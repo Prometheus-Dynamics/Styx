@@ -10,6 +10,7 @@ mod daedalus;
 mod dmabuf;
 mod equivalence;
 mod fp16;
+mod h264;
 mod jpeg;
 mod post;
 mod quality;

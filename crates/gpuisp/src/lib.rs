@@ -34,6 +34,7 @@ mod convert;
 mod dmabuf;
 mod error;
 mod fp16;
+mod h264;
 mod input;
 mod isp;
 mod jpeg;
@@ -49,6 +50,7 @@ pub use context::{
 };
 pub use convert::{GpuConvert, Image, ImageMut};
 pub use error::GpuError;
+pub use h264::MotionCandidate;
 pub use input::{ExternalBuffer, Input};
 pub use isp::{ExportedFrame, GpuIsp, ImportId};
 pub use jpeg::{JpegGrid, JpegPixels};

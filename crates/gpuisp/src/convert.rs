@@ -138,6 +138,8 @@ pub struct GpuConvert {
     pipeline: vk::Pipeline,
     /// `shaders/jpeg.comp` (`src/jpeg.rs`), on the same layout.
     pub(crate) jpeg: vk::Pipeline,
+    /// `shaders/h264_me.comp` (`src/h264.rs`), on the same layout.
+    pub(crate) h264_me: vk::Pipeline,
     pool: vk::DescriptorPool,
     set: vk::DescriptorSet,
     cmd_pool: vk::CommandPool,
@@ -160,6 +162,7 @@ impl Drop for GpuConvert {
             d.destroy_descriptor_pool(self.pool, None);
             d.destroy_pipeline(self.pipeline, None);
             d.destroy_pipeline(self.jpeg, None);
+            d.destroy_pipeline(self.h264_me, None);
             d.destroy_pipeline_layout(self.layout, None);
             d.destroy_descriptor_set_layout(self.set_layout, None);
         }
@@ -181,6 +184,7 @@ impl GpuConvert {
             layout: vk::PipelineLayout::null(),
             pipeline: vk::Pipeline::null(),
             jpeg: vk::Pipeline::null(),
+            h264_me: vk::Pipeline::null(),
             pool: vk::DescriptorPool::null(),
             set: vk::DescriptorSet::null(),
             cmd_pool: vk::CommandPool::null(),
@@ -220,6 +224,7 @@ impl GpuConvert {
             unsafe { d.create_pipeline_layout(&info, None) }.ctx("vkCreatePipelineLayout")?;
         self.pipeline = self.pipeline_from(CONVERT)?;
         self.jpeg = self.pipeline_from(crate::jpeg::SPIRV)?;
+        self.h264_me = self.pipeline_from(crate::h264::SPIRV)?;
         let sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: 2,

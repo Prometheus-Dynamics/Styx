@@ -8,6 +8,8 @@
 
 mod bits;
 mod cavlc;
+#[cfg(all(feature = "gpu-h264", target_os = "linux"))]
+mod gpu;
 mod headers;
 mod mb;
 mod picture;
@@ -17,6 +19,8 @@ mod tests;
 mod transform;
 
 use bits::{Bits, nal};
+#[cfg(all(feature = "gpu-h264", target_os = "linux"))]
+pub use gpu::{GPU_SEARCH_RANGE, GpuStyxH264};
 use mb::{Counts, MbCode, write_residual};
 use picture::{I16_DC, I16_HORIZONTAL, I16_VERTICAL, Picture};
 
@@ -123,6 +127,9 @@ pub struct StyxH264 {
     cur: Picture,
     reference: Picture,
     motion: Vec<Motion>,
+    /// Whole-pel search starts per macroblock from a motion search elsewhere (the GPU's),
+    /// empty without one.
+    hints: Vec<[i32; 2]>,
     counts: Counts,
     code: Box<MbCode>,
     bits: Bits,
@@ -163,6 +170,7 @@ impl StyxH264 {
             cur: Picture::default(),
             reference: Picture::default(),
             motion: Vec::new(),
+            hints: Vec::new(),
             counts: Counts::default(),
             code: Box::default(),
             bits: Bits::default(),
@@ -189,6 +197,22 @@ impl StyxH264 {
         input: &StyxH264Input<'_>,
         out: &mut Vec<u8>,
     ) -> Result<bool, CodecError> {
+        self.encode_hinted(input, out, |_, _, _, hints| {
+            hints.clear();
+            Ok(())
+        })
+    }
+
+    /// [`Self::encode`], with `hint` asked before a P picture for a whole-pel offset per
+    /// macroblock (row-major) to start the search from: it gets the padded luma of the
+    /// picture and of its reference (`w` x `h`, rows `w` apart) and fills the hints (left empty:
+    /// none).
+    pub fn encode_hinted(
+        &mut self,
+        input: &StyxH264Input<'_>,
+        out: &mut Vec<u8>,
+        hint: impl FnOnce(&[u8], &[u8], (usize, usize), &mut Vec<[i32; 2]>) -> Result<(), CodecError>,
+    ) -> Result<bool, CodecError> {
         input.check()?;
         let size = input.size();
         if size != self.size {
@@ -204,6 +228,14 @@ impl StyxH264 {
         }
         self.load(input);
         let idr = self.force_key || self.since_key >= self.keyframe_interval;
+        self.hints.clear();
+        if !idr {
+            let (y, r) = (&self.src.y, &self.reference.y);
+            hint(&y.data, &r.data, (y.w, y.h), &mut self.hints)?;
+            if !self.hints.is_empty() && self.hints.len() != self.mbs.0 * self.mbs.1 {
+                return Err(CodecError::Codec("styx-h264: a hint per macroblock".into()));
+            }
+        }
         out.clear();
         if idr {
             self.force_key = false;
@@ -409,8 +441,11 @@ impl StyxH264 {
         };
         let start = [(mvp[0] + 2) >> 2, (mvp[1] + 2) >> 2];
         let mut best = ([0, 0], cost([0, 0]).unwrap_or(u32::MAX));
-        if let Some(c) = cost(start).filter(|&c| c < best.1) {
-            best = (start, c);
+        let hint = self.hints.get(mby * self.mbs.0 + mbx).copied();
+        for cand in [Some(start), hint].into_iter().flatten() {
+            if let Some(c) = cost(cand).filter(|&c| c < best.1) {
+                best = (cand, c);
+            }
         }
         for step in [8, 4, 2, 1] {
             for _ in 0..16 {

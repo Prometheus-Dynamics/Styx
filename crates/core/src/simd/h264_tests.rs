@@ -174,3 +174,23 @@ fn transforms_match_their_matrices() {
     d[0] = 640;
     assert_eq!(idct4(&d), [10; 16]);
 }
+
+#[test]
+fn full_search_finds_a_shift() {
+    let (w, h) = (64, 48);
+    let reference = bytes(w * h, 99);
+    // `cur` is `reference` moved 3 right and 2 down: the block at (16, 16) came from (13, 14).
+    let cur: Vec<u8> = (0..w * h)
+        .map(|i| {
+            let (x, y) = ((i % w) as i32 - 3, (i / w) as i32 - 2);
+            reference[(y.clamp(0, h as i32 - 1) as usize) * w + x.clamp(0, w as i32 - 1) as usize]
+        })
+        .collect();
+    assert_eq!(
+        full_search(&cur, &reference, (w, h), (1, 1), 8),
+        ([-3, -2], 0)
+    );
+    // A flat picture ties everywhere: the centre wins.
+    let flat = vec![9u8; w * h];
+    assert_eq!(full_search(&flat, &flat, (w, h), (2, 1), 16), ([0, 0], 0));
+}

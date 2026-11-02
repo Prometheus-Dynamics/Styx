@@ -3,6 +3,6 @@
 # Needs `glslc` (shaderc); the outputs are committed, so building the crate does not.
 set -eu
 cd "$(dirname "$0")"
-for s in full half stats convert jpeg full16 half16 denoise sharpen output; do
+for s in full half stats convert jpeg h264_me full16 half16 denoise sharpen output; do
     glslc --target-env=vulkan1.2 -O -o "$s.spv" "$s.comp"
 done

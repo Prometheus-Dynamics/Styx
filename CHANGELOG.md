@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_codec::styx_h264::GpuStyxH264` (feature `gpu-h264`, Linux): the H.264 encoder with each
+  P picture's motion search started from the GPU's exhaustive whole-pel search
+  (`styx_gpuisp::GpuConvert::motion_search`, `shaders/h264_me.comp`, bit for bit
+  `styx_core::simd::h264::full_search`); `StyxH264::encode_hinted` takes such hints from any
+  source.
 - `styx_core::simd::h264`: the H.264 encoder's hot loops on grids of 4x4 blocks: `sad16`,
   `residual_quant` (forward core transform with deadzone quantisation) and `recon` (the
   decoder's dequantisation, inverse transform, prediction and clamp), with RVV leaves exact

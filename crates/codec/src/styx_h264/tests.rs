@@ -9,14 +9,14 @@ use super::picture::Plane;
 use super::*;
 
 /// A plane's samples as rows.
-fn plane_rows(p: &Plane, (w, h): (usize, usize)) -> Vec<u8> {
+pub(super) fn plane_rows(p: &Plane, (w, h): (usize, usize)) -> Vec<u8> {
     (0..h)
         .flat_map(|y| p.data[y * p.w..][..w].iter().copied())
         .collect()
 }
 
 /// `w` x `h` planes of a scene: gradients, a texture and a square moving by `shift` pixels.
-fn scene(w: usize, h: usize, shift: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+pub(super) fn scene(w: usize, h: usize, shift: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let mut s = 0x9e37_79b9u32;
     let mut noise = || {
         s ^= s << 13;
@@ -47,7 +47,7 @@ fn scene(w: usize, h: usize, shift: usize) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
 }
 
 /// FFmpeg's decode of `stream` as I420 pictures, or `None` without an `ffmpeg` binary.
-fn ffmpeg_decode(stream: &[u8]) -> Option<Vec<u8>> {
+pub(super) fn ffmpeg_decode(stream: &[u8]) -> Option<Vec<u8>> {
     let mut child = Command::new("ffmpeg")
         .args([
             "-v", "error", "-f", "h264", "-i", "pipe:0", "-f", "rawvideo", "-pix_fmt", "yuv420p",

@@ -74,6 +74,9 @@ codec-rga = ["dep:styx-kernel", "dep:daedalus-rga"]
 # `styx_jpeg::GpuStyxJpeg` (Linux): Styx's JPEG encoder with colour and DCT on a Vulkan device
 # (`styx-gpuisp`), Huffman coding on the CPU.
 gpu-jpeg = ["dep:styx-gpuisp"]
+# Styx's H.264 encoder with its motion search started from the GPU's exhaustive search
+# (`styx-gpuisp`).
+gpu-h264 = ["dep:styx-gpuisp"]
 # FFmpeg containers and network streams (libavformat), for netcam and file video.
 codec-ffmpeg-format = ["codec-ffmpeg"]
 serde = ["dep:serde", "styx-core/serde", "styx-capture/serde"]

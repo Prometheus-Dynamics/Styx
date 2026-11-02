@@ -10,7 +10,7 @@ fn spirv_is_up_to_date() {
     let out = std::env::temp_dir().join(format!("styx-gpuisp-spv-{}", std::process::id()));
     std::fs::create_dir_all(&out).unwrap();
     for s in [
-        "full", "half", "stats", "convert", "jpeg", "full16", "half16",
+        "full", "half", "stats", "convert", "jpeg", "h264_me", "full16", "half16",
     ] {
         let spv = out.join(format!("{s}.spv"));
         let status = Command::new("glslc")

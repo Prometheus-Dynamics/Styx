@@ -174,13 +174,13 @@ memory when it runs.
       (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG decode. Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
       `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
-- [ ] **Styx's own H.264 encoder: SIMD and GPU leaves, codec hookup** (`styx_codec::styx_h264`,
+- [ ] **Styx's own H.264 encoder: codec hookup, rate control, search** (`styx_codec::styx_h264`,
       scalar, decodes bit for bit to its reconstruction under FFmpeg). *Why:* the H.264 cells on
-      RVV and the GPU are gaps with no library to lean on. *Done when:* SAD, the 4x4 transform
-      with quantisation and the reconstruction run on the GPU too (the RVV leaves in
-      `styx_core::simd::h264` are done, QEMU VLEN 128–1024), conformance-tested; the encoder
+      RVV and the GPU are gaps with no library to lean on. *Done when:* (the RVV leaves in
+      `styx_core::simd::h264` and the GPU's motion search, `GpuStyxH264`, are done) the encoder
       is a registered `Codec` (H264 out of I420/NV12/GREY) on hosts without another H.264 encoder;
-      rate control and sub-pel motion follow. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
+      rate control, sub-pel motion and a wider CPU search (the diamond misses fast motion the
+      GPU's exhaustive search finds: 10x the bytes at 11 px/picture) follow. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
       the dev PC (Zen 3, load ~34–59 from other sessions): scalar I 21.9 ms, P 26.0 ms a picture; on the
       `simd::h264` kernels I 16.3 ms, P 17.3 ms.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**

@@ -131,7 +131,12 @@ Notes:
    128, 256 and 1024; CAVLC is serial and scalar. Written, untested on board. H.265 has no RVV
    path beyond the board's VPU. JPEG decode still needs its own leaves, or the board's units
    (see the fixed-function table below).
-9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. There is no Vulkan Video encode yet.
+9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. On any Vulkan device, Styx's H.264 encoder
+   (`styx_codec::styx_h264::GpuStyxH264`, feature `gpu-h264`) starts each macroblock's motion
+   search from the GPU's exhaustive whole-pel search (`shaders/h264_me.comp`, ±16, bit for bit
+   `styx_core::simd::h264::full_search`); refinement and coding stay on the CPU. 1280x720 QP 26,
+   11 px/picture of motion: CPU 25.0 ms and 3.49 MB for 20 pictures, RADV 16.3 ms and 0.35 MB,
+   NVIDIA 17.6 ms, llvmpipe 125.7 ms. There is no Vulkan Video encode yet.
 10. `GpuConvert::transform` gathers each output pixel rather than working on 8x8 tiles. It
     gives the bytes of `transform_packed` in all eight orientations, tested against it.
 11. `GpuConvert::jpeg_blocks` (`shaders/jpeg.comp`): JFIF colour, the DCT and quantisation, one

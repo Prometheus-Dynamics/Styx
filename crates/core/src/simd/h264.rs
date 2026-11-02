@@ -243,3 +243,43 @@ pub fn recon_scalar(
         }
     }
 }
+
+/// The most whole pels [`full_search`] (and the GPU's motion search) looks either way.
+pub const SEARCH_RANGE_MAX: i32 = 16;
+
+/// Exhaustive whole-pel motion search of the 16x16 macroblock (`mbx`, `mby`) of `cur` in
+/// `reference` (both `w` x `h` with rows `w` apart, `w` and `h` multiples of 16), offsets up
+/// to `range` either way with the block inside the picture: the offset (whole pels) with the
+/// least SAD, ties to the least `|dx| + |dy|`, then the first in raster order of the
+/// `(2 range + 1)²` candidates. Returns the offset and its SAD.
+pub fn full_search(
+    cur: &[u8],
+    reference: &[u8],
+    (w, h): (usize, usize),
+    (mbx, mby): (usize, usize),
+    range: i32,
+) -> ([i32; 2], u32) {
+    assert!(w % 16 == 0 && h % 16 == 0 && cur.len() >= w * h && reference.len() >= w * h);
+    assert!((0..=SEARCH_RANGE_MAX).contains(&range));
+    let (x0, y0) = (mbx as i32 * 16, mby as i32 * 16);
+    let mut best = (u32::MAX, u32::MAX, [0, 0]);
+    let d = 2 * range + 1;
+    for c in 0..d * d {
+        let (dx, dy) = (c % d - range, c / d - range);
+        let (rx, ry) = (x0 + dx, y0 + dy);
+        if rx < 0 || ry < 0 || rx + 16 > w as i32 || ry + 16 > h as i32 {
+            continue;
+        }
+        let sad = sad16_scalar(
+            &cur[y0 as usize * w + x0 as usize..],
+            w,
+            &reference[ry as usize * w + rx as usize..],
+            w,
+        );
+        let tie = dx.unsigned_abs() + dy.unsigned_abs();
+        if (sad, tie) < (best.0, best.1) {
+            best = (sad, tie, [dx, dy]);
+        }
+    }
+    (best.2, best.0)
+}
