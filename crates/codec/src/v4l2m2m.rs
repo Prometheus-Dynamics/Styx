@@ -4,8 +4,10 @@
 //! K230's 2D unit, vim2m).
 //!
 //! Each codec opens its device on the first frame and reopens it when the frame size changes.
-//! Frames are copied into the device's buffers at its strides; results are copied out into
-//! host frames, so nothing the device owns outlives a call.
+//! A frame over dma-bufs at a layout the device reads (a capture buffer, a dma-heap frame) is
+//! handed to it by descriptor and read in place; other frames are copied into the device's
+//! buffers at its strides. Results are copied out into host frames, so nothing the device owns
+//! outlives a call.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -14,13 +16,17 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
+use smallvec::SmallVec;
 use styx_core::prelude::*;
 use styx_kernel::v4l2::{
-    BufType, CapabilityFlags, ControlValue, Controls, Format, ImageRows, M2mFrame, M2mSession,
-    PixFormat, PixFormatMplane, PlaneFormat, VideoDevice,
+    BufType, CapabilityFlags, ControlValue, Controls, DmabufSource, Format, ImageRows, M2mFrame,
+    M2mSession, MAX_PLANES, PixFormat, PixFormatMplane, PlaneFormat, VideoDevice,
 };
 
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
+
+mod import;
+use import::dmabuf_planes;
 
 /// `V4L2_CID_MPEG_VIDEO_BITRATE`.
 const CID_BITRATE: u32 = 0x0099_09cf;
@@ -42,6 +48,9 @@ pub struct V4l2M2mOptions {
     pub gop: Option<u32>,
     /// How long to wait for the device's result before reporting backpressure.
     pub timeout: Duration,
+    /// Hand frames over dma-bufs to the device by descriptor (no copy) when their layout is
+    /// one it reads; `false` copies every frame into the device's buffers.
+    pub import_dmabuf: bool,
 }
 
 impl Default for V4l2M2mOptions {
@@ -52,6 +61,7 @@ impl Default for V4l2M2mOptions {
             bitrate: None,
             gop: None,
             timeout: Duration::from_secs(1),
+            import_dmabuf: true,
         }
     }
 }
@@ -120,7 +130,14 @@ fn codec_err(context: &str, e: impl std::fmt::Display) -> CodecError {
     CodecError::Codec(format!("v4l2m2m {context}: {e}"))
 }
 
-fn format_for(mplane: bool, code: u32, width: u32, height: u32, size_hint: u32) -> Format {
+/// A `width` x `height` format of V4L2 `code`, at `stride` bytes a row (0: the driver's).
+fn format_for(
+    mplane: bool,
+    code: u32,
+    (width, height): (u32, u32),
+    stride: u32,
+    size_hint: u32,
+) -> Format {
     let fourcc = styx_kernel::FourCc(code);
     if mplane {
         Format::Multi(PixFormatMplane {
@@ -128,9 +145,9 @@ fn format_for(mplane: bool, code: u32, width: u32, height: u32, size_hint: u32) 
             height,
             fourcc,
             field: 1,
-            planes: if size_hint > 0 {
+            planes: if size_hint > 0 || stride > 0 {
                 vec![PlaneFormat {
-                    bytes_per_line: 0,
+                    bytes_per_line: stride,
                     size_image: size_hint,
                 }]
             } else {
@@ -144,15 +161,59 @@ fn format_for(mplane: bool, code: u32, width: u32, height: u32, size_hint: u32) 
             height,
             fourcc,
             field: 1,
+            bytes_per_line: stride,
             size_image: size_hint,
             ..Default::default()
         })
     }
 }
 
+/// The stream for `input` (`width` x `height`): the one open, or a new one from `open` when
+/// the size changed or whether `input` is imported did. A frame over dma-bufs is imported
+/// (`open` gets its stride) unless `options.import_dmabuf` is off or the device has refused a
+/// frame's layout (`refused`, set here), after which frames are copied.
+fn stream_for<'g>(
+    guard: &'g mut Option<Stream>,
+    options: &V4l2M2mOptions,
+    refused: &AtomicBool,
+    input: &FrameLease,
+    (width, height): (u32, u32),
+    open: impl Fn(Option<u32>) -> Result<Stream, CodecError>,
+) -> Result<&'g mut Stream, CodecError> {
+    let import = if options.import_dmabuf
+        && !refused.load(Ordering::Relaxed)
+        && input.dmabuf_plane(0).is_some()
+    {
+        let planes = input.planes_visible().map_err(|e| codec_err("input", e))?;
+        planes.first().map(|p| p.stride() as u32)
+    } else {
+        None
+    };
+    let current = |s: &Stream| {
+        (s.width, s.height) == (width, height) && s.session.imports() == import.is_some()
+    };
+    if !guard.as_ref().is_some_and(current) {
+        if let Some(old) = guard.take() {
+            let _ = old.session.close();
+        }
+        *guard = Some(open(import)?);
+    }
+    let stream = guard.as_mut().expect("opened above");
+    if stream.session.imports()
+        && dmabuf_planes(&stream.session, input, &mut [None; MAX_PLANES]).is_none()
+    {
+        refused.store(true, Ordering::Relaxed);
+        if let Some(old) = guard.take() {
+            let _ = old.session.close();
+        }
+        *guard = Some(open(None)?);
+    }
+    Ok(guard.as_mut().expect("opened above"))
+}
+
 /// An open stream and the frames in flight through it.
 struct Stream {
-    session: M2mSession,
+    session: M2mSession<FrameLease>,
     width: u32,
     height: u32,
     /// The next source timestamp, which identifies a frame on its way through the device.
@@ -165,7 +226,8 @@ struct Stream {
 
 impl Stream {
     /// Opens `source` (`width` x `height` frames of `source`) to `dest` (`out_width` x
-    /// `out_height` of `dest`), after `setup` sets the device's controls.
+    /// `out_height` of `dest`), after `setup` sets the device's controls. `import`: the
+    /// source side imports dma-bufs, read at `import`'s stride.
     #[allow(clippy::too_many_arguments)]
     fn open(
         options: &V4l2M2mOptions,
@@ -174,6 +236,7 @@ impl Stream {
         (width, height): (u32, u32),
         (out_width, out_height): (u32, u32),
         size_hint: u32,
+        import: Option<u32>,
         setup: impl FnOnce(&VideoDevice),
     ) -> Result<Self, CodecError> {
         let (dev, codes) = match &options.device {
@@ -199,11 +262,12 @@ impl Stream {
         };
         let mplane = m2m_kind(&dev).unwrap_or(false);
         setup(&dev);
-        let session = M2mSession::open(
+        let session = M2mSession::open_with(
             dev,
-            &format_for(mplane, codes.0, width, height, 0),
-            &format_for(mplane, codes.1, out_width, out_height, size_hint),
+            &format_for(mplane, codes.0, (width, height), import.unwrap_or(0), 0),
+            &format_for(mplane, codes.1, (out_width, out_height), 0, size_hint),
             options.buffers,
+            import.is_some(),
         )
         .map_err(|e| codec_err("open", e))?;
         Ok(Self {
@@ -223,18 +287,12 @@ impl Stream {
         &mut self,
         input: &FrameLease,
         timeout: Duration,
-        mut take: impl FnMut(&M2mSession, &M2mFrame, FrameMeta) -> Result<FrameLease, CodecError>,
+        mut take: impl FnMut(
+            &M2mSession<FrameLease>,
+            &M2mFrame,
+            FrameMeta,
+        ) -> Result<FrameLease, CodecError>,
     ) -> Result<FrameLease, CodecError> {
-        let planes = input.planes_visible().map_err(|e| codec_err("input", e))?;
-        let rows: Vec<ImageRows<'_>> = planes
-            .iter()
-            .map(|p| ImageRows {
-                data: p.as_bytes(),
-                stride: p.stride(),
-                row_bytes: p.row_bytes(),
-                rows: p.len(),
-            })
-            .collect();
         while !self.session.can_push().map_err(|e| codec_err("queue", e))? {
             if !self.collect(timeout, &mut take)? {
                 return Err(codec_err("queue", "the device returned no buffer"));
@@ -242,11 +300,30 @@ impl Stream {
         }
         let timestamp = Duration::from_micros(self.next);
         self.next += 1;
-        if !self
-            .session
-            .push_image(&rows, timestamp)
-            .map_err(|e| codec_err("queue", e))?
-        {
+        let pushed = if self.session.imports() {
+            let mut sources = [None; MAX_PLANES];
+            let count = dmabuf_planes(&self.session, input, &mut sources)
+                .ok_or_else(|| codec_err("queue", "the frame is not at the device's layout"))?;
+            let sources: SmallVec<[DmabufSource<'_>; 3]> =
+                sources[..count].iter().flatten().copied().collect();
+            let hold = input
+                .share()
+                .ok_or_else(|| codec_err("queue", "a dma-buf frame that cannot be shared"))?;
+            self.session.push_dmabuf(&sources, timestamp, hold)
+        } else {
+            let planes = input.planes_visible().map_err(|e| codec_err("input", e))?;
+            let rows: SmallVec<[ImageRows<'_>; 3]> = planes
+                .iter()
+                .map(|p| ImageRows {
+                    data: p.as_bytes(),
+                    stride: p.stride(),
+                    row_bytes: p.row_bytes(),
+                    rows: p.len(),
+                })
+                .collect();
+            self.session.push_image(&rows, timestamp)
+        };
+        if !pushed.map_err(|e| codec_err("queue", e))? {
             return Err(CodecError::Backpressure);
         }
         self.pending.push_back((timestamp, input.meta().clone()));
@@ -260,7 +337,11 @@ impl Stream {
     fn collect(
         &mut self,
         timeout: Duration,
-        take: &mut impl FnMut(&M2mSession, &M2mFrame, FrameMeta) -> Result<FrameLease, CodecError>,
+        take: &mut impl FnMut(
+            &M2mSession<FrameLease>,
+            &M2mFrame,
+            FrameMeta,
+        ) -> Result<FrameLease, CodecError>,
     ) -> Result<bool, CodecError> {
         let Some(frame) = self
             .session
@@ -304,6 +385,8 @@ pub struct V4l2M2mEncoder {
     descriptor: CodecDescriptor,
     options: V4l2M2mOptions,
     stream: Mutex<Option<Stream>>,
+    /// The device refused a dma-buf frame's layout: frames are copied.
+    refused: AtomicBool,
     force_key: AtomicBool,
     pool: BufferPool,
 }
@@ -322,6 +405,7 @@ impl V4l2M2mEncoder {
             },
             options,
             stream: Mutex::new(None),
+            refused: AtomicBool::new(false),
             force_key: AtomicBool::new(false),
             pool: BufferPool::lazy(
                 crate::DEFAULT_CODEC_POOL_CHUNK_BYTES,
@@ -381,26 +465,27 @@ impl Codec for V4l2M2mEncoder {
             format.resolution.height.get(),
         );
         let mut guard = self.stream.lock();
-        if guard
-            .as_ref()
-            .is_none_or(|s| (s.width, s.height) != (width, height))
-        {
-            if let Some(old) = guard.take() {
-                let _ = old.session.close();
-            }
-            // Room for a keyframe well above the raw 4:2:0 size.
-            let hint = (width * height * 3 / 2).max(64 * 1024);
-            *guard = Some(Stream::open(
-                &self.options,
-                self.descriptor.input,
-                self.descriptor.output,
-                (width, height),
-                (width, height),
-                hint,
-                |dev| self.set_controls(dev),
-            )?);
-        }
-        let stream = guard.as_mut().expect("opened above");
+        // Room for a keyframe well above the raw 4:2:0 size.
+        let hint = (width * height * 3 / 2).max(64 * 1024);
+        let stream = stream_for(
+            &mut guard,
+            &self.options,
+            &self.refused,
+            input,
+            (width, height),
+            |import| {
+                Stream::open(
+                    &self.options,
+                    self.descriptor.input,
+                    self.descriptor.output,
+                    (width, height),
+                    (width, height),
+                    hint,
+                    import,
+                    |dev| self.set_controls(dev),
+                )
+            },
+        )?;
         if self.force_key.swap(false, Ordering::AcqRel) {
             let _ = stream
                 .session
@@ -452,6 +537,8 @@ pub struct V4l2M2mConverter {
     options: V4l2M2mOptions,
     size: Option<(u32, u32)>,
     stream: Mutex<Option<Stream>>,
+    /// The device refused a dma-buf frame's layout: frames are copied.
+    refused: AtomicBool,
 }
 
 impl V4l2M2mConverter {
@@ -474,6 +561,7 @@ impl V4l2M2mConverter {
             options,
             size,
             stream: Mutex::new(None),
+            refused: AtomicBool::new(false),
         }
     }
 
@@ -513,24 +601,25 @@ impl Codec for V4l2M2mConverter {
             format.resolution.height.get(),
         );
         let mut guard = self.stream.lock();
-        if guard
-            .as_ref()
-            .is_none_or(|s| (s.width, s.height) != (width, height))
-        {
-            if let Some(old) = guard.take() {
-                let _ = old.session.close();
-            }
-            *guard = Some(Stream::open(
-                &self.options,
-                self.descriptor.input,
-                self.descriptor.output,
-                (width, height),
-                self.size.unwrap_or((width, height)),
-                0,
-                |_| {},
-            )?);
-        }
-        let stream = guard.as_mut().expect("opened above");
+        let stream = stream_for(
+            &mut guard,
+            &self.options,
+            &self.refused,
+            input,
+            (width, height),
+            |import| {
+                Stream::open(
+                    &self.options,
+                    self.descriptor.input,
+                    self.descriptor.output,
+                    (width, height),
+                    self.size.unwrap_or((width, height)),
+                    0,
+                    import,
+                    |_| {},
+                )
+            },
+        )?;
         let output = self.descriptor.output;
         stream.run(input, self.options.timeout, |session, frame, meta| {
             let dest = session.dest_format();

@@ -55,13 +55,21 @@ memory when it runs.
       3` comes from the scaled channels (1/8 from the smallest) within a stated tolerance of the box
       filter; the register programming is checked against dumps from the board (today: unit tests
       against a fake register file). *Blocked by:* a K230D board.
-- [ ] **K230D: VPU encode (H.264/H.265/JPEG).** Not written for the K230: `V4l2M2mEncoder` is generic
-      and unproven against `mvx`. *Why:* preview and recording without the CPU. *Done when:* the M2M
-      backend drives `/dev/video0` (`mvx`) at 1280x800 30 fps with dma-buf NV12 input, and the CPU
-      fallback is used without it. *Blocked by:* a K230D board.
-- [ ] **K230D: 2D unit scaling.** Not written for the K230: `V4l2M2mConverter` is generic. *Why:*
-      preview frames and levels without the CPU. *Done when:* `/dev/video5` (`nonai-2d`) scales
-      through the M2M backend within a stated tolerance. *Blocked by:* a K230D board.
+- [ ] **K230D: VPU encode (H.264/H.265/JPEG)** (written, untested on board). `V4l2M2mEncoder`
+      drives any stateful V4L2 encoder, `mvx` included, and the registry offers it for NV12, YU12
+      and YUYV when a device here produces H.264, HEVC or JPEG. Frames over dma-bufs at the
+      device's layout (capture buffers) are handed to it by descriptor (`M2mSession::
+      open_importing`), no copy; others are copied. *Why:* preview and recording without the
+      CPU. *Done when:* `/dev/video0` (`mvx`) encodes 1280x800 30 fps from the capture's dma-bufs
+      with no copy (the session imports), and the CPU fallback is used without it. Numbers: the
+      import path passes against `vim2m` on the PC (`dmabuf_frames_are_read_in_place_or_copied`,
+      `vim2m_reads_dmabufs_in_place`). *Blocked by:* a K230D board.
+- [ ] **K230D: 2D unit scaling** (written, untested on board). `V4l2M2mConverter` drives any V4L2
+      M2M scaler or converter, `nonai-2d` included, with the same dma-buf import. *Why:* preview
+      frames and levels without the CPU. *Done when:* `/dev/video5` (`nonai-2d`) scales the
+      capture's NV12 through the M2M backend within a stated tolerance of the box filter.
+      *Blocked by:* a K230D board; the planner has no M2M scaling stage yet (see the RGA item),
+      so nothing picks the converter for pyramid levels or preview on its own.
 - [ ] **RK3588S: ISP30 bring-up** (written, untested on board). *Why:* the Rockchip HVS boards. *Done
       when:* the OV9782 through rkcif and the ISP streams NV12 at 120 fps with 3A converged; entity
       names (`media-ctl -p`) and the fixed-point constants (gains, CCM, LSC, statistics bit

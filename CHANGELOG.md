@@ -8,6 +8,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `M2mSession::open_importing` and `push_dmabuf`: a memory-to-memory device reads source frames
+  from the caller's dma-bufs, no copy, holding each frame until the device gives its slot back;
+  a dma-buf goes back to the slot that has it attached. `V4l2M2mEncoder` and
+  `V4l2M2mConverter` hand frames over dma-bufs at the device's layout to it this way (the
+  K230's VPU and 2D unit, the Rockchip RGA, vim2m) and copy the others;
+  `V4l2M2mOptions::import_dmabuf` turns it off. `MmapQueue::importing` for DMABUF slots.
+  `styx_kernel::dma_heap::dmabuf_id` tells two descriptors of one dma-buf apart from two
+  dma-bufs. Breaking: `M2mSession` takes the held type (`M2mSession<H = ()>`),
+  `MmapQueue` has a `memory` field.
 - Software ISP output stages (RGB to YCbCr planes, luma and chroma denoise, sharpening, planes to
   output) have x86, NEON, armv7 NEON and RVV leaves, exact against scalar. Output conversion allocates
   nothing per band.

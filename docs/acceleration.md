@@ -197,8 +197,8 @@ States:
 | ISP8000 | demosaic, colour, tone, YUV out | unused (board) | RVV software ISP (integer path still scalar on RVV) |
 | ISP8000 | 3A statistics | unused (board) | software ISP statistics |
 | ISP8000 | scaled channels (pyramid levels) | unused (board) | `box2_row` (RVV) |
-| VPU (`mvx`, V4L2 M2M) | H.264, H.265, JPEG encode | unused (board): `V4l2M2mEncoder` should drive it | libjpeg-turbo (no SIMD on RISC-V), FFmpeg |
-| 2D unit (`nonai-2d`, V4L2 M2M) | scale, convert, rotate | unused (board): `V4l2M2mConverter` should drive it | `styx_core::simd` (RVV) |
+| VPU (`mvx`, V4L2 M2M) | H.264, H.265, JPEG encode | written, untested on board: `V4l2M2mEncoder`, frames imported by dma-buf | libjpeg-turbo (no SIMD on RISC-V), FFmpeg |
+| 2D unit (`nonai-2d`, V4L2 M2M) | scale, convert, rotate | written, untested on board: `V4l2M2mConverter`, frames imported by dma-buf; no planner stage picks it yet | `styx_core::simd` (RVV) |
 | DPU (structured-light depth) | depth maps | unused (board) | none: Styx has no depth output |
 
 ### Rockchip (RK3566, RK3562, RK3576, RK3588S)

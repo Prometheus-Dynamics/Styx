@@ -1,4 +1,5 @@
-//! An MMAP buffer queue on one video node, every buffer mapped ([`MmapQueue`]).
+//! An MMAP buffer queue on one video node, every buffer mapped ([`MmapQueue`]), or a queue of
+//! DMABUF slots importing the caller's dma-bufs ([`MmapQueue::importing`]).
 
 use std::time::{Duration, Instant};
 
@@ -16,8 +17,10 @@ pub struct MmapQueue {
     pub dev: VideoDevice,
     /// Its queue type.
     pub buf_type: BufType,
-    /// Mappings per buffer, per plane.
+    /// Mappings per buffer, per plane (no planes for a queue importing dma-bufs).
     pub maps: Vec<Vec<Mapping>>,
+    /// `Mmap`, or `DmaBuf` for a queue importing dma-bufs.
+    pub memory: Memory,
     /// The queue's name, for errors and the timer.
     pub name: &'static str,
     timer: Option<QueueTimer>,
@@ -42,6 +45,30 @@ impl MmapQueue {
             dev,
             buf_type,
             maps,
+            memory: Memory::Mmap,
+            name,
+            timer: None,
+        })
+    }
+
+    /// Requests `count` DMABUF slots on `dev`: each buffer queued imports the caller's
+    /// dma-bufs ([`QueueBuffer::dmabuf`] through [`VideoDevice::queue`]); nothing is mapped and
+    /// [`Self::queue`] does not apply. An error if the driver gives none.
+    pub fn importing(
+        dev: VideoDevice,
+        buf_type: BufType,
+        count: u32,
+        name: &'static str,
+    ) -> Result<Self> {
+        let got = dev.request_buffers(buf_type, Memory::DmaBuf, count)?;
+        if got.count == 0 {
+            return Err(Error::Invalid(format!("{name}: no buffers")));
+        }
+        Ok(Self {
+            dev,
+            buf_type,
+            maps: (0..got.count).map(|_| Vec::new()).collect(),
+            memory: Memory::DmaBuf,
             name,
             timer: None,
         })
@@ -92,7 +119,7 @@ impl MmapQueue {
 
     /// Dequeues a buffer if one is ready.
     pub fn try_dequeue(&self) -> Result<Option<DequeuedBuffer>> {
-        self.timed("dqbuf", || self.dev.dequeue(self.buf_type, Memory::Mmap))
+        self.timed("dqbuf", || self.dev.dequeue(self.buf_type, self.memory))
     }
 
     /// Dequeues a buffer, waiting up to `timeout`; `None` if none came.
@@ -119,7 +146,7 @@ impl MmapQueue {
     pub fn close(mut self) -> Result<()> {
         let r = self.dev.stream_off(self.buf_type);
         self.maps.clear();
-        let f = self.dev.free_buffers(self.buf_type, Memory::Mmap);
+        let f = self.dev.free_buffers(self.buf_type, self.memory);
         r?;
         f
     }

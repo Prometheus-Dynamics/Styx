@@ -97,6 +97,16 @@ pub fn sync_stats() -> (u64, u64) {
     (SYNCS.load(Relaxed), SYNC_NS.load(Relaxed))
 }
 
+/// Which dma-buf `fd` is (its device and inode), to know it again under another descriptor.
+pub fn dmabuf_id(fd: BorrowedFd<'_>) -> Option<(u64, u64)> {
+    // SAFETY: `stat` is plain data, valid zeroed; `fstat` fills it for an open descriptor.
+    let mut st: libc::stat = unsafe { std::mem::zeroed() };
+    // SAFETY: as above.
+    let ok = unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } == 0;
+    #[allow(clippy::unnecessary_cast)]
+    ok.then_some((st.st_dev as u64, st.st_ino as u64))
+}
+
 /// The size of a dma-buf (or any seekable file, e.g. a memfd) in bytes, as the kernel has it:
 /// `lseek(SEEK_END)`, which dma-bufs answer with their size, then back to the start.
 pub fn dmabuf_size(dmabuf: BorrowedFd<'_>) -> Result<u64> {
