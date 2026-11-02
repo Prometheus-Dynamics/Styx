@@ -256,6 +256,14 @@ memory when it runs.
 
 Not on the freeze list. *Numbers:* none measured unless stated.
 
+- [ ] **MCU flash: watch config C on the Cortex-M7.** *What:* C is 131,704 bytes against its
+      134,000 limit (1.7% headroom; the others have 4-11%, D 5%). *Why:* the limits are guards,
+      and lean is the default: the next growth in the code C links (sensor driver, algorithms,
+      descriptions) should be cut, not covered by a new limit. *Done when:* C has about 5%
+      headroom again from a real saving. *Blocked by:* nothing. *Numbers:* `scripts/mcu-size.sh`
+      at cb3f56e; docs/mcu.md. A saving looked at and not taken: `SoftLoop::new` clones the
+      `CameraConfig` (about 375 bytes of clone code in D), but `SoftLoop::info()` hands out the
+      whole `SensorInfo`, so moving it into the controller would change that API.
 - [ ] **Regions, remaining.** *Why:* gaps in the region paths. *Done when:* consumers sharing a
       software-ISP capture get their regions beyond views (today luma only); a true 4x4 software
       overview bin beyond 2; libcamera regions of another size without scaling to the first
