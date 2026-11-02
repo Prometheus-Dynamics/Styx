@@ -582,6 +582,20 @@ impl CodecRegistry {
             );
         }
 
+        // Styx's own JPEG encoder: where no C encoder is compiled in, and on RISC-V, where its
+        // RVV colour and DCT beat libjpeg-turbo's scalar build (ties go by name: "styx-jpeg"
+        // sorts before "turbojpeg").
+        #[cfg(any(
+            target_arch = "riscv64",
+            not(any(feature = "codec-turbojpeg", feature = "codec-mozjpeg"))
+        ))]
+        for input in crate::styx_jpeg::StyxJpegEncoder::INPUTS {
+            self.register(
+                input,
+                Arc::new(crate::styx_jpeg::StyxJpegEncoder::new(input, 85)),
+            );
+        }
+
         #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
         self.register(
             FourCc::RG24,

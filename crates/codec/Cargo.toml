@@ -45,6 +45,7 @@ turbojpeg = { workspace = true, optional = true, features = ["require-simd"] }
 
 [dev-dependencies]
 criterion.workspace = true
+jpeg-decoder.workspace = true
 
 [[bench]]
 name = "mjpeg_luma"

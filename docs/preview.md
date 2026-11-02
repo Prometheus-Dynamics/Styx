@@ -54,6 +54,11 @@ Why not the others:
 - **zune-jpeg**: decodes only. **`image` (pure Rust)**: no C dependency, but it takes RGB
   (YUV converted first) and is slower (measured below); available as `JpegBackend::Image` for
   builds without C.
+- **Styx's own (`JpegBackend::Styx`)**: pure Rust and always compiled in; takes the YUV planes
+  as they are. Its colour and DCT have RVV leaves, so on RISC-V (where libjpeg-turbo has no
+  SIMD) it comes first. Huffman tables are the standard ones (no optimisation pass).
+  On x86 (no x86 leaves; dev PC, 640x400 I420, q70) it takes 2.3 ms p50 against libjpeg-turbo's
+  0.41 ms for the same bytes within 0.2%; the RVV time is owed a board.
 - **GPU (styx-gpuisp, Vulkan)**: the GPU ISP can already write NV12/I420 at half size, which
   would replace step 2 on a software-ISP capture. JPEG's entropy coding is serial and stays on
   the CPU, and at preview sizes the scale step costs well under a millisecond on the CPU
@@ -151,7 +156,8 @@ get alone.
   `encode_us`.
 
 `PreviewConfig`: `size(w, h)` (largest; aspect ratio kept, never upscaled, even sizes),
-`max_fps`, `quality` (default 70), `encoder` (`JpegBackend::Auto`: turbojpeg, mozjpeg, image),
+`max_fps`, `quality` (default 70), `encoder` (`JpegBackend::Auto`: turbojpeg, mozjpeg, styx,
+image; styx first on RISC-V),
 `nice`, `encode_unwatched`, `passthrough_jpeg`, `idle_disconnect`, `with_request` (what to ask
 the service for; default NV12 at the preview size).
 

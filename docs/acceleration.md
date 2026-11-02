@@ -92,7 +92,7 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`; for the conversion
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| JPEG encode | pass | lib | lib | lib | gap⁸ | gap |
+| JPEG encode | pass | lib | lib | lib | pass⁸ | gap |
 | JPEG decode | pass | lib | lib | lib | gap⁸ | gap |
 | H.264 / H.265 encode | pass | lib | lib | lib | gap⁸ | pass⁹ |
 
@@ -121,8 +121,12 @@ Notes:
 7. yuvutils-rs has no armv7 or RVV code. There, Styx's own rows run instead
    (`styx_core::simd::{nv12,i420,yuyv}_rgb_row`), exact against scalar. They are tested under QEMU
    and written, untested on board.
-8. Upstream libjpeg-turbo and x264 have no RVV code. Styx needs its own colour and DCT
-   leaves, or the board's encoder (see the fixed-function table below).
+8. Upstream libjpeg-turbo and x264 have no RVV code. JPEG encode: Styx's own encoder
+   (`styx_codec::styx_jpeg`) with RVV leaves for JFIF colour (RGB → YCbCr 4:2:0) and the DCT
+   with quantisation (`styx_core::simd::jpeg`), exact against the scalar oracle, tested under
+   QEMU at VLEN 128, 256, 512 and 1024; Huffman coding is serial and scalar. Written, untested
+   on board. JPEG decode and H.264 still need their own leaves, or the board's units (see the
+   fixed-function table below).
 9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. There is no Vulkan Video encode yet.
 10. `GpuConvert::transform` gathers each output pixel rather than working on 8x8 tiles. It
     gives the bytes of `transform_packed` in all eight orientations, tested against it.

@@ -143,7 +143,8 @@ framelease = []
 frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "styx-core/lease-codec", "metrics-serde"]
 # `styx::preview`: low-latency JPEG previews for user interfaces (a low-priority camera service
 # client or offered frames, MJPEG and WebSocket serving helpers). The JPEG encoder comes from
-# `codec-turbojpeg` (recommended), `codec-mozjpeg` or `image` (docs/preview.md).
+# `codec-turbojpeg` (recommended), `codec-mozjpeg`, `image` or Styx's own, always there
+# (docs/preview.md).
 preview = ["facade", "dep:bytes"]
 # Serde for metrics snapshots (`styx::metrics`), and the camera service's metrics request.
 metrics-serde = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde"]

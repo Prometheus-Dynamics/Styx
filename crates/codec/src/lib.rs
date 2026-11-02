@@ -403,6 +403,7 @@ pub mod prelude;
 pub mod rga;
 #[cfg(all(feature = "codec-rkmpp", target_os = "linux"))]
 pub mod rkmpp;
+pub mod styx_jpeg;
 #[cfg(feature = "codec-turbojpeg")]
 mod turbojpeg_raw;
 #[cfg(all(feature = "codec-v4l2m2m", target_os = "linux"))]

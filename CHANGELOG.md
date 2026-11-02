@@ -8,6 +8,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_codec::styx_jpeg`: Styx's own baseline JPEG encoder (pure Rust). `StyxJpeg` takes packed
+  RGB/BGR (3 or 4 bytes), I420, NV12 or grey; colour and the DCT with quantisation come from the
+  new `styx_core::simd::jpeg` kernels (exact integer arithmetic; RVV leaves on RISC-V, tested
+  under QEMU at VLEN 128–1024, written, untested on board), Huffman coding with the Annex K
+  tables. One MCU row at a time into reused strips: no steady-state allocation.
+  `StyxJpegEncoder` is the codec (impl `styx-jpeg`), registered where no C encoder is compiled in
+  and on RISC-V; `JpegBackend::Styx` is the preview backend (first on RISC-V). Exhaustive matches
+  on `JpegBackend` need the new arm.
 - `styx_codec::RgaConverter` (feature `codec-rga`, Linux): scale, crop and convert on the
   Rockchip RGA through Daedalus's `daedalus-rga` (no rotation yet). Dma-buf frames are read in
   place; host frames go through dma-heap buffers made once per layout. Written, untested on

@@ -6,10 +6,12 @@
 //! |---|---|---|---|
 //! | [`JpegBackend::Turbojpeg`] | `codec-turbojpeg` | planes as they are (`tj3CompressFromYUVPlanes8`) | libjpeg-turbo |
 //! | [`JpegBackend::Mozjpeg`] | `codec-mozjpeg` | raw data (`jpeg_write_raw_data`), fastest settings | mozjpeg |
+//! | [`JpegBackend::Styx`] | always | planes as they are | none (Styx's own, RVV on RISC-V) |
 //! | [`JpegBackend::Image`] | `dynamic-image` | converted to RGB first (the `image` crate takes RGB or grey) | none (pure Rust) |
 //!
 //! `zune-jpeg` (feature `codec-zune`) only decodes. [`JpegBackend::Auto`] takes the first
-//! available in the order above. mozjpeg and libjpeg-turbo export the same libjpeg symbols, so
+//! available in the order above, except on RISC-V, where Styx's own comes first (its colour and
+//! DCT are vectorised; libjpeg-turbo has no RVV). mozjpeg and libjpeg-turbo export the same libjpeg symbols, so
 //! one binary links one of them: with both features, mozjpeg is left out (as
 //! `jpeg_encoder::MozjpegEncoder` is).
 
@@ -39,11 +41,45 @@ pub enum JpegInput<'a> {
     },
 }
 
-impl JpegInput<'_> {
+impl<'a> JpegInput<'a> {
     /// Width and height in pixels.
     pub fn size(&self) -> (usize, usize) {
         match *self {
             Self::I420 { width, height, .. } | Self::Gray { width, height, .. } => (width, height),
+        }
+    }
+
+    fn to_styx(self) -> crate::styx_jpeg::StyxJpegInput<'a> {
+        use crate::styx_jpeg::StyxJpegInput;
+        match self {
+            Self::I420 {
+                y,
+                u,
+                v,
+                width,
+                height,
+                y_stride,
+                c_stride,
+            } => StyxJpegInput::I420 {
+                y,
+                u,
+                v,
+                width,
+                height,
+                y_stride,
+                c_stride,
+            },
+            Self::Gray {
+                y,
+                width,
+                height,
+                stride,
+            } => StyxJpegInput::Gray {
+                y,
+                width,
+                height,
+                stride,
+            },
         }
     }
 
@@ -88,7 +124,7 @@ impl JpegInput<'_> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum JpegBackend {
-    /// The first available: turbojpeg, mozjpeg, image.
+    /// The first available: turbojpeg, mozjpeg, styx, image (styx first on RISC-V).
     #[default]
     Auto,
     /// libjpeg-turbo (feature `codec-turbojpeg`): YUV planes as they are.
@@ -96,6 +132,8 @@ pub enum JpegBackend {
     /// mozjpeg (feature `codec-mozjpeg`, without `codec-turbojpeg`) with libjpeg-turbo's
     /// fastest settings: YUV as raw data.
     Mozjpeg,
+    /// Styx's own baseline encoder ([`crate::styx_jpeg::StyxJpeg`]), always compiled in.
+    Styx,
     /// The `image` crate's pure-Rust encoder (feature `dynamic-image`): YUV converted to RGB.
     Image,
 }
@@ -104,6 +142,9 @@ impl JpegBackend {
     /// The backends compiled in, fastest first.
     pub fn available() -> Vec<JpegBackend> {
         let mut out = Vec::new();
+        if cfg!(target_arch = "riscv64") {
+            out.push(Self::Styx);
+        }
         if cfg!(feature = "codec-turbojpeg") {
             out.push(Self::Turbojpeg);
         }
@@ -112,6 +153,9 @@ impl JpegBackend {
             not(feature = "codec-turbojpeg")
         )) {
             out.push(Self::Mozjpeg);
+        }
+        if !cfg!(target_arch = "riscv64") {
+            out.push(Self::Styx);
         }
         if cfg!(feature = "dynamic-image") {
             out.push(Self::Image);
@@ -124,6 +168,7 @@ impl JpegBackend {
             Self::Auto => "auto",
             Self::Turbojpeg => "turbojpeg",
             Self::Mozjpeg => "mozjpeg",
+            Self::Styx => "styx",
             Self::Image => "image",
         }
     }
@@ -137,9 +182,10 @@ impl std::str::FromStr for JpegBackend {
             "auto" => Ok(Self::Auto),
             "turbojpeg" => Ok(Self::Turbojpeg),
             "mozjpeg" => Ok(Self::Mozjpeg),
+            "styx" => Ok(Self::Styx),
             "image" => Ok(Self::Image),
             other => Err(format!(
-                "unknown JPEG encoder {other:?} (auto, turbojpeg, mozjpeg, image)"
+                "unknown JPEG encoder {other:?} (auto, turbojpeg, mozjpeg, styx, image)"
             )),
         }
     }
@@ -153,6 +199,7 @@ enum State {
     Turbo(Box<turbo::Turbo>),
     #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
     Moz(moz::Moz),
+    Styx(Box<crate::styx_jpeg::StyxJpeg>),
     #[cfg(feature = "dynamic-image")]
     Image(Vec<u8>),
 }
@@ -195,6 +242,9 @@ impl PlanarJpegEncoder {
             }
             #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
             JpegBackend::Mozjpeg => Ok(State::Moz(moz::Moz::default())),
+            JpegBackend::Styx => Ok(State::Styx(Box::new(crate::styx_jpeg::StyxJpeg::new(
+                quality,
+            )))),
             #[cfg(feature = "dynamic-image")]
             JpegBackend::Image => Ok(State::Image(Vec::new())),
             other => Err(CodecError::Codec(format!(
@@ -231,6 +281,7 @@ impl PlanarJpegEncoder {
             State::Turbo(turbo) => turbo.encode(input, out),
             #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
             State::Moz(moz) => moz.encode(input, quality, out),
+            State::Styx(styx) => styx.encode(&input.to_styx(), out),
             #[cfg(feature = "dynamic-image")]
             State::Image(rgb) => pure::encode(input, quality, rgb, out),
         }
