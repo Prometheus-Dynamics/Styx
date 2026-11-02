@@ -240,8 +240,8 @@ Tried: an fp32 version of the quadratics (8 octaves, coefficients by `vpermps` f
 exponent, FMA): 0.61 ms, bound by the lane-crossing `vpermps` (and `vpmovzxwd`) sharing the
 shuffle unit; the 16-bit form looks its coefficients up in-lane. Seven whole-octave segments
 ran at 0.43 ms but missed the adaptive contrast curves by 2 codes. AVX-512 VBMI (`vpermi2b`,
-a 128-entry byte lookup per instruction) would make the exact table two lookups and a blend
-per node array; the host has no AVX-512, so it is not written.
+a 128-entry byte lookup per instruction) makes the exact table two lookups and a blend per
+node array: written (`simd/x86/tone512.rs`), not yet run, as this host has no AVX-512.
 
 ## Cortex-A72 class (no FP16 arithmetic): the integer path
 

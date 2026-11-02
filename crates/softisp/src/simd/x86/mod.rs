@@ -1,10 +1,12 @@
-//! x86 leaves, chosen per call from the given CPU features (AVX2, then SSSE3 or SSE2). The
+//! x86 leaves, chosen per call from the given CPU features (AVX-512 VBMI for the tone table,
+//! AVX2, then SSSE3 or SSE2). The
 //! dispatchers pass the detected features; tests pass restricted sets to reach every leaf. Each
 //! returns the pixels it handled; the dispatcher finishes the row with the scalar kernel.
 
 mod bayer;
 mod color;
 pub(super) mod tone;
+mod tone512;
 mod vec;
 
 use super::{RowKind, SimdBackend, X86FeatureSet, YuvCoeffs};
@@ -228,6 +230,12 @@ pub(super) fn lut_row(
     lut: &super::ToneLut,
     width: usize,
 ) -> Option<(SimdBackend, usize)> {
+    if f.avx512vbmi && width >= 64 {
+        // SAFETY: AVX-512 F, BW and VBMI detected; the slices hold `width` pixels.
+        return done(SimdBackend::X86Avx512Vbmi, unsafe {
+            tone512::lut_avx512vbmi(src, dst, &lut.nodes, width)
+        });
+    }
     if !f.avx2 {
         return None;
     }

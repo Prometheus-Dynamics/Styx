@@ -140,11 +140,16 @@ memory when it runs.
       (2). Fixed-function: 5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves cover every
       kernel in `styx_core::simd` and the integer kernels of `styx_softisp::simd` except the
       edge-directed demosaic.
-- [ ] **Software ISP: AVX-512 VBMI exact tone table.** Not written (no AVX-512 code in the tree; the
-      old entry read as written, untested). *Why:* the fastest exact table on such hosts. *Done
-      when:* a leaf passes the conformance tests. *Blocked by:* an AVX-512 host to run it.
-      *Numbers:* none. Beside it: colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76's
-      integer path; never measured on a real Cortex-A72.
+- [ ] **Software ISP: AVX-512 VBMI exact tone table: written, untested on an AVX-512 host.**
+      `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
+      pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected
+      (`X86FeatureSet::avx512vbmi`, `SimdBackend::X86Avx512Vbmi`), and the AVX2 leaf still tested
+      there. *Why:* the fastest exact table on such hosts. *Done when:* `lut_every_code` and the
+      conformance tests pass on an AVX-512 VBMI CPU or under Intel SDE, and its time is in
+      PERFORMANCE.md. *Blocked by:* a run there: the dev PC is a Zen 3 and QEMU 10.2's TCG has no
+      AVX-512; Intel SDE needs the user's OK to download. *Numbers:* none yet. Beside it: colour
+      matrix 1.1 ms and tone table 1.5 ms per frame on the A76's integer path; never measured on
+      a real Cortex-A72.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
       *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device

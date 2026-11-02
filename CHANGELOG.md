@@ -30,6 +30,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - Replayed raw frames (`ReplaySourceConfig::soft_isp`) are processed into pooled NV12 buffers,
   without a copy or an allocation per frame. `Controller::controls_mut` changes the controls in
   place.
+- AVX-512 VBMI exact tone table (written, untested on an AVX-512 host): `vpermi2b` node
+  lookups, 64 pixels at a time. Breaking: `X86FeatureSet::avx512vbmi` and
+  `SimdBackend::X86Avx512Vbmi`.
 - **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
   `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
   its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`

@@ -41,7 +41,12 @@ pub(super) fn runners() -> Vec<Runner> {
             ssse3: f.ssse3,
             ..sse2
         };
-        out.extend([sse2, ssse3, f].map(Runner::X86));
+        // AVX2 alone too where AVX-512 VBMI would take its place.
+        let avx2 = X86FeatureSet {
+            avx512vbmi: false,
+            ..f
+        };
+        out.extend([sse2, ssse3, avx2, f].map(Runner::X86));
     }
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
     out.push(Runner::Neon);

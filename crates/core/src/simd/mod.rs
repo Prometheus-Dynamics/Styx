@@ -39,6 +39,8 @@ pub enum SimdBackend {
     X86Sse2,
     X86Ssse3,
     X86Avx2,
+    /// AVX-512 with VBMI (byte permutes across a register): the leaves that gain from it.
+    X86Avx512Vbmi,
     Neon,
     /// RISC-V vectors (RVV 1.0): feature `rvv`, on a CPU whose kernel reports the V extension.
     Rvv,
@@ -51,6 +53,7 @@ impl SimdBackend {
             Self::X86Sse2 => "x86-sse2",
             Self::X86Ssse3 => "x86-ssse3",
             Self::X86Avx2 => "x86-avx2",
+            Self::X86Avx512Vbmi => "x86-avx512vbmi",
             Self::Neon => "neon",
             Self::Rvv => "rvv",
         }
@@ -63,6 +66,8 @@ pub struct X86FeatureSet {
     pub sse2: bool,
     pub ssse3: bool,
     pub avx2: bool,
+    /// AVX-512 F, BW and VBMI together.
+    pub avx512vbmi: bool,
 }
 
 impl X86FeatureSet {
@@ -81,6 +86,9 @@ impl X86FeatureSet {
                 sse2: std::is_x86_feature_detected!("sse2"),
                 ssse3: std::is_x86_feature_detected!("ssse3"),
                 avx2: std::is_x86_feature_detected!("avx2"),
+                avx512vbmi: std::is_x86_feature_detected!("avx512f")
+                    && std::is_x86_feature_detected!("avx512bw")
+                    && std::is_x86_feature_detected!("avx512vbmi"),
             }
         }
         #[cfg(all(
@@ -93,6 +101,11 @@ impl X86FeatureSet {
                 sse2: cfg!(target_feature = "sse2"),
                 ssse3: cfg!(target_feature = "ssse3"),
                 avx2: cfg!(target_feature = "avx2"),
+                avx512vbmi: cfg!(all(
+                    target_feature = "avx512f",
+                    target_feature = "avx512bw",
+                    target_feature = "avx512vbmi"
+                )),
             }
         }
         #[cfg(not(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64"))))]
