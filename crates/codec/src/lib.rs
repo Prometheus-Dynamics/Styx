@@ -29,6 +29,18 @@ pub(crate) const DEFAULT_CODEC_POOL_SPARE: usize = 4;
 pub enum CodecKind {
     Encoder,
     Decoder,
+    /// Raw frames in, raw frames of another format or size out, on an engine of its own (a 2D
+    /// blitter such as the Rockchip RGA). The planner takes one where it takes a decoder of
+    /// raw frames; encoder lookups never do.
+    Converter,
+}
+
+impl CodecKind {
+    /// Whether the planner can use the codec to turn frames into the format a consumer asked
+    /// for: a decoder or a converter, never an encoder.
+    pub fn converts(self) -> bool {
+        matches!(self, Self::Decoder | Self::Converter)
+    }
 }
 
 impl std::fmt::Display for CodecKind {
@@ -36,6 +48,7 @@ impl std::fmt::Display for CodecKind {
         f.write_str(match self {
             Self::Encoder => "encoder",
             Self::Decoder => "decoder",
+            Self::Converter => "converter",
         })
     }
 }
@@ -47,6 +60,7 @@ impl std::str::FromStr for CodecKind {
         match value.trim().to_ascii_lowercase().as_str() {
             "encoder" | "encode" => Ok(Self::Encoder),
             "decoder" | "decode" => Ok(Self::Decoder),
+            "converter" | "convert" => Ok(Self::Converter),
             _ => Err(CodecKindParseError {
                 value: value.to_string(),
             }),
@@ -288,6 +302,11 @@ pub trait Codec: Any + Send + Sync + 'static {
                 } else {
                     HOST_OR_DMA_INPUTS
                 },
+                possible_outputs: HOST_OR_DMA_OUTPUTS,
+                preserves_input_residency: false,
+            },
+            CodecKind::Converter => CodecResidencyCapabilities {
+                accepted_inputs: HOST_OR_DMA_INPUTS,
                 possible_outputs: HOST_OR_DMA_OUTPUTS,
                 preserves_input_residency: false,
             },

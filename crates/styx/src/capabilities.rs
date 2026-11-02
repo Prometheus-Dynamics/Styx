@@ -495,7 +495,7 @@ fn codec_accepted_inputs(desc: &CodecDescriptor) -> Vec<FrameResidency> {
             FrameResidency::HostExternal,
             FrameResidency::Dmabuf,
         ],
-        CodecKind::Decoder | CodecKind::Encoder => vec![
+        CodecKind::Decoder | CodecKind::Converter | CodecKind::Encoder => vec![
             FrameResidency::HostOwned,
             FrameResidency::HostExternal,
             FrameResidency::Dmabuf,
@@ -505,7 +505,7 @@ fn codec_accepted_inputs(desc: &CodecDescriptor) -> Vec<FrameResidency> {
 
 fn codec_possible_outputs(desc: &CodecDescriptor) -> Vec<FrameResidency> {
     match desc.kind {
-        CodecKind::Decoder => vec![
+        CodecKind::Decoder | CodecKind::Converter => vec![
             FrameResidency::HostOwned,
             FrameResidency::HostExternal,
             FrameResidency::Dmabuf,
@@ -526,7 +526,8 @@ fn normalize_fourcc(value: impl AsRef<str>) -> String {
 fn codec_kind_rank(kind: CodecKind) -> u8 {
     match kind {
         CodecKind::Decoder => 0,
-        CodecKind::Encoder => 1,
+        CodecKind::Converter => 1,
+        CodecKind::Encoder => 2,
     }
 }
 

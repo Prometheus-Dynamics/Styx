@@ -259,7 +259,7 @@ impl RgaConverter {
     ) -> Self {
         Self {
             descriptor: CodecDescriptor {
-                kind: CodecKind::Encoder,
+                kind: CodecKind::Converter,
                 input,
                 output,
                 name: "rga-convert",
@@ -274,10 +274,23 @@ impl RgaConverter {
     /// Whether the RGA here (`rockchip-rga`) converts `input` frames to `output`, as far as the
     /// formats go: the device's own formats are only known when a frame opens it.
     pub fn available(input: FourCc, output: FourCc) -> bool {
+        // The RGA is a block of the SoC: look for its node once.
+        static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         pixel_format(input).is_some()
             && pixel_format(output).is_some()
-            && daedalus_rga::find_m2m_device("rockchip-rga").is_some()
+            && *PRESENT.get_or_init(|| daedalus_rga::find_m2m_device("rockchip-rga").is_some())
     }
+
+    /// The formats the registry offers conversions between (every pair of two different ones).
+    pub const FORMATS: [FourCc; 7] = [
+        FourCc::NV12,
+        FourCc::NV21,
+        FourCc::YU12,
+        FourCc::RG24,
+        FourCc::BG24,
+        FourCc::BGRA,
+        FourCc::GREY,
+    ];
 
     /// The source's dma-buf when the engine can read `input` in place at `src`'s layout: one
     /// dma-buf from offset 0, each plane at its offset and stride, the buffer holding the frame.

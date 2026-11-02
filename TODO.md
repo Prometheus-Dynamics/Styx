@@ -105,13 +105,13 @@ memory when it runs.
       for RGA3, no rotation yet. Styx has no RGA code of its own; `V4l2M2mConverter` is not for RGA.
       Written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`), dma-buf frames
       read in place, host frames through dma-heap buffers, scale/crop/convert tests against vim2m
-      (identity and channel swap exact). Not written: the hookup. The registry is keyed by input and
-      encoder lookups take every codec of kind `Encoder`, so a converter needs its own kind (or a
-      planner stage) before it can be registered; `V4l2M2mConverter` is not registered either. The
-      scaler knob covers ISP scalers until then. *Done when:* the conversion stage picks RGA through
-      the accelerator knob, scaling within a stated tolerance, CPU fallback without it; then the
-      board run. *Blocked by:* the hookup design (a converter kind); the board run needs a Rockchip
-      board.
+      (identity and channel swap exact). Format conversion is hooked up: `CodecKind::Converter`, the
+      registry offers RGA conversions between NV12, NV21, YU12, RG24, BG24, BGRA and GREY when a
+      `rockchip-rga` node exists, the planner takes them where it takes a raw decoder (hardware first,
+      `Hardware::Off` falls back to the CPU), and encoder lookups never take them. Not written: an M2M
+      scaling stage in the planner (registry converters keep the frame's size). *Done when:* the
+      planner scales through RGA within a stated tolerance, CPU fallback without it; then the board
+      run. *Blocked by:* the scaling stage; the board run needs a Rockchip board.
 - [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (written, untested on board:
       `styx_codec::rkmpp::RkMppEncoder`, feature `codec-rkmpp`, MPP opened with `dlopen`). NV12 or
       YUYV in; the ISP's NV12 in one dma-buf is imported and encoded in place, other frames are

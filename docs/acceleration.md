@@ -139,7 +139,7 @@ Notes:
 | rkisp (RK3566, RK3562, RK3576) | the ISP stages and 3A statistics | gap: needs a board |
 | rkisp (RV1106, Flame) | the ISP stages, pyramid levels | gap: needs a board and its BSP |
 | ISP8000 via vvcam (K230D) | the ISP stages and 3A statistics | gap: needs a board |
-| RGA (Rockchip 2D) | colour conversion, scaling, crop (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Daedalus's `daedalus-rga`, the one binding; the planner and registry do not pick it yet |
+| RGA (Rockchip 2D) | colour conversion, scaling, crop (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Daedalus's `daedalus-rga`, the one binding; the registry offers its format conversions as `CodecKind::Converter` and the planner picks them for raw-to-raw steps; scaling is not a planner stage yet |
 | Stateless VPUs (Hantro, rkvenc) | JPEG, H.264 encode | gap: `V4l2M2mEncoder` is stateful only |
 | Rockchip MPP (vendor `/dev/mpp_service`) | H.264, H.265, JPEG encode | written, untested on board: `RkMppEncoder` (`codec-rkmpp`) |
 | K230D VPU and 2D unit | H.264, H.265, JPEG encode; rotation, scaling | written, untested on board: the V4L2 M2M codecs, frames imported by dma-buf |
@@ -271,5 +271,5 @@ capture starts with them.
 | `pyramid` | levels from the CPU's box filter (levels asked of the GPU stay there) | levels from the ISP (`PyramidSource::HardwareOnly`) |
 
 The request-wide `FrameRequest::hardware` still applies on top. The scaler knob covers the ISP's
-scalers; the planner has no M2M scaling stage yet (`V4l2M2mConverter` and `RgaConverter` are used
-directly), which the Rockchip RGA item in `TODO.md` adds.
+scalers; the planner has no M2M scaling stage yet (`V4l2M2mConverter` is used directly, and
+`RgaConverter` only converts formats in the planner), which the Rockchip RGA item in `TODO.md` adds.

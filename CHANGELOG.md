@@ -11,7 +11,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - `styx_codec::RgaConverter` (feature `codec-rga`, Linux): scale, crop and convert on the
   Rockchip RGA through Daedalus's `daedalus-rga` (no rotation yet). Dma-buf frames are read in
   place; host frames go through dma-heap buffers made once per layout. Written, untested on
-  board; the vim2m tests run where vim2m is loaded. Not yet offered by the registry.
+  board; the vim2m tests run where vim2m is loaded. The registry offers its format conversions
+  (NV12, NV21, YU12, RG24, BG24, BGRA, GREY) when a `rockchip-rga` node exists.
+- `CodecKind::Converter`: raw frames to raw frames on an engine of its own. The planner takes a
+  converter where it takes a raw decoder; encoder lookups never take one. Exhaustive matches on
+  `CodecKind` need the new arm.
 - `styx_softisp`: RVV leaves with Zvfh for the fp16 path's eight kernels (front end, RAW10
   front, colour and quad colour, luma and quad luma, quad statistics, `f32` to fp16), bit for
   bit with the scalar oracle. Run only where Linux's `riscv_hwprobe` reports Zvfh; `Arithmetic::Auto`

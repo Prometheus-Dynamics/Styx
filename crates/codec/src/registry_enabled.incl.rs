@@ -562,6 +562,26 @@ impl CodecRegistry {
             );
         }
 
+        // Format conversions on the Rockchip RGA, looked for when first asked for. Converters:
+        // the planner takes them for raw-to-raw steps, encoder lookups never do.
+        #[cfg(all(feature = "codec-rga", target_os = "linux"))]
+        for input in crate::rga::RgaConverter::FORMATS {
+            self.register_deferred(
+                input,
+                Box::new(move || {
+                    use crate::rga::{RgaConverter, RgaOptions};
+                    RgaConverter::FORMATS
+                        .into_iter()
+                        .filter(|&output| output != input && RgaConverter::available(input, output))
+                        .map(|output| {
+                            Arc::new(RgaConverter::new(input, output, None, RgaOptions::default()))
+                                as Arc<dyn crate::Codec>
+                        })
+                        .collect()
+                }),
+            );
+        }
+
         #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
         self.register(
             FourCc::RG24,

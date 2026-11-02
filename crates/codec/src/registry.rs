@@ -95,7 +95,7 @@ impl RegistryInner {
 /// that format into something usable, it does not compress it.
 fn kind_rank(codec: &dyn Codec) -> u8 {
     match codec.descriptor().kind {
-        CodecKind::Decoder => 0,
+        CodecKind::Decoder | CodecKind::Converter => 0,
         CodecKind::Encoder => 1,
     }
 }

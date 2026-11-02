@@ -740,6 +740,8 @@ mod region_tests;
 #[cfg(test)]
 mod request_tests;
 #[cfg(test)]
+mod routes_tests;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod usb_tests;

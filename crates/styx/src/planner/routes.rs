@@ -607,7 +607,7 @@ fn capture_step(backend: &ProbedBackend, mode: &Mode, fps: Option<f32>) -> PlanS
 
 /// The decoder from `code` to the first output the registry can produce. With `scales_down`,
 /// decoders that can scale while decoding are preferred.
-fn pick_decoder(
+pub(super) fn pick_decoder(
     code: FourCc,
     req: &FrameRequest,
     registry: &CodecRegistryHandle,
@@ -619,7 +619,7 @@ fn pick_decoder(
         // Any format is the camera's own: no decoder.
         OutputFormat::Any => Vec::new(),
     };
-    let accept = |d: &CodecDescriptor| codec_allowed(d, req) && d.kind == CodecKind::Decoder;
+    let accept = |d: &CodecDescriptor| codec_allowed(d, req) && d.kind.converts();
     let scaling =
         |d: &CodecDescriptor| accept(d) && matches!(d.impl_name, "turbojpeg" | "turbojpeg-luma");
     for target in &targets {
@@ -648,7 +648,7 @@ fn codec_allowed(d: &CodecDescriptor, req: &FrameRequest) -> bool {
     if req.forbid.iter().any(|f| f.eq_ignore_ascii_case(name)) {
         return false;
     }
-    if d.kind == CodecKind::Decoder
+    if d.kind.converts()
         && let Some(only) = &req.decoder
         && !only.eq_ignore_ascii_case(name)
     {
@@ -665,7 +665,7 @@ fn codec_allowed(d: &CodecDescriptor, req: &FrameRequest) -> bool {
 /// For a consumer that wants compressed frames the camera does not produce: an encoder from the
 /// capture format, or a decoder to a format an encoder takes and that encoder. Hardware encoders
 /// first. `None` when the consumer takes no compressed format.
-fn encode_route(
+pub(super) fn encode_route(
     code: FourCc,
     req: &FrameRequest,
     registry: &CodecRegistryHandle,
@@ -683,7 +683,7 @@ fn encode_route(
     if targets.is_empty() {
         return Ok(None);
     }
-    let decoder_ok = |d: &CodecDescriptor| d.kind == CodecKind::Decoder && codec_allowed(d, req);
+    let decoder_ok = |d: &CodecDescriptor| d.kind.converts() && codec_allowed(d, req);
     for &target in &targets {
         for hardware in [true, false] {
             let encoder_ok = |d: &CodecDescriptor| {

@@ -576,11 +576,13 @@ pub fn runtime_codec_inventory_with_config(
     codecs.sort_by(|left, right| {
         let left_kind = match left.kind {
             CodecKind::Decoder => 0u8,
-            CodecKind::Encoder => 1u8,
+            CodecKind::Converter => 1u8,
+            CodecKind::Encoder => 2u8,
         };
         let right_kind = match right.kind {
             CodecKind::Decoder => 0u8,
-            CodecKind::Encoder => 1u8,
+            CodecKind::Converter => 1u8,
+            CodecKind::Encoder => 2u8,
         };
         left_kind
             .cmp(&right_kind)
