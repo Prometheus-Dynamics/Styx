@@ -2,18 +2,22 @@
 //! not allocate.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use styx_core::prelude::*;
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    // This thread's only: the test harness's threads allocate beside the test.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
 
-// SAFETY: forwards to the system allocator unchanged.
+// SAFETY: forwards to the system allocator unchanged; the count is a const-initialised
+// thread-local, which never allocates.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
         unsafe { System.alloc(layout) }
     }
 
@@ -48,10 +52,10 @@ fn descriptor_does_not_allocate() {
             },
         ],
     );
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = ALLOCATIONS.with(Cell::get);
     for _ in 0..100 {
         let descriptor = std::hint::black_box(frame.descriptor());
         assert_eq!(descriptor.planes.len(), 2);
     }
-    assert_eq!(ALLOCATIONS.load(Ordering::Relaxed) - before, 0);
+    assert_eq!(ALLOCATIONS.with(Cell::get) - before, 0);
 }

@@ -6,6 +6,9 @@ use std::sync::{
 use std::thread;
 use std::time::Duration;
 
+/// The wait in the wake tests: a missed wake runs it out.
+const WAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[test]
 fn send_timeout_returns_value_when_queue_stays_full() {
     let (tx, rx) = bounded(1);
@@ -63,8 +66,10 @@ fn send_timeout_does_not_miss_repeated_capacity_wakes() {
             ));
         });
 
+        // A missed wake waits out the whole timeout: long enough for a loaded emulator
+        // (the gate's QEMU runs) to start the other thread.
         assert!(matches!(
-            tx.send_timeout(2, Duration::from_millis(250)),
+            tx.send_timeout(2, WAKE_TIMEOUT),
             SendWaitOutcome::Ok
         ));
         join.join().expect("receiver thread");
@@ -83,7 +88,7 @@ fn recv_timeout_does_not_miss_repeated_data_wakes() {
         });
 
         assert!(matches!(
-            rx.recv_timeout(Duration::from_millis(250)),
+            rx.recv_timeout(WAKE_TIMEOUT),
             RecvWaitOutcome::Data(1)
         ));
         join.join().expect("sender thread");
