@@ -903,6 +903,11 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- A simulated camera whose glTF scene took over 2 s a frame to render (1280x800 under QEMU's
+  emulated aarch64: about 1.4 s a frame there once delivered) delivered nothing: the capture
+  took each slow frame for a stalled camera and restarted. Simulated cameras' stall timeout is
+  at least 60 s now (a render is no dead camera); under `qemu-aarch64 -cpu cortex-a76`, 56
+  frames in 80 s where there were none.
 - A PiSP frame handed out at its first slice whose extra passes failed (a device error) gave
   its main output buffers back while its leases still held them; the next frames could write
   them under a consumer. Its leases give them back now.

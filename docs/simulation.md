@@ -118,6 +118,15 @@ With `truth=<path>`, each frame appends one line of JSON: `sequence` (the frame'
 delivered frame (flips applied; pixel centres at integers, as OpenCV's). A point is listed when
 it is in the frame and nothing in the scene is in front of it.
 
+## Rendering cost
+
+A glTF scene renders on the CPU: about 14 fps at 1280x800 on 16 Zen 3 cores, 4 fps on one,
+and under QEMU's emulated aarch64 (`qemu-aarch64 -cpu cortex-a76`, user mode) about 0.7 fps at
+1280x800 and 3.6 fps at 640x400 (2026-11-02). A simulated camera's stall timeout is at least
+60 s, so a slow scene gives slow frames, not a restarted capture. No GPU is used: the sim needs
+no Vulkan, GL or fonts, only the scene file (with any external buffers and images beside it)
+and, with `truth=`, a writable path.
+
 ## Lockstep time
 
 With `clock=real` frames come every frame period by the monotonic clock; a scene slower than

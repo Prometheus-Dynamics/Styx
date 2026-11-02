@@ -389,7 +389,7 @@ fn run(
     let policy = tunables.reconnect;
     let idle_after =
         (tunables.stop_when_idle_ms > 0).then(|| Duration::from_millis(tunables.stop_when_idle_ms));
-    let stall_timeout = stall_timeout(&policy, recipe.interval);
+    let stall_timeout = stall_timeout(&policy, recipe.interval, &recipe.identity);
     let mut backoff = Backoff::new(
         Duration::from_millis(policy.initial_backoff_ms.max(1)),
         Duration::from_millis(policy.max_backoff_ms),
@@ -573,14 +573,39 @@ fn failure(
     })
 }
 
-fn stall_timeout(policy: &ReconnectPolicy, interval: Option<Interval>) -> Option<Duration> {
+fn stall_timeout(
+    policy: &ReconnectPolicy,
+    interval: Option<Interval>,
+    identity: &DeviceIdentity,
+) -> Option<Duration> {
     if policy.stall_timeout_ms == 0 {
         return None;
     }
     let frame = interval
         .map(|i| Duration::from_secs_f32(1.0 / i.fps().max(0.01)))
         .unwrap_or_default();
-    Some(Duration::from_millis(policy.stall_timeout_ms).max(frame * 4))
+    let floor = stall_floor(identity.keys.iter().map(String::as_str));
+    Some(
+        Duration::from_millis(policy.stall_timeout_ms)
+            .max(frame * 4)
+            .max(floor),
+    )
+}
+
+/// The shortest stall timeout for a camera with these identity keys: a simulated camera's
+/// (`STYX_SIM_CAMERAS`) frames take what its scene takes to render on the CPU, seconds for a
+/// glTF scene at 1280x800 on an emulated CPU (QEMU), which is no dead camera.
+pub(crate) fn stall_floor<'a>(keys: impl IntoIterator<Item = &'a str>) -> Duration {
+    #[cfg(feature = "sim")]
+    if keys
+        .into_iter()
+        .any(|k| k.starts_with(styx_native::sim::SIM_PREFIX))
+    {
+        return Duration::from_secs(60);
+    }
+    #[cfg(not(feature = "sim"))]
+    let _ = keys;
+    Duration::ZERO
 }
 
 /// Probe again and start the same capture on the camera with the most matching identity keys.
