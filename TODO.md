@@ -157,8 +157,9 @@ memory when it runs.
       every frame (`swap_params`, Int, IntPolyTone and Half). The software ISP loop (`SoftLoop`, the
       algorithms included) on a host when its outputs are handed back (`SoftLoop::recycle`): 0.00 per
       frame over 300 frames, 176 with the algorithms and 124 settled ones without (`soft_alloc`; was
-      129.83). **Not 0:** the replay source (`replay_isp.rs`) copies each frame into a new NV12 buffer
-      and lease. Also asserted 0 (`crates/styx/tests/worker_alloc.rs`): the capture workers on a
+      129.83). The replay source's software ISP (`replay_isp.rs`): 0, its NV12 frames in pooled
+      buffers (`a_replayed_frame_allocates_nothing_when_warm`; was a new buffer, a copy and the
+      controls' clone per frame). Also asserted 0 (`crates/styx/tests/worker_alloc.rs`): the capture workers on a
       simulated OV9782 (the real `NativeCamera`, queue, sensor driver and control schedule), raw
       frames (`styx-native-capture`, its lease records now from a `BackingPool`) and the software
       ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and

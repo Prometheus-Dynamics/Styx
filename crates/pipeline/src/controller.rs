@@ -186,6 +186,12 @@ impl Controller {
         &self.controls
     }
 
+    /// The controls, changed in place from the next frame on (no copy of their strings and
+    /// windows, as [`Self::set_controls`] of a changed clone makes).
+    pub fn controls_mut(&mut self) -> &mut Controls {
+        &mut self.controls
+    }
+
     /// Records every frame (statistics, metadata, output) as a `styx-algo` replay (feature
     /// `std`). Before the start the header is written at [`Self::start`] (with the
     /// configuration and warm start the algorithms are prepared with).

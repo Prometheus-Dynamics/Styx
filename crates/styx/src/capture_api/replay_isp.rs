@@ -7,8 +7,8 @@
 //! and tone curve are the tuning's for it. The frame keeps its recorded metadata (timestamp,
 //! `NativeFrameMeta` and its 3A record); only its format becomes NV12.
 
+use smallvec::SmallVec;
 use styx_capture::prelude::*;
-use styx_pipeline::styx_algo::Controls;
 use styx_pipeline::{SensorInfo, SensorValues, SoftLoop};
 use styx_sensor::SensorDescription;
 use styx_softisp::{OutputBuffers, RawFormat, Scale};
@@ -24,7 +24,12 @@ pub(crate) struct ReplayProcessor {
     config: ReplayIsp,
     /// The loop, for frames of this format.
     isp: Option<(FourCc, u32, u32, SoftLoop)>,
+    /// The NV12 frames' buffers (reused once consumers drop the frames) and planes.
+    out: Option<(BufferPool, SmallVec<[PlaneLayout; 3]>)>,
 }
+
+/// Output buffers kept for reuse: more than the frames a consumer holds, per plane.
+const KEEP_OUTPUTS: usize = 8;
 
 fn err(e: impl std::fmt::Display) -> ReplayError {
     ReplayError::Frame(format!("replay ISP: {e}"))
@@ -32,7 +37,11 @@ fn err(e: impl std::fmt::Display) -> ReplayError {
 
 impl ReplayProcessor {
     pub(crate) fn new(config: ReplayIsp) -> Self {
-        Self { config, isp: None }
+        Self {
+            config,
+            isp: None,
+            out: None,
+        }
     }
 
     /// `frame` processed (NV12), or as it is when it is not raw Bayer.
@@ -51,6 +60,20 @@ impl ReplayProcessor {
             .is_none_or(|(c, iw, ih, _)| (*c, *iw, *ih) != (format.code, w, h))
         {
             self.isp = Some((format.code, w, h, self.open(raw)?));
+            // Tight NV12 planes, each in a buffer of its own.
+            let (w, h) = (w as usize, h as usize);
+            let plane = |len| PlaneLayout {
+                offset: 0,
+                len,
+                stride: w,
+            };
+            let layouts: SmallVec<[PlaneLayout; 3]> =
+                smallvec::smallvec![plane(w * h), plane(w * h / 2)];
+            let size = w * h;
+            self.out = Some((
+                BufferPool::with_limits(2 * layouts.len(), size, KEEP_OUTPUTS * layouts.len()),
+                layouts,
+            ));
         }
         let (.., soft) = self.isp.as_mut().expect("set up above");
         let native = frame.meta().native().copied().unwrap_or_default();
@@ -63,7 +86,7 @@ impl ReplayProcessor {
             verified: native.verified,
         };
         // The recorded state, not the loop's: no AE, the recorded white balance.
-        let mut c: Controls = soft.controller().controls().clone();
+        let c = soft.controller().controls_mut();
         c.ae_enable = false;
         c.exposure = Some(sensor.exposure);
         c.analogue_gain = Some(sensor.analogue_gain);
@@ -75,13 +98,22 @@ impl ReplayProcessor {
                 f64::from(a.colour_gains[2]) / g,
             ));
         }
-        soft.controller().set_controls(c);
         let layout = frame.layout_slice()[0];
         let planes = frame.planes();
         let data = planes.first().ok_or_else(|| err("no plane"))?.data();
-        let (w, h) = (w as usize, h as usize);
-        let mut nv12 = vec![0u8; w * h * 3 / 2];
-        let (y, uv) = nv12.split_at_mut(w * h);
+        let (pool, layouts) = self.out.as_ref().expect("set up with the loop");
+        let [ly, luv] = [layouts[0], layouts[1]];
+        let mut buffers: SmallVec<[BufferLease; 3]> = layouts
+            .iter()
+            .map(|l| {
+                let mut b = pool.lease();
+                b.resize(l.offset + l.len);
+                b
+            })
+            .collect();
+        let [by, buv] = buffers.as_mut_slice() else {
+            return Err(err("NV12 has two planes"));
+        };
         let processed = soft
             .process(
                 data,
@@ -89,27 +121,20 @@ impl ReplayProcessor {
                 &sensor,
                 Scale::Full,
                 OutputBuffers::Nv12 {
-                    y,
-                    y_stride: w,
-                    uv,
-                    uv_stride: w,
+                    y: &mut by.as_mut_slice()[ly.offset..][..ly.len],
+                    y_stride: ly.stride,
+                    uv: &mut buv.as_mut_slice()[luv.offset..][..luv.len],
+                    uv_stride: luv.stride,
                 },
             )
             .map_err(err)?;
         soft.recycle(processed);
         drop(planes);
-        let mut out = FrameLease::from_visible_bytes(
-            MediaFormat::new(FourCc::NV12, format.resolution, ColorSpace::Srgb),
-            frame.meta().timestamp,
-            &nv12,
-        )
-        .map_err(err)?;
-        let processed = out.meta().format;
-        *out.meta_mut() = FrameMeta {
-            format: processed,
+        let meta = FrameMeta {
+            format: MediaFormat::new(FourCc::NV12, format.resolution, ColorSpace::Srgb),
             ..frame.meta().clone()
         };
-        Ok(out)
+        Ok(FrameLease::multi_plane(meta, buffers, layouts.clone()))
     }
 
     /// The loop for `raw` frames of the configured sensor.
@@ -153,5 +178,51 @@ mod tests {
                 SensorDescription::from_toml_str(toml, name).unwrap()
             );
         }
+    }
+
+    /// A replayed raw frame becomes an NV12 frame in a reused buffer: once warm, processing
+    /// one allocates nothing on the replay's thread (the software ISP's helpers are counted by
+    /// its own tests).
+    #[test]
+    fn a_replayed_frame_allocates_nothing_when_warm() {
+        let (w, h) = (640u32, 400u32);
+        let format = MediaFormat::new(
+            FourCc::new(*b"BYR2"),
+            Resolution::new(w, h).unwrap(),
+            ColorSpace::Unknown,
+        );
+        let bytes: Vec<u8> = (0..w * h)
+            .flat_map(|i| ((200 + i % 400) as u16 * 64).to_le_bytes())
+            .collect();
+        let raw = |i: u32| {
+            let mut f =
+                FrameLease::from_visible_bytes(format, u64::from(i) * 33_000_000, &bytes).unwrap();
+            f.meta_mut().backend = Some(BackendFrameMeta::Native(NativeFrameMeta {
+                sequence: i,
+                exposure_ns: 8_000_000,
+                analog_gain: 2.0,
+                digital_gain: 1.0,
+                frame_duration_ns: 33_333_333,
+                ..Default::default()
+            }));
+            f
+        };
+        let mut isp = ReplayProcessor::new(ReplayIsp {
+            sensor: "ov9782".into(),
+            threads: 1,
+        });
+        for i in 0..20 {
+            let out = isp.process(raw(i)).unwrap();
+            assert_eq!(out.meta().format.code, FourCc::NV12);
+        }
+        let mut counted = 0;
+        for i in 20..80 {
+            let input = raw(i);
+            let (out, n) = crate::test_alloc::allocations(|| isp.process(input).unwrap());
+            assert_eq!(out.meta().timestamp, u64::from(i) * 33_000_000);
+            let ((), dropped) = crate::test_alloc::allocations(|| drop(out));
+            counted += n + dropped;
+        }
+        assert_eq!(counted, 0, "allocations over 60 replayed frames");
     }
 }
