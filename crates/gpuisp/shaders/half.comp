@@ -4,6 +4,7 @@
 
 #extension GL_GOOGLE_include_directive : require
 #include "common.glsl"
+#include "front.glsl"
 
 layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
 
@@ -45,6 +46,18 @@ void main() {
         px[k] = tone3(colour(quad_colours(q)));
     }
     if (P.out_kind == OUT_LUMA) {
+        return;
+    }
+    if (P.out_kind == OUT_PLANES) {
+        for (uint k = 0u; k < 4u; k++) {
+            if (inside[k]) {
+                uvec3 yuv = planes_of(px[k]);
+                uint x = x0 + (k & 1u), y = y0 + (k >> 1);
+                put(0u, x, y, yuv.r);
+                put(1u, x, y, yuv.g);
+                put(2u, x, y, yuv.b);
+            }
+        }
         return;
     }
     if (P.out_kind == OUT_RGB24) {

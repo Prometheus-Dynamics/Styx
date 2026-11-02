@@ -88,6 +88,28 @@ impl PostPrep {
     }
 }
 
+/// The output stages' tables, as [`PostPrep`] builds them, for other implementations of the
+/// stages (the GPU ISP): the luma thresholds per centre value and the strength in Q8, the
+/// chroma threshold (quarter codes) and strength in Q8, and the sharpening amount in Q8,
+/// threshold and limit.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StageTables {
+    pub luma: Option<([u16; 256], i16)>,
+    pub chroma: Option<(i16, i16)>,
+    pub sharpen: Option<[i32; 3]>,
+}
+
+/// The [`StageTables`] of `d` and `s`, or `None` when neither stage does anything.
+pub fn stage_tables(d: Option<&Denoise>, s: Option<&Sharpen>) -> Option<StageTables> {
+    // The output matrix is not part of the tables.
+    let p = PostPrep::new(d, s, YuvCoeffs::BT601_FULL)?;
+    Some(StageTables {
+        luma: p.luma,
+        chroma: p.chroma,
+        sharpen: p.sharpen.map(|s| [s.amount, s.threshold, s.limit]),
+    })
+}
+
 /// Rows `y0 .. y0 + rows` of the three planes of a `w x h` picture, for one band.
 pub(crate) struct Band<'a> {
     pub y0: usize,

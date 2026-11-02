@@ -1,6 +1,5 @@
 //! [`GpuIsp`]: `styx-softisp`'s API on the GPU.
 
-use std::os::fd::{BorrowedFd, OwnedFd};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -10,15 +9,21 @@ use styx_softisp::{IspError, IspParams, IspStats, OutputBuffers, RawFormat, Scal
 use crate::context::{DeviceSelect, GpuContext, Inner};
 use crate::error::GpuError;
 use crate::input::Input;
-use crate::kernels::{Kernels, Plan};
+use crate::kernels::{Kernels, MAX_PASSES, Pass, Plan};
 use crate::layout::{self, Layout, OutputKind};
 use crate::memory::{Buffer, Place};
-use crate::params::{Spare, Tables};
+use crate::params::{Block, Spare, Tables};
+use crate::stages::{Planes, Stages, set_output, set_planes};
 use crate::stats;
+
+/// Bytes of parameter block per slot of the parameter buffer: slot 0 is the picture's (and the
+/// statistics'), slot 1 the output stage's when the output stages run.
+const PARAM_SLOT: usize = 512;
+const _: () = assert!(std::mem::size_of::<Block>() <= PARAM_SLOT);
 
 /// A dma-buf registered with a [`GpuIsp`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct ImportId(usize);
+pub struct ImportId(pub(crate) usize);
 
 /// A frame processed into one of the ISP's exportable output buffers
 /// ([`GpuIsp::process_to_export`]).
@@ -31,15 +36,15 @@ pub struct ExportedFrame {
     pub stats: Option<IspStats>,
 }
 
-struct Slot {
-    buffer: Buffer,
-    set: vk::DescriptorSet,
+pub(crate) struct Slot {
+    pub(crate) buffer: Buffer,
+    pub(crate) set: vk::DescriptorSet,
 }
 
-struct Imported {
-    buffer: Buffer,
+pub(crate) struct Imported {
+    pub(crate) buffer: Buffer,
     /// The set the shaders read it through (same-memory devices).
-    set: Option<vk::DescriptorSet>,
+    pub(crate) set: Option<vk::DescriptorSet>,
 }
 
 /// The software ISP's pipeline on a Vulkan device: the same parameters ([`IspParams`]),
@@ -51,7 +56,7 @@ struct Imported {
 /// with their own memory, the picture, the statistics, results copied out) and one wait on
 /// its fence; buffers, descriptor sets and the command buffer are kept from frame to frame.
 pub struct GpuIsp {
-    ctx: Arc<Inner>,
+    pub(crate) ctx: Arc<Inner>,
     context: GpuContext,
     pub(crate) k: Kernels,
     format: RawFormat,
@@ -60,24 +65,28 @@ pub struct GpuIsp {
     /// fp16 pictures on ([`Self::set_half_precision`]).
     pub(crate) half: bool,
     statistics: bool,
-    separate: bool,
+    pub(crate) separate: bool,
     stride_align: usize,
     params_buf: Buffer,
     lut_buf: Buffer,
     lsc_buf: Buffer,
     stats_dev: Buffer,
     stats_host: Option<Buffer>,
-    set0: vk::DescriptorSet,
+    /// The tables' buffer (the sigma thresholds of the output stages).
+    post_buf: Buffer,
+    /// Set 0 per parameter slot (see [`PARAM_SLOT`]).
+    set0: [vk::DescriptorSet; 2],
+    planes: Option<Planes>,
     staging_in: Option<Slot>,
     dev_in: Option<Slot>,
-    imports: Vec<Option<Imported>>,
+    pub(crate) imports: Vec<Option<Imported>>,
     /// The set [`Input::Buffer`] frames are read through (same-memory devices).
     ext_set: Option<vk::DescriptorSet>,
     host_out: Option<Slot>,
     dev_out: Option<Slot>,
-    ring: Vec<Slot>,
-    ring_len: usize,
-    ring_next: usize,
+    pub(crate) ring: Vec<Slot>,
+    pub(crate) ring_len: usize,
+    pub(crate) ring_next: usize,
     gpu_time: Option<Duration>,
     /// Statistics handed back ([`Self::recycle_stats`]), written into next.
     spare_stats: Option<IspStats>,
@@ -125,15 +134,7 @@ impl GpuIsp {
             Place::Readback
         };
         let stats_dev = Buffer::new(&ctx, 4, stats_place, false)?;
-        let set0 = k.set(
-            0,
-            &[
-                params_buf.buffer,
-                lut_buf.buffer,
-                lsc_buf.buffer,
-                stats_dev.buffer,
-            ],
-        )?;
+        let post_buf = Buffer::new(&ctx, 4 * 256, Place::Upload, false)?;
         let mut isp = Self {
             context: context.clone(),
             ctx,
@@ -150,7 +151,9 @@ impl GpuIsp {
             lsc_buf,
             stats_dev,
             stats_host: None,
-            set0,
+            post_buf,
+            set0: [vk::DescriptorSet::null(); 2],
+            planes: None,
             staging_in: None,
             dev_in: None,
             imports: Vec::new(),
@@ -164,8 +167,30 @@ impl GpuIsp {
             spare_stats: None,
             spare_tables,
         };
+        isp.set0 = isp.make_set0()?;
         isp.upload_tables()?;
         Ok(isp)
+    }
+
+    /// Set 0 for each parameter slot: the parameters from the slot's offset, the tables.
+    fn make_set0(&self) -> Result<[vk::DescriptorSet; 2], GpuError> {
+        let mut sets = [vk::DescriptorSet::null(); 2];
+        for (slot, set) in sets.iter_mut().enumerate() {
+            let b = self.set0_bindings(slot);
+            *set = self.k.set_at(0, b.len(), |i| b[i])?;
+        }
+        Ok(sets)
+    }
+
+    /// The bindings of set 0 for parameter slot `slot`.
+    fn set0_bindings(&self, slot: usize) -> [(vk::Buffer, u64); 5] {
+        [
+            (self.params_buf.buffer, (slot * PARAM_SLOT) as u64),
+            (self.lut_buf.buffer, 0),
+            (self.lsc_buf.buffer, 0),
+            (self.stats_dev.buffer, 0),
+            (self.post_buf.buffer, 0),
+        ]
     }
 
     /// The device in use.
@@ -377,91 +402,7 @@ impl GpuIsp {
         )
     }
 
-    /// Process one frame into the next buffer of the export ring and leave it there:
-    /// [`Self::export_dmabuf`] hands it to other devices or processes, [`Self::exported`]
-    /// reads it on the CPU.
-    pub fn process_to_export(
-        &mut self,
-        input: Input<'_>,
-        stride: usize,
-        scale: Scale,
-        kind: OutputKind,
-    ) -> Result<ExportedFrame, GpuError> {
-        if self.ctx.external_fd.is_none() {
-            return Err(GpuError::Unsupported("dma-buf export".into()));
-        }
-        let layout = self.layout(kind, scale)?;
-        let slot = self.ring_next;
-        self.ensure_slot(Target::Ring(slot), layout.size)?;
-        let stats = self.run(
-            input,
-            stride,
-            scale,
-            &layout,
-            Target::Ring(slot),
-            Region::Frame,
-        )?;
-        self.ring_next = (slot + 1) % self.ring_len;
-        Ok(ExportedFrame {
-            slot,
-            layout,
-            stats,
-        })
-    }
-
-    /// A dma-buf of export ring slot `slot` (a new file each call).
-    pub fn export_dmabuf(&self, slot: usize) -> Result<OwnedFd, GpuError> {
-        let s = self
-            .ring
-            .get(slot)
-            .ok_or_else(|| GpuError::Unsupported(format!("no export slot {slot}")))?;
-        s.buffer.export_dmabuf()
-    }
-
-    /// The bytes of export ring slot `slot`.
-    pub fn exported(&self, slot: usize) -> Result<&[u8], GpuError> {
-        let s = self
-            .ring
-            .get(slot)
-            .ok_or_else(|| GpuError::Unsupported(format!("no export slot {slot}")))?;
-        s.buffer.invalidate()?;
-        Ok(s.buffer.bytes())
-    }
-
-    /// Register a dma-buf holding raw frames (`size` bytes; for example a capture buffer)
-    /// so that frames in it are read in place ([`Input::DmaBuf`]). The file is duplicated;
-    /// the caller keeps its own.
-    pub fn import_dmabuf(&mut self, fd: BorrowedFd<'_>, size: usize) -> Result<ImportId, GpuError> {
-        let buffer = Buffer::import_dmabuf(&self.ctx, fd, size as u64)?;
-        let set = if self.separate {
-            None
-        } else {
-            Some(self.k.set(1, &[buffer.buffer])?)
-        };
-        let entry = Some(Imported { buffer, set });
-        let id = match self.imports.iter().position(Option::is_none) {
-            Some(i) => {
-                self.imports[i] = entry;
-                i
-            }
-            None => {
-                self.imports.push(entry);
-                self.imports.len() - 1
-            }
-        };
-        Ok(ImportId(id))
-    }
-
-    /// Forget an imported dma-buf.
-    pub fn release_import(&mut self, id: ImportId) {
-        if let Some(Some(i)) = self.imports.get_mut(id.0).map(Option::take)
-            && let Some(set) = i.set
-        {
-            self.k.free_set(set);
-        }
-    }
-
-    fn layout(&self, kind: OutputKind, scale: Scale) -> Result<Layout, GpuError> {
+    pub(crate) fn layout(&self, kind: OutputKind, scale: Scale) -> Result<Layout, GpuError> {
         let (ow, oh) = self.output_size(scale);
         self.layout_of(kind, ow, oh)
     }
@@ -509,22 +450,35 @@ impl GpuIsp {
                 self.stats_host = Some(Buffer::new(&self.ctx, need, Place::Readback, false)?);
             }
         }
+        if let Some(sigma) = self.tables.sigma.as_ref() {
+            self.post_buf.write_words(sigma);
+            self.post_buf.flush()?;
+        }
         if rebind {
-            self.k.write_set(
-                self.set0,
-                &[
-                    self.params_buf.buffer,
-                    self.lut_buf.buffer,
-                    self.lsc_buf.buffer,
-                    self.stats_dev.buffer,
-                ],
-            );
+            for slot in 0..2 {
+                let b = self.set0_bindings(slot);
+                self.k.write_set_at(self.set0[slot], b.len(), |i| b[i]);
+            }
+        }
+        Ok(())
+    }
+
+    /// The output stages' planes, made on first use (a frame's size, at most).
+    fn ensure_planes(&mut self) -> Result<(), GpuError> {
+        if self.planes.is_none() {
+            let size = 3 * self.format.width as u64 * self.format.height as u64;
+            let place = if self.separate {
+                Place::Device
+            } else {
+                Place::Readback
+            };
+            self.planes = Some(Planes::new(&self.ctx, &self.k, size, place)?);
         }
         Ok(())
     }
 
     /// Make sure `target` (and the device-side output) holds `size` bytes.
-    fn ensure_slot(&mut self, target: Target, size: usize) -> Result<(), GpuError> {
+    pub(crate) fn ensure_slot(&mut self, target: Target, size: usize) -> Result<(), GpuError> {
         let size = size as u64;
         if self.separate && self.dev_out.as_ref().is_none_or(|s| s.buffer.size < size) {
             self.dev_out = Some(self.slot(size, Place::Device, false, 2, self.dev_out.as_ref())?);
@@ -675,7 +629,7 @@ impl GpuIsp {
         Ok(())
     }
 
-    fn run(
+    pub(crate) fn run(
         &mut self,
         input: Input<'_>,
         stride: usize,
@@ -686,6 +640,12 @@ impl GpuIsp {
     ) -> Result<Option<IspStats>, GpuError> {
         self.check_input(input, stride)?;
         let bytes = frame_bytes(&self.format, stride);
+        // With the output stages, the picture is the whole frame's (at the scale), made into
+        // planes; the output stage reads the window from them.
+        let post = self.tables.post && region != Region::Stats;
+        if post {
+            self.ensure_planes()?;
+        }
         let (in_set, in_offset, copy_in) = self.bind_input(input, bytes)?;
         let stats = match region {
             Region::Window { .. } => None,
@@ -694,18 +654,30 @@ impl GpuIsp {
         let mut block = self.tables.block;
         block.in_stride = stride as u32;
         block.in_offset = in_offset as u32;
-        (block.win_x, block.win_y) = match region {
+        let (pw, ph) = self.output_size(scale);
+        let div = match scale {
+            Scale::Full => 1,
+            Scale::Half => 2,
+        };
+        let (wx, wy) = match region {
             Region::Window { x, y } => (x, y),
             Region::Frame | Region::Stats => (0, 0),
         };
-        block.out_kind = layout.kind.code();
-        block.out_width = layout.width as u32;
-        block.out_height = layout.height as u32;
-        for (i, p) in layout.planes.iter().enumerate() {
-            block.out_offset[i] = p.offset as u32;
-            block.out_stride[i] = p.stride as u32;
+        (block.pic_w, block.pic_h) = (pw, ph);
+        (block.crop_x, block.crop_y) = (wx / div, wy / div);
+        let mut out = block;
+        set_output(&mut out, layout);
+        if post {
+            (block.win_x, block.win_y) = (0, 0);
+            set_planes(&mut block, pw as usize, ph as usize);
+        } else {
+            (block.win_x, block.win_y) = (wx, wy);
+            set_output(&mut block, layout);
         }
         self.params_buf.write(0, block.bytes());
+        if post {
+            self.params_buf.write(PARAM_SLOT, out.bytes());
+        }
         self.params_buf.flush()?;
         let (out_set, out_buf) = match target {
             Target::Host => {
@@ -718,16 +690,40 @@ impl GpuIsp {
             Some(d) if self.separate => (d.set, Some((d.buffer.buffer, out_buf))),
             _ => (out_set, None),
         };
+        let picture = self.picture_pipeline(scale);
+        let out_groups = (
+            (layout.width as u32).div_ceil(32),
+            (layout.height as u32).div_ceil(16),
+        );
+        let passes = if post {
+            let block = &self.tables.block;
+            Stages {
+                kernels: &self.k,
+                planes: self.planes.as_ref().expect("made above"),
+                set0: self.set0,
+                input: in_set,
+                output: shader_out,
+                picture,
+                size: (pw, ph),
+                out_groups,
+                denoise: block.denoise_luma != 0 || block.denoise_chroma != 0,
+                sharpen: block.sharpen_on != 0,
+            }
+            .passes()
+        } else {
+            let mut passes = [None; MAX_PASSES];
+            if region != Region::Stats {
+                passes[0] = Some(Pass {
+                    sets: [self.set0[0], in_set, shader_out],
+                    pipeline: picture,
+                    groups: out_groups,
+                });
+            }
+            passes
+        };
         let plan = Plan {
-            sets: [self.set0, in_set, shader_out],
-            pipeline: self.picture_pipeline(scale),
-            groups: match region {
-                Region::Stats => (0, 0),
-                Region::Frame | Region::Window { .. } => (
-                    (layout.width as u32).div_ceil(32),
-                    (layout.height as u32).div_ceil(16),
-                ),
-            },
+            passes,
+            stats_sets: [self.set0[0], in_set, shader_out],
             copy_in: copy_in.map(|(b, o)| (b, o as u64, bytes as u64)),
             copy_out: copy_out.map(|(s, d)| (s, d, layout.size as u64)),
             stats: stats.map(|s| {
@@ -762,7 +758,7 @@ type BoundInput = (vk::DescriptorSet, usize, Option<(vk::Buffer, usize)>);
 
 /// What a pass makes of the frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Region {
+pub(crate) enum Region {
     /// The whole picture, with the statistics the parameters ask for.
     Frame,
     /// The picture of the window at frame position (`x`, `y`) (even), no statistics.
@@ -773,7 +769,7 @@ enum Region {
 
 /// Where a frame's output goes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Target {
+pub(crate) enum Target {
     /// The ISP's own readback buffer, copied into the caller's buffers.
     Host,
     /// Export ring slot `i`.

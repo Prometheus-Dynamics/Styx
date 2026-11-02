@@ -200,6 +200,74 @@ fn changing_parameters_and_statistics_allocate_nothing_when_warm() {
     assert_eq!(count, 0.0, "allocations per GPU ISP frame");
 }
 
+/// With the output stages on (denoise and sharpening, parameters changing every frame), a
+/// frame allocates nothing either, to the output format and at the half size.
+#[test]
+fn output_stages_allocate_nothing_when_warm() {
+    let (w, h) = (128usize, 96usize);
+    let (raw, stride, format) = frame(w, h);
+    let mut base = three_a();
+    base.denoise = Some(Denoise {
+        luma: Some(LumaDenoise {
+            constant: 400.0,
+            slope: 20.0,
+            strength: 1.0,
+        }),
+        chroma: Some(ChromaDenoise {
+            threshold: 3000.0,
+            strength: 1.0,
+        }),
+    });
+    base.sharpen = Some(Sharpen {
+        amount: 0.8,
+        threshold: 2.0,
+        limit: 20.0,
+    });
+    let Ok(mut isp) = GpuIsp::new(format, base.clone()) else {
+        eprintln!("no Vulkan device: skipped");
+        return;
+    };
+    let mut params = base.clone();
+    let mut rgb = vec![0u8; w * h * 3];
+    let mut luma = vec![0u8; w / 2 * h / 2];
+    let mut n = 0;
+    let count = per_frame(|| {
+        n += 1;
+        step(&mut params, &base, n);
+        isp.swap_params(&mut params).unwrap();
+        let stats = isp
+            .process_input(
+                Input::Bytes(&raw),
+                stride,
+                Scale::Full,
+                OutputBuffers::Rgb24 {
+                    data: &mut rgb,
+                    stride: w * 3,
+                },
+            )
+            .unwrap()
+            .expect("statistics asked for");
+        isp.recycle_stats(stats);
+        let half = isp
+            .process(
+                &raw,
+                stride,
+                Scale::Half,
+                OutputBuffers::Luma {
+                    data: &mut luma,
+                    stride: w / 2,
+                },
+            )
+            .unwrap()
+            .expect("statistics asked for");
+        isp.recycle_stats(half);
+    });
+    assert_eq!(
+        count, 0.0,
+        "allocations per GPU ISP frame with the output stages"
+    );
+}
+
 /// From a buffer of Daedalus's device, as its imported frames come (`Input::Buffer`),
 /// submitted on Daedalus's queue through its `RawSubmitter`: nothing (was 17 a frame in
 /// wgpu-core's submission through `submit_raw`).

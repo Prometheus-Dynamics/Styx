@@ -1,6 +1,7 @@
 // Shared by every GPU ISP shader: the parameter block (written by `src/params.rs`, whose word
-// order this must match), the raw input, and the front end (unpack, black level, gains, lens
-// shading) in the integer arithmetic of `styx-softisp` (`simd::scalar`), bit for bit.
+// order this must match), the tone and colour helpers and the output conversions of
+// `styx-softisp`'s integer arithmetic, bit for bit. The raw input and the front end are in
+// `front.glsl`.
 
 #extension GL_EXT_shader_8bit_storage : require
 
@@ -15,6 +16,8 @@ const uint OUT_RGB24 = 0u;
 const uint OUT_NV12 = 1u;
 const uint OUT_I420 = 2u;
 const uint OUT_LUMA = 3u;
+// The picture's JFIF Y, Cb, Cr planes, one after another (the output stages' input).
+const uint OUT_PLANES = 4u;
 
 layout(set = 0, binding = 0, std430) readonly buffer Params {
     uint width;
@@ -57,67 +60,27 @@ layout(set = 0, binding = 0, std430) readonly buffer Params {
     // window's, its samples the frame's (out_width/out_height are the window's size).
     uint win_x;
     uint win_y;
+    // Output stages: the picture's size (its planes are `pic_w` x `pic_h` each), the window's
+    // origin in the picture, the denoise and sharpening parameters (Q8 strengths, quarter-code
+    // thresholds, sharpening codes).
+    uint pic_w;
+    uint pic_h;
+    uint crop_x;
+    uint crop_y;
+    uint denoise_luma;
+    uint denoise_chroma;
+    uint luma_strength;
+    uint chroma_threshold;
+    uint chroma_strength;
+    uint sharpen_on;
+    int sharpen_amount;
+    int sharpen_threshold;
+    int sharpen_limit;
 } P;
 
 layout(set = 0, binding = 1, std430) readonly buffer Lut {
     uint lut[];
 };
-
-// Lens shading: Q12 gains as u16 pairs, `[row parity][grid row][column]`, then per image row
-// the grid row (low 16 bits) and the Q15 weight of the next (high 16 bits) from `lsc_ymap`.
-layout(set = 0, binding = 2, std430) readonly buffer Lsc {
-    uint lsc[];
-};
-
-layout(set = 1, binding = 0, std430) readonly buffer Raw {
-    uint8_t raw[];
-};
-
-uint rb(uint i) {
-    return uint(raw[P.in_offset + i]);
-}
-
-uint raw_sample(uint x, uint y) {
-    uint base = y * P.in_stride;
-    if (P.packing == PACK_RAW10) {
-        uint g = base + (x >> 2) * 5u;
-        uint lane = x & 3u;
-        return (rb(g + lane) << 2) | ((rb(g + 4u) >> (2u * lane)) & 3u);
-    } else if (P.packing == PACK_RAW12) {
-        uint g = base + (x >> 1) * 3u;
-        uint lane = x & 1u;
-        return (rb(g + lane) << 4) | ((rb(g + 2u) >> (4u * lane)) & 15u);
-    } else if (P.packing == PACK_U16) {
-        uint o = base + 2u * x;
-        return min(rb(o) | (rb(o + 1u) << 8), P.max_value);
-    }
-    return rb(base + x);
-}
-
-uint lsc_entry(uint i) {
-    return (lsc[i >> 1] >> (16u * (i & 1u))) & 0xFFFFu;
-}
-
-uint gain_at(uint x, uint y) {
-    if (P.lsc_on == 0u) {
-        return P.flat_gain[(y & 1u) * 2u + (x & 1u)];
-    }
-    uint ym = lsc[P.lsc_ymap + y];
-    uint i = ym & 0xFFFFu;
-    int f = int(ym >> 16);
-    uint row0 = (y & 1u) * P.lsc_rows;
-    uint a = lsc_entry((row0 + i) * P.width + x);
-    uint b = lsc_entry((row0 + min(i + 1u, P.lsc_rows - 1u)) * P.width + x);
-    return uint(int(a) + (((int(b) - int(a)) * f) >> 15)) & 0xFFFFu;
-}
-
-// `simd::scalar::front_row` of the sample at column `x`, row `y` (inside the frame).
-uint front(uint x, uint y) {
-    uint v = raw_sample(x, y);
-    uint bl = P.black[(y & 1u) * 2u + (x & 1u)];
-    uint d = ((v > bl ? v - bl : 0u) << P.shift) & 0xFFFFu;
-    return min((d * gain_at(x, y)) >> 16, WORK_MAX);
-}
 
 // Mirror `i` into `0..n`, keeping its parity (`pipeline::reflect`).
 uint reflect_into(int i, uint n) {
@@ -197,4 +160,22 @@ uint chroma8(ivec3 c, bool v) {
 uvec3 quad_colours(uint q[4]) {
     uint g = (q[P.quad_idx[1]] + q[P.quad_idx[2]] + 1u) >> 1;
     return uvec3(q[P.quad_idx[0]], g, q[P.quad_idx[3]]);
+}
+
+// `simd::post::scalar::rgb_to_planes_row`: JFIF (Y, Cb, Cr) of an RGB pixel.
+uvec3 planes_of(uvec3 c) {
+    int r = int(c.r), g = int(c.g), b = int(c.b);
+    int y = (77 * r + 150 * g + 29 * b + 128) >> 8;
+    int cb = ((-43 * r - 85 * g + 128 * b + 128) >> 8) + 128;
+    int cr = ((128 * r - 107 * g - 21 * b + 128) >> 8) + 128;
+    return uvec3(clamp(y, 0, 255), clamp(cb, 0, 255), clamp(cr, 0, 255));
+}
+
+// `simd::post::scalar::planes_to_rgb_row` of one pixel (Y, Cb, Cr).
+uvec3 rgb_of(uint y, uint cb, uint cr) {
+    int yi = int(y), cbi = int(cb) - 128, cri = int(cr) - 128;
+    return uvec3(
+        uint(clamp((256 * yi + 359 * cri + 128) >> 8, 0, 255)),
+        uint(clamp((256 * yi - 88 * cbi - 183 * cri + 128) >> 8, 0, 255)),
+        uint(clamp((256 * yi + 454 * cbi + 128) >> 8, 0, 255)));
 }

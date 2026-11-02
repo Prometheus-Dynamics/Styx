@@ -20,6 +20,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   table, the table where the fit misses) and an opt-in fp16 picture (`GpuIsp::set_half_precision`
   on devices with `shaderFloat16`, bounded against the CPU's `Arithmetic::Half`). The first two
   are bit-exact with the CPU on RADV, NVIDIA and llvmpipe.
+- The GPU ISP (`styx-gpuisp`) runs the software ISP's output stages: luma and chroma denoise and
+  sharpening of the output picture, then the output format (RGB → YCbCr planes, the stages,
+  planes → RGB24, luma, NV12 or I420). Bit-exact against `SoftIsp` (`Arithmetic::Int`) on every
+  output at both scales, odd and even sizes, and windows, on llvmpipe, RADV and NVIDIA. Before,
+  it ignored `IspParams::denoise` and `sharpen`. Each frame with them is one submission with
+  more dispatches, and a warm frame allocates nothing. `styx_softisp::shared::stage_tables`
+  gives the stages' tables (the same values as the CPU's).
 - Frame drops are logged by cause (`sensor_sequence_gap`, `isp_skipped`, `queue_overflow`)
   at 1, 2, 4, 8, ... dropped frames, so a capture losing frames says why in its log as well as
   in `CameraMetrics::drops`.

@@ -54,11 +54,11 @@ fp16 bounds, note 6).
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| RGB → YCbCr planes | pass | pass | pass | pass | pass | gap |
-| Luma denoise (sigma filter) | pass | pass | pass | pass | pass | gap |
-| Chroma denoise | pass | pass | pass | pass | pass | gap |
-| Sharpen (unsharp mask) | pass | pass | pass | pass | pass | gap |
-| Planes → output format | pass | pass | pass | pass | pass | gap |
+| RGB → YCbCr planes | pass | pass | pass | pass | pass | pass |
+| Luma denoise (sigma filter) | pass | pass | pass | pass | pass | pass |
+| Chroma denoise | pass | pass | pass | pass | pass | pass |
+| Sharpen (unsharp mask) | pass | pass | pass | pass | pass | pass |
+| Planes → output format | pass | pass | pass | pass | pass | pass |
 
 ### Packed conversions, pyramid and orientation (`styx_core::simd`)
 
@@ -147,8 +147,8 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | NEON64 | 43 | 0 | 0 |
 | NEON32 | 42 | 0 | 1 |
 | RVV | 39 | 4 | 0 |
-| GPU | 36 | 7 | 0 |
-| **all** | **245** | **12** | **1** |
+| GPU | 41 | 2 | 0 |
+| **all** | **250** | **7** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 

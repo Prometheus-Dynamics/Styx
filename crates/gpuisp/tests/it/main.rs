@@ -10,6 +10,7 @@ mod daedalus;
 mod dmabuf;
 mod equivalence;
 mod fp16;
+mod post;
 mod quality;
 mod shaders;
 mod variants;

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ash::vk;
 
-use crate::context::{Inner, Submit};
+use crate::context::{Inner, Submit, vulkan_instance_lock};
 use crate::error::{GpuError, VkContext};
 
 /// SPIR-V of `shaders/*.comp` (`shaders/build.sh` makes them).
@@ -16,15 +16,21 @@ const STATS: &[u8] = include_bytes!("../shaders/stats.spv");
 /// The fp16 pictures (`fp16.glsl`), made only on devices with `shaderFloat16`.
 const FULL16: &[u8] = include_bytes!("../shaders/full16.spv");
 const HALF16: &[u8] = include_bytes!("../shaders/half16.spv");
+const DENOISE: &[u8] = include_bytes!("../shaders/denoise.spv");
+const SHARPEN: &[u8] = include_bytes!("../shaders/sharpen.spv");
+const OUTPUT: &[u8] = include_bytes!("../shaders/output.spv");
 
 /// Descriptor sets the ISP may hold at once: the tables, inputs (staging, device copy and
 /// imported dma-bufs) and outputs (staging, device copy and the export ring).
 const MAX_SETS: u32 = 96;
 
+/// Most dispatches one frame makes: the picture, denoise, sharpening and the output.
+pub(crate) const MAX_PASSES: usize = 4;
+
 pub(crate) struct Kernels {
     ctx: Arc<Inner>,
-    /// Set 0: parameters, tone table, lens shading, statistics. Set 1: raw input. Set 2:
-    /// output.
+    /// Set 0: parameters, tone table, lens shading, statistics, sigma table. Set 1: raw input
+    /// (or a planes buffer, read). Set 2: output (or a planes buffer, written).
     pub set_layouts: [vk::DescriptorSetLayout; 3],
     pub layout: vk::PipelineLayout,
     pub full: vk::Pipeline,
@@ -33,6 +39,9 @@ pub(crate) struct Kernels {
     /// The fp16 pictures; null without `shaderFloat16`.
     pub full16: vk::Pipeline,
     pub half16: vk::Pipeline,
+    pub denoise: vk::Pipeline,
+    pub sharpen: vk::Pipeline,
+    pub output: vk::Pipeline,
     pool: vk::DescriptorPool,
     cmd_pool: vk::CommandPool,
     pub cmd: vk::CommandBuffer,
@@ -55,7 +64,16 @@ impl Drop for Kernels {
             d.destroy_fence(self.fence, None);
             d.destroy_command_pool(self.cmd_pool, None);
             d.destroy_descriptor_pool(self.pool, None);
-            for p in [self.full, self.half, self.stats, self.full16, self.half16] {
+            for p in [
+                self.full,
+                self.half,
+                self.stats,
+                self.denoise,
+                self.sharpen,
+                self.output,
+                self.full16,
+                self.half16,
+            ] {
                 d.destroy_pipeline(p, None);
             }
             d.destroy_pipeline_layout(self.layout, None);
@@ -86,7 +104,7 @@ impl Kernels {
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE)
         };
-        let set0 = [binding(0), binding(1), binding(2), binding(3)];
+        let set0 = [binding(0), binding(1), binding(2), binding(3), binding(4)];
         let set1 = [binding(0)];
         let mut k = Self {
             ctx: Arc::clone(ctx),
@@ -97,6 +115,9 @@ impl Kernels {
             stats: vk::Pipeline::null(),
             full16: vk::Pipeline::null(),
             half16: vk::Pipeline::null(),
+            denoise: vk::Pipeline::null(),
+            sharpen: vk::Pipeline::null(),
+            output: vk::Pipeline::null(),
             pool: vk::DescriptorPool::null(),
             cmd_pool: vk::CommandPool::null(),
             cmd: vk::CommandBuffer::null(),
@@ -124,10 +145,12 @@ impl Kernels {
         k.layout =
             unsafe { d.create_pipeline_layout(&info, None) }.ctx("vkCreatePipelineLayout")?;
         let fp16 = ctx.info.float16;
-        let mut codes = vec![FULL, HALF, STATS];
+        let mut codes = vec![FULL, HALF, STATS, DENOISE, SHARPEN, OUTPUT];
         if fp16 {
             codes.extend([FULL16, HALF16]);
         }
+        // Shader compilation in the driver, serialised with the other driver calls of the process.
+        let driver = vulkan_instance_lock();
         let mut modules = Vec::new();
         for code in codes.iter().copied() {
             let words = spirv(code);
@@ -166,13 +189,21 @@ impl Kernels {
         modules
             .iter()
             .for_each(|&m| unsafe { d.destroy_shader_module(m, None) });
+        drop(driver);
         let pipelines = made.map_err(|(_, e)| GpuError::Vulkan {
             call: "vkCreateComputePipelines",
             result: e,
         })?;
-        [k.full, k.half, k.stats] = [pipelines[0], pipelines[1], pipelines[2]];
+        [k.full, k.half, k.stats, k.denoise, k.sharpen, k.output] = [
+            pipelines[0],
+            pipelines[1],
+            pipelines[2],
+            pipelines[3],
+            pipelines[4],
+            pipelines[5],
+        ];
         if fp16 {
-            [k.full16, k.half16] = [pipelines[3], pipelines[4]];
+            [k.full16, k.half16] = [pipelines[6], pipelines[7]];
         }
         let sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,
@@ -210,6 +241,16 @@ impl Kernels {
 
     /// A descriptor set of layout `which` with `buffers` at bindings 0, 1, ...
     pub fn set(&self, which: usize, buffers: &[vk::Buffer]) -> Result<vk::DescriptorSet, GpuError> {
+        self.set_at(which, buffers.len(), |i| (buffers[i], 0))
+    }
+
+    /// [`Self::set`] with each buffer from its byte offset (`n` bindings, `at(i)` the `i`th).
+    pub fn set_at(
+        &self,
+        which: usize,
+        n: usize,
+        at: impl Fn(usize) -> (vk::Buffer, u64),
+    ) -> Result<vk::DescriptorSet, GpuError> {
         let layouts = [self.set_layouts[which]];
         let info = vk::DescriptorSetAllocateInfo::default()
             .descriptor_pool(self.pool)
@@ -217,18 +258,28 @@ impl Kernels {
         // SAFETY: a pool and layout of this device.
         let set = unsafe { self.ctx.device.allocate_descriptor_sets(&info) }
             .ctx("vkAllocateDescriptorSets")?[0];
-        self.write_set(set, buffers);
+        self.write_set_at(set, n, at);
         Ok(set)
     }
 
     /// Point `set`'s bindings at `buffers` (the set is not in use).
     pub fn write_set(&self, set: vk::DescriptorSet, buffers: &[vk::Buffer]) {
-        let infos: Vec<[vk::DescriptorBufferInfo; 1]> = buffers
-            .iter()
-            .map(|&b| {
+        self.write_set_at(set, buffers.len(), |i| (buffers[i], 0));
+    }
+
+    /// [`Self::write_set`] with each buffer from its byte offset.
+    pub fn write_set_at(
+        &self,
+        set: vk::DescriptorSet,
+        n: usize,
+        at: impl Fn(usize) -> (vk::Buffer, u64),
+    ) {
+        let infos: Vec<[vk::DescriptorBufferInfo; 1]> = (0..n)
+            .map(|i| {
+                let (buffer, offset) = at(i);
                 [vk::DescriptorBufferInfo {
-                    buffer: b,
-                    offset: 0,
+                    buffer,
+                    offset,
                     range: vk::WHOLE_SIZE,
                 }]
             })
@@ -350,17 +401,41 @@ impl Kernels {
                     ),
                 );
             }
-            d.cmd_bind_descriptor_sets(
-                cmd,
-                vk::PipelineBindPoint::COMPUTE,
-                self.layout,
-                0,
-                &plan.sets,
-                &[],
-            );
-            d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, plan.pipeline);
-            d.cmd_dispatch(cmd, plan.groups.0, plan.groups.1, 1);
+            for (i, pass) in plan.passes.iter().flatten().enumerate() {
+                if i > 0 {
+                    barrier(
+                        d,
+                        cmd,
+                        (
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::AccessFlags::SHADER_WRITE,
+                        ),
+                        (
+                            vk::PipelineStageFlags::COMPUTE_SHADER,
+                            vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE,
+                        ),
+                    );
+                }
+                d.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.layout,
+                    0,
+                    &pass.sets,
+                    &[],
+                );
+                d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, pass.pipeline);
+                d.cmd_dispatch(cmd, pass.groups.0, pass.groups.1, 1);
+            }
             if let Some(((zx, zy), ..)) = plan.stats {
+                d.cmd_bind_descriptor_sets(
+                    cmd,
+                    vk::PipelineBindPoint::COMPUTE,
+                    self.layout,
+                    0,
+                    &plan.stats_sets,
+                    &[],
+                );
                 d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, self.stats);
                 d.cmd_dispatch(cmd, zx, zy, 1);
             }
@@ -427,11 +502,20 @@ impl Kernels {
     }
 }
 
-/// What one frame's command buffer does.
-pub(crate) struct Plan {
+/// One compute dispatch: its descriptor sets (parameters, input, output), pipeline and groups.
+#[derive(Clone, Copy)]
+pub(crate) struct Pass {
     pub sets: [vk::DescriptorSet; 3],
     pub pipeline: vk::Pipeline,
     pub groups: (u32, u32),
+}
+
+/// What one frame's command buffer does.
+pub(crate) struct Plan {
+    /// The picture and output stages' dispatches, in order (a barrier between each pair).
+    pub passes: [Option<Pass>; MAX_PASSES],
+    /// The statistics' descriptor sets (the input's).
+    pub stats_sets: [vk::DescriptorSet; 3],
     /// Source buffer, offset and bytes copied into the device input buffer.
     pub copy_in: Option<(vk::Buffer, u64, u64)>,
     /// Device output buffer to the target buffer, bytes.

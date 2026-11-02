@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use styx_softisp::shared::{grid_map_into, q12};
+use styx_softisp::shared::{grid_map_into, q12, stage_tables};
 use styx_softisp::simd::poly::{PolyTone, SEGMENTS};
 use styx_softisp::simd::{RowKind, ToneLut, YuvCoeffs};
 use styx_softisp::{
@@ -56,6 +56,21 @@ pub(crate) struct Block {
     /// The window's origin in the frame (0 for the whole frame).
     pub win_x: u32,
     pub win_y: u32,
+    /// The output stages' picture (its planes are `pic_w` x `pic_h` each), the window's origin
+    /// in it, and the denoise and sharpening parameters.
+    pub pic_w: u32,
+    pub pic_h: u32,
+    pub crop_x: u32,
+    pub crop_y: u32,
+    pub denoise_luma: u32,
+    pub denoise_chroma: u32,
+    pub luma_strength: u32,
+    pub chroma_threshold: u32,
+    pub chroma_strength: u32,
+    pub sharpen_on: u32,
+    pub sharpen_amount: i32,
+    pub sharpen_threshold: i32,
+    pub sharpen_limit: i32,
 }
 
 impl Block {
@@ -95,6 +110,10 @@ pub(crate) struct Tables {
     pub stats: Option<StatsSetup>,
     /// White balance times digital gain, reported with the statistics.
     pub channel_gains: [f32; 3],
+    /// The output stages run (denoise or sharpening), as `styx-softisp`'s.
+    pub post: bool,
+    /// The luma denoise threshold (quarter codes) per centre value, when luma denoise is on.
+    pub sigma: Option<[u32; 256]>,
 }
 
 /// Tables of parameters gone by ([`Spare::keep`]), written in place by the next
@@ -277,7 +296,6 @@ impl Tables {
                 }
             };
         }
-        // (The output stages, `IspParams::denoise` and `sharpen`, are not applied here.)
         b.demosaic = match params.demosaic {
             styx_softisp::Demosaic::Bilinear => 0,
             styx_softisp::Demosaic::Mhc => 1,
@@ -345,6 +363,27 @@ impl Tables {
             b.saturation = (s.config.saturation.clamp(0.0, 1.0) * WORK_MAX as f32).round() as u32;
             b.row_step = s.config.row_step;
         }
+        // The output stages: the tables and strengths of `styx-softisp`'s post stages.
+        let stages = stage_tables(params.denoise.as_ref(), params.sharpen.as_ref());
+        let mut sigma = None;
+        if let Some(st) = &stages {
+            if let Some((table, s)) = &st.luma {
+                b.denoise_luma = 1;
+                b.luma_strength = i32::from(*s) as u32;
+                sigma = Some(table.map(u32::from));
+            }
+            if let Some((t, s)) = st.chroma {
+                b.denoise_chroma = 1;
+                b.chroma_threshold = i32::from(t) as u32;
+                b.chroma_strength = i32::from(s) as u32;
+            }
+            if let Some([amount, threshold, limit]) = st.sharpen {
+                b.sharpen_on = 1;
+                b.sharpen_amount = amount;
+                b.sharpen_threshold = threshold;
+                b.sharpen_limit = limit;
+            }
+        }
         Ok(Self {
             block: b,
             lut,
@@ -354,6 +393,8 @@ impl Tables {
             lsc_cells: cells,
             stats,
             channel_gains,
+            post: stages.is_some(),
+            sigma,
         })
     }
 }
@@ -490,9 +531,9 @@ fn stats_setup_into(
 mod tests {
     use super::*;
 
-    /// The block's size matches the GLSL declaration (64 words).
+    /// The block's size matches the GLSL declaration (77 words).
     #[test]
     fn block_layout() {
-        assert_eq!(size_of::<Block>(), 64 * 4);
+        assert_eq!(size_of::<Block>(), 77 * 4);
     }
 }

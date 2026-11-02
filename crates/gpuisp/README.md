@@ -11,7 +11,11 @@ in Q15), bilinear, Malvar-He-Cutler or edge-directed demosaic, Q12 colour matrix
 saturating sums, the tone curve as the 4096-entry table or (`IntPolyTone`, where it fits) its
 quadratics, RGB24 / NV12 / I420 / luma (BT.601 full or BT.709 limited) at full
 or half size (each quad a pixel), and the 3A statistics: per-zone R/G/B sums of unclipped
-quads, counts, zone luma, luma histogram, on every `row_step`-th quad row.
+quads, counts, zone luma, luma histogram, on every `row_step`-th quad row. With `denoise` or
+`sharpen` in the parameters, the output stages run too: the picture becomes JFIF planes, luma
+and chroma denoise (sigma filter, low-pass) and the luma unsharp mask, then the output format
+is written from them (the same `write_output` as the CPU's, from the whole frame, cropped to
+a window).
 
 The crate is optional: nothing in Styx depends on it by default, and it builds without a C
 toolchain or the Vulkan SDK.
@@ -26,14 +30,16 @@ toolchain or the Vulkan SDK.
   anyway), and brings naga, resource tracking and validation on every submission. `ash` is
   loaded with its `loaded` feature: `libvulkan.so.1` is `dlopen`ed at run time, so binaries
   link nothing Vulkan and start (and fall back to the CPU) where there is no Vulkan.
-* **Shaders.** GLSL in `shaders/` (`common.glsl`: parameters and the front end;
-  `full.comp`, `half.comp`, `stats.comp`; the fp16 pictures `full16.comp`, `half16.comp` with
-  `fp16.glsl`), compiled to SPIR-V by `shaders/build.sh` (glslc, Vulkan 1.2) and committed, so
-  building the crate needs no shader compiler. The integer shaders are the same integer
-  arithmetic as `styx-softisp`'s scalar oracle. The fp16 pictures (`GpuIsp::set_half_precision`,
-  off by default, devices with `shaderFloat16`) run the front end, bilinear demosaic, colour
-  matrix and tone curve in float16, as `styx-softisp`'s `Arithmetic::Half` (within its
-  bounds, not bit-exact); the statistics stay integer. Bytes are read and written
+* **Shaders.** GLSL in `shaders/` (`common.glsl`: parameters, tone and colour helpers;
+  `front.glsl`: the raw input and the front end; `full.comp`, `half.comp`, `stats.comp`; the
+  output stages `denoise.comp`, `sharpen.comp`, `output.comp`; the fp16 pictures
+  `full16.comp`, `half16.comp` with `fp16.glsl`), compiled to SPIR-V by `shaders/build.sh`
+  (glslc, Vulkan 1.2) and committed, so building the crate needs no shader compiler. The
+  integer shaders are the same integer arithmetic as `styx-softisp`'s scalar oracle. The fp16
+  pictures (`GpuIsp::set_half_precision`, off by default, devices with `shaderFloat16`, not with
+  the output stages) run the front end, bilinear demosaic, colour matrix and tone curve in
+  float16, as `styx-softisp`'s `Arithmetic::Half` (within its bounds, not bit-exact); the
+  statistics stay integer. Bytes are read and written
   through 8-bit storage buffers (`storageBuffer8BitAccess`, required).
 * **Full size**: a workgroup of 16x8 invocations makes a 32x16 block, each invocation one
   2x2 quad (one 4:2:0 chroma sample). The block and a 2-sample border (36x20) go through the
@@ -79,7 +85,9 @@ paths, parameter changes between frames and skipped statistics (`tests/it/equiva
 tone quadratics where they fit, and the table kept where they do not, with the tone mode changing
 between frames (`tests/it/variants.rs`). The fp16 pictures stay within the CPU fp16 bounds (45 dB,
 6 codes, 99.9% within 2; `tests/it/fp16.rs`). Also through dma-buf import and export
-(`tests/it/dmabuf.rs`), and through the whole 3A loop (`styx-pipeline/tests/it/gpu_loop.rs`), on
+(`tests/it/dmabuf.rs`), the output stages (denoise, sharpening; every output, odd sizes,
+windows, switching between frames; `tests/it/post.rs`), and through the whole 3A loop
+(`styx-pipeline/tests/it/gpu_loop.rs`), on
 RADV and llvmpipe.
 
 ## Performance

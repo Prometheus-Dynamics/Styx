@@ -5,8 +5,9 @@
 //! ([`Arithmetic::Int`](styx_softisp::Arithmetic::Int)) bit for bit: unpacking (8/16-bit,
 //! CSI-2 RAW10/RAW12), black level, white balance and digital gain, lens shading, bilinear,
 //! Malvar-He-Cutler or edge-directed demosaic, colour matrix, tone table or quadratics,
-//! RGB24 / NV12 / I420 / luma at full or half size, and the 3A statistics (zones, histogram).
-//! A pipeline can swap one for the other. An opt-in fp16 variant ([`GpuIsp::set_half_precision`],
+//! RGB24 / NV12 / I420 / luma at full or half size, the output stages (luma and chroma denoise,
+//! sharpening) when the parameters ask for them, and the 3A statistics (zones, histogram). A
+//! pipeline can swap one for the other. An opt-in fp16 variant ([`GpuIsp::set_half_precision`],
 //! devices with `shaderFloat16`) runs the picture in float16, as `styx-softisp`'s `Half`.
 //!
 //! * One submission per frame and one wait (its fence): the histogram is cleared, the raw
@@ -30,6 +31,7 @@
 
 mod context;
 mod convert;
+mod dmabuf;
 mod error;
 mod fp16;
 mod input;
@@ -38,6 +40,7 @@ mod kernels;
 mod layout;
 mod memory;
 mod params;
+mod stages;
 mod stats;
 
 pub use context::{

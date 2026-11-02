@@ -77,6 +77,7 @@ pub mod simd;
 #[doc(hidden)]
 pub mod shared {
     pub use crate::output::check as check_plane;
+    pub use crate::post::{StageTables, stage_tables};
     pub use crate::prepare::{grid_map, grid_map_into, q12};
 }
 mod stats;

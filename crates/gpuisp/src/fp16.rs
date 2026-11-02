@@ -11,8 +11,9 @@ impl GpuIsp {
     /// Runs the pictures in fp16 (default: off), as `styx-softisp`'s `Arithmetic::Half`: the
     /// front end, bilinear demosaic, colour matrix and tone curve in float16 (the statistics
     /// stay on the integer arithmetic). Used only where the device has `shaderFloat16`, the
-    /// frames are at most 10 bits and the demosaic is bilinear (`Half`'s conditions); else the
-    /// integer pictures run.
+    /// frames are at most 10 bits and the demosaic is bilinear (`Half`'s conditions), and no
+    /// output stage (denoise, sharpening) is on (they read the integer pictures' planes); else
+    /// the integer pictures run.
     pub fn set_half_precision(&mut self, on: bool) {
         self.half = on;
     }
@@ -29,6 +30,7 @@ impl GpuIsp {
             && self.k.full16 != vk::Pipeline::null()
             && self.format().packing.bit_depth() <= 10
             && self.params().demosaic == Demosaic::Bilinear
+            && !self.tables.post
     }
 
     /// The pipeline of a picture at `scale`.
