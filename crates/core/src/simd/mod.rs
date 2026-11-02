@@ -11,6 +11,7 @@
 //!
 //! Every dispatcher returns the [`SimdBackend`] that did the vector part of the work.
 
+pub mod h264;
 pub mod jpeg;
 pub mod scalar;
 
@@ -30,6 +31,8 @@ mod rvv;
 #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
 mod x86;
 
+#[cfg(test)]
+mod h264_tests;
 #[cfg(test)]
 mod jpeg_tests;
 #[cfg(test)]

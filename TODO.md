@@ -166,10 +166,10 @@ memory when it runs.
       GPU and each board's fixed-function units; losing variants stay behind knobs. *Done when:* the
       matrix has no gap cells; each leaf conformance-tested against scalar (guard bytes, odd widths)
       in the gate, on hardware or QEMU. *Blocked by:* nothing for the CPU and GPU columns; boards
-      for the fixed-function rows. *Numbers:* recounted from the matrix: **229 pass, 28
-      gaps, 1 n/a of 258 cells** (43 stages). Gaps by column: x86 1, NEON64 0, NEON32 0, RVV 3, GPU 24.
-      The CPU gaps: fp16 on x86 and RVV, and JPEG decode and H.264 on RVV (JPEG encode: Styx's
-      own encoder with RVV colour and DCT, written, untested on board). The GPU gaps: every
+      for the fixed-function rows. *Numbers:* recounted from the matrix: **230 pass, 27
+      gaps, 1 n/a of 258 cells** (43 stages). Gaps by column: x86 1, NEON64 0, NEON32 0, RVV 2, GPU 24.
+      The CPU gaps: fp16 on x86 and RVV, and JPEG decode on RVV (JPEG and H.264 encode: Styx's
+      own encoders with RVV leaves, written, untested on board). The GPU gaps: every
       stage of `post.rs` (5), the packed conversions (11), YUYV → NV12 chroma, NV12/YUYV/I420 → RGB
       (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG decode. Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
@@ -177,11 +177,12 @@ memory when it runs.
 - [ ] **Styx's own H.264 encoder: SIMD and GPU leaves, codec hookup** (`styx_codec::styx_h264`,
       scalar, decodes bit for bit to its reconstruction under FFmpeg). *Why:* the H.264 cells on
       RVV and the GPU are gaps with no library to lean on. *Done when:* SAD, the 4x4 transform
-      with quantisation and the reconstruction run as `styx_core::simd` kernels with RVV leaves
-      (QEMU VLEN 128–1024) and on the GPU, conformance-tested against the scalar code; the encoder
+      with quantisation and the reconstruction run on the GPU too (the RVV leaves in
+      `styx_core::simd::h264` are done, QEMU VLEN 128–1024), conformance-tested; the encoder
       is a registered `Codec` (H264 out of I420/NV12/GREY) on hosts without another H.264 encoder;
       rate control and sub-pel motion follow. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
-      the dev PC (Zen 3, load ~59 from other sessions): I 21.9 ms, P 26.0 ms a picture.
+      the dev PC (Zen 3, load ~34–59 from other sessions): scalar I 21.9 ms, P 26.0 ms a picture; on the
+      `simd::h264` kernels I 16.3 ms, P 17.3 ms.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**
       `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
       pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected

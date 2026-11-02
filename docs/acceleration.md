@@ -94,7 +94,7 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`; for the conversion
 |---|---|---|---|---|---|---|
 | JPEG encode | pass | lib | lib | lib | pass⁸ | pass¹¹ |
 | JPEG decode | pass | lib | lib | lib | gap⁸ | gap |
-| H.264 / H.265 encode | pass | lib | lib | lib | gap⁸ | pass⁹ |
+| H.264 / H.265 encode | pass | lib | lib | lib | pass⁸ | pass⁹ |
 
 Notes:
 
@@ -125,8 +125,12 @@ Notes:
    (`styx_codec::styx_jpeg`) with RVV leaves for JFIF colour (RGB → YCbCr 4:2:0) and the DCT
    with quantisation (`styx_core::simd::jpeg`), exact against the scalar oracle, tested under
    QEMU at VLEN 128, 256, 512 and 1024; Huffman coding is serial and scalar. Written, untested
-   on board. JPEG decode and H.264 still need their own leaves, or the board's units (see the
-   fixed-function table below).
+   on board. H.264 encode: Styx's own encoder (`styx_codec::styx_h264`, Baseline CAVLC) with RVV
+   leaves for motion-search SAD, the residual transform with quantisation and the
+   reconstruction (`styx_core::simd::h264`), exact against the scalar oracle under QEMU at VLEN
+   128, 256 and 1024; CAVLC is serial and scalar. Written, untested on board. H.265 has no RVV
+   path beyond the board's VPU. JPEG decode still needs its own leaves, or the board's units
+   (see the fixed-function table below).
 9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. There is no Vulkan Video encode yet.
 10. `GpuConvert::transform` gathers each output pixel rather than working on 8x8 tiles. It
     gives the bytes of `transform_packed` in all eight orientations, tested against it.

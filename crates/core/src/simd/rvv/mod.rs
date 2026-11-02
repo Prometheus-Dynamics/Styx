@@ -5,6 +5,7 @@
 //! runs on cores without it, on the scalar kernels. Each must produce exactly the scalar
 //! result.
 
+pub(super) mod h264;
 pub(super) mod jpeg;
 pub(super) mod rows;
 pub(super) mod transform;

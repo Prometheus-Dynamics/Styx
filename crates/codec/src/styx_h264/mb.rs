@@ -7,9 +7,9 @@ use super::cavlc;
 use super::picture::Plane;
 use super::tables::ZIGZAG;
 use super::transform::{
-    dequant_chroma_dc, dequant_luma_dc, dequant4, fdct4, idct4, quant_chroma_dc, quant_luma_dc,
-    quant4,
+    dequant_chroma_dc, dequant_luma_dc, quant_chroma_dc, quant_luma_dc, quantiser, scale,
 };
+use styx_core::simd::h264;
 
 /// The (x, y) in 4x4 blocks of luma block `blk` (`luma4x4BlkIdx`, 8x8 quadrants in raster,
 /// 4x4 blocks in raster within each).
@@ -18,10 +18,10 @@ pub(super) const fn blk_xy(blk: usize) -> (usize, usize) {
     ((i8 & 1) * 2 + (i4 & 1), (i8 >> 1) * 2 + (i4 >> 1))
 }
 
-/// A macroblock's levels, raster within each 4x4 block.
+/// A macroblock's levels, blocks in raster order over the macroblock, raster within each.
 #[derive(Debug, Default)]
 pub(super) struct MbCode {
-    /// Luma blocks by `luma4x4BlkIdx`; Intra16x16 keeps position 0 at zero.
+    /// Luma blocks (`by * 4 + bx`); Intra16x16 keeps position 0 at zero.
     pub(super) luma: [[i32; 16]; 16],
     /// Intra16x16 luma DC, raster by block position.
     pub(super) luma_dc: [i32; 16],
@@ -35,32 +35,47 @@ pub(super) struct MbCode {
     pub(super) cbp_chroma: u8,
 }
 
-fn residual4(src: &Plane, pred: &[u8], pstride: usize, (x, y): (usize, usize)) -> [i32; 16] {
-    core::array::from_fn(|i| {
-        let (c, r) = (i & 3, i >> 2);
-        i32::from(src.at(x + c, y + r)) - i32::from(pred[(r) * pstride + c])
-    })
+/// The 8x8 quadrant of raster luma block `b`.
+const fn quadrant(b: usize) -> usize {
+    (b / 8) * 2 + (b % 4) / 2
+}
+
+/// `plane` from (`x`, `y`) on, for a kernel's grid.
+fn from(plane: &Plane, (x, y): (usize, usize)) -> &[u8] {
+    &plane.data[y * plane.w + x..]
+}
+
+fn from_mut(plane: &mut Plane, (x, y): (usize, usize)) -> &mut [u8] {
+    &mut plane.data[y * plane.w + x..]
 }
 
 impl MbCode {
-    /// Quantises luma: `src`'s macroblock at (`x`, `y`) against `pred` (16x16), Intra16x16
-    /// (DC through its own transform) or inter.
+    /// Quantises luma: `src`'s macroblock at `xy` against `pred` (16x16), Intra16x16 (DC
+    /// through its own transform) or inter.
     pub(super) fn code_luma(
         &mut self,
         src: &Plane,
-        (x, y): (usize, usize),
+        xy: (usize, usize),
         pred: &[u8; 256],
         qp: u8,
         i16: bool,
     ) {
         let mut dc = [0i32; 16];
+        let q = quantiser(qp, i16);
+        h264::residual_quant(
+            from(src, xy),
+            src.w,
+            pred,
+            16,
+            (4, 4),
+            &q,
+            i16,
+            &mut dc,
+            &mut self.luma,
+        );
         let mut nz8 = [false; 4];
-        for blk in 0..16 {
-            let (bx, by) = blk_xy(blk);
-            let r = residual4(src, &pred[by * 64 + bx * 4..], 16, (x + bx * 4, y + by * 4));
-            let c = fdct4(&r);
-            dc[by * 4 + bx] = c[0];
-            nz8[blk / 4] |= quant4(&c, qp, i16, i16, &mut self.luma[blk]) > 0;
+        for (b, l) in self.luma.iter().enumerate() {
+            nz8[quadrant(b)] |= l.iter().any(|&v| v != 0);
         }
         if i16 {
             quant_luma_dc(&dc, qp, &mut self.luma_dc);
@@ -68,33 +83,40 @@ impl MbCode {
         } else {
             self.luma_dc = [0; 16];
             self.cbp_luma = nz8.iter().enumerate().map(|(i, &n)| u8::from(n) << i).sum();
-            for (blk, l) in self.luma.iter_mut().enumerate() {
-                if self.cbp_luma >> (blk / 4) & 1 == 0 {
+            for (b, l) in self.luma.iter_mut().enumerate() {
+                if self.cbp_luma >> quadrant(b) & 1 == 0 {
                     *l = [0; 16];
                 }
             }
         }
     }
 
-    /// Quantises chroma: `src`'s 8x8 blocks at (`x`, `y`) against `pred` (Cb, Cr).
+    /// Quantises chroma: `src`'s 8x8 blocks at `xy` against `pred` (Cb, Cr).
     pub(super) fn code_chroma(
         &mut self,
         src: [&Plane; 2],
-        (x, y): (usize, usize),
+        xy: (usize, usize),
         pred: [&[u8; 64]; 2],
         qpc: u8,
         intra: bool,
     ) {
         let (mut any_dc, mut any_ac) = (false, false);
+        let q = quantiser(qpc, intra);
         for c in 0..2 {
             let mut dc = [0i32; 4];
-            for (b, dc) in dc.iter_mut().enumerate() {
-                let (bx, by) = ((b & 1) * 4, (b >> 1) * 4);
-                let r = residual4(src[c], &pred[c][by * 8 + bx..], 8, (x + bx, y + by));
-                let t = fdct4(&r);
-                *dc = t[0];
-                any_ac |= quant4(&t, qpc, intra, true, &mut self.chroma_ac[c][b]) > 0;
-            }
+            let ac = &mut self.chroma_ac[c];
+            h264::residual_quant(
+                from(src[c], xy),
+                src[c].w,
+                pred[c],
+                8,
+                (2, 2),
+                &q,
+                true,
+                &mut dc,
+                ac,
+            );
+            any_ac |= ac.iter().flatten().any(|&v| v != 0);
             any_dc |= quant_chroma_dc(&dc, qpc, intra, &mut self.chroma_dc[c]) > 0;
         }
         self.cbp_chroma = if any_ac { 2 } else { u8::from(any_dc) };
@@ -103,56 +125,51 @@ impl MbCode {
         }
     }
 
-    /// The decoder's luma: `pred` plus the dequantised residual, into `rec` at (`x`, `y`).
+    /// The decoder's luma: `pred` plus the dequantised residual, into `rec` at `xy`.
     pub(super) fn recon_luma(
         &self,
         rec: &mut Plane,
-        (x, y): (usize, usize),
+        xy: (usize, usize),
         pred: &[u8; 256],
         qp: u8,
         i16: bool,
     ) {
-        let dc = if i16 {
-            dequant_luma_dc(&self.luma_dc, qp)
-        } else {
-            [0; 16]
-        };
-        for blk in 0..16 {
-            let (bx, by) = blk_xy(blk);
-            let mut d = dequant4(&self.luma[blk], qp, i16);
-            if i16 {
-                d[0] = dc[by * 4 + bx];
-            }
-            let r = idct4(&d);
-            for (i, &v) in r.iter().enumerate() {
-                let (c, rr) = (bx * 4 + (i & 3), by * 4 + (i >> 2));
-                let p = i32::from(pred[rr * 16 + c]);
-                rec.data[(y + rr) * rec.w + x + c] = (p + v).clamp(0, 255) as u8;
-            }
-        }
+        let dc = i16.then(|| dequant_luma_dc(&self.luma_dc, qp));
+        let w = rec.w;
+        h264::recon(
+            &self.luma,
+            &scale(qp),
+            dc.as_ref().map(|d| &d[..]),
+            pred,
+            16,
+            from_mut(rec, xy),
+            w,
+            (4, 4),
+        );
     }
 
-    /// The decoder's chroma into `rec` (Cb, Cr) at (`x`, `y`).
+    /// The decoder's chroma into `rec` (Cb, Cr) at `xy`.
     pub(super) fn recon_chroma(
         &self,
         rec: [&mut Plane; 2],
-        (x, y): (usize, usize),
+        xy: (usize, usize),
         pred: [&[u8; 64]; 2],
         qpc: u8,
     ) {
+        let sc = scale(qpc);
         for (c, plane) in rec.into_iter().enumerate() {
             let dc = dequant_chroma_dc(&self.chroma_dc[c], qpc);
-            for (b, &dc) in dc.iter().enumerate() {
-                let (bx, by) = ((b & 1) * 4, (b >> 1) * 4);
-                let mut d = dequant4(&self.chroma_ac[c][b], qpc, true);
-                d[0] = dc;
-                let r = idct4(&d);
-                for (i, &v) in r.iter().enumerate() {
-                    let (cc, rr) = (bx + (i & 3), by + (i >> 2));
-                    let p = i32::from(pred[c][rr * 8 + cc]);
-                    plane.data[(y + rr) * plane.w + x + cc] = (p + v).clamp(0, 255) as u8;
-                }
-            }
+            let w = plane.w;
+            h264::recon(
+                &self.chroma_ac[c],
+                &sc,
+                Some(&dc),
+                pred[c],
+                8,
+                from_mut(plane, xy),
+                w,
+                (2, 2),
+            );
         }
     }
 }
@@ -201,7 +218,9 @@ impl Counts {
         for blk in 0..16 {
             let (bx, by) = blk_xy(blk);
             self.luma[(mby * 4 + by) * w + mbx * 4 + bx] = match code {
-                Some(c) if c.cbp_luma >> (blk / 4) & 1 != 0 => nz(&c.luma[blk], usize::from(i16)),
+                Some(c) if c.cbp_luma >> (blk / 4) & 1 != 0 => {
+                    nz(&c.luma[by * 4 + bx], usize::from(i16))
+                }
                 _ => 0,
             };
         }
@@ -241,7 +260,7 @@ pub(super) fn write_residual(
             continue;
         }
         let (bx, by) = blk_xy(blk);
-        let n = scan(&code.luma[blk], usize::from(i16), &mut buf);
+        let n = scan(&code.luma[by * 4 + bx], usize::from(i16), &mut buf);
         cavlc::block(bits, &buf[..n], counts.luma_nc(mbx * 4 + bx, mby * 4 + by));
     }
     if code.cbp_chroma > 0 {

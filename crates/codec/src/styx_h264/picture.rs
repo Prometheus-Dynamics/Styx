@@ -213,14 +213,7 @@ pub(super) fn chroma_mc(rf: &Plane, (x, y): (usize, usize), mv: [i32; 2], out: &
 
 /// SAD of the 16x16 block at (`x`, `y`) of `src` against `pred`.
 pub(super) fn sad16(src: &Plane, (x, y): (usize, usize), pred: &[u8; 256]) -> u32 {
-    let mut s = 0;
-    for r in 0..16 {
-        let a = &src.data[(y + r) * src.w + x..][..16];
-        for (p, q) in a.iter().zip(&pred[r * 16..][..16]) {
-            s += u32::from(p.abs_diff(*q));
-        }
-    }
-    s
+    styx_core::simd::h264::sad16(&src.data[y * src.w + x..], src.w, pred, 16)
 }
 
 /// SAD of the 16x16 block at (`x`, `y`) of `src` against `rf` at (`rx`, `ry`), both inside.
@@ -230,13 +223,10 @@ pub(super) fn sad16_at(
     rf: &Plane,
     (rx, ry): (usize, usize),
 ) -> u32 {
-    let mut s = 0;
-    for r in 0..16 {
-        let a = &src.data[(y + r) * src.w + x..][..16];
-        let b = &rf.data[(ry + r) * rf.w + rx..][..16];
-        for (p, q) in a.iter().zip(b) {
-            s += u32::from(p.abs_diff(*q));
-        }
-    }
-    s
+    styx_core::simd::h264::sad16(
+        &src.data[y * src.w + x..],
+        src.w,
+        &rf.data[ry * rf.w + rx..],
+        rf.w,
+    )
 }

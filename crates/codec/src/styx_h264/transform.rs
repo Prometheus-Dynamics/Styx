@@ -1,103 +1,31 @@
-//! The 4x4 integer transform, quantisation and their inverses as the decoder computes them
-//! (8.5.12 with flat scaling lists), and the DC transforms of Intra16x16 luma and chroma.
-//! Blocks are raster order; levels come out in raster order too.
+//! Quantisers and scales for the 4x4 kernels (`styx_core::simd::h264`), and the DC transforms
+//! of Intra16x16 luma and chroma with their quantisation, as the decoder inverts them
+//! (8.5.10, 8.5.11.2 with flat scaling lists).
+
+use styx_core::simd::h264::{Quant4, quant1};
 
 use super::tables::{DEQUANT_V, QUANT_MF, pos_class};
-
-/// Levels are clamped here so CAVLC can always code them in Baseline (level_prefix ≤ 15).
-const LEVEL_MAX: i32 = 2047;
-
-/// The forward core transform of a 4x4 residual.
-pub(super) fn fdct4(r: &[i32; 16]) -> [i32; 16] {
-    let mut t = [0i32; 16];
-    for y in 0..4 {
-        let s = &r[y * 4..][..4];
-        let (a, b) = (s[0] + s[3], s[1] + s[2]);
-        let (c, d) = (s[1] - s[2], s[0] - s[3]);
-        t[y * 4] = a + b;
-        t[y * 4 + 1] = 2 * d + c;
-        t[y * 4 + 2] = a - b;
-        t[y * 4 + 3] = d - 2 * c;
-    }
-    let mut o = [0i32; 16];
-    for x in 0..4 {
-        let (a, b) = (t[x] + t[12 + x], t[4 + x] + t[8 + x]);
-        let (c, d) = (t[4 + x] - t[8 + x], t[x] - t[12 + x]);
-        o[x] = a + b;
-        o[4 + x] = 2 * d + c;
-        o[8 + x] = a - b;
-        o[12 + x] = d - 2 * c;
-    }
-    o
-}
-
-/// The inverse core transform of dequantised coefficients, rounded: the residual.
-pub(super) fn idct4(d: &[i32; 16]) -> [i32; 16] {
-    let mut t = [0i32; 16];
-    for y in 0..4 {
-        let s = &d[y * 4..][..4];
-        let (e0, e1) = (s[0] + s[2], s[0] - s[2]);
-        let (e2, e3) = ((s[1] >> 1) - s[3], s[1] + (s[3] >> 1));
-        t[y * 4] = e0 + e3;
-        t[y * 4 + 1] = e1 + e2;
-        t[y * 4 + 2] = e1 - e2;
-        t[y * 4 + 3] = e0 - e3;
-    }
-    let mut o = [0i32; 16];
-    for x in 0..4 {
-        let (e0, e1) = (t[x] + t[8 + x], t[x] - t[8 + x]);
-        let (e2, e3) = ((t[4 + x] >> 1) - t[12 + x], t[4 + x] + (t[12 + x] >> 1));
-        o[x] = (e0 + e3 + 32) >> 6;
-        o[4 + x] = (e1 + e2 + 32) >> 6;
-        o[8 + x] = (e1 - e2 + 32) >> 6;
-        o[12 + x] = (e0 - e3 + 32) >> 6;
-    }
-    o
-}
 
 /// Rounding offset of the deadzone quantiser: a third of a step intra, a sixth inter.
 fn deadzone(qbits: u32, intra: bool) -> i32 {
     (1 << qbits) / if intra { 3 } else { 6 }
 }
 
-fn quant1(c: i32, mf: i32, f: i32, qbits: u32) -> i32 {
-    let l = ((c.abs() * mf + f) >> qbits).min(LEVEL_MAX);
-    if c < 0 { -l } else { l }
-}
-
-/// Quantises a transformed block at `qp` into `levels` (position 0 left alone when `ac_only`);
-/// returns how many are nonzero.
-pub(super) fn quant4(
-    c: &[i32; 16],
-    qp: u8,
-    intra: bool,
-    ac_only: bool,
-    levels: &mut [i32; 16],
-) -> u32 {
+/// The 4x4 quantiser at `qp` for `simd::h264::residual_quant`.
+pub(super) fn quantiser(qp: u8, intra: bool) -> Quant4 {
     let qbits = 15 + u32::from(qp / 6);
     let mf = &QUANT_MF[usize::from(qp % 6)];
-    let f = deadzone(qbits, intra);
-    let mut nz = 0;
-    for i in usize::from(ac_only)..16 {
-        levels[i] = quant1(c[i], mf[pos_class(i)], f, qbits);
-        nz += u32::from(levels[i] != 0);
+    Quant4 {
+        mf: core::array::from_fn(|i| mf[pos_class(i)]),
+        f: deadzone(qbits, intra),
+        qbits,
     }
-    if ac_only {
-        levels[0] = 0;
-    }
-    nz
 }
 
-/// Dequantises a block's levels (position 0 too unless `ac_only`, which leaves it 0 for the
-/// DC path to fill).
-pub(super) fn dequant4(levels: &[i32; 16], qp: u8, ac_only: bool) -> [i32; 16] {
+/// The dequantisation scale per position at `qp` for `simd::h264::recon`.
+pub(super) fn scale(qp: u8) -> [i32; 16] {
     let v = &DEQUANT_V[usize::from(qp % 6)];
-    let shift = u32::from(qp / 6);
-    let mut d = [0i32; 16];
-    for i in usize::from(ac_only)..16 {
-        d[i] = (levels[i] * v[pos_class(i)]) << shift;
-    }
-    d
+    core::array::from_fn(|i| v[pos_class(i)] << (qp / 6))
 }
 
 /// The 4x4 Hadamard transform (rows then columns, no scaling).
@@ -185,15 +113,18 @@ pub(super) fn dequant_chroma_dc(levels: &[i32; 4], qp: u8) -> [i32; 4] {
 
 #[cfg(test)]
 mod tests {
+    use styx_core::simd::h264::{fdct4, idct4};
+
     use super::*;
 
     #[test]
     fn transform_round_trips_at_low_qp() {
         let r: [i32; 16] = core::array::from_fn(|i| (i as i32 * 37 % 61) - 30);
         let c = fdct4(&r);
-        let mut l = [0; 16];
-        quant4(&c, 0, true, false, &mut l);
-        let back = idct4(&dequant4(&l, 0, false));
+        let q = quantiser(0, true);
+        let sc = scale(0);
+        let d: [i32; 16] = core::array::from_fn(|i| quant1(c[i], q.mf[i], q.f, q.qbits) * sc[i]);
+        let back = idct4(&d);
         for (a, b) in r.iter().zip(&back) {
             assert!((a - b).abs() <= 1, "{r:?} {back:?}");
         }

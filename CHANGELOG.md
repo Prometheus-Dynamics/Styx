@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_core::simd::h264`: the H.264 encoder's hot loops on grids of 4x4 blocks: `sad16`,
+  `residual_quant` (forward core transform with deadzone quantisation) and `recon` (the
+  decoder's dequantisation, inverse transform, prediction and clamp), with RVV leaves exact
+  against the scalar oracle under QEMU at VLEN 128, 256 and 1024 (written, untested on board).
+  `styx_h264` runs on them.
 - `styx_codec::styx_h264`: Styx's own H.264 encoder (pure Rust): Constrained Baseline, CAVLC,
   Intra16x16 I pictures, P_Skip and P_L0_16x16 with a whole-pel diamond search in P pictures,
   fixed QP, keyframe interval, I420, NV12 or grey in, Annex B out; the deblocking filter is off
