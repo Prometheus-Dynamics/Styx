@@ -283,3 +283,13 @@ fn taken_frames_record_their_hops_and_copies() {
         assert!(text.contains(name), "{name} missing:\n{text}");
     }
 }
+
+#[test]
+fn drops_are_logged_when_they_double() {
+    use super::doubled;
+    let logged: Vec<u64> = (1..=40).filter(|&n| doubled(n - 1, n)).collect();
+    assert_eq!(logged, [1, 2, 4, 8, 16, 32]);
+    // Several at once: once, if they pass a power of two.
+    assert!(doubled(3, 9));
+    assert!(!doubled(5, 7));
+}

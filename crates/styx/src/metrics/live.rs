@@ -147,6 +147,8 @@ pub(crate) struct Live {
     pub(crate) counters: Counters,
     /// Gaps in the sequence are frames dropped as damaged (UVC), not lost by the sensor.
     gaps_are_corrupt: AtomicBool,
+    /// The consumer queue's overflow (send timeouts and evictions) last logged against.
+    overflow_seen: AtomicU64,
     pub(crate) buffers: Arc<BufferStats>,
     /// Worker threads (Linux thread ids) and their CPU time when last read.
     threads: Mutex<Vec<(i32, u64)>>,
@@ -171,6 +173,7 @@ impl Default for CaptureMetrics {
             info: Mutex::new(Info::default()),
             counters: Counters::default(),
             gaps_are_corrupt: AtomicBool::new(false),
+            overflow_seen: AtomicU64::new(0),
             buffers: Arc::default(),
             threads: Mutex::new(Vec::new()),
             current: Mutex::new(None),
@@ -294,11 +297,11 @@ impl CaptureMetrics {
         } else {
             l.counters.sequence_gaps.fetch_add(gaps, Relaxed)
         };
-        // Logged at 1, 2, 4, 8... lost frames: never once per frame.
-        if (before + gaps).ilog2() != before.checked_ilog2().unwrap_or(u32::MAX) {
+        if doubled(before, before + gaps) {
             crate::trace::info!(
                 capture = l.id,
                 lost = before + gaps,
+                cause = "sensor_sequence_gap",
                 corrupt = l.gaps_are_corrupt.load(Relaxed),
                 "frames missing from the sequence"
             );
@@ -330,7 +333,35 @@ impl CaptureMetrics {
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn isp_skipped(&self) {
         styx_core::metrics::pool_exhausted();
+        let skipped = &self.0.counters.rt.isp_skipped;
+        let before = skipped.get();
         self.0.counters.rt.isp_skipped();
+        if doubled(before, before + 1) {
+            crate::trace::info!(
+                capture = self.0.id,
+                dropped = before + 1,
+                cause = "isp_skipped",
+                "frames dropped: consumers held every ISP output buffer"
+            );
+        }
+    }
+
+    /// After a frame was sent to the consumer queue: logs its overflow (send timeouts and
+    /// evictions, frames the consumer was too slow to take) at 1, 2, 4, 8... frames.
+    #[inline]
+    pub(crate) fn queue_overflow(&self, stats: styx_core::queue::QueueStats) {
+        let now = stats.send_timeouts + stats.evictions;
+        let before = self.0.overflow_seen.swap(now, Relaxed);
+        if now > before && doubled(before, now) {
+            crate::trace::info!(
+                capture = self.0.id,
+                dropped = now,
+                send_timeouts = stats.send_timeouts,
+                evictions = stats.evictions,
+                cause = "queue_overflow",
+                "frames dropped: the consumer queue was full"
+            );
+        }
     }
 
     /// Time the ISP spent on a frame (`isp`: the back end job or the software ISP pass) and the
@@ -692,6 +723,12 @@ impl Drop for Live {
             "capture closed"
         );
     }
+}
+
+/// A drop counter went from `before` to `after` past a power of two: drops are logged at 1,
+/// 2, 4, 8... frames, never once per frame.
+fn doubled(before: u64, after: u64) -> bool {
+    after.checked_ilog2() != before.checked_ilog2()
 }
 
 #[cfg(test)]

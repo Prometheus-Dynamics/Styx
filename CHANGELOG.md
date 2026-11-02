@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Frame drops are logged by cause (`sensor_sequence_gap`, `isp_skipped`, `queue_overflow`)
+  at 1, 2, 4, 8, ... dropped frames, so a capture losing frames says why in its log as well as
+  in `CameraMetrics::drops`.
 - Edge-directed demosaic (`Demosaic::EdgeDirected`) on SSE2, AVX2, NEON, armv7 NEON and RVV,
   exact against scalar. All of it runs in 16-bit lanes; the opposite colour, which can reach
   40950 quarter units, is carried with an offset of 24576. armv7 and RVV are tested under QEMU

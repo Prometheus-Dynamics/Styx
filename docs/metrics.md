@@ -378,8 +378,11 @@ captures it replaced are added up, windows and 3A come from the running one.
 
 No per-frame events. `info`: `capture started` (camera, backend, mode, rate) when a request
 starts a capture, `capture closed` (frames, received, drops by cause, seconds) when its metrics
-go away, `frames missing from the sequence` at 1, 2, 4, 8, ... lost frames, and the existing
-reconnect, ISP buffer and teardown events.
+go away, and the existing reconnect, ISP buffer and teardown events. Drops are logged by cause
+at 1, 2, 4, 8, ... frames, each with a `cause` field matching `Drops`:
+`frames missing from the sequence` (`sensor_sequence_gap`), `frames dropped: consumers held
+every ISP output buffer` (`isp_skipped`) and `frames dropped: the consumer queue was full`
+(`queue_overflow`, with its send timeouts and evictions).
 
 ## Cost
 

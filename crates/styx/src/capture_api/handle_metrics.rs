@@ -19,7 +19,9 @@ pub(crate) fn deliver(
 ) -> bool {
     crate::metrics::stamp_queued(frame.meta_mut());
     live.frame(frame.meta());
-    enqueue_capture_frame(tx, frame, backend, timeout)
+    let closed = enqueue_capture_frame(tx, frame, backend, timeout);
+    live.queue_overflow(tx.stats());
+    closed
 }
 
 impl CaptureHandle {
