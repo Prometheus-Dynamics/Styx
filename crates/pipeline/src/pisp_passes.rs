@@ -142,6 +142,11 @@ impl PassConfigs {
         self.handed_out.take() == Some(seq)
     }
 
+    /// Whether frame `seq` is the one handed out (as [`Self::handed_out`], forgetting nothing).
+    pub fn is_handed_out(&self, seq: u64) -> bool {
+        self.handed_out == Some(seq)
+    }
+
     /// The buffer slot `k`'s pass writes for the frame handed out.
     pub fn reserved(&self, k: usize) -> Option<u32> {
         self.reserved.get(k).copied().flatten()

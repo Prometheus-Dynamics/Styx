@@ -903,6 +903,9 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- A PiSP frame handed out at its first slice whose extra passes failed (a device error) gave
+  its main output buffers back while its leases still held them; the next frames could write
+  them under a consumer. Its leases give them back now.
 - **A sliced PiSP capture with extra passes (pyramid levels) dropped two frames in three.** A
   sliced frame goes out at its first slice; its passes, run at its end, were never given back,
   and drained the output's buffers until a frame could start only when a consumer had released

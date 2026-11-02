@@ -652,6 +652,7 @@ impl PispPipeline {
             }
             let t_passes = Instant::now();
             let jobs = self.options.pass_jobs;
+            let handed_out = self.passes.is_handed_out(seq);
             let passes = match passes::run(
                 be.dev,
                 &mut self.passes,
@@ -662,7 +663,10 @@ impl PispPipeline {
             ) {
                 Ok(passes) => passes,
                 Err(e) => {
-                    be.dev.release(&p.output);
+                    // A frame handed out at its first slice: its outputs are its leases'.
+                    if !handed_out {
+                        be.dev.release(&p.output);
+                    }
                     return Err(e);
                 }
             };

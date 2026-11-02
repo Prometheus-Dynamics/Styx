@@ -298,6 +298,7 @@ fn a_handed_out_frame_runs_its_reserved_passes_once() {
     assert!(!passes.handed_out(7));
     passes.hand_out(7);
     passes.reserve(2, 5);
+    assert!(passes.is_handed_out(7) && !passes.is_handed_out(6));
     assert!(passes.handed_out(7));
     assert_eq!((passes.reserved(0), passes.reserved(2)), (None, Some(5)));
     assert!(!passes.handed_out(7));
