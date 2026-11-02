@@ -37,6 +37,18 @@ pub struct IspParams {
     pub arithmetic: Arithmetic,
 }
 
+impl IspParams {
+    /// These parameters without their lens shading grid and tone curve: a copy that never
+    /// allocates.
+    pub fn without_tables(&self) -> Self {
+        Self {
+            lens_shading: None,
+            tone: None,
+            ..*self
+        }
+    }
+}
+
 impl Default for IspParams {
     fn default() -> Self {
         Self {
@@ -175,13 +187,36 @@ impl WhiteBalance {
 
 /// A `width` x `height` grid of gains per channel (row-major), spread evenly over the frame
 /// with the outer nodes on the corner pixels, interpolated bilinearly.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LensShading {
     pub width: u32,
     pub height: u32,
     pub r: Vec<f32>,
     pub g: Vec<f32>,
     pub b: Vec<f32>,
+}
+
+impl Clone for LensShading {
+    fn clone(&self) -> Self {
+        let mut out = Self::default();
+        out.clone_from(self);
+        out
+    }
+
+    /// Copies into this grid's own buffers (no allocation once they have grown).
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            width,
+            height,
+            r,
+            g,
+            b,
+        } = self;
+        (*width, *height) = (source.width, source.height);
+        r.clone_from(&source.r);
+        g.clone_from(&source.g);
+        b.clone_from(&source.b);
+    }
 }
 
 impl LensShading {
@@ -251,7 +286,7 @@ impl ColorMatrix {
 }
 
 /// Linear light (0..1) to output code values.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToneCurve {
     /// `out = in^(1 / gamma)`.
@@ -260,6 +295,26 @@ pub enum ToneCurve {
     Srgb,
     /// Piecewise linear through `[input, output]` points in 0..1, sorted by input.
     Points { points: Vec<[f32; 2]> },
+}
+
+impl Clone for ToneCurve {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Gamma { gamma } => Self::Gamma { gamma: *gamma },
+            Self::Srgb => Self::Srgb,
+            Self::Points { points } => Self::Points {
+                points: points.clone(),
+            },
+        }
+    }
+
+    /// Points copied into this curve's own buffer when both are points.
+    fn clone_from(&mut self, source: &Self) {
+        match (self, source) {
+            (Self::Points { points }, Self::Points { points: from }) => points.clone_from(from),
+            (to, from) => *to = from.clone(),
+        }
+    }
 }
 
 impl ToneCurve {

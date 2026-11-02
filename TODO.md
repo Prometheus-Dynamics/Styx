@@ -153,10 +153,12 @@ memory when it runs.
       (`pisp_alloc`). Also asserted 0: software ISP output lease and rkisp lease
       (`frames_allocate_nothing`, `BackingPool`); a `SoftIsp` frame at 1 and 4 threads, plain and post
       stages, RGB24/NV12/I420, and with statistics when the caller uses `recycle_stats`
-      (`crates/softisp/tests/alloc.rs`). **Not 0:** the software ISP loop above it, 129.83 per frame
-      on a host with a moving scene and the algorithms on every frame: `SoftIsp::set_params`
-      rebuilding its tables on each change of settings, cloned settings and params, the statistics
-      conversion. **Not counted:** V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw
+      (`crates/softisp/tests/alloc.rs`), also with white balance, gain, lens shading and tone changing
+      every frame (`swap_params`, Int, IntPolyTone and Half). The software ISP loop (`SoftLoop`, the
+      algorithms included) on a host when its outputs are handed back (`SoftLoop::recycle`): 0.00 per
+      frame over 300 frames, 176 with the algorithms and 124 settled ones without (`soft_alloc`; was
+      129.83). **Not 0:** the replay source (`replay_isp.rs`) copies each frame into a new NV12 buffer
+      and lease. **Not counted:** V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw
       and sliced leases, GPU ISP `Input::Buffer` and its statistics, the raw native lease
       (`native_backend.rs`), libcamera, and every real worker loop on a board.
 - [ ] **GPU import pad from Daedalus.** *Why:* `gpu_import_pad` is a fixed 256 B; Daedalus knows the

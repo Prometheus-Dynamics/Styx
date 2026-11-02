@@ -1,6 +1,6 @@
 //! Parameters compiled into the fixed-point tables the row loop uses.
 
-use alloc::{format, vec, vec::Vec};
+use alloc::{format, vec::Vec};
 use styx_core::sync::Arc;
 
 use crate::format::{CfaPattern, RawFormat};
@@ -93,6 +93,13 @@ pub(crate) struct StatsSetup {
     pub saturation: u16,
 }
 
+impl StatsSetup {
+    /// Quads across the frame.
+    pub fn quad_cols(&self) -> usize {
+        self.col_edges.last().copied().unwrap_or(0)
+    }
+}
+
 /// `round(g 4096)` (halves away from zero), clamped to `0..=65535`. Truncation plus a
 /// comparison: the same result as `f32::round`, which x86 without SSE4.1 calls `roundf` for
 /// (a lens shading table rebuild took 0.27 instead of 0.03 ms on Zen 3).
@@ -106,20 +113,121 @@ pub fn q12(g: f32) -> u16 {
 
 /// Sample positions of `n` output points spread over `nodes` grid nodes: index and Q16 weight.
 pub fn grid_map(n: usize, nodes: usize) -> Vec<(u16, u32)> {
-    (0..n)
-        .map(|i| {
-            if nodes < 2 || n < 2 {
-                return (0, 0);
+    let mut out = Vec::new();
+    grid_map_into(&mut out, n, nodes);
+    out
+}
+
+/// [`grid_map`] into `out` (its buffer reused).
+pub fn grid_map_into(out: &mut Vec<(u16, u32)>, n: usize, nodes: usize) {
+    out.clear();
+    out.extend((0..n).map(|i| {
+        if nodes < 2 || n < 2 {
+            return (0, 0);
+        }
+        // `floor` and `round` (halves away from zero) of non-negative values by
+        // truncation: x86 without SSE4.1 calls libm for them.
+        let pos = i as f64 * (nodes - 1) as f64 / (n - 1) as f64;
+        let idx = (pos as usize).min(nodes - 2);
+        let y = (pos - idx as f64) * 65536.0;
+        let frac = y as u32 + u32::from(y - f64::from(y as u32) >= 0.5);
+        (idx as u16, frac.min(65536))
+    }));
+}
+
+/// Tables of parameters gone by ([`Spare::keep`]), written in place by the next
+/// [`Prepared::build`], and its working buffers: parameters changing every frame (white
+/// balance, lens shading, tone) rebuild their tables without allocating.
+#[derive(Debug, Default)]
+pub(crate) struct Spare {
+    gains: Spares<GainRows>,
+    grid: Spares<LensShading>,
+    lut: Spares<ToneLut>,
+    poly: Spares<PolyTone>,
+    curve: Spares<ToneCurve>,
+    col_edges: Vec<usize>,
+    pub half_lsc: Spares<crate::prepare_half::HalfLsc>,
+    pub half_curve: Option<ToneCurve>,
+    pub scratch: Scratch,
+}
+
+/// Working rows of the table builders.
+#[derive(Debug, Default)]
+pub(crate) struct Scratch {
+    pub x_map: Vec<(u16, u32)>,
+    /// Per column parity: each column's weight of its second grid node, and runs of columns
+    /// between the same two nodes (`k0, k1, node, next node`).
+    ts: [Vec<f32>; 2],
+    runs: [Vec<(usize, usize, usize, usize)>; 2],
+    pub rows: [Vec<f32>; 3],
+    half: [Vec<u16>; 2],
+    pub lanes: Vec<(usize, usize, f32)>,
+    weight: Vec<f64>,
+}
+
+/// Up to two tables held by nothing else: a table that comes and goes (a tone fit that fails
+/// on some curves) needs a second one while the current parameters have none.
+#[derive(Debug)]
+pub(crate) struct Spares<T>([Option<Arc<T>>; 2]);
+
+impl<T> Default for Spares<T> {
+    fn default() -> Self {
+        Self([None, None])
+    }
+}
+
+impl<T> Spares<T> {
+    fn take(&mut self) -> Option<Arc<T>> {
+        self.0.iter_mut().find_map(Option::take)
+    }
+
+    /// Keeps `a` when nothing else holds it and there is room.
+    fn put(&mut self, a: Option<Arc<T>>) {
+        if let Some(mut a) = a
+            && Arc::get_mut(&mut a).is_some()
+            && let Some(slot) = self.0.iter_mut().find(|s| s.is_none())
+        {
+            *slot = Some(a);
+        }
+    }
+}
+
+impl Spare {
+    /// Keeps the tables of `old` that nothing else holds (those shared with the current
+    /// parameters stay where they are).
+    pub fn keep(&mut self, old: Prepared) {
+        if let Some(s) = old.stats {
+            self.col_edges = s.col_edges;
+        }
+        match old.arith {
+            Arith::Int(i) => {
+                self.gains.put(Some(i.gains));
+                self.grid.put(i.gain_src.grid);
+                self.lut.put(i.lut);
+                self.poly.put(i.poly);
+                self.curve.put(i.curve.0);
             }
-            // `floor` and `round` (halves away from zero) of non-negative values by
-            // truncation: x86 without SSE4.1 calls libm for them.
-            let pos = i as f64 * (nodes - 1) as f64 / (n - 1) as f64;
-            let idx = (pos as usize).min(nodes - 2);
-            let y = (pos - idx as f64) * 65536.0;
-            let frac = y as u32 + u32::from(y - f64::from(y as u32) >= 0.5);
-            (idx as u16, frac.min(65536))
-        })
-        .collect()
+            Arith::Half(h) => {
+                let (lsc, curve) = h.into_spare();
+                self.half_lsc.put(lsc);
+                if curve.is_some() {
+                    self.half_curve = curve;
+                }
+            }
+        }
+    }
+}
+
+/// The spare `Arc` (held by nothing else: [`Spare::keep`]), else a new one of `new`, and its
+/// value to write.
+pub(crate) fn writable<T>(
+    spare: &mut Spares<T>,
+    new: impl FnOnce() -> T,
+    fill: impl FnOnce(&mut T),
+) -> Arc<T> {
+    let mut a = spare.take().unwrap_or_else(|| Arc::new(new()));
+    fill(Arc::get_mut(&mut a).expect("a spare is held by nothing else"));
+    a
 }
 
 impl Prepared {
@@ -129,6 +237,23 @@ impl Prepared {
         format: &RawFormat,
         params: &IspParams,
         previous: Option<&Prepared>,
+        lsc_tolerance: f32,
+    ) -> Result<Self, IspError> {
+        Self::build(
+            format,
+            params,
+            previous,
+            &mut Spare::default(),
+            lsc_tolerance,
+        )
+    }
+
+    /// [`Self::new`] writing new tables into those of `spare`.
+    pub fn build(
+        format: &RawFormat,
+        params: &IspParams,
+        previous: Option<&Prepared>,
+        spare: &mut Spare,
         lsc_tolerance: f32,
     ) -> Result<Self, IspError> {
         let (w, h) = (format.width as usize, format.height as usize);
@@ -183,6 +308,7 @@ impl Prepared {
                 tone,
                 channel_gains,
                 previous_half,
+                spare,
                 lsc_tolerance,
             )),
             None => {
@@ -195,6 +321,7 @@ impl Prepared {
                     params,
                     channel_gains,
                     previous,
+                    spare,
                     lsc_tolerance,
                 )?)
             }
@@ -203,7 +330,10 @@ impl Prepared {
             YuvMatrix::Bt601Full => YuvCoeffs::BT601_FULL,
             YuvMatrix::Bt709Limited => YuvCoeffs::BT709_LIMITED,
         };
-        let stats = params.stats.map(|c| stats_setup(c, w, h)).transpose()?;
+        let stats = params
+            .stats
+            .map(|c| stats_setup(c, w, h, core::mem::take(&mut spare.col_edges)))
+            .transpose()?;
         let post = if cfg!(feature = "post") {
             PostPrep::new(params.denoise.as_ref(), params.sharpen.as_ref(), yuv)
         } else {
@@ -238,6 +368,7 @@ impl IntPrep {
         params: &IspParams,
         channel_gains: [f32; 3],
         previous: Option<&IntPrep>,
+        spare: &mut Spare,
         lsc_tolerance: f32,
     ) -> Result<Self, IspError> {
         let w = format.width as usize;
@@ -265,14 +396,15 @@ impl IntPrep {
         let (gains, gain_src) = match kept {
             Some(p) => (Arc::clone(&p.gains), p.gain_src.clone()),
             None => {
-                let rows = match &params.lens_shading {
-                    None => GainRows::Flat(
-                        [0, 1].map(|y| (0..w).map(|x| q12(cell_gain(x, y))).collect()),
-                    ),
-                    Some(ls) => shaded_gains(ls, format, &cell_gain)?,
-                };
-                let grid = params.lens_shading.clone().map(Arc::new);
-                (Arc::new(rows), GainSource { cells, grid })
+                let empty = || GainRows::Flat(Default::default());
+                let rows = writable(&mut spare.gains, empty, |rows| match &params.lens_shading {
+                    None => flat_gains(rows, w, &cell_gain),
+                    Some(ls) => shaded_gains(rows, ls, format, &cell_gain, &mut spare.scratch),
+                });
+                let grid = params.lens_shading.as_ref().map(|ls| {
+                    writable(&mut spare.grid, LensShading::default, |g| g.clone_from(ls))
+                });
+                (rows, GainSource { cells, grid })
             }
         };
         let ccm = params.ccm.map(|c| {
@@ -296,16 +428,20 @@ impl IntPrep {
                 (p.lut.clone(), p.poly.clone(), p.curve.0.clone())
             }
             _ => {
-                let lut = params
-                    .tone
-                    .as_ref()
-                    .map(|curve| Arc::new(ToneLut::from_curve(|x| curve.eval(x))));
+                let lut = params.tone.as_ref().map(|curve| {
+                    let blank = || ToneLut::from_nodes([0; 257]);
+                    writable(&mut spare.lut, blank, |l| l.set_curve(|x| curve.eval(x)))
+                });
                 let poly = lut
                     .as_ref()
                     .filter(|_| poly_wanted)
-                    .and_then(|l| PolyTone::fit(l.full()))
-                    .map(Arc::new);
-                (lut, poly, params.tone.clone().map(Arc::new))
+                    .and_then(|l| PolyTone::fit_with(l.full(), &mut spare.scratch.weight))
+                    .map(|p| writable(&mut spare.poly, || p.clone(), |q| q.clone_from(&p)));
+                let curve = params
+                    .tone
+                    .as_ref()
+                    .map(|t| writable(&mut spare.curve, || ToneCurve::Srgb, |c| c.clone_from(t)));
+                (lut, poly, curve)
             }
         };
         Ok(Self {
@@ -342,78 +478,96 @@ fn check_lens_shading(ls: &LensShading) -> Result<(), IspError> {
     Ok(())
 }
 
+/// Flat gains (no lens shading) into `out`, its buffers reused.
+fn flat_gains(out: &mut GainRows, w: usize, cell_gain: &dyn Fn(usize, usize) -> f32) {
+    if !matches!(out, GainRows::Flat(_)) {
+        *out = GainRows::Flat(Default::default());
+    }
+    let GainRows::Flat(rows) = out else {
+        unreachable!("made flat above")
+    };
+    for (y, row) in rows.iter_mut().enumerate() {
+        row.clear();
+        row.extend((0..w).map(|x| q12(cell_gain(x, y))));
+    }
+}
+
+/// Lens shading gain rows into `out`, its buffers reused (`s` holds the working rows).
 fn shaded_gains(
+    out: &mut GainRows,
     ls: &LensShading,
     format: &RawFormat,
     cell_gain: &dyn Fn(usize, usize) -> f32,
-) -> Result<GainRows, IspError> {
+    s: &mut Scratch,
+) {
     let (gw, gh) = (ls.width as usize, ls.height as usize);
     let (w, h) = (format.width as usize, format.height as usize);
     let grids = [&ls.r, &ls.g, &ls.b];
-    let x_map = grid_map(w, gw);
+    grid_map_into(&mut s.x_map, w, gw);
     // Columns of each parity: their weights of the second grid node, and runs of them between
     // the same two grid nodes.
-    let lanes = [0, 1].map(|p| {
-        let cols: Vec<(usize, usize, f32)> = x_map
-            .iter()
-            .skip(p)
-            .step_by(2)
-            .map(|&(i, f)| {
-                let i = i as usize;
-                (i.min(gw - 1), (i + 1).min(gw - 1), f as f32 / 65536.0)
-            })
-            .collect();
-        let mut runs: Vec<(usize, usize, usize, usize)> = Vec::new();
-        for (k, &(i, j, _)) in cols.iter().enumerate() {
+    for p in 0..2 {
+        let (ts, runs) = (&mut s.ts[p], &mut s.runs[p]);
+        ts.clear();
+        runs.clear();
+        for (k, &(i, f)) in s.x_map.iter().skip(p).step_by(2).enumerate() {
+            let i = i as usize;
+            let (i, j) = (i.min(gw - 1), (i + 1).min(gw - 1));
+            ts.push(f as f32 / 65536.0);
             match runs.last_mut() {
                 Some(r) if (r.2, r.3) == (i, j) => r.1 = k + 1,
                 _ => runs.push((k, k + 1, i, j)),
             }
         }
-        (cols.iter().map(|c| c.2).collect::<Vec<f32>>(), runs)
-    });
+    }
     // Each column's two nodes, filled run by run, so that the arithmetic is one vector loop
     // over the row (0.21 instead of 0.31 ms per rebuild on the Cortex-A76 with the rounding
     // below; 0.25 vectorised per run).
-    let (mut a, mut b) = (vec![0.0f32; w.div_ceil(2)], vec![0.0f32; w.div_ceil(2)]);
-    let rows = [0, 1].map(|parity| {
+    let [a, b, _] = &mut s.rows;
+    a.resize(w.div_ceil(2), 0.0);
+    b.resize(w.div_ceil(2), 0.0);
+    s.half[0].resize(w.div_ceil(2), 0);
+    s.half[1].resize(w / 2, 0);
+    if !matches!(out, GainRows::Shaded { .. }) {
+        *out = GainRows::Shaded {
+            rows: Default::default(),
+            y_map: Vec::new(),
+        };
+    }
+    let GainRows::Shaded { rows, y_map } = out else {
+        unreachable!("made shaded above")
+    };
+    for (parity, rows) in rows.iter_mut().enumerate() {
         // Everything but the shading depends on the column's parity only.
         let gain = [0, 1].map(|x| cell_gain(x, parity));
         let grid = [0, 1].map(|x| grids[format.pattern.channel_at(x, parity).index()]);
-        let mut half = [vec![0u16; w.div_ceil(2)], vec![0u16; w / 2]];
-        (0..gh)
-            .map(|gy| {
-                for (p, out) in half.iter_mut().enumerate() {
-                    let node = &grid[p][gy * gw..][..gw];
-                    let (ts, runs) = &lanes[p];
-                    for &(k0, k1, i, j) in runs {
-                        a[k0..k1].fill(node[i]);
-                        b[k0..k1].fill(node[j]);
-                    }
-                    q12_row(out, &a, &b, ts, gain[p]);
+        rows.resize_with(gh, Vec::new);
+        for (gy, row) in rows.iter_mut().enumerate() {
+            for (p, out) in s.half.iter_mut().enumerate() {
+                let node = &grid[p][gy * gw..][..gw];
+                for &(k0, k1, i, j) in &s.runs[p] {
+                    a[k0..k1].fill(node[i]);
+                    b[k0..k1].fill(node[j]);
                 }
-                let mut row = vec![0u16; w];
-                for ((pair, &even), &odd) in row
-                    .as_chunks_mut::<2>()
-                    .0
-                    .iter_mut()
-                    .zip(&half[0])
-                    .zip(&half[1])
-                {
-                    pair[0] = even;
-                    pair[1] = odd;
-                }
-                if w % 2 == 1 {
-                    row[w - 1] = half[0][w / 2];
-                }
-                row
-            })
-            .collect()
-    });
-    Ok(GainRows::Shaded {
-        rows,
-        y_map: grid_map(h, gh),
-    })
+                q12_row(out, a, b, &s.ts[p], gain[p]);
+            }
+            row.resize(w, 0);
+            for ((pair, &even), &odd) in row
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(&s.half[0])
+                .zip(&s.half[1])
+            {
+                pair[0] = even;
+                pair[1] = odd;
+            }
+            if w % 2 == 1 {
+                row[w - 1] = s.half[0][w / 2];
+            }
+        }
+    }
+    grid_map_into(y_map, h, gh);
 }
 
 /// `out[k] = q12(g (a[k] (1 - t[k]) + b[k] t[k]))`.
@@ -423,7 +577,13 @@ fn q12_row(out: &mut [u16], a: &[f32], b: &[f32], t: &[f32], g: f32) {
     }
 }
 
-fn stats_setup(c: StatsConfig, w: usize, h: usize) -> Result<StatsSetup, IspError> {
+/// The statistics geometry, its column edges in `col_edges` (reused).
+fn stats_setup(
+    c: StatsConfig,
+    w: usize,
+    h: usize,
+    mut col_edges: Vec<usize>,
+) -> Result<StatsSetup, IspError> {
     let (qw, qh) = (w / 2, h / 2);
     if c.zones_x == 0 || c.zones_y == 0 || c.zones_x as usize > qw || c.zones_y as usize > qh {
         return Err(IspError::InvalidParams(format!(
@@ -439,7 +599,11 @@ fn stats_setup(c: StatsConfig, w: usize, h: usize) -> Result<StatsSetup, IspErro
     let zx = c.zones_x as usize;
     Ok(StatsSetup {
         config: c,
-        col_edges: (0..=zx).map(|z| z * qw / zx).collect(),
+        col_edges: {
+            col_edges.clear();
+            col_edges.extend((0..=zx).map(|z| z * qw / zx));
+            col_edges
+        },
         quad_rows: qh,
         saturation: (c.saturation.clamp(0.0, 1.0) * WORK_MAX as f32).round() as u16,
     })

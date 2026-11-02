@@ -300,7 +300,7 @@ impl Controller {
     }
 
     /// [`Self::isp_for`] into `isp`, reusing its buffers.
-    fn isp_into(
+    pub(crate) fn isp_into(
         &self,
         isp: &mut IspSettings,
         params: &Params,

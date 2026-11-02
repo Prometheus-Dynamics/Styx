@@ -13,6 +13,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   nothing per band.
 - `SoftIsp::recycle_stats` hands a frame's statistics back; the next frame's are written into their
   buffers.
+- `SoftIsp::swap_params` takes new parameters and leaves the old ones in the caller's buffer;
+  the tables of the parameters before last are rebuilt in place. `SoftLoop::recycle`,
+  `SoftPipeline::recycle` and `Algorithms::recycle_step`/`recycle_settings`/`recycle_statistics`
+  hand outputs back. With them, the software ISP loop allocates nothing per frame.
 - **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
   `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
   its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`

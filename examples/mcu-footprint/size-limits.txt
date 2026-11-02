@@ -5,8 +5,8 @@
 thumbv7em-none-eabihf    A       12100
 thumbv7em-none-eabihf    B       94000
 thumbv7em-none-eabihf    C       134000
-thumbv7em-none-eabihf    D       216000
+thumbv7em-none-eabihf    D       227000
 thumbv6m-none-eabi       A       12000
 thumbv6m-none-eabi       B       94000
 thumbv6m-none-eabi       C       135000
-thumbv6m-none-eabi       D       239000
+thumbv6m-none-eabi       D       247000

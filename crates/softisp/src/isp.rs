@@ -9,7 +9,7 @@ use crate::pipeline::{Geom, Source, Worker};
 #[cfg(feature = "std")]
 use crate::pool::Pool;
 use crate::post::{self, Band, Crop};
-use crate::prepare::Prepared;
+use crate::prepare::{Prepared, Spare};
 use crate::stats::{IspStats, StatsAccum};
 #[cfg(feature = "std")]
 use std::sync::Mutex;
@@ -98,6 +98,8 @@ pub struct SoftIsp {
     workers: Vec<WorkerSlot>,
     /// A result handed back ([`Self::recycle_stats`]), written into next.
     spare_stats: Option<IspStats>,
+    /// Tables of earlier parameters, rebuilt in place.
+    spare_tables: Spare,
     #[cfg(feature = "std")]
     threads: usize,
     #[cfg(feature = "std")]
@@ -135,6 +137,7 @@ impl SoftIsp {
             prepared,
             workers: vec![WorkerSlot::default()],
             spare_stats: None,
+            spare_tables: Spare::default(),
             #[cfg(feature = "std")]
             threads: 1,
             #[cfg(feature = "std")]
@@ -203,13 +206,31 @@ impl SoftIsp {
 
     /// Replace the parameters (for example new white balance gains from the last statistics).
     pub fn set_params(&mut self, params: IspParams) -> Result<(), IspError> {
-        self.prepared = Prepared::new(
+        self.prepare(&params)?;
+        self.params = params;
+        Ok(())
+    }
+
+    /// [`Self::set_params`] taking the parameters out of `params` and leaving the previous
+    /// ones there: a caller writing each change into the same parameters allocates nothing
+    /// once the tables have been built twice (those of the parameters before last are
+    /// rebuilt in place).
+    pub fn swap_params(&mut self, params: &mut IspParams) -> Result<(), IspError> {
+        self.prepare(params)?;
+        core::mem::swap(&mut self.params, params);
+        Ok(())
+    }
+
+    fn prepare(&mut self, params: &IspParams) -> Result<(), IspError> {
+        let next = Prepared::build(
             &self.format,
-            &params,
+            params,
             Some(&self.prepared),
+            &mut self.spare_tables,
             self.lsc_tolerance,
         )?;
-        self.params = params;
+        self.spare_tables
+            .keep(core::mem::replace(&mut self.prepared, next));
         Ok(())
     }
 

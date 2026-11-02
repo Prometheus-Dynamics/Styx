@@ -17,6 +17,7 @@ thiserror.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+libc.workspace = true
 
 [features]
 default = ["std", "neon", "x86", "rvv"]

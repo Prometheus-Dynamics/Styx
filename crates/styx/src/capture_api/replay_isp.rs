@@ -82,19 +82,21 @@ impl ReplayProcessor {
         let (w, h) = (w as usize, h as usize);
         let mut nv12 = vec![0u8; w * h * 3 / 2];
         let (y, uv) = nv12.split_at_mut(w * h);
-        soft.process(
-            data,
-            layout.stride,
-            &sensor,
-            Scale::Full,
-            OutputBuffers::Nv12 {
-                y,
-                y_stride: w,
-                uv,
-                uv_stride: w,
-            },
-        )
-        .map_err(err)?;
+        let processed = soft
+            .process(
+                data,
+                layout.stride,
+                &sensor,
+                Scale::Full,
+                OutputBuffers::Nv12 {
+                    y,
+                    y_stride: w,
+                    uv,
+                    uv_stride: w,
+                },
+            )
+            .map_err(err)?;
+        soft.recycle(processed);
         drop(planes);
         let mut out = FrameLease::from_visible_bytes(
             MediaFormat::new(FourCc::NV12, format.resolution, ColorSpace::Srgb),

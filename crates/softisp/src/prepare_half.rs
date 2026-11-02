@@ -4,12 +4,12 @@
 // Feature `fp16` (on with `std`); without it nothing here is made.
 #![cfg_attr(not(feature = "fp16"), allow(dead_code, unused_imports))]
 
-use alloc::{vec, vec::Vec};
+use alloc::vec::Vec;
 use styx_core::sync::Arc;
 
 use crate::format::RawFormat;
 use crate::params::{Arithmetic, ColorMatrix, Demosaic, IspParams, LensShading, ToneCurve};
-use crate::prepare::grid_map;
+use crate::prepare::{Scratch, Spare, grid_map_into, writable};
 use crate::simd::half::{ColourCoeffs, HalfTone};
 use crate::simd::{RowKind, f16, half};
 
@@ -40,7 +40,7 @@ pub(crate) struct HalfPrep {
 
 /// Lens shading without the channel gains (those change every frame; these only when the
 /// grid does).
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct HalfLsc {
     /// `a[row parity][grid row]`: the gain at each column on the grid row (fp16).
     pub a: [Vec<Vec<u16>>; 2],
@@ -92,6 +92,7 @@ impl HalfPrep {
         _tone: HalfTone,
         _channel_gains: [f32; 3],
         _previous: Option<&HalfPrep>,
+        _spare: &mut Spare,
         _lsc_tolerance: f32,
     ) -> Self {
         unreachable!("fp16 arithmetic without feature `fp16`")
@@ -104,6 +105,7 @@ impl HalfPrep {
         tone: HalfTone,
         channel_gains: [f32; 3],
         previous: Option<&HalfPrep>,
+        spare: &mut Spare,
         lsc_tolerance: f32,
     ) -> Self {
         let pattern = format.pattern;
@@ -124,8 +126,12 @@ impl HalfPrep {
                 .as_ref()
                 .map(|ls| match previous.and_then(|p| p.lsc.as_ref()) {
                     Some(old) if close(&old.grid, ls, lsc_tolerance) => old.clone(),
-                    _ => Arc::new(HalfLsc::new(ls, format)),
+                    _ => writable(&mut spare.half_lsc, HalfLsc::default, |l| {
+                        l.fill(ls, format, &mut spare.scratch)
+                    }),
                 });
+        let mut curve = spare.half_curve.take();
+        curve.clone_from(&params.tone);
         Self {
             black,
             gain,
@@ -134,8 +140,13 @@ impl HalfPrep {
             quad: core::array::from_fn(|i| f16::from_f32(m[i / 3][i % 3])),
             tone,
             stats_scale: f16::from_f64(4096.0 * full / (full + 1.0) / half::FULL),
-            curve: params.tone.clone(),
+            curve,
         }
+    }
+
+    /// The lens shading rows and the curve, for [`Spare::keep`].
+    pub fn into_spare(self) -> (Option<Arc<HalfLsc>>, Option<ToneCurve>) {
+        (self.lsc, self.curve)
     }
 }
 
@@ -155,20 +166,22 @@ pub(crate) fn close(a: &LensShading, b: &LensShading, tolerance: f32) -> bool {
 }
 
 impl HalfLsc {
-    fn new(ls: &LensShading, format: &RawFormat) -> Self {
+    /// The rows of `ls` written into these (their buffers reused; `s` holds working rows).
+    fn fill(&mut self, ls: &LensShading, format: &RawFormat, s: &mut Scratch) {
         let (gw, gh) = (ls.width as usize, ls.height as usize);
         let (w, h) = (format.width as usize, format.height as usize);
         let grids = [&ls.r, &ls.g, &ls.b];
-        let x_map: Vec<(usize, usize, f32)> = grid_map(w, gw)
-            .into_iter()
-            .map(|(i, f)| {
-                let i = (i as usize).min(gw - 1);
-                (i, (i + 1).min(gw - 1), f as f32 / 65536.0)
-            })
-            .collect();
-        let mut a = [Vec::with_capacity(gh), Vec::with_capacity(gh)];
-        let mut d = [Vec::with_capacity(gh), Vec::with_capacity(gh)];
-        let (mut cur, mut next, mut diff) = (vec![0f32; w], vec![0f32; w], vec![0f32; w]);
+        grid_map_into(&mut s.x_map, w, gw);
+        let x_map = &mut s.lanes;
+        x_map.clear();
+        x_map.extend(s.x_map.iter().map(|&(i, f)| {
+            let i = (i as usize).min(gw - 1);
+            (i, (i + 1).min(gw - 1), f as f32 / 65536.0)
+        }));
+        let [cur, next, diff] = &mut s.rows;
+        for v in [&mut *cur, &mut *next, &mut *diff] {
+            v.resize(w, 0.0);
+        }
         for parity in 0..2 {
             let grid = [0, 1].map(|x| grids[format.pattern.channel_at(x, parity).index()]);
             // Gains along grid row `gy` (`x` interpolated between its nodes).
@@ -180,30 +193,31 @@ impl HalfLsc {
                     }
                 }
             };
-            along(0, &mut cur);
+            along(0, cur);
+            let (a, d) = (&mut self.a[parity], &mut self.d[parity]);
+            a.resize_with(gh, Vec::new);
+            d.resize_with(gh, Vec::new);
+            for row in a.iter_mut().chain(d.iter_mut()) {
+                row.resize(w, 0);
+            }
             for gy in 0..gh {
-                along((gy + 1).min(gh - 1), &mut next);
-                for ((v, &c), &n) in diff.iter_mut().zip(&cur).zip(&next) {
+                along((gy + 1).min(gh - 1), next);
+                for ((v, &c), &n) in diff.iter_mut().zip(cur.iter()).zip(next.iter()) {
                     *v = n - c;
                 }
-                let (mut ra, mut rd) = (vec![0u16; w], vec![0u16; w]);
-                half::from_f32_row(&cur, &mut ra);
-                half::from_f32_row(&diff, &mut rd);
-                a[parity].push(ra);
-                d[parity].push(rd);
-                core::mem::swap(&mut cur, &mut next);
+                half::from_f32_row(cur, &mut a[gy]);
+                half::from_f32_row(diff, &mut d[gy]);
+                core::mem::swap(cur, next);
             }
         }
-        let y_map = grid_map(h, gh)
-            .into_iter()
-            .map(|(i, f)| (i, f16::from_f64(f64::from(f) / 65536.0)))
-            .collect();
-        Self {
-            a,
-            d,
-            y_map,
-            grid: ls.clone(),
-        }
+        grid_map_into(&mut s.x_map, h, gh);
+        self.y_map.clear();
+        self.y_map.extend(
+            s.x_map
+                .iter()
+                .map(|&(i, f)| (i, f16::from_f64(f64::from(f) / 65536.0))),
+        );
+        self.grid.clone_from(ls);
     }
 
     /// The rows for image row `y`.

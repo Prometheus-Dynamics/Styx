@@ -99,13 +99,24 @@ impl Engine {
         }
     }
 
-    pub fn set_params(&mut self, params: IspParams) -> Result<()> {
+    /// New parameters, taken out of `params`, the previous ones left there
+    /// (CPU: the tables rebuilt in place, no allocation; GPU: copied).
+    pub fn swap_params(&mut self, params: &mut IspParams) -> Result<()> {
         match self {
-            Self::Cpu(i) => i.set_params(params)?,
+            Self::Cpu(i) => i.swap_params(params)?,
             #[cfg(feature = "gpu")]
-            Self::Gpu(g) => g.isp.set_params(params)?,
+            Self::Gpu(g) => g.isp.set_params(params.clone())?,
         }
         Ok(())
+    }
+
+    /// Hands a frame's statistics back (CPU: the next frame's are written into them).
+    pub fn recycle_stats(&mut self, stats: IspStats) {
+        match self {
+            Self::Cpu(i) => i.recycle_stats(stats),
+            #[cfg(feature = "gpu")]
+            Self::Gpu(_) => drop(stats),
+        }
     }
 
     pub fn set_statistics(&mut self, on: bool) {

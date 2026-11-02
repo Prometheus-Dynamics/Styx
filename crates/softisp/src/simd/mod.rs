@@ -336,29 +336,47 @@ impl core::fmt::Debug for ToneLut {
 
 impl ToneLut {
     pub fn from_nodes(nodes: [u8; 257]) -> Self {
-        let mut full = Box::new([0u8; 4096]);
-        for (x, v) in full.iter_mut().enumerate() {
-            let (i, f) = (x >> 4, (x & 15) as u32);
-            *v = ((nodes[i] as u32 * (16 - f) + nodes[i + 1] as u32 * f + 8) >> 4) as u8;
-        }
-        Self {
+        let mut lut = Self {
             nodes,
-            full,
+            full: Box::new([0u8; 4096]),
             #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
-            cascades: Box::new([
-                x86::tone::cascade(|i| nodes[i]),
-                x86::tone::cascade(|i| nodes[i + 1]),
-            ]),
-        }
+            cascades: Box::new([x86::tone::cascade(|_| 0), x86::tone::cascade(|_| 0)]),
+        };
+        lut.set_nodes(nodes);
+        lut
     }
 
     /// Nodes sampled from `curve` (0..1 to 0..1) at inputs `16 k / 4095`.
     pub fn from_curve(curve: impl Fn(f32) -> f32) -> Self {
-        let nodes = core::array::from_fn(|k| {
+        Self::from_nodes(Self::curve_nodes(curve))
+    }
+
+    /// [`Self::from_nodes`] written into this table (no allocation).
+    pub fn set_nodes(&mut self, nodes: [u8; 257]) {
+        self.nodes = nodes;
+        for (x, v) in self.full.iter_mut().enumerate() {
+            let (i, f) = (x >> 4, (x & 15) as u32);
+            *v = ((nodes[i] as u32 * (16 - f) + nodes[i + 1] as u32 * f + 8) >> 4) as u8;
+        }
+        #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            *self.cascades = [
+                x86::tone::cascade(|i| nodes[i]),
+                x86::tone::cascade(|i| nodes[i + 1]),
+            ];
+        }
+    }
+
+    /// [`Self::from_curve`] written into this table (no allocation).
+    pub fn set_curve(&mut self, curve: impl Fn(f32) -> f32) {
+        self.set_nodes(Self::curve_nodes(curve));
+    }
+
+    fn curve_nodes(curve: impl Fn(f32) -> f32) -> [u8; 257] {
+        core::array::from_fn(|k| {
             let x = (k as f32 * 16.0 / scalar::WORK_MAX as f32).min(1.0);
             (curve(x) * 255.0).round().clamp(0.0, 255.0) as u8
-        });
-        Self::from_nodes(nodes)
+        })
     }
 
     pub fn nodes(&self) -> &[u8; 257] {

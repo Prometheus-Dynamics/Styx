@@ -120,13 +120,18 @@ impl StatsAccum {
             histogram: vec![0; 4 * setup.config.histogram_bins as usize],
             bins: setup.config.histogram_bins as usize,
             samples: 0,
-            bin_row: Vec::new(),
+            // Sized here, not on the first row: a thread may add none for many frames.
+            bin_row: Vec::with_capacity(setup.quad_cols()),
             focus: if setup.config.focus {
                 vec![0; zones]
             } else {
                 Vec::new()
             },
-            prev_green: Vec::new(),
+            prev_green: Vec::with_capacity(if setup.config.focus {
+                setup.quad_cols()
+            } else {
+                0
+            }),
             prev_row: None,
         }
     }

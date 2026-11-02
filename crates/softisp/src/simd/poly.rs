@@ -23,7 +23,7 @@
 //! recorded OV9782 session; steeper ones (gamma 3) do not and keep the table. Whole octaves
 //! missed by two codes on most of those adaptive curves.
 
-use alloc::vec;
+use alloc::vec::Vec;
 
 use super::scalar::WORK_MAX;
 
@@ -63,8 +63,14 @@ impl PolyTone {
     /// The quadratics of `table` (4096 entries, inputs above 4095 clamp), or `None` when they
     /// would miss it by more than one code anywhere.
     pub fn fit(table: &[u8; 4096]) -> Option<Self> {
+        Self::fit_with(table, &mut Vec::new())
+    }
+
+    /// [`Self::fit`] with its weights in `weight` (no allocation once it has grown).
+    pub fn fit_with(table: &[u8; 4096], weight: &mut Vec<f64>) -> Option<Self> {
         let mut c = [[[0i16; 8]; 2]; 3];
-        let mut weight = vec![1.0f64; 4096];
+        weight.clear();
+        weight.resize(4096, 1.0);
         let mut x0 = 0u16;
         for s in 0..SEGMENTS {
             let mut x1 = x0;

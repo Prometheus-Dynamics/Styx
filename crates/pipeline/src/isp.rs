@@ -20,9 +20,11 @@ use styx_pisp::uapi::{
 };
 use styx_softisp as soft;
 
+mod softisp;
+
 /// What the ISP applies to a frame: everything is normalised (full scale 1.0) and hardware
 /// independent.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct IspSettings {
     /// The frame whose statistics produced these settings.
     pub from_frame: u64,
@@ -69,6 +71,53 @@ pub struct IspSettings {
 
 fn one() -> f64 {
     1.0
+}
+
+impl Clone for IspSettings {
+    fn clone(&self) -> Self {
+        let mut out = Self::neutral(self.black_level);
+        out.clone_from(self);
+        out
+    }
+
+    /// Copies into these settings' own curve and table buffers (no allocation once they have
+    /// grown), so settings kept across frames are copied without one.
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            from_frame,
+            black_level,
+            black_channels,
+            wb,
+            digital_gain,
+            flicker,
+            flicker_bands,
+            ccm,
+            gamma,
+            lens_shading,
+            denoise,
+            sharpen,
+            histogram_weights,
+            #[cfg(feature = "all-algorithms")]
+            focus_area,
+        } = self;
+        *from_frame = source.from_frame;
+        *black_level = source.black_level;
+        *black_channels = source.black_channels;
+        *wb = source.wb;
+        *digital_gain = source.digital_gain;
+        *flicker = source.flicker;
+        flicker_bands.clone_from(&source.flicker_bands);
+        *ccm = source.ccm;
+        gamma.clone_from(&source.gamma);
+        lens_shading.clone_from(&source.lens_shading);
+        *denoise = source.denoise;
+        *sharpen = source.sharpen;
+        histogram_weights.clone_from(&source.histogram_weights);
+        #[cfg(feature = "all-algorithms")]
+        {
+            *focus_area = source.focus_area;
+        }
+    }
 }
 
 impl IspSettings {
@@ -160,49 +209,6 @@ impl IspSettings {
     pub fn channel_gains(&self) -> [f64; 3] {
         let min = self.wb.iter().copied().fold(1.0, f64::min).max(0.1);
         self.wb.map(|w| w * self.digital_gain / min)
-    }
-
-    /// Software ISP parameters for `bits`-bit samples, keeping `base`'s demosaic, YUV
-    /// matrix and statistics settings.
-    ///
-    /// The tuning's denoise and sharpening apply only where `base` has them on (any value: the
-    /// tuning's strengths replace it), so they cost nothing unless asked for.
-    pub fn softisp(&self, bits: u8, base: &soft::IspParams) -> soft::IspParams {
-        let full = f64::from((1u32 << bits) - 1);
-        let level = (self.black_level * f64::from(1u32 << bits))
-            .round()
-            .clamp(0.0, full - 1.0);
-        let m = self.ccm.map(|v| v.clamp(-3.99, 3.99) as f32);
-        // The output stages run only where `base` asks for them; their strengths are the tuning's.
-        let (denoise, sharpen) = crate::soft::post_stages(&self.denoise, self.sharpen);
-        let denoise = denoise.filter(|_| base.denoise.is_some());
-        let sharpen = sharpen.filter(|_| base.sharpen.is_some());
-        soft::IspParams {
-            denoise,
-            sharpen,
-            black_level: Some(soft::BlackLevel::uniform(level as u16)),
-            white_balance: Some(soft::WhiteBalance {
-                r: self.wb[0] as f32,
-                g: self.wb[1] as f32,
-                b: self.wb[2] as f32,
-            }),
-            digital_gain: self.digital_gain as f32,
-            lens_shading: self.lens_shading.as_ref().and_then(soft_lens_shading),
-            ccm: Some(soft::ColorMatrix {
-                m: [[m[0], m[1], m[2]], [m[3], m[4], m[5]], [m[6], m[7], m[8]]],
-            }),
-            tone: Some(match &self.gamma {
-                Some(p) => soft::ToneCurve::Points {
-                    points: p
-                        .points()
-                        .iter()
-                        .map(|&(x, y)| [x as f32, y as f32])
-                        .collect(),
-                },
-                None => soft::ToneCurve::Srgb,
-            }),
-            ..base.clone()
-        }
     }
 
     /// The black level of each CFA channel (red, green on the red row, green on the blue row,
@@ -507,21 +513,6 @@ pub(crate) fn be_lens_shading(ls: &LensShading) -> Option<BeLscConfig> {
     }
     let table = [&ls.r, &ls.g, &ls.b].map(|t| styx_pisp::be::lsc::resample_table(t, w, h));
     Some(styx_pisp::be::lsc::pack_lut(&table))
-}
-
-fn soft_lens_shading(ls: &LensShading) -> Option<soft::LensShading> {
-    let n = (ls.width * ls.height) as usize;
-    if ls.width < 2 || ls.height < 2 || [&ls.r, &ls.g, &ls.b].iter().any(|t| t.len() != n) {
-        return None;
-    }
-    let f = |t: &[f64]| t.iter().map(|&v| v as f32).collect();
-    Some(soft::LensShading {
-        width: ls.width,
-        height: ls.height,
-        r: f(&ls.r),
-        g: f(&ls.g),
-        b: f(&ls.b),
-    })
 }
 
 #[cfg(test)]

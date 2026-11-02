@@ -26,13 +26,15 @@ on a register bus, a clock) that a real port replaces. KB here is 1000 bytes.
 | A, Cortex-M7/M4F | 11.5 KB | 10.9 KB | 2.2 KB |
 | B, Cortex-M7/M4F | 116.2 KB | 89.4 KB (-23%) | 2.2 KB |
 | C, Cortex-M7/M4F | 191.4 KB | 128.2 KB (-33%) | 2.2 KB |
-| D, Cortex-M7/M4F | 298.3 KB | 205.6 KB (-31%) | 2.2 KB |
+| D, Cortex-M7/M4F | 298.3 KB | 216.1 KB (-28%) | 2.2 KB |
 | A, Cortex-M0+ | did not build (queues) | 10.7 KB | 36 B |
 | B, Cortex-M0+ | did not build (`Arc`, TOML) | 87.9 KB | 40 B |
 | C, Cortex-M0+ | did not build | 126.7 KB | 40 B |
-| D, Cortex-M0+ | did not build | 223.4 KB | 48 B |
+| D, Cortex-M0+ | did not build | 235.0 KB | 48 B |
 
-"Before" is `dev` at 0bee9e4 with the same configurations and the features it had (every
+D grew from 205.6 KB (Cortex-M0+: 223.4 KB) with the software ISP loop's recycling, which
+allocates nothing per frame (the spare parameters, tables and statistics, measured as of
+3.0's software ISP work). "Before" is `dev` at 0bee9e4 with the same configurations and the features it had (every
 algorithm in, descriptions validated again on the device). "After" is measured with Rust 1.99.0
 and the dependencies of October 2026 (with 1.94.0 they were 0.1-1.6% larger), with the sensor
 driver writing through Lemnos's register-map trait (`lemnos_hal::RegisterBus`; Styx's own
@@ -184,11 +186,11 @@ not yet run on a core.
 
 | Part | Flash / RAM | Fits comfortably | Tight | Does not fit |
 |---|---|---|---|---|
-| STM32H743 / H753 (Cortex-M7 480 MHz, DP FPU) | 2 MB / 1 MB (512 KB AXI SRAM, 288 KB SRAM1-3, 64 KB SRAM4, 128 KB DTCM) | A-D at QQVGA and QVGA (D at QVGA: 205 KB of flash, 576 KB of frames over the banks, 86 KB of heap); the bracket at QQVGA | B and C at VGA (two RAW8 buffers: 614 KB) | D at VGA (1.1 MB of frames even lean), the bracket at QVGA (1.3 MB): external SDRAM |
+| STM32H743 / H753 (Cortex-M7 480 MHz, DP FPU) | 2 MB / 1 MB (512 KB AXI SRAM, 288 KB SRAM1-3, 64 KB SRAM4, 128 KB DTCM) | A-D at QQVGA and QVGA (D at QVGA: 216 KB of flash, 576 KB of frames over the banks, 86 KB of heap); the bracket at QQVGA | B and C at VGA (two RAW8 buffers: 614 KB) | D at VGA (1.1 MB of frames even lean), the bracket at QVGA (1.3 MB): external SDRAM |
 | STM32H750 (same core, 128 KB of flash) | 128 KB / 1 MB | A, B | C (127.6 KB) | D, unless the application runs from QSPI flash |
 | STM32F429 / F439 (Cortex-M4F 180 MHz) | 2 MB / 256 KB (192 KB SRAM, 64 KB CCM not reachable by DMA) | A-C at QQVGA, B and C at QVGA with two RAW8 buffers | D at QQVGA lean (67 KB of frames, about 105 KB of heap with allocator slack, the stack in CCM) | D at QVGA, any bracket |
 | STM32F407 / F417 (Cortex-M4F 168 MHz) | 1 MB / 192 KB (128 KB SRAM, 64 KB CCM) | A-C at QQVGA | B and C at QVGA with one RAW8 buffer | D (its heap and frames do not fit 128 KB of SRAM next to each other) |
-| RP2040 (2 x Cortex-M0+ 133 MHz, no FPU) | 2 MB QSPI / 264 KB | A-C at QQVGA and QVGA (RAW8 through PIO); D at QQVGA lean (227 KB of flash, 67 KB of frames, about 105 KB of heap) | D at QQVGA with three RAW16 buffers | D at QVGA, any bracket |
+| RP2040 (2 x Cortex-M0+ 133 MHz, no FPU) | 2 MB QSPI / 264 KB | A-C at QQVGA and QVGA (RAW8 through PIO); D at QQVGA lean (235 KB of flash, 67 KB of frames, about 105 KB of heap) | D at QQVGA with three RAW16 buffers | D at QVGA, any bracket |
 | ESP32-S3 (2 x Xtensa LX7 240 MHz, SP FPU) with 8 MB PSRAM | 8-16 MB / 512 KB + 8 MB | everything up to VGA, frame buffers in PSRAM | | not built here (Xtensa needs the esp-rs toolchain); the crates are target-neutral `no_std` |
 
 Flash is not the limit (D is 205-227 KB, 10-23% of a 1-2 MB part; only a 128 KB part like

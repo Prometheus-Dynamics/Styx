@@ -84,6 +84,15 @@ impl Binned {
     pub(crate) fn fill(&mut self, zones: &[(f64, f64)]) {
         self.cells.clear();
         self.members.clear();
+        self.cursor.clear();
+        self.index.clear();
+        // Room for the most any frame can need (at most `GRID` boxes a side, a cell per zone):
+        // otherwise the buffers grow whenever a scene reaches a new high, mid-stream.
+        let boxes = GRID * GRID;
+        self.index.reserve(boxes);
+        self.cells.reserve(zones.len().min(boxes));
+        self.cursor.reserve(zones.len().min(boxes));
+        self.members.reserve(zones.len());
         let finite = |z: &&(f64, f64)| z.0.is_finite() && z.1.is_finite();
         let (mut lo, mut hi) = (
             (f64::INFINITY, f64::INFINITY),

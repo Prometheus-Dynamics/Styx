@@ -6,3 +6,4 @@ mod gpu_loop;
 mod pisp_alloc;
 mod replay_loop;
 mod scene;
+mod soft_alloc;

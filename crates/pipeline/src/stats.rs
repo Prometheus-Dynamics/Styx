@@ -1,12 +1,11 @@
 //! ISP statistics → [`styx_algo::Statistics`] (normalised to full scale 1.0, black level
 //! removed, before white balance).
 
-use alloc::vec;
 use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use styx_core::math::Float as _;
 
-use styx_algo::{ColourZone, Histogram, LumaZone, Statistics, ZoneGrid};
+use styx_algo::{ColourZone, Histogram, LumaZone, Statistics};
 use styx_pisp::stats::Statistics as PispStatistics;
 use styx_pisp::uapi::{AWB_STATS_SIZE, CDAF_STATS_SIZE, RawStatistics};
 use styx_softisp::IspStats;
@@ -91,59 +90,79 @@ fn fill_pisp(
 /// (as the PiSP's Y weights do) but not the digital gain; the histogram is resampled the
 /// same way.
 pub fn from_softisp(s: &IspStats, black_level: f64, with_lens_shading: bool) -> Statistics {
+    let mut out = Statistics::default();
+    from_softisp_into(s, black_level, with_lens_shading, &mut out, &mut Vec::new());
+    out
+}
+
+/// [`from_softisp`] written into `out`, reusing its buffers (`histogram`: working bins), so
+/// statistics converted every frame allocate nothing once `out` has held some.
+pub fn from_softisp_into(
+    s: &IspStats,
+    black_level: f64,
+    with_lens_shading: bool,
+    out: &mut Statistics,
+    histogram: &mut Vec<u64>,
+) {
     let range = 1.0 - black_level.clamp(0.0, 0.99);
     let g = s.gains.map(|g| f64::from(g).max(1e-6));
-    let zones: Vec<ColourZone> = s
-        .zones
-        .iter()
-        .map(|z| ColourZone {
-            r: z.r_sum as f64 / SOFT_SCALE / g[0] * range,
-            g: z.g_sum as f64 / SOFT_SCALE / g[1] * range,
-            b: z.b_sum as f64 / SOFT_SCALE / g[2] * range,
-            counted: z.count,
-        })
-        .collect();
+    out.colour.width = s.zones_x;
+    out.colour.height = s.zones_y;
+    out.colour.zones.clear();
+    out.colour.zones.extend(s.zones.iter().map(|z| ColourZone {
+        r: z.r_sum as f64 / SOFT_SCALE / g[0] * range,
+        g: z.g_sum as f64 / SOFT_SCALE / g[1] * range,
+        b: z.b_sum as f64 / SOFT_SCALE / g[2] * range,
+        counted: z.count,
+    }));
     let n = (s.zones_x * s.zones_y).max(1);
     let per_zone = s.samples / n;
-    let luma = s
-        .zones
-        .iter()
-        .map(|z| LumaZone {
-            y: f64::from(z.luma) / g[1] * range * f64::from(per_zone),
-            counted: per_zone,
-        })
-        .collect();
-    let mut out = Statistics::new(
-        ZoneGrid {
-            width: s.zones_x,
-            height: s.zones_y,
-            zones,
-        },
-        Some(ZoneGrid {
-            width: s.zones_x,
-            height: s.zones_y,
-            zones: luma,
-        }),
-        Histogram::from(rescale_histogram(&s.histogram, range / g[1])),
-        // Gradient energy without the gains (squared) and on the black-subtracted scale, as
-        // the colour zones.
-        (s.focus.len() == s.zones.len() && !s.focus.is_empty()).then(|| ZoneGrid {
-            width: s.zones_x,
-            height: s.zones_y,
-            zones: s.focus.iter().map(|f| f * (range / g[1]).powi(2)).collect(),
-        }),
-    );
+    let luma = out.luma.get_or_insert_with(Default::default);
+    luma.width = s.zones_x;
+    luma.height = s.zones_y;
+    luma.zones.clear();
+    luma.zones.extend(s.zones.iter().map(|z| LumaZone {
+        y: f64::from(z.luma) / g[1] * range * f64::from(per_zone),
+        counted: per_zone,
+    }));
+    rescale_histogram_into(&s.histogram, range / g[1], histogram);
+    out.histogram.set_bins(histogram.iter().copied());
+    // Gradient energy without the gains (squared) and on the black-subtracted scale, as
+    // the colour zones.
+    if s.focus.len() == s.zones.len() && !s.focus.is_empty() {
+        let focus = out.focus.get_or_insert_with(Default::default);
+        focus.width = s.zones_x;
+        focus.height = s.zones_y;
+        focus.zones.clear();
+        let k = (range / g[1]).powi(2);
+        focus.zones.extend(s.focus.iter().map(|f| f * k));
+    } else {
+        out.focus = None;
+    }
+    #[cfg(feature = "all-algorithms")]
+    {
+        out.focus_area = None;
+    }
+    out.pdaf = None;
+    out.before_wb = true;
     out.before_lsc = !with_lens_shading;
-    out
 }
 
 /// A histogram of values `v` turned into one of `v × factor` over the same bins (counts
 /// moved to the bin their centre lands in, clipped into the last bin).
 pub fn rescale_histogram(bins: &[u32], factor: f64) -> Vec<u64> {
+    let mut out = Vec::new();
+    rescale_histogram_into(bins, factor, &mut out);
+    out
+}
+
+/// [`rescale_histogram`] into `out` (its buffer reused).
+pub fn rescale_histogram_into(bins: &[u32], factor: f64, out: &mut Vec<u64>) {
     let n = bins.len();
-    let mut out = vec![0u64; n];
+    out.clear();
+    out.resize(n, 0);
     if n == 0 {
-        return out;
+        return;
     }
     for (i, &c) in bins.iter().enumerate() {
         let pos = ((i as f64 + 0.5) * factor).floor();
@@ -154,7 +173,6 @@ pub fn rescale_histogram(bins: &[u32], factor: f64) -> Vec<u64> {
         };
         out[j] += u64::from(c);
     }
-    out
 }
 
 /// Mean of a normalised luma histogram, 0..1.
@@ -175,6 +193,8 @@ pub fn histogram_mean(h: &Histogram) -> f64 {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec;
+    use styx_algo::ZoneGrid;
     use styx_pisp::uapi::RawStatistics;
     use styx_softisp::ZoneStats;
 

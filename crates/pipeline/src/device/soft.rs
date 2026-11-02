@@ -224,6 +224,12 @@ impl SoftPipeline {
         }))
     }
 
+    /// Hands a frame back when done with it: its raw buffer to the queue, its output to the
+    /// loop, whose next outputs are written into its buffers ([`SoftLoop::recycle`]).
+    pub fn recycle(&mut self, frame: SoftFrame) {
+        self.soft.recycle(frame.output);
+    }
+
     /// Stops streaming; what the algorithms settled on is remembered for the camera's next
     /// start ([`crate::warm`]).
     pub fn stop(&mut self) -> Result<()> {

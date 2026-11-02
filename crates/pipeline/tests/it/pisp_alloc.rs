@@ -33,7 +33,7 @@ use styx_sensor::SensorDescription;
 struct Counting;
 
 thread_local! {
-    static ARMED: Cell<bool> = const { Cell::new(false) };
+    pub(crate) static ARMED: Cell<bool> = const { Cell::new(false) };
     static COUNT: Cell<u64> = const { Cell::new(0) };
 }
 
@@ -68,7 +68,7 @@ unsafe impl GlobalAlloc for Counting {
 static ALLOC: Counting = Counting;
 
 /// Allocations on this thread while `f` runs.
-fn counted<T>(f: impl FnOnce() -> T) -> (T, u64) {
+pub(crate) fn counted<T>(f: impl FnOnce() -> T) -> (T, u64) {
     let before = COUNT.with(Cell::get);
     let v = f();
     (v, COUNT.with(Cell::get) - before)
@@ -76,7 +76,7 @@ fn counted<T>(f: impl FnOnce() -> T) -> (T, u64) {
 
 /// Each steady-state allocation's stack (`STYX_PISP_ALLOC_TRACE=1`): raw return addresses, a
 /// fixed table, symbolised with `addr2line` at the end.
-mod trace {
+pub(crate) mod trace {
     use std::cell::Cell;
     use std::ffi::c_void;
     use std::sync::Mutex;
@@ -223,7 +223,7 @@ fn fmt(w: u16, h: u16, format: u32) -> ImageFormatConfig {
     f
 }
 
-fn info() -> SensorInfo {
+pub(crate) fn info() -> SensorInfo {
     let desc = SensorDescription::from_file(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/../sensor/sensors/ov9782.toml"

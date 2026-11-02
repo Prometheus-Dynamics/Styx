@@ -4,6 +4,7 @@
 
 #[cfg(feature = "gpu")]
 use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::time::Duration;
 #[cfg(not(feature = "std"))]
 use styx_core::math::Float as _;
@@ -61,6 +62,9 @@ pub struct SoftLoop {
     applied: Option<IspSettings>,
     /// Where the lens was for the next frame, and its phase detection data.
     next_focus: (Option<LensState>, Option<ZoneGrid<PdafZone>>),
+    /// The ISP's previous parameters, the next ones written into them; the statistics
+    /// conversion's working bins.
+    spare: (IspParams, Vec<u64>),
 }
 
 /// The software (or GPU) ISP as the loop's [`FrameIsp`]: settings applied when they change,
@@ -69,6 +73,7 @@ struct SoftRun<'a> {
     isp: &'a mut Engine,
     base: &'a IspParams,
     applied: &'a mut Option<IspSettings>,
+    spare: &'a mut (IspParams, Vec<u64>),
     bits: u8,
     black_level: f64,
     stats: Option<styx_softisp::IspStats>,
@@ -91,9 +96,13 @@ impl FrameIsp for SoftRun<'_> {
     ) -> Result<()> {
         let t0 = now();
         if self.applied.as_ref() != Some(settings) {
-            self.isp
-                .set_params(settings.softisp(self.bits, self.base))?;
-            *self.applied = Some(settings.clone());
+            let params = &mut self.spare.0;
+            settings.softisp_into(self.bits, self.base, params);
+            self.isp.swap_params(params)?;
+            match &mut *self.applied {
+                Some(a) => a.clone_from(settings),
+                slot => *slot = Some(settings.clone()),
+            }
         }
         // Settled: statistics only on the frames the algorithms run on.
         self.isp.set_statistics(statistics);
@@ -110,11 +119,14 @@ impl FrameIsp for SoftRun<'_> {
 
     /// Always some, when the algorithms run (empty without the ISP's statistics, as before).
     fn statistics(&mut self, out: &mut Statistics) -> bool {
-        *out = self
-            .stats
-            .take()
-            .map(|s| stats::from_softisp(&s, self.black_level, self.lens_shading))
-            .unwrap_or_default();
+        match self.stats.take() {
+            Some(s) => {
+                let (bl, lsc) = (self.black_level, self.lens_shading);
+                stats::from_softisp_into(&s, bl, lsc, out, &mut self.spare.1);
+                self.isp.recycle_stats(s);
+            }
+            None => *out = Statistics::default(),
+        }
         true
     }
 }
@@ -231,6 +243,7 @@ impl SoftLoop {
             base,
             applied: None,
             next_focus: (None, None),
+            spare: Default::default(),
         }
         .with_settled_rate(Some(SETTLED_RATE_HZ)))
     }
@@ -453,6 +466,7 @@ impl SoftLoop {
             isp: &mut self.isp,
             base: &self.base,
             applied: &mut self.applied,
+            spare: &mut self.spare,
             bits: self.info.bits,
             black_level: self.info.black_level,
             stats: None,
@@ -477,13 +491,7 @@ impl SoftLoop {
         let (step, stats) = if p.ran {
             (self.algo.take_step(), self.algo.take_statistics())
         } else {
-            let step = Step {
-                frame: sensor.frame,
-                sensor: None,
-                lens: None,
-                isp: applied.clone(),
-                params: self.algo.step().params.clone(),
-            };
+            let step = self.algo.skipped_step(sensor.frame, &applied);
             let stats = Statistics {
                 pdaf,
                 ..Default::default()
@@ -505,6 +513,21 @@ impl SoftLoop {
             },
             p.request_lands,
         ))
+    }
+
+    /// Hands a frame's output back when done with it: the next frames' settings, params and
+    /// statistics are written into its buffers, so a loop that hands each output back
+    /// allocates nothing per frame.
+    pub fn recycle(&mut self, output: SoftOutput) {
+        let SoftOutput {
+            step,
+            applied,
+            stats,
+            timing: _,
+        } = output;
+        self.algo.recycle_step(step);
+        self.algo.recycle_settings(applied);
+        self.algo.recycle_statistics(stats);
     }
 
     /// Processes a frame into a second output with the settings the last frame used, without

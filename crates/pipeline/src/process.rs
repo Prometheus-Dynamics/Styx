@@ -25,9 +25,10 @@
 //! `no_std` + `alloc`, deterministic (the same inputs give the same outputs bit for bit).
 
 use alloc::format;
+use alloc::vec::Vec;
 use core::time::Duration;
 
-use styx_algo::{LensRequest, LensState, PdafZone, SensorRequest, Statistics, ZoneGrid};
+use styx_algo::{LensRequest, LensState, Params, PdafZone, SensorRequest, Statistics, ZoneGrid};
 use styx_runtime::{Controls, FrameControls};
 use styx_sensor::{ControlRequest, DriverBus, SensorPins};
 
@@ -212,7 +213,14 @@ pub struct Algorithms {
     settled_every: u64,
     stats: Statistics,
     profiler: Option<Profiler>,
+    /// Settings and params handed back ([`Self::recycle_step`], [`Self::recycle_settings`]),
+    /// the buffers of the next ones made: the loop allocates nothing per frame.
+    spare_isp: Vec<IspSettings>,
+    spare_params: Option<Params>,
 }
+
+/// Spare settings kept: two leave the loop on each frame (the frame's and its step's).
+const SPARE_SETTINGS: usize = 4;
 
 impl Algorithms {
     /// The loop around `controller`, with neutral settings for a sensor at `black_level`
@@ -235,7 +243,53 @@ impl Algorithms {
             settled_every: 1,
             stats: Statistics::default(),
             profiler: None,
+            spare_isp: Vec::with_capacity(SPARE_SETTINGS),
+            spare_params: None,
         }
+    }
+
+    /// Hands a step back when done with it (from [`Self::take_step`] or [`Self::skipped_step`]).
+    pub fn recycle_step(&mut self, step: Step) {
+        self.recycle_settings(step.isp);
+        if self.spare_params.is_none() {
+            self.spare_params = Some(step.params);
+        }
+    }
+
+    /// Hands settings back when done with them ([`Processed::settings`]).
+    pub fn recycle_settings(&mut self, isp: IspSettings) {
+        if self.spare_isp.len() < SPARE_SETTINGS {
+            self.spare_isp.push(isp);
+        }
+    }
+
+    /// Hands statistics back when done with them ([`Self::take_statistics`]).
+    pub fn recycle_statistics(&mut self, stats: Statistics) {
+        if self.stats.colour.zones.capacity() == 0 {
+            self.stats = stats;
+        }
+    }
+
+    /// The step of a frame the algorithms skipped: the newest params, with `isp`, in handed
+    /// back buffers.
+    pub fn skipped_step(&mut self, frame: u64, isp: &IspSettings) -> Step {
+        let mut params = self.spare_params.take().unwrap_or_default();
+        params.clone_from(&self.step.params);
+        let mut copy = self.spare_settings();
+        copy.clone_from(isp);
+        Step {
+            frame,
+            sensor: None,
+            lens: None,
+            isp: copy,
+            params,
+        }
+    }
+
+    fn spare_settings(&mut self) -> IspSettings {
+        self.spare_isp
+            .pop()
+            .unwrap_or_else(|| IspSettings::neutral(self.black_level))
     }
 
     /// Hands each frame's settings out of [`Self::process`] ([`Processed::settings`]), moved
@@ -288,12 +342,14 @@ impl Algorithms {
     pub fn take_step(&mut self) -> Step {
         let isp = core::mem::replace(&mut self.step.isp, IspSettings::neutral(self.black_level));
         self.isp_taken = self.stepped;
+        let mut params = self.spare_params.take().unwrap_or_default();
+        params.clone_from(&self.step.params);
         Step {
             frame: self.step.frame,
             sensor: self.step.sensor,
             lens: self.step.lens,
             isp,
-            params: self.step.params.clone(),
+            params,
         }
     }
 
@@ -364,9 +420,10 @@ impl Algorithms {
     pub fn settings(&mut self, values: &SensorValues) -> &IspSettings {
         if self.isp_taken {
             // The same settings retargeting would give: from the params, for this frame.
-            self.step.isp = self
-                .controller
-                .isp_for(&self.step.params, self.step.frame, values);
+            let mut isp = self.spare_settings();
+            self.controller
+                .isp_into(&mut isp, &self.step.params, self.step.frame, values);
+            self.step.isp = isp;
             self.isp_taken = false;
         } else if self.stepped {
             self.controller
@@ -398,7 +455,11 @@ impl Algorithms {
             controls.lens(l)?;
         }
         // The step it replaces goes back to the controller, whose buffers the next one reuses.
-        let old = core::mem::replace(&mut self.step, step);
+        let mut old = core::mem::replace(&mut self.step, step);
+        if self.isp_taken {
+            // Its settings were handed out: buffers for the controller's next ones.
+            old.isp = self.spare_settings();
+        }
         self.controller.recycle(old);
         self.stepped = true;
         self.isp_taken = false;
@@ -472,10 +533,12 @@ impl Algorithms {
         // Statistics the ISP made while processing (software, GPU): settings for the next.
         if run && ran.is_none() {
             let t = now();
-            let mut stats = Statistics::default();
-            if isp.statistics(&mut stats) {
-                stats.pdaf = pdaf.take().flatten();
-                self.stats = stats;
+            // Written into the last statistics' buffers.
+            let mut stats = core::mem::take(&mut self.stats);
+            let got = isp.statistics(&mut stats);
+            self.stats = stats;
+            if got {
+                self.stats.pdaf = pdaf.take().flatten();
                 let t1 = now();
                 times.stats = t1.since(t);
                 let r = self.run_stats(values, lens, controls);

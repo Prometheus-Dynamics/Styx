@@ -264,7 +264,7 @@ pub(super) fn spawn(
                     .sensor_raw
                     .then(|| raw16(&f, p.soft_loop().format(), &meta))
                     .flatten();
-                drop(f);
+                p.recycle(f);
                 w.still
                     .after_frame(&mut p, &sensor, (lands, request), ae, raw);
                 let mut main_meta = meta.clone();

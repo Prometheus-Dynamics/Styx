@@ -162,6 +162,8 @@ impl Source<'_> {
             let pitch = if whole { self.stride } else { bytes };
             let rows = (STAGE_BYTES / pitch).clamp(1, height - y);
             let len = pitch * (rows - 1) + bytes;
+            // At most `STAGE_BYTES`, or a row of up to `2 width` bytes: reserved by
+            // `Worker::begin_frame`.
             stage.buf.resize(len.max(stage.buf.len()), 0);
             if whole {
                 stage.buf[..len].copy_from_slice(&self.data[y * self.stride..][..len]);
@@ -264,6 +266,10 @@ impl Worker {
             self.luma16 = vec![0; w];
             self.quad = core::array::from_fn(|_| vec![0; w / 2]);
             self.dec = core::array::from_fn(|_| vec![0; w]);
+            // Grown on use otherwise: on the frame a thread first claims a band of a new
+            // kind, which with bands claimed by whichever thread is free can be any frame.
+            self.gains = vec![0; w];
+            self.stage.buf.reserve(STAGE_BYTES.max(2 * w));
         }
         let kept = self.stats.take().or_else(|| self.spare_stats.take());
         match (p.stats.as_ref().filter(|_| stats), kept) {

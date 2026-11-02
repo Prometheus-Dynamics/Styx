@@ -5658,6 +5658,7 @@ name = "styx-softisp"
 version = "2.0.1-dev"
 dependencies = [
  "criterion",
+ "libc",
  "serde",
  "styx-core-rs",
  "thiserror 2.0.21",
