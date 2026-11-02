@@ -5511,6 +5511,8 @@ dependencies = [
 name = "styx-kernel"
 version = "2.0.1-dev"
 dependencies = [
+ "lemnos-linux",
+ "lemnos-linux-sys",
  "libc",
 ]
 

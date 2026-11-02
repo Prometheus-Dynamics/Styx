@@ -12,44 +12,19 @@
 //! # Ok::<(), styx_kernel::Error>(())
 //! ```
 
-#![allow(non_camel_case_types)]
+//! The ioctls are Lemnos's (`lemnos_linux::dma`, `lemnos_linux_sys::dma_buf`); Styx keeps
+//! the heap sizing ([`TAIL_SLACK`]), the sync counters ([`sync_stats`]) and the memfd stand-in.
 
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd, RawFd};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use crate::ioctl::{self, ioctls, iow, iowr};
+use lemnos_linux::dma as lemnos;
+use lemnos_linux_sys::dma_buf as sys;
+
 use crate::{Error, Mapping, Result};
 
 /// Where dma-heaps live.
-pub const HEAP_DIR: &str = "/dev/dma_heap";
-
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct dma_heap_allocation_data {
-    len: u64,
-    fd: u32,
-    fd_flags: u32,
-    heap_flags: u64,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Default)]
-struct dma_buf_sync {
-    flags: u64,
-}
-
-ioctls! {
-    DMA_HEAP_IOCTL_ALLOC = iowr::<dma_heap_allocation_data>(b'H', 0);
-    DMA_BUF_IOCTL_SYNC = iow::<dma_buf_sync>(b'b', 0);
-}
-
-const _: () = assert!(size_of::<dma_heap_allocation_data>() == 24);
-const _: () = assert!(size_of::<dma_buf_sync>() == 8);
-
-const SYNC_READ: u64 = 1 << 0;
-const SYNC_WRITE: u64 = 1 << 1;
-const SYNC_START: u64 = 0;
-const SYNC_END: u64 = 1 << 2;
+pub const HEAP_DIR: &str = lemnos::HEAP_DIR;
 
 /// The direction of CPU access to a dma-buf.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -65,11 +40,15 @@ pub enum Access {
 impl Access {
     fn bits(self) -> u64 {
         match self {
-            Access::Read => SYNC_READ,
-            Access::Write => SYNC_WRITE,
-            Access::ReadWrite => SYNC_READ | SYNC_WRITE,
+            Access::Read => sys::SYNC_READ,
+            Access::Write => sys::SYNC_WRITE,
+            Access::ReadWrite => sys::SYNC_READ | sys::SYNC_WRITE,
         }
     }
+}
+
+fn sys_err(call: &'static str) -> impl FnOnce(std::io::Error) -> Error {
+    move |source| Error::Sys { call, source }
 }
 
 static SYNCS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -79,16 +58,17 @@ static SYNC_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// touching a mapping and `start = false` after. Counted with its time ([`sync_stats`]).
 pub fn sync(dmabuf: BorrowedFd<'_>, access: Access, start: bool) -> Result<()> {
     use std::sync::atomic::Ordering::Relaxed;
-    let mut raw = dma_buf_sync {
-        flags: access.bits() | if start { SYNC_START } else { SYNC_END },
-    };
+    let flags = access.bits()
+        | if start {
+            sys::SYNC_START
+        } else {
+            sys::SYNC_END
+        };
     let at = std::time::Instant::now();
-    // SAFETY: DMA_BUF_IOCTL_SYNC takes a `dma_buf_sync`.
-    let r = unsafe { ioctl::ioctl(dmabuf, DMA_BUF_IOCTL_SYNC, &mut raw) };
+    let r = sys::sync(dmabuf, flags);
     SYNCS.fetch_add(1, Relaxed);
     SYNC_NS.fetch_add(at.elapsed().as_nanos() as u64, Relaxed);
-    r?;
-    Ok(())
+    r.map_err(sys_err("DMA_BUF_IOCTL_SYNC"))
 }
 
 /// `DMA_BUF_IOCTL_SYNC` calls [`sync`] made in this process, and the nanoseconds they took.
@@ -99,34 +79,18 @@ pub fn sync_stats() -> (u64, u64) {
 
 /// Which dma-buf `fd` is (its device and inode), to know it again under another descriptor.
 pub fn dmabuf_id(fd: BorrowedFd<'_>) -> Option<(u64, u64)> {
-    // SAFETY: `stat` is plain data, valid zeroed; `fstat` fills it for an open descriptor.
-    let mut st: libc::stat = unsafe { std::mem::zeroed() };
-    // SAFETY: as above.
-    let ok = unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } == 0;
-    #[allow(clippy::unnecessary_cast)]
-    ok.then_some((st.st_dev as u64, st.st_ino as u64))
+    sys::identity(fd).ok()
 }
 
-/// The size of a dma-buf (or any seekable file, e.g. a memfd) in bytes, as the kernel has it:
-/// `lseek(SEEK_END)`, which dma-bufs answer with their size, then back to the start.
+/// The size of a dma-buf (or any seekable file, e.g. a memfd) in bytes, as the kernel has it.
+/// The descriptor's file offset is left where it was.
 pub fn dmabuf_size(dmabuf: BorrowedFd<'_>) -> Result<u64> {
-    let fd = dmabuf.as_raw_fd();
-    // SAFETY: lseek on a borrowed, open descriptor; no memory is passed.
-    let end = unsafe { libc::lseek(fd, 0, libc::SEEK_END) };
-    if end < 0 {
-        return Err(Error::sys("lseek"));
-    }
-    // SAFETY: as above. dma-bufs only accept offset 0 here; the result does not matter.
-    unsafe { libc::lseek(fd, 0, libc::SEEK_SET) };
-    Ok(end as u64)
+    sys::size(dmabuf).map_err(sys_err("lseek"))
 }
 
 /// An open dma-heap (`/dev/dma_heap/<name>`).
 #[derive(Debug)]
-pub struct DmaHeap {
-    fd: OwnedFd,
-    path: PathBuf,
-}
+pub struct DmaHeap(lemnos::DmaHeap);
 
 impl DmaHeap {
     /// Opens a heap by name, e.g. `system`, `linux,cma`, `vidbuf_cached`.
@@ -139,16 +103,14 @@ impl DmaHeap {
 
     /// Opens a heap by path.
     pub fn open_path(path: impl AsRef<Path>) -> Result<Self> {
-        let path = path.as_ref();
-        Ok(Self {
-            fd: ioctl::open_path(path, libc::O_RDONLY, false)?,
-            path: path.to_owned(),
-        })
+        lemnos::DmaHeap::open_path(path)
+            .map(Self)
+            .map_err(sys_err("open"))
     }
 
     /// The heap's name (the file name of its node).
     pub fn name(&self) -> &str {
-        self.path.file_name().and_then(|n| n.to_str()).unwrap_or("")
+        self.0.name()
     }
 
     /// Allocates a dma-buf of at least `len` bytes (`DMA_HEAP_IOCTL_ALLOC`), read-write and
@@ -158,22 +120,20 @@ impl DmaHeap {
             return Err(Error::Invalid("cannot allocate an empty dma-buf".into()));
         }
         let len = padded_len(len);
-        let mut raw = dma_heap_allocation_data {
-            len: len as u64,
-            fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
-            ..Default::default()
-        };
-        // SAFETY: DMA_HEAP_IOCTL_ALLOC takes a `dma_heap_allocation_data`.
-        unsafe { ioctl::ioctl(self.as_fd(), DMA_HEAP_IOCTL_ALLOC, &mut raw)? };
-        // SAFETY: the kernel returned a new dma-buf descriptor that we now own.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw.fd as RawFd) };
-        Ok(DmaBuf { fd, len })
+        let buf = self
+            .0
+            .allocate(len)
+            .map_err(sys_err("DMA_HEAP_IOCTL_ALLOC"))?;
+        Ok(DmaBuf {
+            fd: buf.into_fd(),
+            len,
+        })
     }
 }
 
 impl AsFd for DmaHeap {
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.0.as_fd()
     }
 }
 
@@ -190,14 +150,7 @@ pub const fn padded_len(len: usize) -> usize {
 
 /// Lists the heaps in `/dev/dma_heap`, sorted by name.
 pub fn list_heaps() -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(HEAP_DIR)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.file_name().into_string().ok())
-        .collect();
-    names.sort();
-    names
+    lemnos::list_heaps().unwrap_or_default()
 }
 
 /// A dma-buf allocated from a heap.
@@ -314,13 +267,6 @@ mod tests {
         assert_eq!(dmabuf_size(buf.as_fd()).unwrap(), 12_345);
         // Twice: the offset went back to the start.
         assert_eq!(dmabuf_size(buf.as_fd()).unwrap(), 12_345);
-    }
-
-    #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
-    #[test]
-    fn ioctl_numbers_match_the_headers() {
-        assert_eq!(DMA_HEAP_IOCTL_ALLOC.nr, 0xc018_4800);
-        assert_eq!(DMA_BUF_IOCTL_SYNC.nr, 0x4008_6200);
     }
 
     #[test]

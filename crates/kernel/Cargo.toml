@@ -11,5 +11,9 @@ rust-version.workspace = true
 [dependencies]
 libc.workspace = true
 
+[target.'cfg(target_os = "linux")'.dependencies]
+lemnos-linux = { workspace = true, features = ["dma"] }
+lemnos-linux-sys.workspace = true
+
 [lints]
 workspace = true

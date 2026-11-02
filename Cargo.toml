@@ -80,6 +80,8 @@ embedded-hal-async = "1.0"
 lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
 # lemnos-linux: i2c-dev, GPIO v2 and uevents in pure Rust (Linux only).
 lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
+# lemnos-linux-sys: the uAPI layer under lemnos-linux (dma-buf sync, identity, size).
+lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
 # lemnos-drivers-vcm: no_std focus lens (VCM) drivers.
 lemnos-drivers-vcm = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev" }
 # Compact binary sensor descriptions for targets without a TOML parser (styx-sensor `build`).
