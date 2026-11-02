@@ -8,6 +8,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_pisp::be::ops`: the PiSP back end as memory-to-memory image ops for a caller's images,
+  each a `BeOp` with its capability name and an exactness statement: `resample` (caller's
+  16-phase 6-tap coefficients, `styx.pisp.resample`), `downscale` (area mean by 2–8 on output 1,
+  `styx.pisp.downscale`), `lut` (a non-decreasing 8-bit table through the gamma block, with a
+  `LutFit` of the codes it misses, `styx.pisp.lut`), `filter5x5` (one int8 sharpen kernel on
+  luma, `styx.pisp.filter5x5`), `demosaic_ccm` (16-bit Bayer to RGB with a matrix and offsets,
+  `styx.pisp.demosaic_ccm`); grey, RGB888, I420 and NV12. `device::BeImageDevice` runs one on the
+  caller's input and output dma-bufs, nothing copied or allocated per job. Written, untested on
+  board.
 - `styx_codec::styx_jpeg`: Styx's own baseline JPEG encoder (pure Rust). `StyxJpeg` takes packed
   RGB/BGR (3 or 4 bytes), I420, NV12 or grey; colour and the DCT with quantisation come from the
   new `styx_core::simd::jpeg` kernels (exact integer arithmetic; RVV leaves on RISC-V, tested

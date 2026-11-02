@@ -48,7 +48,7 @@ pub struct BackEndDevice {
     output_format: ImageFormatConfig,
 }
 
-fn node(t: &Topology, name: &str) -> Result<VideoDevice> {
+pub(super) fn node(t: &Topology, name: &str) -> Result<VideoDevice> {
     let id = t
         .entity_by_name(name)
         .ok_or_else(|| DeviceError::Setup(format!("no '{name}' entity")))?

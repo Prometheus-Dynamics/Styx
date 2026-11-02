@@ -141,6 +141,13 @@ memory when it runs.
       messages. *Blocked by:* HeliOS's image bump. *Numbers:* with the module and `--pass-jobs 4`
       (a62f285): 0 messages, no hang, 0.251 vs 0.276 ms of pass time per frame, latency p50 8.53 vs
       8.56 ms, CPU 0.1 ms either way.
+- [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`:
+      written, untested on board). *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs,
+      5x5 filters and demosaic + CCM onto the BE memory to memory on its own dma-bufs. *Done when:*
+      each of `styx.pisp.{resample,downscale,lut,filter5x5,demosaic_ccm}` runs on the CM5 and its
+      exactness is measured: downscale and resample against the CPU references (max abs error),
+      the LUT against `LutFit`, the 5x5 and demosaic as tolerances; GREY in through the greyscale
+      Bayer path confirmed accepted by `pispbe-input`. *Blocked by:* a Raze slot. *Numbers:* none yet.
 - [ ] **pispbe patch: carried** (user decision: we keep carrying it; the drafts in
       `kernel-modules/pispbe/README.md` stay unsent, nothing gets filed). *Why:* it takes the config
       write from 117 to 8 µs per job and makes queued jobs safe; the stock driver overwrites a held

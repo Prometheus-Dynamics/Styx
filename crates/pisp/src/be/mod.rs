@@ -14,6 +14,7 @@
 
 pub mod defaults;
 pub mod lsc;
+pub mod ops;
 mod prepare;
 mod slices;
 pub mod tiling;

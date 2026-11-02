@@ -9,6 +9,7 @@
 //!   buffers), two outputs, a config per job, output buffers held until released.
 
 mod be;
+mod be_image;
 mod be_output;
 mod be_spare;
 mod be_stream;
@@ -62,6 +63,7 @@ use std::fmt;
 const LINES_EVENT_OFFSET: u32 = 0x5354;
 
 pub use be::{BackEndDevice, BeOutput};
+pub use be_image::BeImageDevice;
 pub use be_output::OutputMemory;
 pub use be_stream::{
     BackEndStream, BeFormat, BeJob, BeOutputSetup, OUTPUT_STRIDE_ALIGN, QUEUED_JOBS, QueuedJob,

@@ -173,6 +173,12 @@ only the words that differ (enables, crops, formats, TDN) are written. See
   input's format that swap every job, queued whenever the job's config enables
   `TDN_OUTPUT`/`TDN_INPUT`), and
   `profile`, optional timing of every device call.
+- `be::ops`: memory-to-memory image ops for other libraries (resample, area downscale, tone LUT
+  through the gamma block, a 5x5 sharpen kernel, demosaic + CCM with offsets), each a `BeOp`
+  with a capability name and what its configuration makes exact; `device::BeImageDevice` runs
+  one on the caller's dma-bufs. Grey goes in through the greyscale Bayer path with RGB to YCbCr
+  on, so channel 0 (what a `GREY` output writes) is luma equal to the input. Written, untested
+  on board.
 - Per-frame configs in `styx-pipeline` (`pisp_be::BeConfigBuilder`): the back end config and
   tiles are prepared once and patched where the algorithms' settings changed; see
   [pipeline.md](pipeline.md#pisp-path) for the frame path and its costs. The stock driver writes
