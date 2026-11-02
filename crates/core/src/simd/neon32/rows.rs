@@ -6,7 +6,7 @@
 
 use core::arch::asm;
 
-use crate::simd::ColorLayout;
+use crate::simd::{ColorLayout, YuvMatrix};
 
 /// The loop around one block: `body` runs with `{s}`, `{d}` advancing and `{n}` counting down.
 macro_rules! block_loop {
@@ -264,5 +264,147 @@ pub(super) unsafe fn reverse(src: &[u8], dst_end: *mut u8, steps: usize, bpp: us
                 "vst1.8 {{d0, d1}}, [{d}], {back}",
             ], back = in(reg) -16isize, out("q0") _),
         }
+    }
+}
+
+/// YUV → RGB, 16 pixels a step, from U in d0, V in d1 and the even and odd lumas in d2 and
+/// d3 (each block's `$load`). Chroma terms and luma widen to 32 bits as the scalar kernel
+/// computes (`y_scale·c` reaches 75990), from the coefficients in d7, the luma scale in
+/// d30 and its offset in d31; `vqshrun #8` then `vqmovn` shift and clamp. Even and
+/// odd results zip back into pixel order; `vst3` writes 48 bytes.
+macro_rules! yuv_rgb_loop {
+    ($s:expr, $d:expr, $n:expr, $m:expr, [$($load:literal),* $(,)?] $(, $($extra:tt)*)?) => {{
+        let m: &YuvMatrix = $m;
+        let (sc, off) = (m.y_scale, u16::from(m.y_offset) * 0x101);
+        let k: [u16; 12] = [m.r_v, m.g_u, m.g_v, m.b_u, sc, sc, sc, sc, off, off, off, off];
+        asm!(
+            ".fpu neon",
+            "vld1.16 {{d7}}, [{k}]!",
+            "vld1.16 {{d30, d31}}, [{k}]",
+            "vmov.i8 d6, #128",
+            "2:",
+            $($load,)*
+            "vsubl.u8 q8, d0, d6",
+            "vsubl.u8 q9, d1, d6",
+            "vqsub.u8 d2, d2, d31",
+            "vqsub.u8 d3, d3, d31",
+            "vmovl.u8 q10, d2",
+            "vmovl.u8 q11, d3",
+            "vmov.i32 q4, #128",
+            "vmov.i32 q5, #128",
+            "vmov.i32 q6, #128",
+            "vmov.i32 q7, #128",
+            "vmlal.u16 q4, d20, d30",
+            "vmlal.u16 q5, d21, d30",
+            "vmlal.u16 q6, d22, d30",
+            "vmlal.u16 q7, d23, d30",
+            // Red: + r_v·e.
+            "vmull.s16 q10, d18, d7[0]",
+            "vmull.s16 q11, d19, d7[0]",
+            "vadd.i32 q12, q4, q10",
+            "vadd.i32 q13, q5, q11",
+            "vqshrun.s32 d28, q12, #8",
+            "vqshrun.s32 d29, q13, #8",
+            "vqmovn.u16 d0, q14",
+            "vadd.i32 q12, q6, q10",
+            "vadd.i32 q13, q7, q11",
+            "vqshrun.s32 d28, q12, #8",
+            "vqshrun.s32 d29, q13, #8",
+            "vqmovn.u16 d1, q14",
+            // Green: - g_u·d - g_v·e.
+            "vmull.s16 q10, d16, d7[1]",
+            "vmlal.s16 q10, d18, d7[2]",
+            "vmull.s16 q11, d17, d7[1]",
+            "vmlal.s16 q11, d19, d7[2]",
+            "vsub.i32 q12, q4, q10",
+            "vsub.i32 q13, q5, q11",
+            "vqshrun.s32 d28, q12, #8",
+            "vqshrun.s32 d29, q13, #8",
+            "vqmovn.u16 d2, q14",
+            "vsub.i32 q12, q6, q10",
+            "vsub.i32 q13, q7, q11",
+            "vqshrun.s32 d28, q12, #8",
+            "vqshrun.s32 d29, q13, #8",
+            "vqmovn.u16 d3, q14",
+            // Blue: + b_u·d.
+            "vmull.s16 q10, d16, d7[3]",
+            "vmull.s16 q11, d17, d7[3]",
+            "vadd.i32 q12, q4, q10",
+            "vadd.i32 q13, q5, q11",
+            "vqshrun.s32 d28, q12, #8",
+            "vqshrun.s32 d29, q13, #8",
+            "vqmovn.u16 d4, q14",
+            "vadd.i32 q12, q6, q10",
+            "vadd.i32 q13, q7, q11",
+            "vqshrun.s32 d28, q12, #8",
+            "vqshrun.s32 d29, q13, #8",
+            "vqmovn.u16 d5, q14",
+            "vzip.8 d0, d1",
+            "vzip.8 d2, d3",
+            "vzip.8 d4, d5",
+            "vst3.8 {{d0, d2, d4}}, [{d}]!",
+            "vst3.8 {{d1, d3, d5}}, [{d}]!",
+            "subs {n}, {n}, #1",
+            "bne 2b",
+            s = inout(reg) $s => _,
+            d = inout(reg) $d => _,
+            n = inout(reg) $n => _,
+            k = inout(reg) k.as_ptr() => _,
+            $($($extra)*,)?
+            out("q0") _, out("q1") _, out("q2") _, out("q3") _, out("q4") _, out("q5") _,
+            out("q6") _, out("q7") _, out("q8") _, out("q9") _, out("q10") _, out("q11") _,
+            out("q12") _, out("q13") _, out("q14") _, out("q15") _,
+            options(nostack),
+        )
+    }};
+}
+
+/// NV12 → RGB24, 16 pixels a step.
+pub(super) unsafe fn nv12_rgb(y: &[u8], uv: &[u8], dst: &mut [u8], steps: usize, m: &YuvMatrix) {
+    // SAFETY: per the module; 16 chroma bytes a step, as many as luma.
+    unsafe {
+        yuv_rgb_loop!(y.as_ptr(), dst.as_mut_ptr(), steps, m, [
+            "vld2.8 {{d0, d1}}, [{c}]!",
+            "vld2.8 {{d2, d3}}, [{s}]!",
+        ], c = inout(reg) uv.as_ptr() => _);
+    }
+}
+
+/// I420 → RGB24, 16 pixels a step.
+pub(super) unsafe fn i420_rgb(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    dst: &mut [u8],
+    steps: usize,
+    m: &YuvMatrix,
+) {
+    // SAFETY: per the module; 8 bytes of each chroma a step.
+    unsafe {
+        yuv_rgb_loop!(y.as_ptr(), dst.as_mut_ptr(), steps, m, [
+            "vld1.8 {{d0}}, [{u}]!",
+            "vld1.8 {{d1}}, [{v}]!",
+            "vld2.8 {{d2, d3}}, [{s}]!",
+        ], u = inout(reg) u.as_ptr() => _, v = inout(reg) v.as_ptr() => _);
+    }
+}
+
+/// YUYV → RGB24, 16 pixels (32 source bytes) a step: `vld4` splits Y0 U Y1 V.
+pub(super) unsafe fn yuyv_rgb(src: &[u8], dst: &mut [u8], steps: usize, m: &YuvMatrix) {
+    // SAFETY: per the module.
+    unsafe {
+        yuv_rgb_loop!(
+            src.as_ptr(),
+            dst.as_mut_ptr(),
+            steps,
+            m,
+            [
+                "vld4.8 {{d16, d17, d18, d19}}, [{s}]!",
+                "vmov d0, d17",
+                "vmov d1, d19",
+                "vmov d2, d16",
+                "vmov d3, d18",
+            ]
+        );
     }
 }

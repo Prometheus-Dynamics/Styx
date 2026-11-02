@@ -200,3 +200,105 @@ pub unsafe fn transpose_tile<const N: usize>(
         }
     }
 }
+
+/// Integer YUV → RGB in 8-bit fixed point: `c = max(y - y_offset, 0)`, `d = u - 128`,
+/// `e = v - 128`; red `y_scale·c + r_v·e`, green `y_scale·c - g_u·d - g_v·e`, blue
+/// `y_scale·c + b_u·d`, each plus 128, shifted right by 8 and clamped to 0..=255.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct YuvMatrix {
+    pub y_offset: u8,
+    pub y_scale: u16,
+    pub r_v: u16,
+    pub g_u: u16,
+    pub g_v: u16,
+    pub b_u: u16,
+}
+
+impl YuvMatrix {
+    /// Limited-range Rec.709.
+    pub const BT709: Self = Self::limited(459, 55, 136, 541);
+    /// Limited-range Rec.2020.
+    pub const BT2020: Self = Self::limited(430, 48, 166, 549);
+    /// Full-range Rec.601 (sYCC, JFIF).
+    pub const BT601_FULL: Self = Self {
+        y_offset: 0,
+        y_scale: 256,
+        r_v: 359,
+        g_u: 88,
+        g_v: 183,
+        b_u: 454,
+    };
+
+    const fn limited(r_v: u16, g_u: u16, g_v: u16, b_u: u16) -> Self {
+        Self {
+            y_offset: 16,
+            y_scale: 298,
+            r_v,
+            g_u,
+            g_v,
+            b_u,
+        }
+    }
+
+    /// The matrix for a frame labelled `color`: `Srgb` YUV is full-range BT.601 (sYCC);
+    /// `Unknown` is far more likely limited-range BT.709 than full-range BT.601.
+    pub const fn for_color(color: crate::format::ColorSpace) -> Self {
+        use crate::format::ColorSpace;
+        match color {
+            ColorSpace::Bt709 | ColorSpace::Unknown => Self::BT709,
+            ColorSpace::Bt2020 => Self::BT2020,
+            ColorSpace::Srgb => Self::BT601_FULL,
+        }
+    }
+
+    /// One pixel.
+    #[inline(always)]
+    pub fn rgb(&self, y: u8, u: u8, v: u8) -> [u8; 3] {
+        let c = i32::from(self.y_scale) * i32::from(y.saturating_sub(self.y_offset)) + 128;
+        let (d, e) = (i32::from(u) - 128, i32::from(v) - 128);
+        let r = c + i32::from(self.r_v) * e;
+        let g = c - i32::from(self.g_u) * d - i32::from(self.g_v) * e;
+        let b = c + i32::from(self.b_u) * d;
+        [r, g, b].map(|x| (x >> 8).clamp(0, 255) as u8)
+    }
+}
+
+/// NV12 → RGB24: `width` luma bytes, `width.div_ceil(2)` UV pairs.
+pub fn nv12_rgb_row(y: &[u8], uv: &[u8], dst: &mut [u8], width: usize, m: &YuvMatrix) {
+    for (i, (d, &l)) in dst[..width * 3]
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(&y[..width])
+        .enumerate()
+    {
+        *d = m.rgb(l, uv[i / 2 * 2], uv[i / 2 * 2 + 1]);
+    }
+}
+
+/// I420 (or YV12 with `u` and `v` swapped) → RGB24: `width` luma bytes, `width.div_ceil(2)`
+/// of each chroma.
+pub fn i420_rgb_row(y: &[u8], u: &[u8], v: &[u8], dst: &mut [u8], width: usize, m: &YuvMatrix) {
+    for (i, (d, &l)) in dst[..width * 3]
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .zip(&y[..width])
+        .enumerate()
+    {
+        *d = m.rgb(l, u[i / 2], v[i / 2]);
+    }
+}
+
+/// YUYV → RGB24: `width.div_ceil(2)` 4-byte Y0 U Y1 V groups.
+pub fn yuyv_rgb_row(src: &[u8], dst: &mut [u8], width: usize, m: &YuvMatrix) {
+    for (i, d) in dst[..width * 3]
+        .as_chunks_mut::<3>()
+        .0
+        .iter_mut()
+        .enumerate()
+    {
+        let g = &src[i / 2 * 4..][..4];
+        *d = m.rgb(g[i % 2 * 2], g[1], g[3]);
+    }
+}

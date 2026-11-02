@@ -1,6 +1,6 @@
 use styx_core::prelude::*;
 
-use crate::decoder::raw::yuv_to_rgb;
+use crate::decoder::raw::STYX_YUV_ROWS;
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
@@ -93,32 +93,20 @@ impl YuyvToRgbDecoder {
             height: height as u32,
         };
         let (range, matrix) = crate::decoder::raw::yuv_colorspace(color);
-        if yuvutils_rs::yuyv422_to_rgb(&packed, dst, row_bytes as u32, range, matrix).is_err() {
-            for y in 0..height {
-                let src_line = &src[y * stride..][..width * 2];
-                let dst_line = &mut dst[y * row_bytes..(y + 1) * row_bytes];
-                for (dst_px, src_px) in dst_line
-                    .as_chunks_mut::<6>()
-                    .0
-                    .iter_mut()
-                    .zip(src_line[..width * 2].as_chunks::<4>().0)
-                {
-                    let y0 = unsafe { *src_px.get_unchecked(0) as i32 };
-                    let u = unsafe { *src_px.get_unchecked(1) as i32 };
-                    let y1 = unsafe { *src_px.get_unchecked(2) as i32 };
-                    let v = unsafe { *src_px.get_unchecked(3) as i32 };
-                    let (r0, g0, b0) = yuv_to_rgb(y0, u, v, color);
-                    let (r1, g1, b1) = yuv_to_rgb(y1, u, v, color);
-                    unsafe {
-                        *dst_px.get_unchecked_mut(0) = r0;
-                        *dst_px.get_unchecked_mut(1) = g0;
-                        *dst_px.get_unchecked_mut(2) = b0;
-                        *dst_px.get_unchecked_mut(3) = r1;
-                        *dst_px.get_unchecked_mut(4) = g1;
-                        *dst_px.get_unchecked_mut(5) = b1;
-                    }
-                }
-            }
+        if STYX_YUV_ROWS
+            || yuvutils_rs::yuyv422_to_rgb(&packed, dst, row_bytes as u32, range, matrix).is_err()
+        {
+            let m = styx_core::simd::YuvMatrix::for_color(color);
+            crate::par::for_each_row(&mut dst[..], row_bytes, |y, dst_line| {
+                // An odd last pixel needs its group's V; a row without it leaves that pixel.
+                let line = &src[y * stride..];
+                let width = if line.len() >= width.div_ceil(2) * 4 {
+                    width
+                } else {
+                    width & !1
+                };
+                styx_core::simd::yuyv_rgb_row(line, dst_line, width, &m);
+            });
         }
 
         Ok(FrameMeta::new(

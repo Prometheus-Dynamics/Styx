@@ -7,7 +7,7 @@
 
 use core::arch::asm;
 
-use crate::simd::ColorLayout;
+use crate::simd::{ColorLayout, YuvMatrix};
 
 /// One strip: `body` runs with `{left}` pixels left at `{s}` and `{d}`, sets `{n}` to the
 /// strip's pixels with its `vsetvli`, and the strip's value is `n`.
@@ -365,5 +365,146 @@ pub(super) unsafe fn reverse(src: &[u8], dst: &mut [u8], width: usize, bpp: usiz
                 "vse32.v v4, ({d})",
             ], t = out(reg) _),
         }
+    });
+}
+
+/// YUV → RGB over `pairs` pixel pairs a strip, from the even lumas in v0, U in v1, the odd
+/// lumas in v2 and V in v3 (each strip's `$load`, at e8 m1). Chroma terms and luma widen to
+/// 32 bits (m4) as the scalar kernel computes; negatives go to 0, then two `vnclipu` (rounding
+/// down: `vxrm` 2) shift by 8 and clamp to 255. The six results, red green blue of the even
+/// pixel then of the odd, are one 6-field segment store.
+macro_rules! yuv_rgb_strip {
+    ($left:expr, $s:expr, $d:expr, $m:expr, [$($load:literal),* $(,)?] $(, $($extra:tt)*)?) => {{
+        let m: &YuvMatrix = $m;
+        strip!($left, $s, $d, [
+            "vsetvli {n}, {left}, e8, m1, ta, ma",
+            $($load,)*
+            "csrwi vxrm, 2",
+            "vssubu.vx v0, v0, {off}",
+            "vssubu.vx v2, v2, {off}",
+            "vsetvli zero, {n}, e32, m4, ta, ma",
+            "vzext.vf4 v8, v1",
+            "vsub.vx v8, v8, {h}",
+            "vzext.vf4 v12, v3",
+            "vsub.vx v12, v12, {h}",
+            "vzext.vf4 v16, v0",
+            "vmul.vx v16, v16, {sc}",
+            "vadd.vx v16, v16, {h}",
+            "vzext.vf4 v20, v2",
+            "vmul.vx v20, v20, {sc}",
+            "vadd.vx v20, v20, {h}",
+            // Red: + r_v·e.
+            "vmul.vx v24, v12, {rv}",
+            "vadd.vv v28, v16, v24",
+            "vmax.vx v28, v28, zero",
+            "vsetvli zero, {n}, e16, m2, ta, ma",
+            "vnclipu.wi v6, v28, 8",
+            "vsetvli zero, {n}, e8, m1, ta, ma",
+            "vnclipu.wi v0, v6, 0",
+            "vsetvli zero, {n}, e32, m4, ta, ma",
+            "vadd.vv v28, v20, v24",
+            "vmax.vx v28, v28, zero",
+            "vsetvli zero, {n}, e16, m2, ta, ma",
+            "vnclipu.wi v6, v28, 8",
+            "vsetvli zero, {n}, e8, m1, ta, ma",
+            "vnclipu.wi v3, v6, 0",
+            // Green: - g_u·d - g_v·e.
+            "vsetvli zero, {n}, e32, m4, ta, ma",
+            "vmul.vx v24, v8, {gu}",
+            "vmacc.vx v24, {gv}, v12",
+            "vsub.vv v28, v16, v24",
+            "vmax.vx v28, v28, zero",
+            "vsetvli zero, {n}, e16, m2, ta, ma",
+            "vnclipu.wi v6, v28, 8",
+            "vsetvli zero, {n}, e8, m1, ta, ma",
+            "vnclipu.wi v1, v6, 0",
+            "vsetvli zero, {n}, e32, m4, ta, ma",
+            "vsub.vv v28, v20, v24",
+            "vmax.vx v28, v28, zero",
+            "vsetvli zero, {n}, e16, m2, ta, ma",
+            "vnclipu.wi v6, v28, 8",
+            "vsetvli zero, {n}, e8, m1, ta, ma",
+            "vnclipu.wi v4, v6, 0",
+            // Blue: + b_u·d.
+            "vsetvli zero, {n}, e32, m4, ta, ma",
+            "vmul.vx v24, v8, {bu}",
+            "vadd.vv v28, v16, v24",
+            "vmax.vx v28, v28, zero",
+            "vsetvli zero, {n}, e16, m2, ta, ma",
+            "vnclipu.wi v6, v28, 8",
+            "vsetvli zero, {n}, e8, m1, ta, ma",
+            "vnclipu.wi v2, v6, 0",
+            "vsetvli zero, {n}, e32, m4, ta, ma",
+            "vadd.vv v28, v20, v24",
+            "vmax.vx v28, v28, zero",
+            "vsetvli zero, {n}, e16, m2, ta, ma",
+            "vnclipu.wi v6, v28, 8",
+            "vsetvli zero, {n}, e8, m1, ta, ma",
+            "vnclipu.wi v5, v6, 0",
+            "vsseg6e8.v v0, ({d})",
+        ],
+            off = in(reg) usize::from(m.y_offset),
+            sc = in(reg) usize::from(m.y_scale),
+            h = in(reg) 128usize,
+            rv = in(reg) usize::from(m.r_v),
+            gu = in(reg) usize::from(m.g_u),
+            gv = in(reg) usize::from(m.g_v),
+            bu = in(reg) usize::from(m.b_u),
+            out("v24") _, out("v25") _, out("v26") _, out("v27") _,
+            out("v28") _, out("v29") _, out("v30") _, out("v31") _
+            $(, $($extra)*)?)
+    }};
+}
+
+/// NV12 → RGB24 over pixel pairs.
+pub(super) unsafe fn nv12_rgb(y: &[u8], uv: &[u8], dst: &mut [u8], pairs: usize, m: &YuvMatrix) {
+    let (s, c, d) = (y.as_ptr(), uv.as_ptr(), dst.as_mut_ptr());
+    // SAFETY (each strip): `n <= left` pairs after `i` remain in every row (the module).
+    strips(pairs, |i, left| unsafe {
+        yuv_rgb_strip!(left, s.add(2 * i), d.add(6 * i), m, [
+            "vlseg2e8.v v4, ({c})",
+            "vlseg2e8.v v6, ({s})",
+            "vmv1r.v v0, v6",
+            "vmv1r.v v1, v4",
+            "vmv1r.v v2, v7",
+            "vmv1r.v v3, v5",
+        ], c = in(reg) c.add(2 * i))
+    });
+}
+
+/// I420 → RGB24 over pixel pairs.
+pub(super) unsafe fn i420_rgb(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    dst: &mut [u8],
+    pairs: usize,
+    m: &YuvMatrix,
+) {
+    let (s, cu, cv, d) = (y.as_ptr(), u.as_ptr(), v.as_ptr(), dst.as_mut_ptr());
+    // SAFETY (each strip): `n <= left` pairs after `i` remain in every row (the module).
+    strips(pairs, |i, left| unsafe {
+        yuv_rgb_strip!(left, s.add(2 * i), d.add(6 * i), m, [
+            "vle8.v v1, ({u})",
+            "vle8.v v3, ({v})",
+            "vlseg2e8.v v4, ({s})",
+            "vmv1r.v v0, v4",
+            "vmv1r.v v2, v5",
+        ], u = in(reg) cu.add(i), v = in(reg) cv.add(i))
+    });
+}
+
+/// YUYV → RGB24 over pixel pairs: a 4-field segment load splits Y0 U Y1 V.
+pub(super) unsafe fn yuyv_rgb(src: &[u8], dst: &mut [u8], pairs: usize, m: &YuvMatrix) {
+    let (s, d) = (src.as_ptr(), dst.as_mut_ptr());
+    // SAFETY (each strip): `n <= left` pairs after `i` remain in both rows (the module).
+    strips(pairs, |i, left| unsafe {
+        yuv_rgb_strip!(
+            left,
+            s.add(4 * i),
+            d.add(6 * i),
+            m,
+            ["vlseg4e8.v v0, ({s})"]
+        )
     });
 }

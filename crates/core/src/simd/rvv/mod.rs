@@ -10,7 +10,7 @@ pub(super) mod transform;
 
 use std::sync::OnceLock;
 
-use super::{ColorLayout, SimdBackend, TransposeTile};
+use super::{ColorLayout, SimdBackend, TransposeTile, YuvMatrix};
 
 /// Whether the CPU has the V extension (`AT_HWCAP` bit `'V' - 'A'`), asked once.
 pub(super) fn available() -> bool {
@@ -156,4 +156,44 @@ pub(super) fn transpose_tile(bpp: usize) -> Option<(SimdBackend, TransposeTile)>
         _ => return None,
     };
     Some((SimdBackend::Rvv, tile))
+}
+
+/// Run `leaf` on the row's whole pixel pairs when the CPU has vectors.
+fn pairs(width: usize, leaf: impl FnOnce(usize)) -> Option<(SimdBackend, usize)> {
+    let pairs = width / 2;
+    if pairs == 0 || !available() {
+        return None;
+    }
+    leaf(pairs);
+    Some((SimdBackend::Rvv, pairs * 2))
+}
+
+pub(super) fn nv12_rgb_row(
+    y: &[u8],
+    uv: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> Option<(SimdBackend, usize)> {
+    pairs(width, |n| unsafe { rows::nv12_rgb(y, uv, dst, n, m) })
+}
+
+pub(super) fn i420_rgb_row(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> Option<(SimdBackend, usize)> {
+    pairs(width, |n| unsafe { rows::i420_rgb(y, u, v, dst, n, m) })
+}
+
+pub(super) fn yuyv_rgb_row(
+    src: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> Option<(SimdBackend, usize)> {
+    pairs(width, |n| unsafe { rows::yuyv_rgb(src, dst, n, m) })
 }

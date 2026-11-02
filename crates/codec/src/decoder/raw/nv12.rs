@@ -1,6 +1,6 @@
 use styx_core::prelude::*;
 
-use crate::decoder::raw::yuv_to_rgb;
+use crate::decoder::raw::{STYX_YUV_ROWS, yuv_to_rgb};
 #[cfg(feature = "image")]
 use crate::decoder::{ImageDecode, process_to_dynamic};
 use crate::{Codec, CodecDescriptor, CodecError};
@@ -116,7 +116,6 @@ impl Nv12ToRgbDecoder {
 
         let width = meta.format.resolution.width.get() as usize;
         let height = meta.format.resolution.height.get() as usize;
-        let chroma_width = width.div_ceil(2);
         let row_bytes = width
             .checked_mul(3)
             .ok_or_else(|| CodecError::Codec("nv12 output overflow".into()))?;
@@ -138,53 +137,22 @@ impl Nv12ToRgbDecoder {
             width: width as u32,
             height: height as u32,
         };
-        if yuvutils_rs::yuv_nv12_to_rgb(
-            &bi,
-            dst,
-            row_bytes as u32,
-            range,
-            matrix,
-            preferred_yuv_conversion_mode(),
-        )
-        .is_err()
+        if STYX_YUV_ROWS
+            || yuvutils_rs::yuv_nv12_to_rgb(
+                &bi,
+                dst,
+                row_bytes as u32,
+                range,
+                matrix,
+                preferred_yuv_conversion_mode(),
+            )
+            .is_err()
         {
+            let m = styx_core::simd::YuvMatrix::for_color(color);
             crate::par::for_each_row(&mut dst[..], row_bytes, |y, dst_line| {
-                let y_line = &y_plane_data[y * y_stride..][..width];
-                let uv_line = &uv_plane_data[(y / 2) * uv_stride..][..chroma_width * 2];
-                let pair_count = width / 2;
-                for pair in 0..pair_count {
-                    let y_base = pair * 2;
-                    let uv_idx = pair * 2;
-                    let di = pair * 6;
-                    let y0 = unsafe { *y_line.get_unchecked(y_base) as i32 };
-                    let y1 = unsafe { *y_line.get_unchecked(y_base + 1) as i32 };
-                    let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
-                    let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
-                    let (r0, g0, b0) = yuv_to_rgb(y0, u, v, color);
-                    let (r1, g1, b1) = yuv_to_rgb(y1, u, v, color);
-                    unsafe {
-                        *dst_line.get_unchecked_mut(di) = r0;
-                        *dst_line.get_unchecked_mut(di + 1) = g0;
-                        *dst_line.get_unchecked_mut(di + 2) = b0;
-                        *dst_line.get_unchecked_mut(di + 3) = r1;
-                        *dst_line.get_unchecked_mut(di + 4) = g1;
-                        *dst_line.get_unchecked_mut(di + 5) = b1;
-                    }
-                }
-                if width % 2 == 1 && width >= 1 {
-                    let last_idx = width - 1;
-                    let uv_idx = (last_idx / 2) * 2;
-                    let di = last_idx * 3;
-                    let y_val = unsafe { *y_line.get_unchecked(last_idx) as i32 };
-                    let u = unsafe { *uv_line.get_unchecked(uv_idx) as i32 };
-                    let v = unsafe { *uv_line.get_unchecked(uv_idx + 1) as i32 };
-                    let (r, g, b) = yuv_to_rgb(y_val, u, v, color);
-                    unsafe {
-                        *dst_line.get_unchecked_mut(di) = r;
-                        *dst_line.get_unchecked_mut(di + 1) = g;
-                        *dst_line.get_unchecked_mut(di + 2) = b;
-                    }
-                }
+                let y_line = &y_plane_data[y * y_stride..];
+                let uv_line = &uv_plane_data[(y / 2) * uv_stride..];
+                styx_core::simd::nv12_rgb_row(y_line, uv_line, dst_line, width, &m);
             });
         }
 

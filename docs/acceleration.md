@@ -83,9 +83,9 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`.
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
 | YUYV → NV12 chroma | pass | pass | pass | pass | pass | gap |
-| NV12 → RGB | pass | lib | lib | gap⁷ | gap⁷ | gap |
-| YUYV → RGB | pass | lib | lib | gap⁷ | gap⁷ | gap |
-| I420 → RGB | pass | lib | lib | gap⁷ | gap⁷ | gap |
+| NV12 → RGB | pass | lib | lib | pass⁷ | pass⁷ | gap |
+| YUYV → RGB | pass | lib | lib | pass⁷ | pass⁷ | gap |
+| I420 → RGB | pass | lib | lib | pass⁷ | pass⁷ | gap |
 
 ### Codecs
 
@@ -104,7 +104,9 @@ Notes:
 4. The Cortex-A7 has no fp16 arithmetic.
 5. Worth doing only if the K230D's C908 has Zvfh. Check that on the board.
 6. GPUs have fp16 arithmetic: a `half` shader variant beside the bit-exact integer one.
-7. yuvutils-rs has no armv7 or RVV code. Styx's own kernels, with all leaves, replace it there.
+7. yuvutils-rs has no armv7 or RVV code. There, Styx's own rows run instead
+   (`styx_core::simd::{nv12,i420,yuyv}_rgb_row`), exact against scalar. They are tested under QEMU
+   and written, untested on board.
 8. Upstream libjpeg-turbo and x264 have no RVV code. Styx needs its own colour and DCT
    leaves, or the board's encoder (see the fixed-function table below).
 9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. There is no Vulkan Video encode yet.
@@ -135,10 +137,10 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | scalar | 43 | 0 | 0 |
 | x86 | 41 | 2 | 0 |
 | NEON64 | 42 | 1 | 0 |
-| NEON32 | 38 | 4 | 1 |
-| RVV | 35 | 8 | 0 |
+| NEON32 | 41 | 1 | 1 |
+| RVV | 38 | 5 | 0 |
 | GPU | 18 | 25 | 0 |
-| **all** | **217** | **40** | **1** |
+| **all** | **223** | **34** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 

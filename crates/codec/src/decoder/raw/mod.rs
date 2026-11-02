@@ -237,70 +237,20 @@ impl_raw_decode_into!(YuyvToLumaDecoder, 1);
 #[cfg(feature = "raw-decoders")]
 impl_raw_decode_into!(YuyvToRgbDecoder, 3);
 
-#[cfg(any(feature = "raw-decoders", feature = "image"))]
-#[derive(Clone, Copy)]
-struct YuvCoeffs {
-    r_v: i32,
-    g_u: i32,
-    g_v: i32,
-    b_u: i32,
-    full_range: bool,
-}
-
-#[cfg(any(feature = "raw-decoders", feature = "image"))]
-const BT709: YuvCoeffs = YuvCoeffs {
-    r_v: 459,
-    g_u: 55,
-    g_v: 136,
-    b_u: 541,
-    full_range: false,
-};
-
-// Full-range Rec.601 coefficients (Y range 0..255).
-#[cfg(any(feature = "raw-decoders", feature = "image"))]
-const BT601_FULL: YuvCoeffs = YuvCoeffs {
-    r_v: 359,
-    g_u: 88,
-    g_v: 183,
-    b_u: 454,
-    full_range: true,
-};
-
-#[cfg(any(feature = "raw-decoders", feature = "image"))]
-const BT2020: YuvCoeffs = YuvCoeffs {
-    r_v: 430,
-    g_u: 48,
-    g_v: 166,
-    b_u: 549,
-    full_range: false,
-};
-
 /// Integer conversion with clamping using limited-range YUV coefficients.
 #[inline(always)]
 #[cfg(any(feature = "raw-decoders", feature = "image"))]
 pub(crate) fn yuv_to_rgb(y: i32, u: i32, v: i32, color: ColorSpace) -> (u8, u8, u8) {
-    let coeffs = match color {
-        ColorSpace::Bt709 => BT709,
-        ColorSpace::Bt2020 => BT2020,
-        // `Srgb` in our metadata means "full-range output" (libcamera frequently reports sYCC).
-        // libcamera's sYCC uses a Rec.601 YCbCr matrix with full-range.
-        ColorSpace::Srgb => BT601_FULL,
-        // Default unknown to limited-range Rec.709; BT.601 assumptions tend to skew heavily.
-        ColorSpace::Unknown => BT709,
-    };
-    let d = u - 128;
-    let e = v - 128;
-    let (c, scale) = if coeffs.full_range {
-        (y.max(0), 256)
-    } else {
-        (y.saturating_sub(16).max(0), 298)
-    };
-    let r = (scale * c + coeffs.r_v * e + 128) >> 8;
-    let g = (scale * c - coeffs.g_u * d - coeffs.g_v * e + 128) >> 8;
-    let b = (scale * c + coeffs.b_u * d + 128) >> 8;
-    (
-        r.clamp(0, 255) as u8,
-        g.clamp(0, 255) as u8,
-        b.clamp(0, 255) as u8,
-    )
+    let [r, g, b] = styx_core::simd::YuvMatrix::for_color(color).rgb(
+        y.clamp(0, 255) as u8,
+        u.clamp(0, 255) as u8,
+        v.clamp(0, 255) as u8,
+    );
+    (r, g, b)
 }
+
+/// Whether NV12, I420 and YUYV convert with Styx's own rows rather than yuvutils-rs: on the
+/// targets yuvutils-rs has no vector code for (32-bit Arm, RISC-V), where Styx's NEON and RVV
+/// leaves run.
+#[cfg(feature = "raw-decoders")]
+pub(crate) const STYX_YUV_ROWS: bool = cfg!(any(target_arch = "arm", target_arch = "riscv64"));

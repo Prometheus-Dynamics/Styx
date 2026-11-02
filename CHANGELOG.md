@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_core::simd::{nv12_rgb_row, i420_rgb_row, yuyv_rgb_row}` and `YuvMatrix`: YUV → RGB24
+  rows with armv7 NEON and RVV leaves, exact against scalar. On 32-bit Arm and RISC-V, where
+  yuvutils-rs has no vector code, the NV12, I420 and YUYV → RGB decoders use them. Elsewhere
+  these rows are the decoders' fallback. Written, untested on board.
 - `styx_core::simd::yuyv_chroma_row`: YUYV chroma of two rows averaged (NV12's chroma row) on
   SSE2, AVX2, NEON, armv7 NEON and RVV, exact against scalar. `YuyvToNv12Decoder` uses it.
 - `GpuContext::import_pad(len)`: the bytes the GPU ISP's device needs past a dma-buf to import

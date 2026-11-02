@@ -13,7 +13,7 @@
 
 pub mod scalar;
 
-pub use scalar::ColorLayout;
+pub use scalar::{ColorLayout, YuvMatrix};
 
 #[cfg(all(feature = "neon", target_arch = "aarch64"))]
 mod neon;
@@ -31,6 +31,8 @@ mod x86;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod yuv_tests;
 
 /// Which implementation ran a kernel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -305,6 +307,75 @@ pub fn yuyv_chroma_row(a: &[u8], b: &[u8], dst: &mut [u8], width: usize) -> Simd
     let outcome = leaf!(yuyv_chroma_row(a, b, dst, width));
     finish(outcome, width, |d, n| {
         scalar::yuyv_chroma_row(&a[d * 2..], &b[d * 2..], &mut dst[d..], n)
+    })
+}
+
+/// The 32-bit Arm and RISC-V vector leaf's result for the YUV → RGB rows (pixel pairs done).
+/// x86 and AArch64 have yuvutils-rs's kernels; these cover the targets it has none for.
+macro_rules! yuv_leaf {
+    ($name:ident($($arg:expr),* $(,)?)) => {{
+        #[allow(unused_mut, unused_assignments)]
+        let mut outcome: Option<(SimdBackend, usize)> = None;
+        #[cfg(all(
+            feature = "neon",
+            feature = "std",
+            target_arch = "arm",
+            target_os = "linux"
+        ))]
+        {
+            outcome = neon32::$name($($arg),*);
+        }
+        #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+        {
+            outcome = rvv::$name($($arg),*);
+        }
+        outcome
+    }};
+}
+
+/// NV12 → RGB24 ([`YuvMatrix`]): `width` luma bytes and `width.div_ceil(2)` UV pairs.
+pub fn nv12_rgb_row(
+    y: &[u8],
+    uv: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> SimdBackend {
+    let (y, uv, dst) = (
+        &y[..width],
+        &uv[..width.div_ceil(2) * 2],
+        &mut dst[..width * 3],
+    );
+    let outcome = yuv_leaf!(nv12_rgb_row(y, uv, dst, width, m));
+    finish(outcome, width, |d, n| {
+        scalar::nv12_rgb_row(&y[d..], &uv[d..], &mut dst[d * 3..], n, m)
+    })
+}
+
+/// I420 → RGB24 ([`YuvMatrix`]): `width` luma bytes and `width.div_ceil(2)` of each chroma
+/// (YV12: `u` and `v` swapped).
+pub fn i420_rgb_row(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> SimdBackend {
+    let half = width.div_ceil(2);
+    let (y, u, v, dst) = (&y[..width], &u[..half], &v[..half], &mut dst[..width * 3]);
+    let outcome = yuv_leaf!(i420_rgb_row(y, u, v, dst, width, m));
+    finish(outcome, width, |d, n| {
+        scalar::i420_rgb_row(&y[d..], &u[d / 2..], &v[d / 2..], &mut dst[d * 3..], n, m)
+    })
+}
+
+/// YUYV → RGB24 ([`YuvMatrix`]): `width.div_ceil(2)` 4-byte groups.
+pub fn yuyv_rgb_row(src: &[u8], dst: &mut [u8], width: usize, m: &YuvMatrix) -> SimdBackend {
+    let (src, dst) = (&src[..width.div_ceil(2) * 4], &mut dst[..width * 3]);
+    let outcome = yuv_leaf!(yuyv_rgb_row(src, dst, width, m));
+    finish(outcome, width, |d, n| {
+        scalar::yuyv_rgb_row(&src[d * 2..], &mut dst[d * 3..], n, m)
     })
 }
 

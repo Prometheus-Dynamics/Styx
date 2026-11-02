@@ -9,7 +9,7 @@ pub(super) mod transform;
 
 use std::sync::OnceLock;
 
-use super::{ColorLayout, SimdBackend, TransposeTile};
+use super::{ColorLayout, SimdBackend, TransposeTile, YuvMatrix};
 
 /// `HWCAP_NEON` on 32-bit Arm Linux.
 const HWCAP_NEON: libc::c_ulong = 1 << 12;
@@ -168,4 +168,34 @@ pub(super) fn transpose_tile(bpp: usize) -> Option<(SimdBackend, TransposeTile)>
         _ => return None,
     };
     Some((SimdBackend::Neon, tile))
+}
+
+pub(super) fn nv12_rgb_row(
+    y: &[u8],
+    uv: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> Option<(SimdBackend, usize)> {
+    blocks(width, 16, |n| unsafe { rows::nv12_rgb(y, uv, dst, n, m) })
+}
+
+pub(super) fn i420_rgb_row(
+    y: &[u8],
+    u: &[u8],
+    v: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> Option<(SimdBackend, usize)> {
+    blocks(width, 16, |n| unsafe { rows::i420_rgb(y, u, v, dst, n, m) })
+}
+
+pub(super) fn yuyv_rgb_row(
+    src: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    m: &YuvMatrix,
+) -> Option<(SimdBackend, usize)> {
+    blocks(width, 16, |n| unsafe { rows::yuyv_rgb(src, dst, n, m) })
 }
