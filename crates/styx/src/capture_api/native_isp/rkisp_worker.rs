@@ -203,12 +203,12 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                     styx_core::metrics::copied(styx_core::metrics::CopySite::Capture, len);
                 }
                 let step = p.algorithms().step();
-                let params = step.params.clone();
+                let params = &step.params;
                 let (ae, request) = ((params.ae.total_exposure, params.ae.locked), step.sensor);
                 let wb = step.isp.wb;
-                w.loop_controls.report(&params);
+                w.loop_controls.report(params);
                 w.loop_controls.processed(f.sensor.frame);
-                let sample = aaa_sample(&params, &controls, f.sensor.frame);
+                let sample = aaa_sample(params, &controls, f.sensor.frame);
                 w.live.aaa(&sample);
                 let mut meta = frame_meta(
                     &w.mode,
