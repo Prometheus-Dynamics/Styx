@@ -269,6 +269,12 @@ macro_rules! half_leaf {
             // as the leaf documents.
             done = unsafe { neon::half::$name($($arg),*) };
         }
+        #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+        if super::rvv::half::available() && !scalar_only() {
+            // SAFETY: V and Zvfh are available (checked above) and the dispatcher sized the
+            // slices as the leaf documents.
+            done = unsafe { super::rvv::half::$name($($arg),*) };
+        }
         done
     }};
 }
@@ -382,7 +388,17 @@ pub fn from_f32_row(src: &[f32], dst: &mut [u16]) {
     // SAFETY: NEON is part of AArch64; both slices hold `n` elements.
     #[cfg(all(feature = "neon", target_arch = "aarch64"))]
     let done = unsafe { neon::half::from_f32(&src[..n], &mut dst[..n]) };
-    #[cfg(not(all(feature = "neon", target_arch = "aarch64")))]
+    #[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+    let done = if super::rvv::half::available() {
+        // SAFETY: V and Zvfh are available (checked above); both slices hold `n` elements.
+        unsafe { super::rvv::half::from_f32(&src[..n], &mut dst[..n]) }
+    } else {
+        0
+    };
+    #[cfg(not(any(
+        all(feature = "neon", target_arch = "aarch64"),
+        all(feature = "rvv", target_arch = "riscv64", target_os = "linux")
+    )))]
     let done = 0;
     for (d, &v) in dst[done..n].iter_mut().zip(&src[done..n]) {
         *d = f16::from_f32(v);

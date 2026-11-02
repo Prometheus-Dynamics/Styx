@@ -12,6 +12,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   Rockchip RGA through Daedalus's `daedalus-rga` (no rotation yet). Dma-buf frames are read in
   place; host frames go through dma-heap buffers made once per layout. Written, untested on
   board; the vim2m tests run where vim2m is loaded. Not yet offered by the registry.
+- `styx_softisp`: RVV leaves with Zvfh for the fp16 path's eight kernels (front end, RAW10
+  front, colour and quad colour, luma and quad luma, quad statistics, `f32` to fp16), bit for
+  bit with the scalar oracle. Run only where Linux's `riscv_hwprobe` reports Zvfh; `Arithmetic::Auto`
+  still picks the integer path on RVV. Tested under QEMU with `zvfh=true` (VLEN 128, 256, 512).
+  Written, untested on board: the K230D's C908 Zvfh is owed a board check.
 - `styx_gpuisp::GpuConvert`: the packed and codec conversions as Vulkan compute
   (`shaders/convert.comp`), bit-exact with `styx_core::simd`'s scalar kernels: BGR ↔ RGB, BGRA ↔
   RGBA, XRGB32, RGB48, grey and Y16 to RGB24, RGB24 → RGBA, RGB and YUYV → luma, YUYV → NV12

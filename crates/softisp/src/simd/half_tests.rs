@@ -275,3 +275,51 @@ fn tone_follows_the_curve() {
     assert_eq!(f16::from_f64(4095.0 / 4080.0), H_TO_12BIT);
     assert_eq!(f16::from_f64(FULL), H_MAX);
 }
+
+#[test]
+fn from_f32_matches_the_oracle() {
+    let mut rng = Rng(3);
+    let mut src: Vec<f32> = (0..300)
+        .map(|_| f32::from_bits(rng.next()))
+        .filter(|v| !v.is_nan())
+        .collect();
+    src.extend([
+        0.0,
+        -0.0,
+        65504.0,
+        65519.0,
+        65520.0,
+        2f32.powi(-24),
+        2f32.powi(-25),
+        1.0 + 2f32.powi(-10),
+        1.0 + 2f32.powi(-11),
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+        1e-30,
+        -3.0e38,
+    ]);
+    for n in [1, 7, 8, 9, src.len()] {
+        both(|| {
+            let mut out = vec![GUARD; n + 1];
+            from_f32_row(&src[..n], &mut out[..n]);
+            assert_eq!(out[n], GUARD);
+            out
+        });
+        let mut out = vec![0u16; n];
+        from_f32_row(&src[..n], &mut out);
+        for (v, h) in src[..n].iter().zip(&out) {
+            assert_eq!(*h, f16::from_f32(*v), "{v}");
+        }
+    }
+}
+
+/// The riscv gate runs QEMU with `zvfh=true` (`scripts/check-riscv.sh`): the fp16 leaves
+/// above then ran in RVV, not on the oracle alone.
+#[cfg(all(feature = "rvv", target_arch = "riscv64", target_os = "linux"))]
+#[test]
+fn rvv_fp16_leaves_run() {
+    assert!(
+        crate::simd::rvv::half::available(),
+        "the riscv gate runs QEMU with v=true and zvfh=true"
+    );
+}

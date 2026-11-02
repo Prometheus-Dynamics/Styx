@@ -14,6 +14,8 @@ rust-version.workspace = true
 styx-core.workspace = true
 serde = { workspace = true, features = ["derive", "alloc"] }
 thiserror.workspace = true
+# `riscv_hwprobe` (Zvfh detection), with the `rvv` feature.
+libc = { workspace = true, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true
@@ -38,7 +40,7 @@ poly-tone = []
 neon = ["styx-core/neon"]
 x86 = ["styx-core/x86"]
 # RISC-V vectors when the CPU has them (needs `std`).
-rvv = ["std", "styx-core/rvv"]
+rvv = ["std", "styx-core/rvv", "dep:libc"]
 # Kept for compatibility, does nothing. Row bands run in parallel on the ISP's own persistent
 # helper threads (`SoftIsp::with_threads`); there is no Rayon dependency.
 rayon = []

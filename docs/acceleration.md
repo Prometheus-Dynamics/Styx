@@ -48,7 +48,7 @@ fp16 bounds, note 6).
 | RGB → UV (4:2:0) | pass | pass | pass | pass | pass | pass |
 | 3A zone sums | pass | pass | pass | pass | pass | pass |
 | Luma histogram | pass | pass | pass | pass | pass | pass |
-| fp16 path (8 kernels) | pass² | gap³ | pass | n/a⁴ | gap⁵ | pass⁶ |
+| fp16 path (8 kernels) | pass² | gap³ | pass | n/a⁴ | pass⁵ | pass⁶ |
 
 ### Software ISP, output stages (`styx_softisp::post`)
 
@@ -104,7 +104,15 @@ Notes:
 3. AVX-512 FP16 (Sapphire Rapids, Zen 5) has the arithmetic; F16C converts only. Build
    both, measure them, and keep them selectable.
 4. The Cortex-A7 has no fp16 arithmetic.
-5. Worth doing only if the K230D's C908 has Zvfh. Check that on the board.
+5. RVV leaves with Zvfh (`simd::rvv::half`, the K230D's C908): the eight kernels (front end,
+   RAW10 front, colour and half-size quad colour, luma and quad luma, quad statistics,
+   `f32` to fp16), bit for bit with the oracle. They run only where the kernel reports Zvfh
+   (`riscv_hwprobe`, Linux 6.5 and later; `AT_HWCAP` has no such letter), and
+   `Arithmetic::Auto` still picks the integer path there. Conformance-tested under QEMU with
+   `zvfh=true` at VLEN 128, 256 and 512 (`crates/softisp/src/simd/half_tests.rs`, run by
+   `scripts/check-riscv.sh`). Written,
+   untested on board: the C908's Zvfh, the probe's bit and the speed against the integer path are
+   owed a board check.
 6. GPUs have fp16 arithmetic: `full16` and `half16`, beside the integer shaders, opt-in
    (`GpuIsp::set_half_precision`) where the device has `shaderFloat16`. They run the front end,
    bilinear demosaic, colour matrix, tone curve and output in float16, within the CPU fp16 path's
@@ -146,9 +154,9 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | x86 | 42 | 1 | 0 |
 | NEON64 | 43 | 0 | 0 |
 | NEON32 | 42 | 0 | 1 |
-| RVV | 39 | 4 | 0 |
+| RVV | 40 | 3 | 0 |
 | GPU | 41 | 2 | 0 |
-| **all** | **250** | **7** | **1** |
+| **all** | **251** | **6** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board. "Written, untested on board"
 rows count as gaps (the MPP, K230D and RGA rows), so the RGA row's change leaves the count as it was.
