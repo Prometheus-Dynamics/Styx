@@ -13,60 +13,19 @@
 
 mod urb;
 
-use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::ioctl::{self, Ioctl, io, ior, iow, iowr};
+use lemnos_linux_sys::usbfs::{self as sys, UsbfsFile};
+
+use crate::ioctl::{self, Ioctl, io};
 use crate::{Error, Result};
 
 pub use urb::{
     Completion, IsoPacket, MAX_ISO_PACKETS, TransferKind, UrbRing, UrbRingConfig, UrbStatus,
 };
-
-/// `struct usbdevfs_ctrltransfer`.
-#[repr(C)]
-struct CtrlTransfer {
-    request_type: u8,
-    request: u8,
-    value: u16,
-    index: u16,
-    length: u16,
-    timeout: u32,
-    data: *mut libc::c_void,
-}
-
-/// `struct usbdevfs_bulktransfer`.
-#[repr(C)]
-struct BulkTransfer {
-    ep: libc::c_uint,
-    len: libc::c_uint,
-    timeout: libc::c_uint,
-    data: *mut libc::c_void,
-}
-
-/// `struct usbdevfs_setinterface`.
-#[repr(C)]
-struct SetInterface {
-    interface: libc::c_uint,
-    altsetting: libc::c_uint,
-}
-
-/// `struct usbdevfs_getdriver`.
-#[repr(C)]
-struct GetDriver {
-    interface: libc::c_uint,
-    driver: [u8; 256],
-}
-
-/// `struct usbdevfs_disconnect_claim`.
-#[repr(C)]
-struct DisconnectClaim {
-    interface: libc::c_uint,
-    flags: libc::c_uint,
-    driver: [u8; 256],
-}
 
 /// `struct usbdevfs_ioctl`.
 #[repr(C)]
@@ -77,31 +36,24 @@ struct UsbIoctl {
 }
 
 #[cfg(target_pointer_width = "64")]
-const _: () = {
-    assert!(size_of::<CtrlTransfer>() == 24);
-    assert!(size_of::<BulkTransfer>() == 24);
-    assert!(size_of::<SetInterface>() == 8);
-    assert!(size_of::<GetDriver>() == 260);
-    assert!(size_of::<DisconnectClaim>() == 264);
-    assert!(size_of::<UsbIoctl>() == 16);
-};
+const _: () = assert!(size_of::<UsbIoctl>() == 16);
 
 ioctl::ioctls! {
-    USBDEVFS_CONTROL = iowr::<CtrlTransfer>(b'U', 0);
-    USBDEVFS_BULK = iowr::<BulkTransfer>(b'U', 2);
-    USBDEVFS_SETINTERFACE = ior::<SetInterface>(b'U', 4);
-    USBDEVFS_SETCONFIGURATION = ior::<libc::c_uint>(b'U', 5);
-    USBDEVFS_GETDRIVER = iow::<GetDriver>(b'U', 8);
-    USBDEVFS_CLAIMINTERFACE = ior::<libc::c_uint>(b'U', 15);
-    USBDEVFS_RELEASEINTERFACE = ior::<libc::c_uint>(b'U', 16);
-    USBDEVFS_IOCTL = iowr::<UsbIoctl>(b'U', 18);
-    USBDEVFS_RESET = io(b'U', 20);
-    USBDEVFS_CLEAR_HALT = ior::<libc::c_uint>(b'U', 21);
+    USBDEVFS_IOCTL = crate::ioctl::iowr::<UsbIoctl>(b'U', 18);
     USBDEVFS_DISCONNECT = io(b'U', 22);
     USBDEVFS_CONNECT = io(b'U', 23);
-    USBDEVFS_GET_CAPABILITIES = ior::<u32>(b'U', 26);
-    USBDEVFS_DISCONNECT_CLAIM = ior::<DisconnectClaim>(b'U', 27);
-    USBDEVFS_GET_SPEED = io(b'U', 31);
+}
+
+/// An `Error::Ioctl` named `name` for a failed Lemnos usbfs call.
+fn usb_err(name: &'static str) -> impl FnOnce(std::io::Error) -> Error {
+    move |source| match source.raw_os_error() {
+        Some(errno) => Error::Ioctl { name, errno },
+        None => Error::Sys { call: name, source },
+    }
+}
+
+fn millis(timeout: Duration) -> u32 {
+    timeout.as_millis().min(u32::MAX as u128) as u32
 }
 
 /// The speed a device runs at (`USBDEVFS_GET_SPEED`, `enum usb_device_speed`).
@@ -175,25 +127,37 @@ impl ControlSetup {
     }
 }
 
-/// An open usbfs device node.
+/// An open usbfs device node. The ioctls are Lemnos's (`lemnos_linux_sys::usbfs`); the
+/// asynchronous transfers are [`UrbRing`]'s, on the same descriptor.
 ///
 /// Every method takes `&self`: control transfers may run on one thread while another reaps
 /// streaming transfers through the device's [`UrbRing`].
-#[derive(Debug)]
 pub struct UsbDevice {
-    fd: OwnedFd,
+    file: UsbfsFile,
     path: PathBuf,
     /// A ring owns the asynchronous transfers of this descriptor (reaping returns any).
     ring_taken: AtomicBool,
+}
+
+impl std::fmt::Debug for UsbDevice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UsbDevice")
+            .field("path", &self.path)
+            .field("fd", &self.file.as_fd().as_raw_fd())
+            .finish()
+    }
 }
 
 impl UsbDevice {
     /// Opens `/dev/bus/usb/BBB/DDD` read-write.
     pub fn open(path: impl AsRef<Path>) -> Result<UsbDevice> {
         let path = path.as_ref();
-        let fd = ioctl::open_device(path, false)?;
+        let file = UsbfsFile::open(path).map_err(|source| Error::Open {
+            path: path.to_owned(),
+            source,
+        })?;
         Ok(UsbDevice {
-            fd,
+            file,
             path: path.to_owned(),
             ring_taken: AtomicBool::new(false),
         })
@@ -211,6 +175,7 @@ impl UsbDevice {
 
     /// The device descriptor followed by every configuration's descriptors, as the kernel
     /// cached them at enumeration (what `read(2)` on the node returns; no bus traffic).
+    /// Read with `pread` from the start, so every call returns them all.
     pub fn descriptors(&self) -> Result<Vec<u8>> {
         let mut out = Vec::new();
         let mut buf = [0u8; 4096];
@@ -219,7 +184,7 @@ impl UsbDevice {
             // most that many.
             let n = unsafe {
                 libc::pread(
-                    self.fd.as_raw_fd(),
+                    self.file.as_fd().as_raw_fd(),
                     buf.as_mut_ptr().cast(),
                     buf.len(),
                     out.len() as libc::off_t,
@@ -252,90 +217,68 @@ impl UsbDevice {
         data: &mut [u8],
         timeout: Duration,
     ) -> Result<usize> {
-        let length = u16::try_from(data.len())
-            .map_err(|_| Error::Invalid("control transfer longer than 65535 bytes".into()))?;
-        let mut arg = CtrlTransfer {
+        let raw = sys::ControlSetup {
             request_type: setup.request_type,
             request: setup.request,
             value: setup.value,
             index: setup.index,
-            length,
-            timeout: timeout.as_millis().min(u32::MAX as u128) as u32,
-            data: data.as_mut_ptr().cast(),
         };
-        // SAFETY: `arg` is a `usbdevfs_ctrltransfer` whose `data` points to `length` bytes of
-        // `data`, borrowed mutably for the call; the kernel copies in or out synchronously.
-        let n = unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_CONTROL, &mut arg)? };
-        Ok(n as usize)
+        let r = if setup.is_in() {
+            self.file.control_in(raw, data, millis(timeout))
+        } else {
+            self.file.control_out(raw, data, millis(timeout))
+        };
+        r.map_err(usb_err("USBDEVFS_CONTROL"))
     }
 
     /// A synchronous bulk (or interrupt) transfer on `endpoint` (bit 7 set for IN).
     pub fn bulk(&self, endpoint: u8, data: &mut [u8], timeout: Duration) -> Result<usize> {
-        let len = u32::try_from(data.len())
-            .map_err(|_| Error::Invalid("bulk transfer longer than 4 GiB".into()))?;
-        let mut arg = BulkTransfer {
-            ep: endpoint.into(),
-            len,
-            timeout: timeout.as_millis().min(u32::MAX as u128) as u32,
-            data: data.as_mut_ptr().cast(),
+        let r = if endpoint & 0x80 != 0 {
+            self.file.bulk_in(endpoint, data, millis(timeout))
+        } else {
+            self.file.bulk_out(endpoint, data, millis(timeout))
         };
-        // SAFETY: `arg.data` points to `len` bytes of `data`, borrowed mutably for the
-        // synchronous call.
-        let n = unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_BULK, &mut arg)? };
-        Ok(n as usize)
+        r.map_err(usb_err("USBDEVFS_BULK"))
     }
 
     /// Selects configuration `value` (`bConfigurationValue`).
     pub fn set_configuration(&self, value: u32) -> Result<()> {
-        let mut v: libc::c_uint = value;
-        // SAFETY: the ioctl reads one `unsigned int`.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_SETCONFIGURATION, &mut v)? };
-        Ok(())
+        let value = u8::try_from(value)
+            .map_err(|_| Error::Invalid(format!("configuration value {value}")))?;
+        self.file
+            .set_configuration(value)
+            .map_err(usb_err("USBDEVFS_SETCONFIGURATION"))
     }
 
     /// Claims interface `number` for this descriptor (`EBUSY` while a driver holds it).
     pub fn claim_interface(&self, number: u8) -> Result<()> {
-        let mut v = libc::c_uint::from(number);
-        // SAFETY: the ioctl reads one `unsigned int`.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_CLAIMINTERFACE, &mut v)? };
-        Ok(())
+        self.file
+            .claim_interface(number, false)
+            .map_err(usb_err("USBDEVFS_CLAIMINTERFACE"))
     }
 
     /// Releases interface `number`.
     pub fn release_interface(&self, number: u8) -> Result<()> {
-        let mut v = libc::c_uint::from(number);
-        // SAFETY: the ioctl reads one `unsigned int`.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_RELEASEINTERFACE, &mut v)? };
-        Ok(())
+        self.file
+            .release_interface(number, false)
+            .map_err(usb_err("USBDEVFS_RELEASEINTERFACE"))
     }
 
     /// Detaches whatever kernel driver holds interface `number` and claims it, atomically
     /// (`USBDEVFS_DISCONNECT_CLAIM`). Only that interface: the device's other interfaces keep
     /// their drivers.
     pub fn detach_and_claim(&self, number: u8) -> Result<()> {
-        let mut arg = DisconnectClaim {
-            interface: number.into(),
-            flags: 0,
-            driver: [0; 256],
-        };
-        // SAFETY: `arg` is a `usbdevfs_disconnect_claim`, read by the kernel.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_DISCONNECT_CLAIM, &mut arg)? };
-        Ok(())
+        self.file
+            .claim_interface(number, true)
+            .map_err(usb_err("USBDEVFS_DISCONNECT_CLAIM"))
     }
 
     /// The kernel driver bound to interface `number`, if any (`usbfs` for one claimed through
     /// usbfs).
     pub fn driver(&self, number: u8) -> Result<Option<String>> {
-        let mut arg = GetDriver {
-            interface: number.into(),
-            driver: [0; 256],
-        };
-        // SAFETY: `arg` is a `usbdevfs_getdriver`; the kernel writes the name into `driver`.
-        match unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_GETDRIVER, &mut arg) } {
-            Ok(_) => Ok(Some(ioctl::cstr_field(&arg.driver))),
-            Err(e) if e.errno() == Some(libc::ENODATA) => Ok(None),
-            Err(e) => Err(e),
-        }
+        self.file
+            .driver(number)
+            .map_err(usb_err("USBDEVFS_GETDRIVER"))
     }
 
     /// Detaches the kernel driver from interface `number` (`USBDEVFS_DISCONNECT`).
@@ -356,7 +299,7 @@ impl UsbDevice {
             data: std::ptr::null_mut(),
         };
         // SAFETY: `arg` is a `usbdevfs_ioctl` with no data for these two codes.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_IOCTL, &mut arg) }
+        unsafe { ioctl::ioctl(self.file.as_fd(), USBDEVFS_IOCTL, &mut arg) }
             .map(|_| ())
             .map_err(|e| match e {
                 Error::Ioctl { errno, .. } => Error::Ioctl {
@@ -369,50 +312,40 @@ impl UsbDevice {
 
     /// Selects alternate setting `alt` of interface `number` (claimed).
     pub fn set_interface(&self, number: u8, alt: u8) -> Result<()> {
-        let mut arg = SetInterface {
-            interface: number.into(),
-            altsetting: alt.into(),
-        };
-        // SAFETY: `arg` is a `usbdevfs_setinterface`, read by the kernel.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_SETINTERFACE, &mut arg)? };
-        Ok(())
+        self.file
+            .set_interface(number, alt)
+            .map_err(usb_err("USBDEVFS_SETINTERFACE"))
     }
 
     /// Clears a halt (stall) on `endpoint`.
     pub fn clear_halt(&self, endpoint: u8) -> Result<()> {
-        let mut v = libc::c_uint::from(endpoint);
-        // SAFETY: the ioctl reads one `unsigned int`.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_CLEAR_HALT, &mut v)? };
-        Ok(())
+        self.file
+            .clear_halt(endpoint)
+            .map_err(usb_err("USBDEVFS_CLEAR_HALT"))
     }
 
     /// Resets the device (it re-enumerates if its descriptors changed).
     pub fn reset(&self) -> Result<()> {
-        // SAFETY: the ioctl takes no argument.
-        unsafe { ioctl::ioctl_raw(self.fd.as_fd(), USBDEVFS_RESET, std::ptr::null_mut())? };
-        Ok(())
+        self.file.reset().map_err(usb_err("USBDEVFS_RESET"))
     }
 
     /// The device's speed.
     pub fn speed(&self) -> Result<Speed> {
-        // SAFETY: the ioctl takes no argument and returns the speed.
-        let v =
-            unsafe { ioctl::ioctl_raw(self.fd.as_fd(), USBDEVFS_GET_SPEED, std::ptr::null_mut())? };
+        let v = self.file.speed().map_err(usb_err("USBDEVFS_GET_SPEED"))?;
         Ok(Speed::from_raw(v))
     }
 
     /// usbfs capability bits (`USBDEVFS_CAP_*`).
     pub fn capabilities(&self) -> Result<u32> {
-        let mut caps = 0u32;
-        // SAFETY: the ioctl writes one `__u32`.
-        unsafe { ioctl::ioctl(self.fd.as_fd(), USBDEVFS_GET_CAPABILITIES, &mut caps)? };
-        Ok(caps)
+        self.file
+            .capabilities()
+            .map_err(usb_err("USBDEVFS_GET_CAPABILITIES"))
     }
 
     /// Waits until a submitted transfer completed (`POLLOUT`) or the device went away.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<crate::Ready> {
         ioctl::poll_fd(
-            self.fd.as_fd(),
+            self.file.as_fd(),
             libc::POLLOUT,
             timeout.map(crate::ioctl::ceil_ms),
         )
@@ -436,7 +369,7 @@ impl AsFd for UsbDevice {
     /// The descriptor reports `POLLOUT` when a submitted transfer completed, `POLLHUP` when
     /// the device was disconnected.
     fn as_fd(&self) -> BorrowedFd<'_> {
-        self.fd.as_fd()
+        self.file.as_fd()
     }
 }
 
@@ -468,16 +401,9 @@ mod tests {
     #[test]
     fn ioctl_numbers_match_the_kernel_headers() {
         // From <linux/usbdevice_fs.h> on x86_64/aarch64.
-        assert_eq!(USBDEVFS_CONTROL.nr, 0xc018_5500);
-        assert_eq!(USBDEVFS_BULK.nr, 0xc018_5502);
-        assert_eq!(USBDEVFS_SETINTERFACE.nr, 0x8008_5504);
-        assert_eq!(USBDEVFS_CLAIMINTERFACE.nr, 0x8004_550f);
         assert_eq!(USBDEVFS_IOCTL.nr, 0xc010_5512);
         assert_eq!(USBDEVFS_DISCONNECT.nr, 0x5516);
         assert_eq!(USBDEVFS_CONNECT.nr, 0x5517);
-        assert_eq!(USBDEVFS_DISCONNECT_CLAIM.nr, 0x8108_551b);
-        assert_eq!(USBDEVFS_GET_SPEED.nr, 0x551f);
-        assert_eq!(USBDEVFS_GETDRIVER.nr, 0x4104_5508);
     }
 
     #[test]
