@@ -33,6 +33,13 @@ copied into the device's buffers at its strides and results are copied out into 
 With the feature on, the registry offers the encoders for NV12, YU12 and YUYV input whenever a
 device here produces H.264, HEVC or JPEG.
 
+Feature `codec-rga` (Linux) converts, scales and crops on the Rockchip RGA through Daedalus's
+`daedalus-rga`, the stack's one RGA binding: `styx_codec::RgaConverter` takes RGB, BGR, BGRA,
+grey, NV12, NV21 and I420 frames and reads dma-buf frames at the engine's layout in place. Other
+frames are copied into dma-heap buffers made once per layout; the result is copied out into a
+host frame. No rotation yet. Written, untested on board; the vim2m tests pass where vim2m is
+loaded. The registry does not offer it yet, so the CPU path is still what the pipeline uses.
+
 ```rust,ignore
 use styx::codec::{V4l2M2mEncoder, V4l2M2mOptions};
 

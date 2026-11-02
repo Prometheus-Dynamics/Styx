@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_codec::RgaConverter` (feature `codec-rga`, Linux): scale, crop and convert on the
+  Rockchip RGA through Daedalus's `daedalus-rga` (no rotation yet). Dma-buf frames are read in
+  place; host frames go through dma-heap buffers made once per layout. Written, untested on
+  board; the vim2m tests run where vim2m is loaded. Not yet offered by the registry.
 - `styx_gpuisp::GpuConvert`: the packed and codec conversions as Vulkan compute
   (`shaders/convert.comp`), bit-exact with `styx_core::simd`'s scalar kernels: BGR ↔ RGB, BGRA ↔
   RGBA, XRGB32, RGB48, grey and Y16 to RGB24, RGB24 → RGBA, RGB and YUYV → luma, YUYV → NV12

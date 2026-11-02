@@ -37,6 +37,7 @@ utoipa = { workspace = true, optional = true }
 # V4L2 memory-to-memory codecs driven directly (Linux only).
 [target.'cfg(target_os = "linux")'.dependencies]
 styx-kernel = { workspace = true, optional = true }
+daedalus-rga = { workspace = true, optional = true }
 
 # libjpeg-turbo with its SIMD required where it has it; elsewhere (RISC-V) it builds without.
 [target.'cfg(any(target_arch = "x86_64", target_arch = "aarch64"))'.dependencies]
@@ -66,6 +67,8 @@ codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc"]
 codec-v4l2m2m = ["dep:styx-kernel"]
 # Hardware encoders on Rockchip VPUs through MPP (librockchip_mpp, opened at run time).
 codec-rkmpp = ["dep:styx-kernel", "dep:libc"]
+# Scalers and converters on the Rockchip RGA through Daedalus's `daedalus-rga` (Linux only).
+codec-rga = ["dep:styx-kernel", "dep:daedalus-rga"]
 # FFmpeg containers and network streams (libavformat), for netcam and file video.
 codec-ffmpeg-format = ["codec-ffmpeg"]
 serde = ["dep:serde", "styx-core/serde", "styx-capture/serde"]

@@ -106,6 +106,9 @@ styx-tune = { path = "crates/tune", version = "2.0.1-dev" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev", default-features = false }
 # Daedalus's GPU crate, for `styx-gpuisp`'s optional `daedalus` feature (its raw Vulkan handles).
 daedalus-gpu = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev", default-features = false }
+# Daedalus's RGA 2D engine (V4L2 mem2mem and librga): the stack's one RGA binding, for
+# `styx-codec`'s optional `codec-rga` feature (Linux).
+daedalus-rga = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev" }
 crossbeam-queue = { version = "0.3.14", default-features = false, features = ["alloc"] }
 # Locks for the no_std frame path (styx-core without `std`), and its targets without
 # compare-and-swap (`critical-section`, `portable-atomic-util`'s `Arc`).

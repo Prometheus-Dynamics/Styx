@@ -2094,6 +2094,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "daedalus-rga"
+version = "3.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#cad62f3a3b6b18522042d5bc13a06da5c3882cda"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "daedalus-rs"
 version = "3.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#cad62f3a3b6b18522042d5bc13a06da5c3882cda"
@@ -5362,6 +5370,7 @@ name = "styx-codec"
 version = "2.0.1-dev"
 dependencies = [
  "criterion",
+ "daedalus-rga",
  "ffmpeg-sys-next",
  "image",
  "jpeg-decoder",

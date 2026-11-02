@@ -171,6 +171,7 @@ pub fn is_hardware_implementation_name(value: &str) -> bool {
         "videotoolbox",
         "v4l2m2m",
         "rkmpp",
+        "rga",
         "nvv4l2",
         "nvmpi",
         "ffmpeg-hw",
@@ -379,6 +380,8 @@ pub mod mjpeg_zune;
 ))]
 mod par;
 pub mod prelude;
+#[cfg(all(feature = "codec-rga", target_os = "linux"))]
+pub mod rga;
 #[cfg(all(feature = "codec-rkmpp", target_os = "linux"))]
 pub mod rkmpp;
 #[cfg(feature = "codec-turbojpeg")]

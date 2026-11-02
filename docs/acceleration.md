@@ -131,7 +131,7 @@ Notes:
 | rkisp (RK3566, RK3562, RK3576) | the ISP stages and 3A statistics | gap: needs a board |
 | rkisp (RV1106, Flame) | the ISP stages, pyramid levels | gap: needs a board and its BSP |
 | ISP8000 via vvcam (K230D) | the ISP stages and 3A statistics | gap: needs a board |
-| RGA (Rockchip 2D) | colour conversion, scaling, rotation | gap: Daedalus's `daedalus-rga` (V4L2 M2M and librga backends; no rotation yet) is the one binding; Styx's conversion stage does not hand frames to it yet |
+| RGA (Rockchip 2D) | colour conversion, scaling, crop (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Daedalus's `daedalus-rga`, the one binding; the planner and registry do not pick it yet |
 | Stateless VPUs (Hantro, rkvenc) | JPEG, H.264 encode | gap: `V4l2M2mEncoder` is stateful only |
 | Rockchip MPP (vendor `/dev/mpp_service`) | H.264, H.265, JPEG encode | written, untested on board: `RkMppEncoder` (`codec-rkmpp`) |
 | K230D VPU and 2D unit | H.264, H.265, JPEG encode; rotation, scaling | written, untested on board: the V4L2 M2M codecs, frames imported by dma-buf |
@@ -150,7 +150,8 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | GPU | 41 | 2 | 0 |
 | **all** | **250** | **7** | **1** |
 
-Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
+Fixed-function units: 5 pass and 7 gaps, 6 of which need a board. "Written, untested on board"
+rows count as gaps (the MPP, K230D and RGA rows), so the RGA row's change leaves the count as it was.
 
 ## Hardware blocks
 
@@ -218,7 +219,7 @@ States:
 | rkisp | main path (full ISP) | unused (board): parameter and statistics code exists for ISP30 only | software ISP |
 | rkisp | 3A statistics | unused (board) | software ISP statistics |
 | rkisp | self path (second scaled output) | unused (board) | `box2_row`, software scaling |
-| RGA2 / RGA3 | scale, crop, convert, rotate | unused (board): through Daedalus's `daedalus-rga` (mainline `rockchip-rga` over V4L2 M2M, RGA3 through librga) | `styx_core::simd` |
+| RGA2 / RGA3 | scale, crop, convert (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Daedalus's `daedalus-rga` (mainline `rockchip-rga` over V4L2 M2M, RGA3 through librga) | `styx_core::simd` |
 | MPP / rkvenc, Hantro | H.264, H.265, JPEG encode | written, untested on board: `RkMppEncoder`, ISP NV12 imported by dma-buf | libjpeg-turbo, FFmpeg |
 | MPP / rkvdec | H.264, H.265 decode | unused (board) | FFmpeg software |
 | IEP | denoise, enhancement (deinterlace n/a: cameras are progressive) | unused (board) | software ISP denoise |
@@ -262,5 +263,5 @@ capture starts with them.
 | `pyramid` | levels from the CPU's box filter (levels asked of the GPU stay there) | levels from the ISP (`PyramidSource::HardwareOnly`) |
 
 The request-wide `FrameRequest::hardware` still applies on top. The scaler knob covers the ISP's
-scalers; the planner has no M2M scaling stage yet (`V4l2M2mConverter` is used directly), which
-the Rockchip RGA item in `TODO.md` adds.
+scalers; the planner has no M2M scaling stage yet (`V4l2M2mConverter` and `RgaConverter` are used
+directly), which the Rockchip RGA item in `TODO.md` adds.

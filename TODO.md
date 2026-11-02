@@ -102,12 +102,16 @@ memory when it runs.
 - [ ] **Rockchip: RGA scale, crop and convert** (RGA3 on RK3588S, RGA2 on the others). *Why:* deeper
       pyramid levels and preview frames without the CPU. The stack's one RGA binding is Daedalus's
       `daedalus-rga` (agreed with Daedalus 2026-11-02): V4L2 M2M for mainline `rockchip-rga`, librga
-      for RGA3 (written, untested on board), no rotation yet. Styx calls it (directly, or by handing
-      a dma-buf frame to a Daedalus graph) and has no RGA code of its own; `V4l2M2mConverter` is
-      not for RGA. The scaler
-      knob covers ISP scalers until this adds an M2M stage to the planner. *Done when:* the
-      conversion stage picks RGA through the accelerator knob, scaling within a stated tolerance,
-      CPU fallback without it. *Blocked by:* a Rockchip board.
+      for RGA3, no rotation yet. Styx has no RGA code of its own; `V4l2M2mConverter` is not for RGA.
+      Written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`), dma-buf frames
+      read in place, host frames through dma-heap buffers, scale/crop/convert tests against vim2m
+      (identity and channel swap exact). Not written: the hookup. The registry is keyed by input and
+      encoder lookups take every codec of kind `Encoder`, so a converter needs its own kind (or a
+      planner stage) before it can be registered; `V4l2M2mConverter` is not registered either. The
+      scaler knob covers ISP scalers until then. *Done when:* the conversion stage picks RGA through
+      the accelerator knob, scaling within a stated tolerance, CPU fallback without it; then the
+      board run. *Blocked by:* the hookup design (a converter kind); the board run needs a Rockchip
+      board.
 - [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (written, untested on board:
       `styx_codec::rkmpp::RkMppEncoder`, feature `codec-rkmpp`, MPP opened with `dlopen`). NV12 or
       YUYV in; the ISP's NV12 in one dma-buf is imported and encoded in place, other frames are
