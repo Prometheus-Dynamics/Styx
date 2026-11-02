@@ -47,8 +47,8 @@ fn next(stream: &mut FrameStream) -> crate::buffers::NativeFrame {
 }
 
 /// The camera opens, configures and streams as a real one: the description's modes, CSI-2
-/// packed RAW10 at the rate asked for, timestamps from the monotonic clock one frame apart,
-/// each frame carrying the controls that made it.
+/// packed RAW10 at the rate asked for, timestamps one frame apart (lockstep, so a loaded host
+/// cannot spread them), each frame carrying the controls that made it.
 #[test]
 fn a_simulated_camera_streams_like_the_sensor() {
     let mut spec = SimSpec::new("ov9782");
@@ -57,6 +57,7 @@ fn a_simulated_camera_streams_like_the_sensor() {
         light: 1.0,
     };
     spec.noise = false;
+    spec.lockstep = true;
     let mut cam = open(spec, 10);
     assert!(cam.info().display_name().contains("simulated"));
     assert!(
@@ -72,10 +73,17 @@ fn a_simulated_camera_streams_like_the_sensor() {
     assert_eq!(c.fourcc, FourCc::new(b"pBAA"));
     let mut stream = cam.start().unwrap();
     // Frames go back as they are read (the queue has 4 buffers).
+    // Frames one period (1/30 s) apart, stamped in lockstep: however late a loaded host
+    // renders them.
     let stamps: Vec<Duration> = (0..7).map(|_| next(&mut stream).timestamp).collect();
-    let span = stamps[6] - stamps[0];
-    let fps = 6.0 / span.as_secs_f64();
-    assert!((fps - 30.0).abs() < 3.0, "{fps:.1} fps");
+    let gaps: Vec<f64> = stamps
+        .windows(2)
+        .map(|w| (w[1] - w[0]).as_secs_f64())
+        .collect();
+    assert!(
+        gaps.iter().all(|g| (g * 30.0 - 1.0).abs() < 0.01),
+        "gaps {gaps:.4?}"
+    );
     let f = &next(&mut stream);
     assert!(!f.error);
     assert_eq!((f.width, f.height), (640, 400));

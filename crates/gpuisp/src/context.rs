@@ -138,11 +138,29 @@ struct Candidate {
 /// Held while a Vulkan instance or device is created or destroyed. The Vulkan loader (1.4.341
 /// on the development host) crashes in its driver scan, or looking a device up, when one
 /// thread creates an instance or device while another creates or destroys one, so every
-/// instance and device this crate makes or destroys is under this lock. Code making other Vulkan instances in the same process (wgpu's, Daedalus's) can
-/// hold it around theirs, creation and drop.
-pub fn vulkan_instance_lock() -> std::sync::MutexGuard<'static, ()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+/// instance and device this crate makes or destroys is under this lock. With the `daedalus`
+/// feature it is Daedalus's driver lock (`daedalus_gpu::driver_lock`), which Daedalus holds
+/// around its own creations: do not make a Daedalus GPU while holding it (it is not
+/// reentrant). Without it, a lock of this crate's that other code making instances in the
+/// process (wgpu's) can hold around theirs.
+pub fn vulkan_instance_lock() -> VulkanInstanceGuard {
+    #[cfg(feature = "daedalus")]
+    let guard = daedalus_gpu::driver_lock();
+    #[cfg(not(feature = "daedalus"))]
+    let guard = {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    };
+    VulkanInstanceGuard { _guard: guard }
+}
+
+/// [`vulkan_instance_lock`] held until dropped.
+#[must_use]
+pub struct VulkanInstanceGuard {
+    #[cfg(feature = "daedalus")]
+    _guard: daedalus_gpu::DriverGuard,
+    #[cfg(not(feature = "daedalus"))]
+    _guard: std::sync::MutexGuard<'static, ()>,
 }
 
 /// Destroys `instance` (nothing made from it is alive) under [`vulkan_instance_lock`].

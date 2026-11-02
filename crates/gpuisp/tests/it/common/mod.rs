@@ -176,46 +176,20 @@ pub fn compare(a: &[u8], b: &[u8], c: usize, n: usize) -> (f64, u8, f64) {
     (psnr, max, over as f64 / k.max(1) as f64)
 }
 
-/// Daedalus's GPU (wgpu on Vulkan), made and dropped under the GPU ISP's instance lock: the
-/// loader crashes when wgpu's instance comes or goes while another test thread makes or
-/// destroys one (`styx_gpuisp::vulkan_instance_lock`). Declare it before everything made
-/// from it, so it drops last, holding the last reference.
+/// Daedalus's wgpu GPU, `None` (with a note) without one. Daedalus makes it under its driver
+/// lock, which the GPU ISP's instances and devices are made and destroyed under too
+/// (`styx_gpuisp::vulkan_instance_lock`).
 #[cfg(feature = "daedalus")]
-pub struct DaedalusGpu(Option<daedalus_gpu::GpuContextHandle>);
-
-#[cfg(feature = "daedalus")]
-impl std::ops::Deref for DaedalusGpu {
-    type Target = daedalus_gpu::GpuContextHandle;
-
-    fn deref(&self) -> &Self::Target {
-        self.0.as_ref().expect("until dropped")
-    }
-}
-
-#[cfg(feature = "daedalus")]
-impl Drop for DaedalusGpu {
-    fn drop(&mut self) {
-        let _vk = styx_gpuisp::vulkan_instance_lock();
-        self.0.take();
-    }
-}
-
-/// Daedalus's wgpu GPU, `None` (with a note) without one.
-#[cfg(feature = "daedalus")]
-pub fn daedalus_gpu() -> Option<DaedalusGpu> {
+pub fn daedalus_gpu() -> Option<daedalus_gpu::GpuContextHandle> {
     use daedalus_gpu::{GpuBackendKind, GpuOptions, select_backend};
-    let _vk = styx_gpuisp::vulkan_instance_lock();
     let gpu = select_backend(&GpuOptions {
         preferred_backend: Some(GpuBackendKind::Wgpu),
         ..Default::default()
     });
-    match gpu {
-        Ok(gpu) => Some(DaedalusGpu(Some(gpu))),
-        Err(_) => {
-            eprintln!("no Daedalus GPU: skipped");
-            None
-        }
+    if gpu.is_err() {
+        eprintln!("no Daedalus GPU: skipped");
     }
+    gpu.ok()
 }
 
 /// Submits `GpuStorage::with_data`'s upload: wgpu flushes `write_buffer` data only on its
