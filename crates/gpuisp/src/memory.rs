@@ -175,7 +175,8 @@ impl Buffer {
         // The import covers the whole dma-buf (v3dv refuses any other size with
         // ERROR_INVALID_EXTERNAL_HANDLE): its real size, which heaps round up to pages.
         let whole = dmabuf_len(fd).ok();
-        let create = |len: u64| -> Result<(vk::Buffer, vk::MemoryRequirements), GpuError> {
+        // The buffer, its requirements and whether the driver requires a dedicated allocation.
+        let create = |len: u64| -> Result<(vk::Buffer, vk::MemoryRequirements, bool), GpuError> {
             let mut ext_info = vk::ExternalMemoryBufferCreateInfo::default().handle_types(handle);
             let info = vk::BufferCreateInfo::default()
                 .size(len)
@@ -184,25 +185,52 @@ impl Buffer {
                 .push_next(&mut ext_info);
             // SAFETY: valid create info.
             let buffer = unsafe { d.create_buffer(&info, None) }.ctx("vkCreateBuffer")?;
-            // SAFETY: a buffer of this device.
-            Ok((buffer, unsafe { d.get_buffer_memory_requirements(buffer) }))
+            let mut dedicated = vk::MemoryDedicatedRequirements::default();
+            let mut req = vk::MemoryRequirements2::default().push_next(&mut dedicated);
+            let query = vk::BufferMemoryRequirementsInfo2::default().buffer(buffer);
+            // SAFETY: a buffer of this device; Vulkan 1.2 has the call.
+            unsafe { d.get_buffer_memory_requirements2(&query, &mut req) };
+            let req = req.memory_requirements;
+            Ok((
+                buffer,
+                req,
+                dedicated.requires_dedicated_allocation == vk::TRUE,
+            ))
         };
-        let mut size = whole.map_or(size, |w| size.min(w));
-        let (mut buffer, mut req) = create(size)?;
+        // The buffer spans the whole dma-buf, so its requirement is the import's size (a
+        // dedicated allocation needs that); the frames' bounds are checked against `size`.
+        let mut len = whole.unwrap_or(size);
+        let (mut buffer, mut req, mut required) = create(len)?;
         // A driver that rounds buffers up (v3dv by 256 bytes) needs the rounding inside the
         // dma-buf: a shorter buffer then, the frames' bounds checked against what it covers.
         if let Some(w) = whole.filter(|&w| req.size > w) {
             // SAFETY: not in use.
             unsafe { d.destroy_buffer(buffer, None) };
-            size = size.saturating_sub((req.size - w).next_multiple_of(4));
-            (buffer, req) = create(size)?;
-            if req.size > w || size == 0 {
+            len = len.saturating_sub((req.size - w).next_multiple_of(4));
+            (buffer, req, required) = create(len)?;
+            if req.size > w || len == 0 {
                 // SAFETY: not in use.
                 unsafe { d.destroy_buffer(buffer, None) };
                 return Err(GpuError::Unsupported(format!(
                     "dma-buf of {w} bytes is too short for this device's buffers"
                 )));
             }
+        }
+        let size = size.min(len);
+        // A dedicated allocation must be exactly the buffer's requirement
+        // (VUID-VkMemoryDedicatedAllocateInfo-buffer-02965), and the import is the whole
+        // dma-buf: dedicate when the sizes agree (NVIDIA refuses dma-buf imports without, though
+        // it neither requires nor prefers one), not otherwise; a driver that requires one over a
+        // dma-buf of another size cannot import it.
+        let exact = whole.is_none_or(|w| w == req.size);
+        if required && !exact {
+            // SAFETY: not in use.
+            unsafe { d.destroy_buffer(buffer, None) };
+            return Err(GpuError::Unsupported(format!(
+                "the driver requires a dedicated allocation of {} bytes for a dma-buf of {}",
+                req.size,
+                whole.unwrap_or_default()
+            )));
         }
         let bits = req.memory_type_bits & props.memory_type_bits;
         let found = memory_type(
@@ -233,11 +261,13 @@ impl Buffer {
             .handle_type(handle)
             .fd(raw);
         let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().buffer(buffer);
-        let alloc = vk::MemoryAllocateInfo::default()
+        let mut alloc = vk::MemoryAllocateInfo::default()
             .allocation_size(whole.unwrap_or(req.size))
             .memory_type_index(index)
-            .push_next(&mut import)
-            .push_next(&mut dedicated);
+            .push_next(&mut import);
+        if exact {
+            alloc = alloc.push_next(&mut dedicated);
+        }
         // Imported memory is not mapped: the CPU side of a dma-buf is the dma-buf's own mmap.
         match Self::bind(ctx, buffer, &alloc, size, vk::MemoryPropertyFlags::empty()) {
             Ok(b) => {
@@ -245,7 +275,12 @@ impl Buffer {
                 std::mem::forget(dup);
                 Ok(b)
             }
-            Err(e) => Err(e),
+            Err(e) => {
+                // A driver may close the fd even when the import fails (an IO-safety abort on
+                // drop): leak it rather than close a number another file may hold by now.
+                std::mem::forget(dup);
+                Err(e)
+            }
         }
     }
 

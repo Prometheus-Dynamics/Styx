@@ -893,6 +893,13 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- GPU ISP dma-buf import: the whole dma-buf was imported as a dedicated allocation even when
+  the buffer's memory requirement was a different size, which is invalid
+  (`VUID-VkMemoryDedicatedAllocateInfo-buffer-02965`, found by Daedalus's validation run on v3dv).
+  The buffer now spans the whole dma-buf, so the sizes agree. The allocation is dedicated only
+  when they do; NVIDIA refuses dma-buf imports without it. A driver that requires a dedicated
+  allocation of another size gets an error. A failed import no longer closes an fd the driver
+  may already have closed.
 - PiSP back end: a camera whose input ring times `QUEUED_JOBS` came to more than 32 (V4L2's
   `VIDEO_MAX_FRAME`) failed to start with "pispbe-input gave 32 of 40 buffers" when
   `queue_safe` was loaded. The input slots now fit the indices the node grants: own indices
