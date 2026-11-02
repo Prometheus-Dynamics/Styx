@@ -39,6 +39,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   (written, untested on board). Breaking: `styx_pipeline::rkisp::params` and `statistics`
   take the buffer and the `Isp`; `IspDevice::start` and `queue_params` take any
   `ParamBuffer`.
+- Rockchip: the ISP's self path as a pyramid level (`native_pyramid_level`;
+  `IspSetup::self_path`, `RkispPipeline::self_data`/`release_self`; written, untested on
+  board). Breaking: `IspSetup` gains `self_path`, `RkispPipeline::open` takes
+  `(output, self_path)`, `RkispFrame` gains `self_output`.
 - **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
   `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
   its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`

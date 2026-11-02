@@ -69,11 +69,15 @@ memory when it runs.
 - [ ] **Rockchip: rkcif graph per chip** (`IspDevice` sets up one graph, written, untested on board).
       *Why:* capture feeds the ISP. *Done when:* each chip's (RK3588S, RK3576, RK3566, RK3562,
       RV1106) sensor-to-ISP media graph is set up by Styx and streams. *Blocked by:* boards.
-- [ ] **Rockchip: the ISP's self path for pyramid level 1 and preview.** Not written: `IspDevice` has
-      no second output, and whether the media core takes a second enabled link from the ISP's
-      source pad is unverified (docs/rockchip.md). *Why:* a second scaled output costs nothing.
-      *Done when:* level 1 comes from the self path, deeper levels from it, within a stated
-      tolerance of the box filter. *Blocked by:* an RK3588S.
+- [ ] **Rockchip: the ISP's self path for pyramid levels and preview: written, untested on
+      board.** `IspSetup::self_path` links the ISP's source pad to `rkisp_selfpath` and keeps a
+      second NV12 queue; `RkispPipeline` dequeues its frame with each main frame and the worker
+      attaches it as a `CompanionKind::Pyramid` companion (`native_pyramid_level`, copied into a
+      pooled buffer; the main frame stays zero-copy). *Why:* a second scaled output costs
+      nothing. *Done when:* on a board the media core takes the second enabled link from the
+      source pad, level 1 (and deeper levels from it) arrives within a stated tolerance of the
+      box filter, and the companion is leased without the copy. *Blocked by:* a Rockchip board
+      (RK3588S, RK3566 or a Flame).
 - [ ] **RK3566: rkisp ISP21** (`styx-rkisp` parameters and statistics, 0dad505, written, untested on
       board). *Why:* user decision, both low-cost chips. *Done when:* the chip streams the OV9782
       with 3A converged. The structures, builder and parser have tests; the fixed-point constants
@@ -99,11 +103,12 @@ memory when it runs.
       turbojpeg on the CPU. *Done when:* a `styx-codec` backend over librockchip_mpp encodes dma-buf
       NV12 from the ISP at 1280x800 120 fps, and the CPU fallback is used without it. *Blocked by:*
       a Rockchip board on the vendor BSP (`mpp_service`).
-- [ ] **RV1106: pyramid levels from the ISP.** Not written: `rkisp_worker` makes no pyramid companion.
-      *Why:* Eidos on Flame spends the most Styx time on the CPU pyramid downscale. *Done when:* the
-      rkisp's second output feeds `CompanionKind::Pyramid` like the PiSP's output 1 (selfpath scaler,
-      or the vendor 4x4/8x8 sampling outputs), luma or NV12's Y plane at 256-byte strides; `box2_row`
-      stays the fallback. *Blocked by:* a Flame board and its BSP.
+- [ ] **RV1106: pyramid levels from the ISP: the self path written, untested on board.** As the
+      other chips (the self path item above); the ISP32's 4x4-sampled outputs
+      (`isp32::nodes::MAINPATH_4X4`) are not used yet. *Why:* Eidos on Flame spends the most Styx
+      time on the CPU pyramid downscale. *Done when:* the companion arrives on the Flame at
+      256-byte strides (luma or NV12's Y plane), `box2_row` the fallback for deeper levels.
+      *Blocked by:* a Flame board and its BSP.
 - [ ] **Flame (RV1106G2): bring-up** (ISP32 parameters and statistics written, untested on board;
       pipeline selection as RK3562). *Why:* the Flame board. *Done when:* rkisp, rkcif graph and
       rkvenc run the OV9782 within the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a

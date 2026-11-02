@@ -578,6 +578,7 @@ pub(super) fn start_processed(
                 live: live_worker,
                 clock: timestamp_clock,
                 controls: None,
+                pyramid_level: 0,
             },
         )?,
         IspKind::Software => {

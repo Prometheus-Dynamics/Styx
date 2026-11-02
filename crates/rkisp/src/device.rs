@@ -2,7 +2,8 @@
 //!
 //! ```text
 //! sensor ─► (rkcif sditf / csi) ─► rkisp-isp-subdev ─► rkisp_mainpath  (NV12)
-//!                     rkisp-input-params ─►│  └─► rkisp-statistics (3A statistics)
+//!                     rkisp-input-params ─►│  ├─► rkisp_selfpath  (NV12, optional)
+//!                                          │  └─► rkisp-statistics (3A statistics)
 //! ```
 //!
 //! [`IspDevice`] routes whatever feeds the ISP's sink pad through it into the main path,
@@ -37,6 +38,9 @@ pub const PARAMS_ENTITY: &str = "rkisp-input-params";
 pub const STATS_ENTITY: &str = "rkisp-statistics";
 /// The main path's output node.
 pub const MAINPATH_ENTITY: &str = "rkisp_mainpath";
+/// The self path's output node: a second scaled image of the same frame (every generation's
+/// driver registers it, `SP_VDEV_NAME`).
+pub const SELFPATH_ENTITY: &str = "rkisp_selfpath";
 
 /// ISP pads: raw in, parameters in, image out, statistics out.
 const PAD_SINK: u32 = 0;
@@ -113,6 +117,11 @@ pub struct IspSetup {
     /// Bytes past the image asked for in each output buffer, for a GPU importing it (v3dv
     /// rounds storage buffers up to 256 bytes); drivers that size planes themselves ignore it.
     pub gpu_pad: u32,
+    /// The self path's NV12 output size (`None`: the self path stays off): the same frame
+    /// scaled again by the ISP, for a pyramid level or a preview (written, untested on board:
+    /// whether the media core takes the second enabled link from the ISP's source pad is to
+    /// confirm on the chip).
+    pub self_path: Option<(u32, u32)>,
 }
 
 /// An output frame left dequeued by [`IspDevice::next_output`]; give it back with
@@ -134,6 +143,44 @@ pub struct OutputFrame {
 /// Bytes of a tightly packed NV12 image of `(w, h)`.
 fn nv12_bytes((w, h): (u32, u32)) -> u32 {
     w * h + w * h.div_ceil(2)
+}
+
+/// An NV12 capture queue on video node `path` at `size` (one plane, the chroma after the
+/// luma): the queue, the size the driver set and its line stride.
+fn nv12_queue(
+    path: &std::path::Path,
+    size: (u32, u32),
+    setup: &IspSetup,
+    name: &'static str,
+) -> Result<(MmapQueue, (u32, u32), u32)> {
+    let dev = VideoDevice::open(path)?;
+    let f = dev.set_format(
+        BufType::VideoCaptureMplane,
+        &Format::Multi(PixFormatMplane {
+            width: size.0,
+            height: size.1,
+            fourcc: OUTPUT_FOURCC,
+            field: 1,
+            planes: alloc::vec![PlaneFormat {
+                bytes_per_line: 0,
+                size_image: nv12_bytes(size) + setup.gpu_pad,
+            }],
+            ..Default::default()
+        }),
+    )?;
+    let Format::Multi(p) = f else {
+        return Err(DeviceError::Setup(format!("{name} is not multi-planar")));
+    };
+    if p.fourcc != OUTPUT_FOURCC || p.planes.len() != 1 {
+        return Err(DeviceError::Setup(format!(
+            "{name} gave {} in {} planes",
+            p.fourcc,
+            p.planes.len()
+        )));
+    }
+    let stride = p.planes[0].bytes_per_line;
+    let queue = MmapQueue::new(dev, BufType::VideoCaptureMplane, setup.buffers, name)?;
+    Ok((queue, (p.width, p.height), stride))
 }
 
 /// [`MmapQueue::dequeue_within`] with the timeout as an error.
@@ -159,6 +206,8 @@ pub struct IspDevice {
     params: MmapQueue,
     stats: MmapQueue,
     output: MmapQueue,
+    /// The self path, its output size and line stride, when set up.
+    self_path: Option<(MmapQueue, (u32, u32), u32)>,
     /// Parameter buffers not queued.
     free_params: Vec<u32>,
     /// The main path's line stride and size.
@@ -191,7 +240,12 @@ impl IspDevice {
             (pad(isp, PAD_SOURCE), pad(main, 0)),
             (pad(isp, PAD_STATS), pad(stats, 0)),
         ];
-        for (s, k) in wanted {
+        let selfpath = match setup.self_path {
+            Some(_) => Some(entity(&t, SELFPATH_ENTITY)?),
+            None => None,
+        };
+        let self_link = selfpath.map(|sp| (pad(isp, PAD_SOURCE), pad(sp, 0)));
+        for (s, k) in wanted.into_iter().chain(self_link) {
             let link = t
                 .data_links()
                 .into_iter()
@@ -255,48 +309,26 @@ impl IspDevice {
         let params = meta(params, BufType::MetaOutput, PARAMS_FOURCC, PARAMS_ENTITY)?;
         let stats = meta(stats, BufType::MetaCapture, STATS_FOURCC, STATS_ENTITY)?;
         let output_path = devnode(&t, main, MAINPATH_ENTITY)?;
-        let dev = VideoDevice::open(&output_path)?;
-        let f = dev.set_format(
-            BufType::VideoCaptureMplane,
-            &Format::Multi(PixFormatMplane {
-                width: setup.output.0,
-                height: setup.output.1,
-                fourcc: OUTPUT_FOURCC,
-                field: 1,
-                planes: alloc::vec![PlaneFormat {
-                    bytes_per_line: 0,
-                    size_image: nv12_bytes(setup.output) + setup.gpu_pad,
-                }],
-                ..Default::default()
-            }),
-        )?;
-        let Format::Multi(p) = f else {
-            return Err(DeviceError::Setup(
-                "the main path is not multi-planar".into(),
-            ));
+        let (output, (width, height), stride) =
+            nv12_queue(&output_path, setup.output, setup, MAINPATH_ENTITY)?;
+        let self_path = match (selfpath, setup.self_path) {
+            (Some(sp), Some(size)) => Some(nv12_queue(
+                &devnode(&t, sp, SELFPATH_ENTITY)?,
+                size,
+                setup,
+                SELFPATH_ENTITY,
+            )?),
+            _ => None,
         };
-        if p.fourcc != OUTPUT_FOURCC || p.planes.len() != 1 {
-            return Err(DeviceError::Setup(format!(
-                "the main path gave {} in {} planes",
-                p.fourcc,
-                p.planes.len()
-            )));
-        }
-        let stride = p.planes[0].bytes_per_line;
-        let output = MmapQueue::new(
-            dev,
-            BufType::VideoCaptureMplane,
-            setup.buffers,
-            MAINPATH_ENTITY,
-        )?;
         Ok(Self {
             free_params: (0..params.len() as u32).rev().collect(),
             _media: media,
             params,
             stats,
             output,
+            self_path,
             stride,
-            output_size: (p.width, p.height),
+            output_size: (width, height),
             output_path,
             streaming: false,
         })
@@ -329,8 +361,16 @@ impl IspDevice {
         for i in 0..self.output.len() as u32 {
             self.output.queue(i, &[])?;
         }
+        if let Some((q, ..)) = &self.self_path {
+            for i in 0..q.len() as u32 {
+                q.queue(i, &[])?;
+            }
+        }
         self.params.stream_on()?;
         self.stats.stream_on()?;
+        if let Some((q, ..)) = &self.self_path {
+            q.stream_on()?;
+        }
         self.output.stream_on()?;
         self.streaming = true;
         Ok(())
@@ -426,13 +466,56 @@ impl IspDevice {
         Ok((fd, len))
     }
 
+    /// The self path's output size and line stride, when it is set up
+    /// ([`IspSetup::self_path`]).
+    pub fn self_layout(&self) -> Option<((u32, u32), u32)> {
+        self.self_path
+            .as_ref()
+            .map(|(_, size, stride)| (*size, *stride))
+    }
+
+    /// Waits for the self path's next frame and leaves it dequeued (give it back with
+    /// [`Self::release_self`]); `None` without a self path.
+    pub fn next_self(&mut self, timeout: Duration) -> Result<Option<OutputFrame>> {
+        let Some((q, ..)) = &self.self_path else {
+            return Ok(None);
+        };
+        let b = dequeue(q, timeout)?;
+        Ok(Some(OutputFrame {
+            index: b.index,
+            sequence: b.sequence,
+            timestamp: b.timestamp,
+            bytes_used: b.bytes_used(),
+            error: b.flags.contains(styx_kernel::v4l2::BufferFlags::ERROR),
+        }))
+    }
+
+    /// A self path frame's bytes (NV12 at [`Self::self_layout`]'s stride); empty without a
+    /// self path.
+    pub fn self_data(&self, frame: &OutputFrame) -> &[u8] {
+        let Some((q, ..)) = &self.self_path else {
+            return &[];
+        };
+        let data = q.maps[frame.index as usize][0].as_slice();
+        &data[..frame.bytes_used.min(data.len())]
+    }
+
+    /// Gives a self path frame back to the driver.
+    pub fn release_self(&self, frame: &OutputFrame) -> Result<()> {
+        match &self.self_path {
+            Some((q, ..)) => Ok(q.queue(frame.index, &[])?),
+            None => Ok(()),
+        }
+    }
+
     /// Stops streaming and frees the buffers.
     pub fn close(self) -> Result<()> {
         // The main path first: the sensor stops with it.
         let o = self.output.close();
+        let sp = self.self_path.map_or(Ok(()), |(q, ..)| q.close());
         let s = self.stats.close();
         let p = self.params.close();
-        Ok(o.and(s).and(p)?)
+        Ok(o.and(sp).and(s).and(p)?)
     }
 
     /// Whether [`Self::start`] has run.

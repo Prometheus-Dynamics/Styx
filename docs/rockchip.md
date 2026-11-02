@@ -122,6 +122,15 @@ The camera pipeline picks the generation from the SoC (written, untested on boar
 ISP33, RK3576) is refused rather than guessed. `RkispPipeline` builds that generation's buffer
 (`AnyParams`, one buffer reset and rebuilt each frame) and reads its statistics.
 
+### The self path: pyramid levels (written, untested on board)
+
+With `native_pyramid_level` set, `IspSetup::self_path` also links the ISP's source pad to
+`rkisp_selfpath` (`SP_VDEV_NAME`, every generation) and opens it as a second NV12 queue at the
+level's size. Each frame's self path image is copied into a pooled buffer, its V4L2 buffer
+given back at once, and attached to the main frame as a `CompanionKind::Pyramid` companion;
+the main frame stays a zero-copy lease. Whether the media core enables the second link from
+the same source pad as the vendor driver does at probe is the first thing to check on a board.
+
 ## RK3562 and RV1106 (ISP32 and ISP32-lite): written, untested on board
 
 Status: written, untested on board. The buffers are the BSP's `rk-isp32-config.h`, their sizes

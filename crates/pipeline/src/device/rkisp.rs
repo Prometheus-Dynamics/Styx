@@ -51,6 +51,9 @@ pub struct RkispFrame {
     pub sensor: SensorValues,
     /// Frame the latest new sensor request lands on, if this frame made one.
     pub request_lands: Option<u64>,
+    /// The self path's frame of it (NV12, [`RkispPipeline::self_data`]; back to the driver
+    /// with [`RkispPipeline::release`]), when the pipeline has a self path.
+    pub self_output: Option<OutputFrame>,
 }
 
 /// A native camera through the Rockchip ISP. See the [module documentation](self).
@@ -84,21 +87,29 @@ pub fn has_rkisp() -> bool {
 
 impl RkispPipeline {
     /// Opens `camera` for `settings` (a raw mode) through the first ISP of
-    /// [`find_isps`](styx_rkisp::device::find_isps), its main path giving `output`-sized NV12,
+    /// [`find_isps`](styx_rkisp::device::find_isps), its main path giving `output`-sized NV12
+    /// and, with `self_path`, its self path that size of NV12 too (written, untested on board),
     /// with the algorithms of `tuning`; `gpu_pad` bytes are asked for past each output image
     /// (`IspSetup::gpu_pad`).
     pub fn open(
         camera: NativeCamera,
         settings: &StreamSettings,
         tuning: &Tuning,
-        output: (u32, u32),
+        (output, self_path): ((u32, u32), Option<(u32, u32)>),
         gpu_pad: u32,
     ) -> Result<Self> {
         let media = find_isps()
             .into_iter()
             .next()
             .ok_or_else(|| PipelineError::Device("no rkisp media device".into()))?;
-        Self::open_on(&media, camera, settings, tuning, output, gpu_pad)
+        Self::open_on(
+            &media,
+            camera,
+            settings,
+            tuning,
+            (output, self_path),
+            gpu_pad,
+        )
     }
 
     /// [`Self::open`] through the ISP of media device `media`.
@@ -107,7 +118,7 @@ impl RkispPipeline {
         mut camera: NativeCamera,
         settings: &StreamSettings,
         tuning: &Tuning,
-        output: (u32, u32),
+        (output, self_path): ((u32, u32), Option<(u32, u32)>),
         gpu_pad: u32,
     ) -> Result<Self> {
         let isp = Isp::detect().ok_or_else(|| {
@@ -129,6 +140,7 @@ impl RkispPipeline {
                 output,
                 buffers: RKISP_BUFFERS,
                 gpu_pad,
+                self_path,
             },
         )?;
         let fps = configured.interval.fps();
@@ -263,10 +275,18 @@ impl RkispPipeline {
         self.param_buf = Some(p);
         queued?;
         let output = dev.next_output(timeout)?;
+        let self_output = match dev.next_self(timeout) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = dev.release(&output);
+                return Err(e.into());
+            }
+        };
         Ok(RkispFrame {
             output,
             sensor: values,
             request_lands,
+            self_output,
         })
     }
 
@@ -275,6 +295,29 @@ impl RkispPipeline {
         self.dev
             .as_ref()
             .map_or(&[][..], |d| d.output_data(&frame.output))
+    }
+
+    /// The self path's frame of `frame` (NV12 at [`Self::self_layout`]'s stride); empty
+    /// without one.
+    pub fn self_data(&self, frame: &RkispFrame) -> &[u8] {
+        match (&self.dev, &frame.self_output) {
+            (Some(d), Some(s)) => d.self_data(s),
+            _ => &[],
+        }
+    }
+
+    /// The self path's output size and line stride, when it is set up.
+    pub fn self_layout(&self) -> Option<((u32, u32), u32)> {
+        self.dev.as_ref().and_then(IspDevice::self_layout)
+    }
+
+    /// Gives a frame's self path buffer back to the ISP (the main path's stays out: frames
+    /// handed out by their dma-buf return it with [`Self::release_index`]).
+    pub fn release_self(&self, frame: &RkispFrame) -> Result<()> {
+        if let (Some(d), Some(s)) = (&self.dev, &frame.self_output) {
+            d.release_self(s)?;
+        }
+        Ok(())
     }
 
     /// The main path's buffers.
@@ -300,12 +343,12 @@ impl RkispPipeline {
         Ok(())
     }
 
-    /// Gives a frame's buffer back to the ISP.
+    /// Gives a frame's buffers (main and self path) back to the ISP.
     pub fn release(&self, frame: &RkispFrame) -> Result<()> {
         if let Some(d) = &self.dev {
             d.release(&frame.output)?;
         }
-        Ok(())
+        self.release_self(frame)
     }
 
     fn remember(&mut self) {

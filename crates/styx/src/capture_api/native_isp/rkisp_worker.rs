@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use parking_lot::Mutex;
 use styx_capture::prelude::*;
-use styx_core::prelude::{ClockSource, Hop};
+use styx_core::prelude::{ClockSource, CompanionKind, Hop};
 use styx_core::queue::BoundedTx;
 use styx_native::{NativeCamera, StreamSettings};
 use styx_pipeline::device::RkispPipeline;
@@ -47,6 +47,16 @@ pub(super) struct RkispWorker {
     pub(super) gpu_pad: u32,
     /// The camera's controls (set by [`open`]).
     pub(super) controls: Option<styx_native::CameraControls>,
+    /// The pyramid level the self path makes (0: no self path; set by [`open`]), attached to
+    /// each frame as a `CompanionKind::Pyramid` companion (written, untested on board).
+    pub(super) pyramid_level: u8,
+}
+
+/// The NV12 size of pyramid level `level` of a `width` x `height` image: even sizes, as the
+/// chroma plane needs.
+fn level_size((width, height): (u32, u32), level: u8) -> (u32, u32) {
+    let half = |v: u32| ((v >> level) & !1).max(2);
+    (half(width), half(height))
 }
 
 /// Copies an NV12 image of `w`x`h` at `stride` (chroma after `h` rows) into `out`, tightly
@@ -87,8 +97,16 @@ pub(super) fn open(
         hflip: config.backends.native.hflip,
         vflip: config.backends.native.vflip,
     };
-    let mut p =
-        RkispPipeline::open(camera, &settings, tuning, (width, height), w.gpu_pad).map_err(err)?;
+    w.pyramid_level = config.backends.native.pyramid_output_level();
+    let self_path = (w.pyramid_level > 0).then(|| level_size((width, height), w.pyramid_level));
+    let mut p = RkispPipeline::open(
+        camera,
+        &settings,
+        tuning,
+        ((width, height), self_path),
+        w.gpu_pad,
+    )
+    .map_err(err)?;
     if let Some(c) = loop_controls.take() {
         p.algorithms().set_controls(c);
     }
@@ -139,7 +157,7 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                     p.algorithms().set_controls(c);
                 }
                 w.still.before_frame(&mut p);
-                let f = match p.next(w.timeout) {
+                let mut f = match p.next(w.timeout) {
                     Ok(f) => f,
                     Err(e) => {
                         *w.error.lock() = Some(err(e));
@@ -147,6 +165,25 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                     }
                 };
                 let isp_done = styx_core::prelude::CaptureInstant::now();
+                // The self path's pyramid level, copied out and its buffer given back now.
+                let mut level = None;
+                if let (Some(_), Some((lsize, lstride))) = (f.self_output, p.self_layout()) {
+                    let llen = image_bytes(FourCc::NV12, lsize);
+                    let mut b = spare.take(heap.as_deref(), &ret_rx, w.keep, llen);
+                    b.sync_write(true);
+                    let copied = copy_nv12(p.self_data(&f), lsize, lstride, b.as_mut_slice());
+                    b.sync_write(false);
+                    let released = p.release_self(&f);
+                    f.self_output = None;
+                    if let Err(e) = released {
+                        *w.error.lock() = Some(err(e));
+                        break;
+                    }
+                    if copied {
+                        styx_core::metrics::copied(styx_core::metrics::CopySite::Capture, llen);
+                        level = Some((lsize, b));
+                    }
+                }
                 // The driver's buffer itself while enough stay with the driver, else a copy.
                 let leased = !f.output.error && direct.as_ref().is_some_and(RkBuffers::can_lease);
                 let mut buf = None;
@@ -191,7 +228,7 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                 let lease = if leased {
                     let index = f.output.index;
                     let l = direct.as_mut().and_then(|d| {
-                        d.lease(meta, index, (size, stride as usize), &w.live)
+                        d.lease(meta.clone(), index, (size, stride as usize), &w.live)
                     });
                     let Some(l) = l else {
                         // The buffer is smaller than the format says: back to the driver.
@@ -205,7 +242,23 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
                     l
                 } else {
                     let Some(buf) = buf else { continue };
-                    lease(meta, size, buf, &ret_tx, &w.live)
+                    lease(meta.clone(), size, buf, &ret_tx, &w.live)
+                };
+                let lease = match level {
+                    Some((lsize, b)) => {
+                        let companion = super::out_buf::lease(meta, lsize, b, &ret_tx, &w.live);
+                        let kind = CompanionKind::Pyramid {
+                            level: w.pyramid_level,
+                        };
+                        match lease.with_companion(kind, companion) {
+                            Ok(l) => l,
+                            Err(e) => {
+                                *w.error.lock() = Some(err(format!("pyramid companion: {e}")));
+                                break;
+                            }
+                        }
+                    }
+                    None => lease,
                 };
                 if deliver(&w.live, &w.tx, lease, "native-rkisp", w.send_timeout) {
                     break;
@@ -236,5 +289,13 @@ mod tests {
             !copy_nv12(&src[..10], (w, h), stride, &mut out),
             "short source"
         );
+    }
+
+    #[test]
+    fn pyramid_levels_are_even_halvings() {
+        assert_eq!(level_size((1280, 800), 1), (640, 400));
+        assert_eq!(level_size((1280, 800), 3), (160, 100));
+        assert_eq!(level_size((1278, 722), 2), (318, 180));
+        assert_eq!(level_size((6, 4), 3), (2, 2));
     }
 }
