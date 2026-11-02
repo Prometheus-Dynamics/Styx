@@ -100,16 +100,22 @@ latency equals four CPU threads' at a quarter of one thread's CPU. With a captur
 
 ## Raspberry Pi 5 / CM5 (V3D 7.1)
 
-The CM5 image has no Vulkan driver. Mesa's **v3dv** supports the Pi 5's V3D 7.1 (Vulkan
-1.3, `storageBuffer8BitAccess`, `VK_EXT_external_memory_dma_buf`). An image would need:
-Mesa with `-Dvulkan-drivers=broadcom` (Buildroot `BR2_PACKAGE_MESA3D` +
+The CM5 image (the Raze) has Mesa's **v3dv** for the Pi 5's V3D 7.1 (Vulkan 1.3,
+`storageBuffer8BitAccess`, `VK_EXT_external_memory_dma_buf`). On it (eeefd6d) the GPU ISP
+imports capture dma-bufs and exports its output, the Daedalus buffer path and the
+equivalence tests are bit-exact against the CPU, and validation reports nothing. v3dv takes a
+dma-buf import only at the dma-buf's whole size and rounds a buffer's memory requirement
+256 bytes past its size, hence the import pad (`gpu_import_pad`). An image needs Mesa with
+`-Dvulkan-drivers=broadcom` (Buildroot `BR2_PACKAGE_MESA3D` +
 `BR2_PACKAGE_MESA3D_VULKAN_DRIVER_BROADCOM`; no Gallium/GL needed), the Vulkan loader
 (`BR2_PACKAGE_VULKAN_LOADER`, `libvulkan.so.1`) and the ICD file
 (`/usr/share/vulkan/icd.d/broadcom_icd.*.json`), the `v3d` DRM driver (`CONFIG_DRM_V3D`, the
 `vc4-kms-v3d` overlay or the v3d node enabled) and access to `/dev/dri/renderD128` for the
 camera service's user. About 10-15 MB of image.
 
-Estimate, not measured (no v3dv here): V3D 7.1 has 12 QPUs (3 slices) of 16-lane SIMD at
+The time per frame there is not measured yet (TODO.md, "GPU ISP on the Pi 5: timing"). On
+the same GPU `styx-wgpu`'s pyramid takes 1.67 ms p50 and 0.38 ms of CPU for 3 levels of
+1280x800 (42fb407). Estimate: V3D 7.1 has 12 QPUs (3 slices) of 16-lane SIMD at
 about 1 GHz, issuing roughly 4 lane-operations per cycle each (~50 G lane-ops/s), with texture
 and memory units (TMUs) shared per slice. The integer full-size shader costs about 150-250
 operations and 10-14 memory accesses (byte loads of the packed raw, table lookups, byte

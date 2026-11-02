@@ -165,9 +165,9 @@ memory when it runs.
       *Blocked by:* nothing. *Numbers:* v3dv needs frame + 256 B; 1280x800 GREY pads to 1 232 896 B.
 - [ ] **GPU ISP on the Pi 5: timing** (import and output verified on the Raze's v3dv at eeefd6d:
       dma-buf import and export pass, Daedalus buffer path and equivalence bit-exact, 0 validation
-      messages). *Why:* an estimate is all we have, and `crates/gpuisp/README.md` and
-      docs/native-stack/pipeline.md still say the CM5 has no v3dv. *Done when:* ms per 1280x800 frame
-      and CPU measured there, those docs corrected. *Blocked by:* a Raze slot. *Numbers:* no frame
+      messages). *Why:* an estimate is all we have (`crates/gpuisp/README.md` and
+      docs/native-stack/pipeline.md say so). *Done when:* ms per 1280x800 frame and CPU measured
+      there and written into both. *Blocked by:* a Raze slot. *Numbers:* no frame
       timing; estimated 4-8 ms GPU against 2.6-3.0 ms fp16 NEON. `styx-wgpu`'s pyramid on the same
       GPU: 1.67 ms p50 and 0.38 ms CPU for 3 levels (42fb407).
 - [ ] **GPU ISP: outputs through the capture, and the tables.** *Why:* `GpuIsp` exports dma-bufs

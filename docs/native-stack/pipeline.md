@@ -684,10 +684,10 @@ loaded at run time (`ash`), so nothing links against it.
 * **Planner**: with `gpu-isp` and a device, processed native modes without a PiSP cost
   0.3 ms/MP of CPU and 0.6 ms/MP of latency (plus the 3A) instead of the software ISP's
   2.9 ms/MP (`planner/cost.rs`, `GPUISP_*`), executed as `Hardware`.
-* **CM5 / Pi 5**: the CM5 image has no Vulkan driver. Mesa's v3dv (V3D 7.1) would need
-  Mesa with the broadcom Vulkan driver, the Vulkan loader and its ICD file, the `v3d` DRM
-  driver and render-node access (README, "Raspberry Pi 5"). Estimated at 4-8 ms of GPU per
-  1280x800 frame, V3D would not beat the A76's fp16 NEON path (2.6-3.0 ms on one core) on
+* **CM5 / Pi 5**: the CM5 image has Mesa's v3dv (V3D 7.1). There the GPU ISP imports
+  capture dma-bufs and exports its output, bit-exact against the CPU with no validation
+  messages (eeefd6d; README, "Raspberry Pi 5"); its time per frame is not measured yet.
+  Estimated at 4-8 ms of GPU per 1280x800 frame, V3D would not beat the A76's fp16 NEON path (2.6-3.0 ms on one core) on
   time; it would take the ISP off the CPU (about 2.5% of a core left at 30 fps instead of
   9-10%) at a few ms more latency. The CM5 has the PiSP; the GPU ISP is for boards with a GPU
   and no ISP.
