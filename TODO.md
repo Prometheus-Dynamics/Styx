@@ -174,6 +174,14 @@ memory when it runs.
       (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG decode. Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
       `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
+- [ ] **Styx's own H.264 encoder: SIMD and GPU leaves, codec hookup** (`styx_codec::styx_h264`,
+      scalar, decodes bit for bit to its reconstruction under FFmpeg). *Why:* the H.264 cells on
+      RVV and the GPU are gaps with no library to lean on. *Done when:* SAD, the 4x4 transform
+      with quantisation and the reconstruction run as `styx_core::simd` kernels with RVV leaves
+      (QEMU VLEN 128–1024) and on the GPU, conformance-tested against the scalar code; the encoder
+      is a registered `Codec` (H264 out of I420/NV12/GREY) on hosts without another H.264 encoder;
+      rate control and sub-pel motion follow. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
+      the dev PC (Zen 3, load ~59 from other sessions): I 21.9 ms, P 26.0 ms a picture.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**
       `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
       pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected
