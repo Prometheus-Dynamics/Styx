@@ -240,6 +240,33 @@ pub fn demosaic_mhc_row(
     })
 }
 
+/// See [`scalar::demosaic_edge_row`].
+pub fn demosaic_edge_row(
+    rows: [&[u16]; 5],
+    out: [&mut [u16]; 3],
+    width: usize,
+    kind: RowKind,
+) -> SimdBackend {
+    let rows = rows.map(|r| &r[..width + 4]);
+    let [r, g, b] = out;
+    let (r, g, b) = (&mut r[..width], &mut g[..width], &mut b[..width]);
+    let outcome = leaf!(demosaic_edge_row(
+        rows,
+        [&mut *r, &mut *g, &mut *b],
+        width,
+        kind
+    ));
+    finish(outcome, width, |d, n| {
+        debug_assert_eq!(d % 2, 0);
+        scalar::demosaic_edge_row(
+            rows.map(|row| &row[d..]),
+            [&mut r[d..], &mut g[d..], &mut b[d..]],
+            n,
+            kind,
+        )
+    })
+}
+
 /// See [`scalar::bayer_luma_row`].
 pub fn bayer_luma_row(rows: [&[u16]; 3], dst: &mut [u16], width: usize) -> SimdBackend {
     let rows = rows.map(|r| &r[..width + 2]);

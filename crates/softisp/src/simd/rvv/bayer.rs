@@ -300,6 +300,166 @@ pub(super) unsafe fn demosaic_mhc(
     });
 }
 
+/// See [`crate::simd::scalar::demosaic_edge_row`], in 16-bit lanes as the x86 kernel carries
+/// them: the opposite colour plus 24576 fits unsigned 16 bits; `vaadd`/`vaaddu` rounding down
+/// (`vxrm` 2) are the floor means; `vssubu` of 6144 from its quarter is the clamp at 0. Ties
+/// keep the mean, a smaller gradient's estimate replaces it.
+pub(super) unsafe fn demosaic_edge(
+    rows: [&[u16]; 5],
+    out: [&mut [u16]; 3],
+    width: usize,
+    kind: RowKind,
+) {
+    let [u2, u1, c0, d1, d2] = rows.map(<[u16]>::as_ptr);
+    let [r, g, b] = out.map(<[u16]>::as_mut_ptr);
+    let (xo, yo) = if kind.x_is_red { (r, b) } else { (b, r) };
+    let par = green_parity(kind);
+    // SAFETY: as above; the rows hold `width + 4` samples from column -2.
+    strips(width, |i, left| unsafe {
+        rvv!([
+            "vsetvli {n}, {left}, e16, m1, ta, ma",
+            "csrwi vxrm, 2",
+            // c (v1); w2, w1, e1, e2 (v2..v5); n2, n1, s1, s2 (v6..v9); nw1, ne1, sw1, se1
+            // (v10..v13).
+            "addi {t}, {c}, 4",
+            "vle16.v v1, ({t})",
+            "vle16.v v2, ({c})",
+            "addi {t}, {c}, 2",
+            "vle16.v v3, ({t})",
+            "addi {t}, {c}, 6",
+            "vle16.v v4, ({t})",
+            "addi {t}, {c}, 8",
+            "vle16.v v5, ({t})",
+            "addi {t}, {u2}, 4",
+            "vle16.v v6, ({t})",
+            "addi {t}, {u1}, 4",
+            "vle16.v v7, ({t})",
+            "addi {t}, {d1}, 4",
+            "vle16.v v8, ({t})",
+            "addi {t}, {d2}, 4",
+            "vle16.v v9, ({t})",
+            "addi {t}, {u1}, 2",
+            "vle16.v v10, ({t})",
+            "addi {t}, {u1}, 6",
+            "vle16.v v11, ({t})",
+            "addi {t}, {d1}, 2",
+            "vle16.v v12, ({t})",
+            "addi {t}, {d1}, 6",
+            "vle16.v v13, ({t})",
+            // dh (v14), dv (v15): sums of absolute differences.
+            "vmaxu.vv v14, v2, v1",
+            "vminu.vv v15, v2, v1",
+            "vsub.vv v14, v14, v15",
+            "vmaxu.vv v15, v5, v1",
+            "vminu.vv v16, v5, v1",
+            "vsub.vv v15, v15, v16",
+            "vadd.vv v14, v14, v15",
+            "vmaxu.vv v15, v3, v4",
+            "vminu.vv v16, v3, v4",
+            "vsub.vv v15, v15, v16",
+            "vadd.vv v14, v14, v15",
+            "vmaxu.vv v15, v6, v1",
+            "vminu.vv v16, v6, v1",
+            "vsub.vv v15, v15, v16",
+            "vmaxu.vv v16, v9, v1",
+            "vminu.vv v17, v9, v1",
+            "vsub.vv v16, v16, v17",
+            "vadd.vv v15, v15, v16",
+            "vmaxu.vv v16, v7, v8",
+            "vminu.vv v17, v7, v8",
+            "vsub.vv v16, v16, v17",
+            "vadd.vv v15, v15, v16",
+            // gh4 (v16), gv4 (v17), g4 (v18).
+            "vadd.vv v16, v3, v4",
+            "vadd.vv v16, v16, v1",
+            "vsll.vi v16, v16, 1",
+            "vsub.vv v16, v16, v2",
+            "vsub.vv v16, v16, v5",
+            "vadd.vv v17, v7, v8",
+            "vadd.vv v17, v17, v1",
+            "vsll.vi v17, v17, 1",
+            "vsub.vv v17, v17, v6",
+            "vsub.vv v17, v17, v9",
+            "vaadd.vv v18, v16, v17",
+            "vmsltu.vv v0, v15, v14",
+            "vmerge.vvm v18, v18, v17, v0",
+            "vmsltu.vv v0, v14, v15",
+            "vmerge.vvm v18, v18, v16, v0",
+            // base = g4 + 24576 - (w1 + e1 + n1 + s1) (v19).
+            "vadd.vv v19, v3, v4",
+            "vadd.vv v20, v7, v8",
+            "vadd.vv v19, v19, v20",
+            "vsub.vv v19, v18, v19",
+            "vadd.vx v19, v19, {off}",
+            // d_1 (v20), d_2 (v21).
+            "vadd.vv v21, v3, v7",
+            "vadd.vv v22, v4, v8",
+            "vmaxu.vv v20, v21, v22",
+            "vminu.vv v23, v21, v22",
+            "vsub.vv v20, v20, v23",
+            "vmaxu.vv v21, v10, v13",
+            "vminu.vv v22, v10, v13",
+            "vsub.vv v21, v21, v22",
+            "vsll.vi v21, v21, 1",
+            "vadd.vv v20, v20, v21",
+            "vadd.vv v22, v4, v7",
+            "vadd.vv v23, v3, v8",
+            "vmaxu.vv v21, v22, v23",
+            "vminu.vv v24, v22, v23",
+            "vsub.vv v21, v21, v24",
+            "vmaxu.vv v22, v11, v12",
+            "vminu.vv v23, v11, v12",
+            "vsub.vv v22, v22, v23",
+            "vsll.vi v22, v22, 1",
+            "vadd.vv v21, v21, v22",
+            // y1 (v22), y2 (v23), y4 (v24), its quarter less the offset.
+            "vadd.vv v22, v10, v13",
+            "vsll.vi v22, v22, 1",
+            "vadd.vv v22, v22, v19",
+            "vadd.vv v23, v11, v12",
+            "vsll.vi v23, v23, 1",
+            "vadd.vv v23, v23, v19",
+            "vaaddu.vv v24, v22, v23",
+            "vmsltu.vv v0, v21, v20",
+            "vmerge.vvm v24, v24, v23, v0",
+            "vmsltu.vv v0, v20, v21",
+            "vmerge.vvm v24, v24, v22, v0",
+            "vadd.vi v24, v24, 2",
+            "vsrl.vi v24, v24, 2",
+            "vssubu.vx v24, v24, {qoff}",
+            "vminu.vx v24, v24, {max}",
+            // Quarters of gh4, gv4 and g4, clamped to 0..=4095.
+            "vadd.vi v16, v16, 2",
+            "vadd.vi v17, v17, 2",
+            "vadd.vi v18, v18, 2",
+            "vsra.vi v16, v16, 2",
+            "vsra.vi v17, v17, 2",
+            "vsra.vi v18, v18, 2",
+            "vmax.vx v16, v16, zero",
+            "vmax.vx v17, v17, zero",
+            "vmax.vx v18, v18, zero",
+            "vmin.vx v16, v16, {max}",
+            "vmin.vx v17, v17, {max}",
+            "vmin.vx v18, v18, {max}",
+            // Green sites (v0): green c, X from gh4, Y from gv4; elsewhere g4, c, y4.
+            "vid.v v25",
+            "vadd.vx v25, v25, {i}",
+            "vand.vi v25, v25, 1",
+            "vmseq.vx v0, v25, {par}",
+            "vmerge.vvm v26, v18, v1, v0",
+            "vmerge.vvm v27, v1, v16, v0",
+            "vmerge.vvm v28, v24, v17, v0",
+            "vse16.v v26, ({go})",
+            "vse16.v v27, ({xo})",
+            "vse16.v v28, ({yo})",
+        ], left = in(reg) left, c = in(reg) c0.add(i), u2 = in(reg) u2.add(i),
+           u1 = in(reg) u1.add(i), d1 = in(reg) d1.add(i), d2 = in(reg) d2.add(i),
+           go = in(reg) g.add(i), xo = in(reg) xo.add(i), yo = in(reg) yo.add(i),
+           i = in(reg) i, par = in(reg) par, off = in(reg) 24576usize,
+           qoff = in(reg) 6144usize, max = in(reg) 4095usize, t = out(reg) _)
+    });
+}
+
 /// Luma from the mosaic: column sums `up + 2 cur + dn` (at most 16380) and the row filter
 /// `a + 2 b + c` (at most 65520) fit 16 bits.
 pub(super) unsafe fn bayer_luma(rows: [&[u16]; 3], dst: &mut [u16], width: usize) {

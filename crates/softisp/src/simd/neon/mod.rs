@@ -61,6 +61,15 @@ pub(super) fn demosaic_mhc_row(
     done(unsafe { bayer::demosaic_mhc(rows, out, width, kind) })
 }
 
+pub(super) fn demosaic_edge_row(
+    rows: [&[u16]; 5],
+    out: [&mut [u16]; 3],
+    width: usize,
+    kind: RowKind,
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { bayer::demosaic_edge(rows, out, width, kind) })
+}
+
 pub(super) fn bayer_luma_row(
     rows: [&[u16]; 3],
     dst: &mut [u16],

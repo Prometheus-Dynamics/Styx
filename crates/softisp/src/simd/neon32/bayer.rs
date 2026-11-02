@@ -312,6 +312,149 @@ pub(super) unsafe fn demosaic_mhc(
     }
 }
 
+/// See [`crate::simd::scalar::demosaic_edge_row`], in 16-bit lanes as the x86 kernel carries
+/// them: the opposite colour plus 24576 (`0x6000`) fits unsigned 16 bits, `vhadd` is the floor
+/// mean, `vrshr #2` adds the 2, and `vqsub` of 6144 (`0x1800`) is the clamp at 0.
+pub(super) unsafe fn demosaic_edge(
+    rows: [&[u16]; 5],
+    out: [&mut [u16]; 3],
+    steps: usize,
+    kind: RowKind,
+) {
+    let [u2, u1, c0, d1, d2] = rows;
+    let [r, g, b] = out;
+    let (xo, yo) = xy(r, b, kind);
+    let mask = green_mask(kind);
+    // SAFETY: per the module; each step reads columns -2..=9 of its block (the outer rows only
+    // column 0..=7, the inner ones -1..=8).
+    unsafe {
+        neon!([], [
+            // The centre row: w2 (q0), w1 (q1), c (q2), e1 (q3), e2 (q4).
+            "vld1.16 {{d0, d1}}, [{c0}]",
+            "add {c0}, {c0}, #2",
+            "vld1.16 {{d2, d3}}, [{c0}]",
+            "add {c0}, {c0}, #2",
+            "vld1.16 {{d4, d5}}, [{c0}]",
+            "add {c0}, {c0}, #2",
+            "vld1.16 {{d6, d7}}, [{c0}]",
+            "add {c0}, {c0}, #2",
+            "vld1.16 {{d8, d9}}, [{c0}]",
+            "add {c0}, {c0}, #8",
+            // dh (q5), gh4 = 2 (w1 + e1 + c) - w2 - e2 (q6).
+            "vabd.u16 q5, q0, q2",
+            "vabd.u16 q6, q4, q2",
+            "vadd.i16 q5, q5, q6",
+            "vabd.u16 q6, q1, q3",
+            "vadd.i16 q5, q5, q6",
+            "vadd.i16 q0, q0, q4",
+            "vadd.i16 q6, q1, q3",
+            "vadd.i16 q6, q6, q2",
+            "vshl.i16 q6, q6, #1",
+            "vsub.i16 q6, q6, q0",
+            // The centre column: n2 (q0), s2 (q4), n1 (q7), s1 (q8).
+            "vld1.16 {{d0, d1}}, [{u2}]!",
+            "vld1.16 {{d8, d9}}, [{d2}]!",
+            "add {u1}, {u1}, #2",
+            "vld1.16 {{d14, d15}}, [{u1}]",
+            "add {d1}, {d1}, #2",
+            "vld1.16 {{d16, d17}}, [{d1}]",
+            // dv (q9), gv4 (q10).
+            "vabd.u16 q9, q0, q2",
+            "vabd.u16 q10, q4, q2",
+            "vadd.i16 q9, q9, q10",
+            "vabd.u16 q10, q7, q8",
+            "vadd.i16 q9, q9, q10",
+            "vadd.i16 q0, q0, q4",
+            "vadd.i16 q10, q7, q8",
+            "vadd.i16 q10, q10, q2",
+            "vshl.i16 q10, q10, #1",
+            "vsub.i16 q10, q10, q0",
+            // g4 (q0): the axis with the smaller gradient, the floor mean on a tie.
+            "vhadd.s16 q0, q6, q10",
+            "vcgt.u16 q11, q5, q9",
+            "vbit q0, q10, q11",
+            "vcgt.u16 q11, q9, q5",
+            "vbit q0, q6, q11",
+            // Quarters clamped to 0..=4095 (q12, q11): X, then the green-site Y (q10), green.
+            "vmvn.i16 q11, #0xF000",
+            "vmov.i16 q12, #0",
+            "vrshr.s16 q6, q6, #2",
+            "vmax.s16 q6, q6, q12",
+            "vmin.s16 q6, q6, q11",
+            "vbif q6, q2, q15",
+            "vst1.16 {{d12, d13}}, [{x}]!",
+            "vrshr.s16 q10, q10, #2",
+            "vmax.s16 q10, q10, q12",
+            "vmin.s16 q10, q10, q11",
+            "vrshr.s16 q4, q0, #2",
+            "vmax.s16 q4, q4, q12",
+            "vmin.s16 q4, q4, q11",
+            "vbit q4, q2, q15",
+            "vst1.16 {{d8, d9}}, [{g}]!",
+            // base = g4 + 24576 - (w1 + e1 + n1 + s1) (q0).
+            "vadd.i16 q2, q1, q3",
+            "vadd.i16 q4, q7, q8",
+            "vadd.i16 q2, q2, q4",
+            "vmov.i16 q4, #0x6000",
+            "vadd.i16 q0, q0, q4",
+            "vsub.i16 q0, q0, q2",
+            // |w1 + n1 - e1 - s1| (q5), |e1 + n1 - w1 - s1| (q6).
+            "vadd.i16 q2, q1, q7",
+            "vadd.i16 q4, q3, q8",
+            "vabd.u16 q5, q2, q4",
+            "vadd.i16 q2, q3, q7",
+            "vadd.i16 q4, q1, q8",
+            "vabd.u16 q6, q2, q4",
+            // The diagonals: nw1 (q1), ne1 (q3), sw1 (q7), se1 (q8).
+            "sub {u1}, {u1}, #2",
+            "vld1.16 {{d2, d3}}, [{u1}]",
+            "add {u1}, {u1}, #4",
+            "vld1.16 {{d6, d7}}, [{u1}]",
+            "add {u1}, {u1}, #12",
+            "sub {d1}, {d1}, #2",
+            "vld1.16 {{d14, d15}}, [{d1}]",
+            "add {d1}, {d1}, #4",
+            "vld1.16 {{d16, d17}}, [{d1}]",
+            "add {d1}, {d1}, #12",
+            // d_1 (q5), d_2 (q6), y1 (q1), y2 (q3).
+            "vabd.u16 q2, q1, q8",
+            "vshl.i16 q2, q2, #1",
+            "vadd.i16 q5, q5, q2",
+            "vabd.u16 q2, q3, q7",
+            "vshl.i16 q2, q2, #1",
+            "vadd.i16 q6, q6, q2",
+            "vadd.i16 q1, q1, q8",
+            "vshl.i16 q1, q1, #1",
+            "vadd.i16 q1, q1, q0",
+            "vadd.i16 q3, q3, q7",
+            "vshl.i16 q3, q3, #1",
+            "vadd.i16 q3, q3, q0",
+            // y4 (q0), its quarter less the offset, then Y.
+            "vhadd.u16 q0, q1, q3",
+            "vcgt.u16 q2, q5, q6",
+            "vbit q0, q3, q2",
+            "vcgt.u16 q2, q6, q5",
+            "vbit q0, q1, q2",
+            "vrshr.u16 q0, q0, #2",
+            "vmov.i16 q2, #0x1800",
+            "vqsub.u16 q0, q0, q2",
+            "vmin.u16 q0, q0, q11",
+            "vbit q0, q10, q15",
+            "vst1.16 {{d0, d1}}, [{y}]!",
+        ], [],
+        u2 = inout(reg) u2.as_ptr().add(2) => _,
+        u1 = inout(reg) u1.as_ptr().add(1) => _,
+        c0 = inout(reg) c0.as_ptr() => _,
+        d1 = inout(reg) d1.as_ptr().add(1) => _,
+        d2 = inout(reg) d2.as_ptr().add(2) => _,
+        g = inout(reg) g.as_mut_ptr() => _,
+        x = inout(reg) xo.as_mut_ptr() => _,
+        y = inout(reg) yo.as_mut_ptr() => _,
+        n = inout(reg) steps => _,
+        inout("d30") mask => _, inout("d31") mask => _);
+    }
+}
+
 pub(super) unsafe fn bayer_luma(rows: [&[u16]; 3], dst: &mut [u16], steps: usize) {
     let [up, mid, dn] = rows;
     // SAFETY: per the module; as `demosaic_bilinear`.

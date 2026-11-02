@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- Edge-directed demosaic (`Demosaic::EdgeDirected`) on SSE2, AVX2, NEON, armv7 NEON and RVV,
+  exact against scalar. All of it runs in 16-bit lanes; the opposite colour, which can reach
+  40950 quarter units, is carried with an offset of 24576. armv7 and RVV are tested under QEMU
+  and written, untested on board.
 - `styx_core::simd::{nv12_rgb_row, i420_rgb_row, yuyv_rgb_row}` and `YuvMatrix`: YUV → RGB24
   rows with armv7 NEON and RVV leaves, exact against scalar. On 32-bit Arm and RISC-V, where
   yuvutils-rs has no vector code, the NV12, I420 and YUYV → RGB decoders use them. Elsewhere

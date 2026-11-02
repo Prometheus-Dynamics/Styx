@@ -116,7 +116,8 @@ fp16 against the integer reference, PSNR and largest difference in 8-bit codes:
 Off unless the parameters ask (`IspParams::demosaic`, `denoise`, `sharpen`); the defaults give the
 same pictures as before.
 
-* **Edge-directed demosaic** (`Demosaic::EdgeDirected`, 5x5 like MHC, integer, scalar): Hamilton-
+* **Edge-directed demosaic** (`Demosaic::EdgeDirected`, 5x5 like MHC, integer; SSE2, AVX2, NEON, armv7 NEON and RVV leaves
+  exact against scalar, in 16-bit lanes): Hamilton-
   Adams style. Green at red and blue sites is the horizontal or vertical estimate with the smaller
   gradient (the Hamilton-Adams `|d2| + |d2| + |d1|` measure). Red and blue on green sites are the
   gradient-corrected linear estimates. Red and blue on the other colour's sites are green plus the

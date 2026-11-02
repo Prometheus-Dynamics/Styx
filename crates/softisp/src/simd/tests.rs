@@ -302,6 +302,73 @@ fn demosaic_mhc_matches() {
 }
 
 #[test]
+fn demosaic_edge_matches() {
+    for kind in KINDS {
+        check("edge", 3, 1, GUARD, |runner, w, out| {
+            let rows: Vec<Vec<u16>> = (0..5)
+                .map(|i| words(w + 4, w as u64 * 5 + i, 4095))
+                .collect();
+            let rows = [
+                &rows[0][..],
+                &rows[1][..],
+                &rows[2][..],
+                &rows[3][..],
+                &rows[4][..],
+            ];
+            let out = split3(out);
+            match runner {
+                Runner::Oracle => scalar::demosaic_edge_row(rows, out, w, kind),
+                Runner::Dispatch => drop(demosaic_edge_row(rows, out, w, kind)),
+                _ => {
+                    let [r, g, b] = out;
+                    return leaf_call!(
+                        runner,
+                        demosaic_edge_row(rows, [&mut r[..w], &mut g[..w], &mut b[..w]], w, kind)
+                    );
+                }
+            }
+            w
+        });
+    }
+}
+
+#[test]
+fn demosaic_edge_matches_at_the_extremes() {
+    for kind in KINDS {
+        check("edge extremes", 3, 1, GUARD, |runner, w, out| {
+            let rows: Vec<Vec<u16>> = (0..5)
+                .map(|i| {
+                    words(w + 4, w as u64 * 5 + i, 1)
+                        .into_iter()
+                        .map(|v| v * 4095)
+                        .collect()
+                })
+                .collect();
+            let rows = [
+                &rows[0][..],
+                &rows[1][..],
+                &rows[2][..],
+                &rows[3][..],
+                &rows[4][..],
+            ];
+            let out = split3(out);
+            match runner {
+                Runner::Oracle => scalar::demosaic_edge_row(rows, out, w, kind),
+                Runner::Dispatch => drop(demosaic_edge_row(rows, out, w, kind)),
+                _ => {
+                    let [r, g, b] = out;
+                    return leaf_call!(
+                        runner,
+                        demosaic_edge_row(rows, [&mut r[..w], &mut g[..w], &mut b[..w]], w, kind)
+                    );
+                }
+            }
+            w
+        });
+    }
+}
+
+#[test]
 fn bayer_luma_matches() {
     check("bayer_luma", 1, 1, GUARD, |runner, w, out| {
         let rows: Vec<Vec<u16>> = (0..3)

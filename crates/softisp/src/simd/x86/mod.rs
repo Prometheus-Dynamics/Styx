@@ -124,6 +124,22 @@ pub(super) fn demosaic_mhc_row(
     )
 }
 
+pub(super) fn demosaic_edge_row(
+    f: X86FeatureSet,
+    rows: [&[u16]; 5],
+    out: [&mut [u16]; 3],
+    width: usize,
+    kind: RowKind,
+) -> Option<(SimdBackend, usize)> {
+    pick!(
+        f,
+        width,
+        16,
+        bayer::demosaic_edge_avx2(rows, out, width, kind),
+        bayer::demosaic_edge_sse2(rows, out, width, kind)
+    )
+}
+
 pub(super) fn bayer_luma_row(
     f: X86FeatureSet,
     rows: [&[u16]; 3],

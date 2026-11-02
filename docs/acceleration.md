@@ -34,7 +34,7 @@ The GPU column is `styx-gpuisp`, bit-exact with the CPU.
 | Front end (black, WB, gain, lens shading) | pass | pass | pass | pass | pass | pass |
 | Demosaic, bilinear | pass | pass | pass | pass | pass | pass |
 | Demosaic, Malvar-He-Cutler | pass | pass | pass | pass | pass | pass |
-| Demosaic, edge-directed | pass | gap | gap | gap | gap | gap |
+| Demosaic, edge-directed | pass | pass | pass | pass | pass | gap |
 | Bayer luma (luma-only output) | pass | pass | pass | pass | pass | pass |
 | Half-size quad RGB | pass | pass | pass | pass | pass | pass |
 | Half-size quad luma | pass | pass | pass | pass | pass | pass |
@@ -135,12 +135,12 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | Column | pass | gap | n/a |
 |---|---|---|---|
 | scalar | 43 | 0 | 0 |
-| x86 | 41 | 2 | 0 |
-| NEON64 | 42 | 1 | 0 |
-| NEON32 | 41 | 1 | 1 |
-| RVV | 38 | 5 | 0 |
+| x86 | 42 | 1 | 0 |
+| NEON64 | 43 | 0 | 0 |
+| NEON32 | 42 | 0 | 1 |
+| RVV | 39 | 4 | 0 |
 | GPU | 18 | 25 | 0 |
-| **all** | **223** | **34** | **1** |
+| **all** | **227** | **30** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 

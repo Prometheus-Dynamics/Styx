@@ -198,6 +198,124 @@ pub(super) unsafe fn demosaic_mhc<V: Vx>(
     x
 }
 
+/// The opposite colour's offset at a red or blue site (a multiple of four): its quarter-unit
+/// value lies in -24570..=40950, which plus this fits 16 unsigned bits, so wrapping 16-bit
+/// arithmetic carries it exactly.
+const EDGE_OFFSET: i16 = 24576;
+
+/// `|a - b|` of signed 16-bit lanes whose difference fits.
+#[inline(always)]
+unsafe fn absdiff<V: Vx>(a: V, b: V) -> V {
+    unsafe { V::sub16(V::max_i16(a, b), V::min_i16(a, b)) }
+}
+
+/// `(a + b) >> 1` without the sum: `(a >> 1) + (b >> 1) + (a & b & 1)`, arithmetic shifts.
+#[inline(always)]
+unsafe fn floor_avg<V: Vx>(a: V, b: V) -> V {
+    unsafe {
+        let carry = V::and(V::and(a, b), V::splat16(1));
+        V::add16(V::add16(V::srai16::<1>(a), V::srai16::<1>(b)), carry)
+    }
+}
+
+/// `a` where `lt`, `b` where `gt`, their floor mean where neither (the scalar's three-way pick).
+#[inline(always)]
+unsafe fn pick<V: Vx>(lt: V, gt: V, a: V, b: V, mean: V) -> V {
+    unsafe { V::select(lt, a, V::select(gt, b, mean)) }
+}
+
+/// Quarter units to a sample: `clamp((v + 2) >> 2, 0, 4095)`.
+#[inline(always)]
+unsafe fn quarter<V: Vx>(v: V) -> V {
+    unsafe {
+        let q = V::srai16::<2>(V::add16(v, V::splat16(2)));
+        V::min_i16(V::max_i16(q, V::zero()), V::splat16(4095))
+    }
+}
+
+/// See [`crate::simd::scalar::demosaic_edge_row`]: the same integers in 16-bit lanes. The
+/// green and gradient terms fit signed 16 bits; the opposite colour carries
+/// [`EDGE_OFFSET`], its mean of two is the unsigned floor mean and its quarter loses
+/// `EDGE_OFFSET / 4` with unsigned saturation, which is the clamp at 0.
+#[inline(always)]
+pub(super) unsafe fn demosaic_edge<V: Vx>(
+    rows: [&[u16]; 5],
+    mut out: [&mut [u16]; 3],
+    width: usize,
+    kind: RowKind,
+) -> usize {
+    let [u2, u1, c0, d1, d2] = rows;
+    let n = lanes::<V>();
+    let mut x = 0;
+    // SAFETY: as `demosaic_mhc`.
+    unsafe {
+        let mask = green_mask::<V>(kind);
+        let one = V::splat16(1);
+        while x + n <= width {
+            let c = ld::<V>(c0, x + 2);
+            let (w2, w1, e1, e2) = (ld::<V>(c0, x), ld(c0, x + 1), ld(c0, x + 3), ld(c0, x + 4));
+            let (n2, n1, s1, s2) = (
+                ld::<V>(u2, x + 2),
+                ld(u1, x + 2),
+                ld(d1, x + 2),
+                ld(d2, x + 2),
+            );
+            let c2 = V::slli16::<1>(c);
+            let gh4 = V::sub16(
+                V::add16(V::slli16::<1>(V::add16(w1, e1)), c2),
+                V::add16(w2, e2),
+            );
+            let gv4 = V::sub16(
+                V::add16(V::slli16::<1>(V::add16(n1, s1)), c2),
+                V::add16(n2, s2),
+            );
+            let dh = V::add16(V::add16(absdiff(w2, c), absdiff(e2, c)), absdiff(w1, e1));
+            let dv = V::add16(V::add16(absdiff(n2, c), absdiff(s2, c)), absdiff(n1, s1));
+            let g4 = pick(
+                V::cmplt_i16(dh, dv),
+                V::cmplt_i16(dv, dh),
+                gh4,
+                gv4,
+                floor_avg(gh4, gv4),
+            );
+            let (nw1, ne1, sw1, se1) = (
+                ld::<V>(u1, x + 1),
+                ld(u1, x + 3),
+                ld(d1, x + 1),
+                ld(d1, x + 3),
+            );
+            let g_sum = V::add16(V::add16(w1, e1), V::add16(n1, s1));
+            let base = V::sub16(V::add16(g4, V::splat16(EDGE_OFFSET)), g_sum);
+            let y1 = V::add16(base, V::slli16::<1>(V::add16(nw1, se1)));
+            let y2 = V::add16(base, V::slli16::<1>(V::add16(ne1, sw1)));
+            let d_1 = V::add16(
+                V::slli16::<1>(absdiff(nw1, se1)),
+                absdiff(V::add16(w1, n1), V::add16(e1, s1)),
+            );
+            let d_2 = V::add16(
+                V::slli16::<1>(absdiff(ne1, sw1)),
+                absdiff(V::add16(e1, n1), V::add16(w1, s1)),
+            );
+            let mean = V::add16(
+                V::add16(V::srli16::<1>(y1), V::srli16::<1>(y2)),
+                V::and(V::and(y1, y2), one),
+            );
+            let y4 = pick(V::cmplt_i16(d_1, d_2), V::cmplt_i16(d_2, d_1), y1, y2, mean);
+            let q = V::srli16::<2>(V::add16(y4, V::splat16(2)));
+            let yq = V::min_i16(
+                V::subs_u16(q, V::splat16(EDGE_OFFSET / 4)),
+                V::splat16(4095),
+            );
+            let g = V::select(mask, c, quarter(g4));
+            let xv = V::select(mask, quarter(gh4), c);
+            let yv = V::select(mask, quarter(gv4), yq);
+            store_rgb(&mut out, x, kind, g, xv, yv);
+            x += n;
+        }
+    }
+    x
+}
+
 /// `up + 2 cur + dn` at `i`.
 #[inline(always)]
 unsafe fn vsum<V: Vx>([up, cur, dn]: [&[u16]; 3], i: usize) -> V {
@@ -428,6 +546,8 @@ instantiate! {
     demosaic_bilinear => demosaic_bilinear_sse2, demosaic_bilinear_avx2(
         rows: [&[u16]; 3], out: [&mut [u16]; 3], width: usize, kind: RowKind);
     demosaic_mhc => demosaic_mhc_sse2, demosaic_mhc_avx2(
+        rows: [&[u16]; 5], out: [&mut [u16]; 3], width: usize, kind: RowKind);
+    demosaic_edge => demosaic_edge_sse2, demosaic_edge_avx2(
         rows: [&[u16]; 5], out: [&mut [u16]; 3], width: usize, kind: RowKind);
     bayer_luma => bayer_luma_sse2, bayer_luma_avx2(
         rows: [&[u16]; 3], dst: &mut [u16], width: usize);

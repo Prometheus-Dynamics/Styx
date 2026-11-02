@@ -271,6 +271,104 @@ pub(in crate::simd) unsafe fn demosaic_mhc(
     x
 }
 
+/// The opposite colour's offset at a red or blue site, as in the x86 kernel: its quarter-unit
+/// value plus this fits 16 unsigned bits.
+const EDGE_OFFSET: u16 = 24576;
+
+/// `a` where `lt`, `b` where `gt`, `mean` where neither.
+#[inline(always)]
+unsafe fn pick(
+    lt: uint16x8_t,
+    gt: uint16x8_t,
+    a: uint16x8_t,
+    b: uint16x8_t,
+    mean: uint16x8_t,
+) -> uint16x8_t {
+    unsafe { vbslq_u16(lt, a, vbslq_u16(gt, b, mean)) }
+}
+
+/// Quarter units (signed) to a sample: `clamp((v + 2) >> 2, 0, 4095)`.
+#[inline(always)]
+unsafe fn quarter(v: int16x8_t) -> uint16x8_t {
+    unsafe {
+        let q = vrshrq_n_s16::<2>(v);
+        vreinterpretq_u16_s16(vminq_s16(vmaxq_s16(q, vdupq_n_s16(0)), vdupq_n_s16(4095)))
+    }
+}
+
+/// # Safety
+/// As [`demosaic_mhc`]. See [`crate::simd::scalar::demosaic_edge_row`]; 16-bit lanes as the
+/// x86 kernel carries them (`vhadd` is the floor mean, `vrshr #2` adds the 2).
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn demosaic_edge(
+    rows: [&[u16]; 5],
+    mut out: [&mut [u16]; 3],
+    width: usize,
+    kind: RowKind,
+) -> usize {
+    let [u2, u1, c0, d1, d2] = rows;
+    let mut x = 0;
+    // SAFETY: as `demosaic_mhc`.
+    unsafe {
+        let mask = green_mask(kind);
+        let s = vreinterpretq_s16_u16;
+        while x + 8 <= width {
+            let c = ld(c0, x + 2);
+            let (w2, w1, e1, e2) = (ld(c0, x), ld(c0, x + 1), ld(c0, x + 3), ld(c0, x + 4));
+            let (n2, n1, s1, s2) = (ld(u2, x + 2), ld(u1, x + 2), ld(d1, x + 2), ld(d2, x + 2));
+            let c2 = vshlq_n_u16::<1>(c);
+            let gh4 = vsubq_u16(
+                vaddq_u16(vshlq_n_u16::<1>(vaddq_u16(w1, e1)), c2),
+                vaddq_u16(w2, e2),
+            );
+            let gv4 = vsubq_u16(
+                vaddq_u16(vshlq_n_u16::<1>(vaddq_u16(n1, s1)), c2),
+                vaddq_u16(n2, s2),
+            );
+            let dh = vaddq_u16(
+                vaddq_u16(vabdq_u16(w2, c), vabdq_u16(e2, c)),
+                vabdq_u16(w1, e1),
+            );
+            let dv = vaddq_u16(
+                vaddq_u16(vabdq_u16(n2, c), vabdq_u16(s2, c)),
+                vabdq_u16(n1, s1),
+            );
+            let mean = vreinterpretq_u16_s16(vhaddq_s16(s(gh4), s(gv4)));
+            let g4 = pick(vcltq_u16(dh, dv), vcltq_u16(dv, dh), gh4, gv4, mean);
+            let (nw1, ne1, sw1, se1) = (ld(u1, x + 1), ld(u1, x + 3), ld(d1, x + 1), ld(d1, x + 3));
+            let g_sum = vaddq_u16(vaddq_u16(w1, e1), vaddq_u16(n1, s1));
+            let base = vsubq_u16(vaddq_u16(g4, vdupq_n_u16(EDGE_OFFSET)), g_sum);
+            let y1 = vaddq_u16(base, vshlq_n_u16::<1>(vaddq_u16(nw1, se1)));
+            let y2 = vaddq_u16(base, vshlq_n_u16::<1>(vaddq_u16(ne1, sw1)));
+            let d_1 = vaddq_u16(
+                vshlq_n_u16::<1>(vabdq_u16(nw1, se1)),
+                vabdq_u16(vaddq_u16(w1, n1), vaddq_u16(e1, s1)),
+            );
+            let d_2 = vaddq_u16(
+                vshlq_n_u16::<1>(vabdq_u16(ne1, sw1)),
+                vabdq_u16(vaddq_u16(e1, n1), vaddq_u16(w1, s1)),
+            );
+            let y4 = pick(
+                vcltq_u16(d_1, d_2),
+                vcltq_u16(d_2, d_1),
+                y1,
+                y2,
+                vhaddq_u16(y1, y2),
+            );
+            let yq = vminq_u16(
+                vqsubq_u16(vrshrq_n_u16::<2>(y4), vdupq_n_u16(EDGE_OFFSET / 4)),
+                vdupq_n_u16(4095),
+            );
+            let g = vbslq_u16(mask, c, quarter(s(g4)));
+            let xv = vbslq_u16(mask, quarter(s(gh4)), c);
+            let yv = vbslq_u16(mask, quarter(s(gv4)), yq);
+            store_rgb(&mut out, x, kind, g, xv, yv);
+            x += 8;
+        }
+    }
+    x
+}
+
 /// # Safety
 /// As [`demosaic_bilinear`], with one output row.
 #[target_feature(enable = "neon")]
