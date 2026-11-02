@@ -358,6 +358,12 @@ pub(super) fn spawn(
                     if !raw_taken {
                         give_back_raw(&mut p);
                     }
+                    // Its passes ran after it went out: nobody gets their buffers, so they go
+                    // back now (kept, they drained the output until two frames in three
+                    // dropped: Raze, 2026-11-02).
+                    for pass in f.passes.iter().flatten() {
+                        p.release_output(pass.output, pass.index);
+                    }
                     continue;
                 }
                 if let Some(prev) = sliced.take() {

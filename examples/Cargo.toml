@@ -409,6 +409,12 @@ path = "05_apps/service_controls.rs"
 test = false
 
 [[bin]]
+name = "sliced_pyramid_check"
+path = "04_performance/sliced_pyramid_check.rs"
+test = false
+required-features = ["native"]
+
+[[bin]]
 name = "metrics_top"
 path = "05_apps/metrics_top.rs"
 test = false

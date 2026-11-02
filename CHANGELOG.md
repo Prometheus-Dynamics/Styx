@@ -896,6 +896,12 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- **A sliced PiSP capture with extra passes (pyramid levels) dropped two frames in three.** A
+  sliced frame goes out at its first slice; its passes, run at its end, were never given back,
+  and drained the output's buffers until a frame could start only when a consumer had released
+  the previous one. Raze, OV9782 1280x800 at 30 fps, HeliOS's camera service holding each frame
+  51 ms: 10 fps with 2 `isp_skipped` per frame. `sliced_pyramid_check` (new example), same
+  hold: 148 `isp_skipped` in 10 s before, 0 after.
 - GPU ISP dma-buf import: the whole dma-buf was imported as a dedicated allocation even when
   the buffer's memory requirement was a different size, which is invalid
   (`VUID-VkMemoryDedicatedAllocateInfo-buffer-02965`, found by Daedalus's validation run on v3dv).
