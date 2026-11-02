@@ -82,7 +82,7 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`.
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| YUYV → NV12 chroma | pass | gap | gap | gap | gap | gap |
+| YUYV → NV12 chroma | pass | pass | pass | pass | pass | gap |
 | NV12 → RGB | pass | lib | lib | gap⁷ | gap⁷ | gap |
 | YUYV → RGB | pass | lib | lib | gap⁷ | gap⁷ | gap |
 | I420 → RGB | pass | lib | lib | gap⁷ | gap⁷ | gap |
@@ -133,12 +133,12 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | Column | pass | gap | n/a |
 |---|---|---|---|
 | scalar | 43 | 0 | 0 |
-| x86 | 40 | 3 | 0 |
-| NEON64 | 41 | 2 | 0 |
-| NEON32 | 37 | 5 | 1 |
-| RVV | 34 | 9 | 0 |
+| x86 | 41 | 2 | 0 |
+| NEON64 | 42 | 1 | 0 |
+| NEON32 | 38 | 4 | 1 |
+| RVV | 35 | 8 | 0 |
 | GPU | 18 | 25 | 0 |
-| **all** | **213** | **44** | **1** |
+| **all** | **217** | **40** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 

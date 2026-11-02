@@ -120,6 +120,16 @@ pub(super) fn yuyv_luma_row(
     blocks(width, 16, |n| unsafe { rows::yuyv_luma(src, dst, n) })
 }
 
+/// YUYV chroma of two rows, 16 outputs a step.
+pub(super) fn yuyv_chroma_row(
+    a: &[u8],
+    b: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    blocks(width, 16, |n| unsafe { rows::yuyv_chroma(a, b, dst, n) })
+}
+
 /// 2x2 box average, 16 outputs a step.
 pub(super) fn box2_row(
     top: &[u8],

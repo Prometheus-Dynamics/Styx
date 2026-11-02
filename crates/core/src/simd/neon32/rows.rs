@@ -193,6 +193,21 @@ pub(super) unsafe fn yuyv_luma(src: &[u8], dst: &mut [u8], steps: usize) {
     }
 }
 
+/// 16 outputs a step: `vld2` splits even and odd bytes and `vrhadd` averages the odd ones,
+/// (x + y + 1) >> 1.
+pub(super) unsafe fn yuyv_chroma(a: &[u8], b: &[u8], dst: &mut [u8], steps: usize) {
+    // SAFETY: per the module.
+    unsafe {
+        block_loop!(a.as_ptr(), dst.as_mut_ptr(), steps, [
+            "vld2.8 {{d0, d1, d2, d3}}, [{s}]!",
+            "vld2.8 {{d4, d5, d6, d7}}, [{b}]!",
+            "vrhadd.u8 q1, q1, q3",
+            "vst1.8 {{d2, d3}}, [{d}]!",
+        ], b = inout(reg) b.as_ptr() => _,
+           out("q0") _, out("q1") _, out("q2") _, out("q3") _);
+    }
+}
+
 /// 16 outputs a step: `vld2` splits even and odd bytes, the four bytes sum in 16 bits (at most
 /// 1020) and `vrshrn #2` adds 2 before the shift, as the scalar kernel rounds.
 pub(super) unsafe fn box2(top: &[u8], bottom: &[u8], dst: &mut [u8], steps: usize) {

@@ -143,6 +143,18 @@ pub fn yuyv_luma_row(src: &[u8], dst: &mut [u8], width: usize) {
     }
 }
 
+/// YUYV (Y0 U Y1 V) chroma of two rows averaged, rounding half up: `width` bytes of UV pairs
+/// (NV12's chroma row) from the odd bytes.
+pub fn yuyv_chroma_row(a: &[u8], b: &[u8], dst: &mut [u8], width: usize) {
+    for ((d, x), y) in dst[..width]
+        .iter_mut()
+        .zip(a[..width * 2].as_chunks::<2>().0)
+        .zip(b[..width * 2].as_chunks::<2>().0)
+    {
+        *d = (u16::from(x[1]) + u16::from(y[1])).div_ceil(2) as u8;
+    }
+}
+
 /// 2x2 box average of two rows into `width` outputs, rounding half up.
 pub fn box2_row(top: &[u8], bottom: &[u8], dst: &mut [u8], width: usize) {
     for ((d, t), b) in dst[..width]

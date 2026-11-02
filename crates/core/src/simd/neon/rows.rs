@@ -218,6 +218,27 @@ pub(in crate::simd) unsafe fn yuyv_luma(src: &[u8], dst: &mut [u8], width: usize
 }
 
 /// # Safety
+/// As [`swap_rb24`]; `a` and `b` hold `width` 2-byte pixels, `dst` `width` bytes.
+#[target_feature(enable = "neon")]
+pub(in crate::simd) unsafe fn yuyv_chroma(
+    a: &[u8],
+    b: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> usize {
+    let blocks = width / 16;
+    for i in 0..blocks {
+        // SAFETY: 16 pixels of each row; `vrhaddq` is (x + y + 1) >> 1 of the odd bytes.
+        unsafe {
+            let x = vld2q_u8(a.as_ptr().add(i * 32));
+            let y = vld2q_u8(b.as_ptr().add(i * 32));
+            vst1q_u8(dst.as_mut_ptr().add(i * 16), vrhaddq_u8(x.1, y.1));
+        }
+    }
+    blocks * 16
+}
+
+/// # Safety
 /// As [`swap_rb24`]; `top` and `bottom` hold `2 * width` bytes, `dst` `width`.
 #[target_feature(enable = "neon")]
 pub(in crate::simd) unsafe fn box2(

@@ -95,6 +95,16 @@ pub(super) fn yuyv_luma_row(
     done(unsafe { rows::yuyv_luma(src, dst, width) })
 }
 
+pub(super) fn yuyv_chroma_row(
+    a: &[u8],
+    b: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    // SAFETY: as above.
+    done(unsafe { rows::yuyv_chroma(a, b, dst, width) })
+}
+
 pub(super) fn box2_row(
     top: &[u8],
     bottom: &[u8],

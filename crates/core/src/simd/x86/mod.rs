@@ -178,6 +178,26 @@ pub(super) fn yuyv_luma_row(
     None
 }
 
+pub(super) fn yuyv_chroma_row(
+    a: &[u8],
+    b: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    let f = X86FeatureSet::detect();
+    if f.avx2 && width >= 32 {
+        return done(SimdBackend::X86Avx2, unsafe {
+            rows::yuyv_chroma_avx2(a, b, dst, width)
+        });
+    }
+    if f.sse2 {
+        return done(SimdBackend::X86Sse2, unsafe {
+            rows::yuyv_chroma_sse2(a, b, dst, width)
+        });
+    }
+    None
+}
+
 pub(super) fn box2_row(
     top: &[u8],
     bottom: &[u8],

@@ -299,6 +299,15 @@ pub fn yuyv_luma_row(src: &[u8], dst: &mut [u8], width: usize) -> SimdBackend {
     })
 }
 
+/// YUYV chroma of two rows averaged (NV12's chroma row: `width` bytes of UV pairs).
+pub fn yuyv_chroma_row(a: &[u8], b: &[u8], dst: &mut [u8], width: usize) -> SimdBackend {
+    let (a, b, dst) = (&a[..width * 2], &b[..width * 2], &mut dst[..width]);
+    let outcome = leaf!(yuyv_chroma_row(a, b, dst, width));
+    finish(outcome, width, |d, n| {
+        scalar::yuyv_chroma_row(&a[d * 2..], &b[d * 2..], &mut dst[d..], n)
+    })
+}
+
 /// 2x2 box average of two rows into `width` outputs.
 pub fn box2_row(top: &[u8], bottom: &[u8], dst: &mut [u8], width: usize) -> SimdBackend {
     let (top, bottom, dst) = (&top[..width * 2], &bottom[..width * 2], &mut dst[..width]);

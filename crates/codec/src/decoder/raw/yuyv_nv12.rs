@@ -88,12 +88,7 @@ impl YuyvToNv12Decoder {
             let a = &src[2 * r * stride..][..row];
             // An odd last row pairs with itself.
             let b = &src[(2 * r + 1).min(h - 1) * stride..][..row];
-            let out = &mut uv[r * w..][..w];
-            for (i, o) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
-                let (u, v) = (4 * i + 1, 4 * i + 3);
-                o[0] = (u16::from(a[u]) + u16::from(b[u])).div_ceil(2) as u8;
-                o[1] = (u16::from(a[v]) + u16::from(b[v])).div_ceil(2) as u8;
-            }
+            styx_core::simd::yuyv_chroma_row(a, b, &mut uv[r * w..][..w], w);
         }
         let mut out = meta.clone();
         out.format = MediaFormat::new(FourCc::NV12, meta.format.resolution, meta.format.color);

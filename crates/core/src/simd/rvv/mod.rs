@@ -114,6 +114,16 @@ pub(super) fn yuyv_luma_row(
     whole(width, || unsafe { rows::yuyv_luma(src, dst, width) })
 }
 
+/// YUYV chroma of two rows.
+pub(super) fn yuyv_chroma_row(
+    a: &[u8],
+    b: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    whole(width, || unsafe { rows::yuyv_chroma(a, b, dst, width) })
+}
+
 /// 2x2 box average.
 pub(super) fn box2_row(
     top: &[u8],

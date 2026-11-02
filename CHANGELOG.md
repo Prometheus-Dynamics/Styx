@@ -8,6 +8,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_core::simd::yuyv_chroma_row`: YUYV chroma of two rows averaged (NV12's chroma row) on
+  SSE2, AVX2, NEON, armv7 NEON and RVV, exact against scalar. `YuyvToNv12Decoder` uses it.
 - `GpuContext::import_pad(len)`: the bytes the GPU ISP's device needs past a dma-buf to import
   it whole. The native software ISP path pads its output buffers to at least that when it has
   a GPU ISP device. Daedalus pinned at 6900b97 (`flush_uploads`).

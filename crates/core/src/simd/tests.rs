@@ -229,6 +229,9 @@ fn dispatchers_match_the_oracle() {
         box2_row(&top, &bottom, &mut got, width);
         scalar::box2_row(&top, &bottom, &mut want, width);
         assert_eq!(got, want, "box2 width {width}");
+        yuyv_chroma_row(&top, &bottom, &mut got, width);
+        scalar::yuyv_chroma_row(&top, &bottom, &mut want, width);
+        assert_eq!(got, want, "yuyv chroma width {width}");
     }
 }
 
@@ -370,6 +373,9 @@ mod x86_leaves {
             box2_leaf("box2 sse2", |t, b, d, w| unsafe {
                 rows::box2_sse2(t, b, d, w)
             });
+            chroma_leaf("yuyv chroma sse2", |t, b, d, w| unsafe {
+                rows::yuyv_chroma_sse2(t, b, d, w)
+            });
         }
         if f.ssse3 {
             for layout in LAYOUTS {
@@ -494,6 +500,9 @@ mod x86_leaves {
             box2_leaf("box2 avx2", |t, b, d, w| unsafe {
                 rows::box2_avx2(t, b, d, w)
             });
+            chroma_leaf("yuyv chroma avx2", |t, b, d, w| unsafe {
+                rows::yuyv_chroma_avx2(t, b, d, w)
+            });
         }
     }
 
@@ -598,6 +607,9 @@ mod neon_leaves {
             );
         }
         box2_leaf("box2 neon", |t, b, d, w| unsafe { rows::box2(t, b, d, w) });
+        chroma_leaf("yuyv chroma neon", |t, b, d, w| unsafe {
+            rows::yuyv_chroma(t, b, d, w)
+        });
     }
 
     #[test]
@@ -628,10 +640,27 @@ fn finish_reverse(
 
 #[allow(dead_code)]
 fn box2_leaf(name: &str, leaf: impl Fn(&[u8], &[u8], &mut [u8], usize) -> usize) {
+    pair_leaf(name, scalar::box2_row, leaf);
+}
+
+/// YUYV chroma leaf against the scalar kernel.
+#[allow(dead_code)]
+fn chroma_leaf(name: &str, leaf: impl Fn(&[u8], &[u8], &mut [u8], usize) -> usize) {
+    pair_leaf(name, scalar::yuyv_chroma_row, leaf);
+}
+
+/// A leaf of two `2 * width`-byte rows into `width` bytes against `oracle`, writing nothing
+/// past `width`.
+#[allow(dead_code)]
+fn pair_leaf(
+    name: &str,
+    oracle: fn(&[u8], &[u8], &mut [u8], usize),
+    leaf: impl Fn(&[u8], &[u8], &mut [u8], usize) -> usize,
+) {
     for width in widths() {
         let (top, bottom) = (bytes(width * 2, 3), bytes(width * 2, 4));
         let mut want = vec![0; width];
-        scalar::box2_row(&top, &bottom, &mut want, width);
+        oracle(&top, &bottom, &mut want, width);
         let mut got = vec![GUARD; width + 64];
         let done = leaf(&top, &bottom, &mut got[..width], width);
         assert_eq!(got[..done], want[..done], "{name} width {width}");
@@ -736,6 +765,9 @@ macro_rules! detected_leaves {
             check_tile(stringify!($m), bpp, tile);
         }
         box2_leaf("box2", |t, b, d, w| done($m::box2_row(t, b, d, w)));
+        chroma_leaf("yuyv chroma", |t, b, d, w| {
+            done($m::yuyv_chroma_row(t, b, d, w))
+        });
         // Saturated input: the widest sum (4 * 255 + 2) narrows back to 255.
         let row = vec![255u8; 2 * 300];
         let mut all = vec![0u8; 300];

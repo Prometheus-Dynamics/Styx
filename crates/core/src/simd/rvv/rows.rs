@@ -267,6 +267,23 @@ pub(super) unsafe fn yuyv_luma(src: &[u8], dst: &mut [u8], width: usize) {
     });
 }
 
+/// YUYV chroma of two rows: segment loads split even and odd bytes; `vaaddu` with
+/// round-to-nearest-up (`vxrm` 0) is (x + y + 1) >> 1.
+pub(super) unsafe fn yuyv_chroma(a: &[u8], b: &[u8], dst: &mut [u8], width: usize) {
+    let (x, y, d) = (a.as_ptr(), b.as_ptr(), dst.as_mut_ptr());
+    // SAFETY: as above, `2n` bytes of each source row.
+    strips(width, |i, left| unsafe {
+        strip!(left, x.add(2 * i), d.add(i), [
+            "vsetvli {n}, {left}, e8, m2, ta, ma",
+            "csrwi vxrm, 0",
+            "vlseg2e8.v v0, ({s})",
+            "vlseg2e8.v v4, ({b})",
+            "vaaddu.vv v8, v2, v6",
+            "vse8.v v8, ({d})",
+        ], b = in(reg) y.add(2 * i))
+    });
+}
+
 /// 2x2 box average: segment loads split even and odd bytes; the sums widen to 16 bits (at
 /// most 1020 + 2) and narrow back with a shift by 2, as the scalar kernel rounds.
 pub(super) unsafe fn box2(top: &[u8], bottom: &[u8], dst: &mut [u8], width: usize) {

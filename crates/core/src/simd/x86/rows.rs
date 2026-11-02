@@ -490,6 +490,59 @@ pub(in crate::simd) unsafe fn yuyv_luma_avx2(src: &[u8], dst: &mut [u8], width: 
     blocks * 32
 }
 
+/// # Safety
+/// SSE2 must be available; `a` and `b` hold `width` 2-byte pixels, `dst` `width` bytes.
+#[target_feature(enable = "sse2")]
+pub(in crate::simd) unsafe fn yuyv_chroma_sse2(
+    a: &[u8],
+    b: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> usize {
+    let blocks = width / 16;
+    for i in 0..blocks {
+        // SAFETY: 32 bytes of each row in, 16 out. `avg_epu8` is (x + y + 1) >> 1; the odd
+        // bytes (U, V) shift down into 16-bit lanes and pack back.
+        unsafe {
+            let (x, y) = (a.as_ptr().add(i * 32), b.as_ptr().add(i * 32));
+            let half = |k: usize| {
+                _mm_srli_epi16::<8>(_mm_avg_epu8(load(x.add(16 * k)), load(y.add(16 * k))))
+            };
+            store(
+                dst.as_mut_ptr().add(i * 16),
+                _mm_packus_epi16(half(0), half(1)),
+            );
+        }
+    }
+    blocks * 16
+}
+
+/// # Safety
+/// AVX2 must be available; as [`yuyv_chroma_sse2`].
+#[target_feature(enable = "avx2")]
+pub(in crate::simd) unsafe fn yuyv_chroma_avx2(
+    a: &[u8],
+    b: &[u8],
+    dst: &mut [u8],
+    width: usize,
+) -> usize {
+    let blocks = width / 32;
+    for i in 0..blocks {
+        // SAFETY: 64 bytes of each row in, 32 out; the permute undoes `packus`'s lane order.
+        unsafe {
+            let (x, y) = (a.as_ptr().add(i * 64), b.as_ptr().add(i * 64));
+            let half = |k: usize| {
+                let p = _mm256_loadu_si256(x.add(32 * k).cast());
+                let q = _mm256_loadu_si256(y.add(32 * k).cast());
+                _mm256_srli_epi16::<8>(_mm256_avg_epu8(p, q))
+            };
+            let uv = _mm256_permute4x64_epi64::<0xD8>(_mm256_packus_epi16(half(0), half(1)));
+            _mm256_storeu_si256(dst.as_mut_ptr().add(i * 32).cast(), uv);
+        }
+    }
+    blocks * 32
+}
+
 /// Pairwise sums of 16 bytes as 8 u16 lanes.
 #[inline(always)]
 unsafe fn pair_sums(v: __m128i) -> __m128i {
