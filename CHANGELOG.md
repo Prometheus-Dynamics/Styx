@@ -8,6 +8,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_gpuisp::GpuConvert`: the packed and codec conversions as Vulkan compute
+  (`shaders/convert.comp`), bit-exact with `styx_core::simd`'s scalar kernels: BGR ↔ RGB, BGRA ↔
+  RGBA, XRGB32, RGB48, grey and Y16 to RGB24, RGB24 → RGBA, RGB and YUYV → luma, YUYV → NV12
+  chroma, NV12, YUYV and I420 → RGB (matrix as `YuvMatrix`), row reverse and the 90° transform.
+  Host slices in and out, one submission a call, buffers reused. Tested byte for byte on
+  llvmpipe over odd and even sizes and padded strides (`tests/it/convert.rs`). Not yet on
+  Daedalus's device.
 - Frame drops are logged by cause (`sensor_sequence_gap`, `isp_skipped`, `queue_overflow`)
   at 1, 2, 4, 8, ... dropped frames, so a capture losing frames says why in its log as well as
   in `CameraMetrics::drops`.

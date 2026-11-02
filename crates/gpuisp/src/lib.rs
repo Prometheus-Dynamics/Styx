@@ -28,6 +28,7 @@
 //! design, the measured quality and the performance.
 
 mod context;
+mod convert;
 mod error;
 mod input;
 mod isp;
@@ -40,6 +41,7 @@ mod stats;
 pub use context::{
     DeviceInfo, DeviceKind, DeviceSelect, GpuContext, devices, vulkan_instance_lock,
 };
+pub use convert::{GpuConvert, Image, ImageMut};
 pub use error::GpuError;
 pub use input::{ExternalBuffer, Input};
 pub use isp::{ExportedFrame, GpuIsp, ImportId};

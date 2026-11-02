@@ -15,6 +15,7 @@ readme = "README.md"
 # Thin Vulkan bindings; `libvulkan.so.1` is loaded at run time (no link-time dependency, no
 # C build), so a binary with this crate starts on systems without Vulkan.
 ash = { version = "0.38", default-features = false, features = ["loaded", "std"] }
+styx-core.workspace = true
 styx-softisp.workspace = true
 thiserror = { workspace = true, features = ["std"] }
 daedalus-gpu = { workspace = true, optional = true, features = ["gpu-vulkan-raw"] }

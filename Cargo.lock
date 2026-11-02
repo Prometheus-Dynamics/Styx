@@ -5447,6 +5447,7 @@ dependencies = [
  "ash",
  "daedalus-gpu",
  "libc",
+ "styx-core-rs",
  "styx-kernel",
  "styx-softisp",
  "thiserror 2.0.21",

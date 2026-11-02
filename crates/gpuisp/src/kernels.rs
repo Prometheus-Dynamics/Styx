@@ -60,7 +60,8 @@ impl Drop for Kernels {
     }
 }
 
-fn spirv(bytes: &[u8]) -> Vec<u32> {
+/// SPIR-V bytes as the words `vkCreateShaderModule` takes.
+pub(crate) fn spirv(bytes: &[u8]) -> Vec<u32> {
     bytes
         .as_chunks::<4>()
         .0

@@ -1,0 +1,214 @@
+#version 450
+// Pixel-format conversions, computed as `styx-core`'s scalar kernels (`simd::scalar`) do, bit
+// for bit: one invocation per output pixel (per chroma sample for the NV12 chroma). The host
+// copies the source planes into `src`, one after another at `off1` and `off2`, and reads `dst`
+// back row by row at `dst_stride`. The op codes are `src/convert.rs`'s `Op`.
+
+#extension GL_EXT_shader_8bit_storage : require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer Src {
+    uint8_t src[];
+};
+
+layout(set = 0, binding = 1, std430) writeonly buffer Dst {
+    uint8_t dst[];
+};
+
+layout(push_constant, std430) uniform Args {
+    // Output grid: width and height in output pixels.
+    uint op;
+    uint width;
+    uint height;
+    // Plane 0 stride, and the offsets and strides of planes 1 and 2 in `src`.
+    uint stride0;
+    uint off1;
+    uint stride1;
+    uint off2;
+    uint stride2;
+    uint dst_stride;
+    // Source bytes per pixel (transform and luma), flags (see below), the source height
+    // (chroma).
+    uint bpp;
+    uint flags;
+    uint in_height;
+    // The YUV matrix (`YuvMatrix`).
+    int y_offset;
+    int y_scale;
+    int r_v;
+    int g_u;
+    int g_v;
+    int b_u;
+} A;
+
+const uint OP_SWAP_RB24 = 0u;
+const uint OP_SWAP_RB32 = 1u;
+const uint OP_X32_RGB24 = 2u;
+const uint OP_LUMA = 3u;
+const uint OP_RGB24_RGBA = 4u;
+const uint OP_GRAY8_RGB24 = 5u;
+const uint OP_GRAY16_RGB24 = 6u;
+const uint OP_RGB48_RGB24 = 7u;
+const uint OP_YUYV_LUMA = 8u;
+const uint OP_YUYV_CHROMA = 9u;
+const uint OP_TRANSFORM = 10u;
+const uint OP_NV12_RGB = 11u;
+const uint OP_YUYV_RGB = 12u;
+const uint OP_I420_RGB = 13u;
+
+// Flags: bit 0 swaps red and blue (XRGB32, RGB48 to RGB24, BGR luma); for TRANSFORM bit 0
+// mirrors horizontally, bit 1 vertically and bit 2 transposes.
+const uint FLAG_SWAP = 1u;
+const uint FLAG_FLIP_X = 1u;
+const uint FLAG_FLIP_Y = 2u;
+const uint FLAG_TRANSPOSE = 4u;
+
+uint rd(uint i) {
+    return uint(src[i]);
+}
+
+void wr(uint i, uint v) {
+    dst[i] = uint8_t(v);
+}
+
+// `YuvMatrix::rgb`: 8-bit fixed point, shifted down arithmetically, clamped.
+void put_rgb(uint d, uint y, uint u, uint v) {
+    int c = A.y_scale * max(int(y) - A.y_offset, 0) + 128;
+    int dd = int(u) - 128;
+    int ee = int(v) - 128;
+    int r = c + A.r_v * ee;
+    int g = c - A.g_u * dd - A.g_v * ee;
+    int b = c + A.b_u * dd;
+    wr(d, uint(clamp(r >> 8, 0, 255)));
+    wr(d + 1u, uint(clamp(g >> 8, 0, 255)));
+    wr(d + 2u, uint(clamp(b >> 8, 0, 255)));
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    if (x >= A.width || y >= A.height) {
+        return;
+    }
+    uint row = y * A.stride0;
+    uint out3 = y * A.dst_stride + 3u * x;
+    switch (A.op) {
+    case OP_SWAP_RB24: {
+        uint s = row + 3u * x;
+        wr(out3, rd(s + 2u));
+        wr(out3 + 1u, rd(s + 1u));
+        wr(out3 + 2u, rd(s));
+        break;
+    }
+    case OP_SWAP_RB32: {
+        uint s = row + 4u * x;
+        uint d = y * A.dst_stride + 4u * x;
+        wr(d, rd(s + 2u));
+        wr(d + 1u, rd(s + 1u));
+        wr(d + 2u, rd(s));
+        wr(d + 3u, rd(s + 3u));
+        break;
+    }
+    case OP_X32_RGB24: {
+        uint s = row + 4u * x;
+        bool swap = (A.flags & FLAG_SWAP) != 0u;
+        wr(out3, swap ? rd(s + 2u) : rd(s));
+        wr(out3 + 1u, rd(s + 1u));
+        wr(out3 + 2u, swap ? rd(s) : rd(s + 2u));
+        break;
+    }
+    case OP_LUMA: {
+        // Byte offsets of R and B within a pixel: BGR order swaps them.
+        uint s = row + A.bpp * x;
+        uint r = (A.flags & FLAG_SWAP) != 0u ? 2u : 0u;
+        uint b = 2u - r;
+        uint v = (77u * rd(s + r) + 150u * rd(s + 1u) + 29u * rd(s + b)) >> 8;
+        wr(y * A.dst_stride + x, v);
+        break;
+    }
+    case OP_RGB24_RGBA: {
+        uint s = row + 3u * x;
+        uint d = y * A.dst_stride + 4u * x;
+        wr(d, rd(s));
+        wr(d + 1u, rd(s + 1u));
+        wr(d + 2u, rd(s + 2u));
+        wr(d + 3u, 255u);
+        break;
+    }
+    case OP_GRAY8_RGB24: {
+        uint g = rd(row + x);
+        wr(out3, g);
+        wr(out3 + 1u, g);
+        wr(out3 + 2u, g);
+        break;
+    }
+    case OP_GRAY16_RGB24: {
+        // The high byte of the little-endian sample.
+        uint g = rd(row + 2u * x + 1u);
+        wr(out3, g);
+        wr(out3 + 1u, g);
+        wr(out3 + 2u, g);
+        break;
+    }
+    case OP_RGB48_RGB24: {
+        uint s = row + 6u * x;
+        bool swap = (A.flags & FLAG_SWAP) != 0u;
+        wr(out3, swap ? rd(s + 5u) : rd(s + 1u));
+        wr(out3 + 1u, rd(s + 3u));
+        wr(out3 + 2u, swap ? rd(s + 1u) : rd(s + 5u));
+        break;
+    }
+    case OP_YUYV_LUMA: {
+        wr(y * A.dst_stride + x, rd(row + 2u * x));
+        break;
+    }
+    case OP_YUYV_CHROMA: {
+        // Chroma sample x of row y: the U or V byte of luma rows 2y and 2y + 1 (the last row
+        // pairs with itself), averaged, rounding half up.
+        uint a = 2u * y * A.stride0 + 2u * x + 1u;
+        uint b = min(2u * y + 1u, A.in_height - 1u) * A.stride0 + 2u * x + 1u;
+        wr(y * A.dst_stride + x, (rd(a) + rd(b) + 1u) >> 1);
+        break;
+    }
+    case OP_TRANSFORM: {
+        // Output pixel (x, y) reads source pixel (sx, sy): transposed, the output's columns
+        // are the source's rows; then the mirrors.
+        uint sx;
+        uint sy;
+        if ((A.flags & FLAG_TRANSPOSE) != 0u) {
+            sx = (A.flags & FLAG_FLIP_Y) != 0u ? A.height - 1u - y : y;
+            sy = (A.flags & FLAG_FLIP_X) != 0u ? A.width - 1u - x : x;
+        } else {
+            sx = (A.flags & FLAG_FLIP_X) != 0u ? A.width - 1u - x : x;
+            sy = (A.flags & FLAG_FLIP_Y) != 0u ? A.height - 1u - y : y;
+        }
+        uint s = sy * A.stride0 + sx * A.bpp;
+        uint d = y * A.dst_stride + x * A.bpp;
+        for (uint k = 0u; k < A.bpp; k++) {
+            wr(d + k, rd(s + k));
+        }
+        break;
+    }
+    case OP_NV12_RGB: {
+        // Chroma row y / 2, pair x / 2 (U then V).
+        uint uv = A.off1 + (y / 2u) * A.stride1 + 2u * (x / 2u);
+        put_rgb(out3, rd(row + x), rd(uv), rd(uv + 1u));
+        break;
+    }
+    case OP_YUYV_RGB: {
+        // Groups of Y0 U Y1 V: pixel x is Y0 or Y1 of group x / 2.
+        uint g = row + 4u * (x / 2u);
+        put_rgb(out3, rd(g + 2u * (x % 2u)), rd(g + 1u), rd(g + 3u));
+        break;
+    }
+    case OP_I420_RGB: {
+        uint u = A.off1 + (y / 2u) * A.stride1 + x / 2u;
+        uint v = A.off2 + (y / 2u) * A.stride2 + x / 2u;
+        put_rgb(out3, rd(row + x), rd(u), rd(v));
+        break;
+    }
+    default:
+        break;
+    }
+}

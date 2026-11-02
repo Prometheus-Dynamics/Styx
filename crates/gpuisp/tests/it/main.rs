@@ -3,6 +3,7 @@
 
 mod alloc;
 mod common;
+mod convert;
 
 #[cfg(feature = "daedalus")]
 mod daedalus;

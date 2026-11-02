@@ -99,6 +99,17 @@ pub(crate) struct Inner {
     pub info: DeviceInfo,
 }
 
+impl Inner {
+    /// The queue and its lock when the device is the context's own (not Daedalus's).
+    pub fn own_queue(&self) -> Option<&Mutex<vk::Queue>> {
+        match &self.submit {
+            Submit::Own(queue) => Some(queue),
+            #[cfg(feature = "daedalus")]
+            Submit::Daedalus(_) => None,
+        }
+    }
+}
+
 impl Drop for Inner {
     fn drop(&mut self) {
         // A shared device is its owner's to destroy.

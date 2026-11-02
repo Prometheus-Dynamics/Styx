@@ -61,31 +61,31 @@ The GPU column is `styx-gpuisp`, bit-exact with the CPU.
 
 ### Packed conversions, pyramid and orientation (`styx_core::simd`)
 
-The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`.
+The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`; for the conversions (and the codec ones below) it is `styx_gpuisp::GpuConvert`.
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| BGR ↔ RGB (24-bit) | pass | pass | pass | pass | pass | gap |
-| BGRA ↔ RGBA (32-bit) | pass | pass | pass | pass | pass | gap |
-| XRGB32 → RGB24 | pass | pass | pass | pass | pass | gap |
-| RGB → luma | pass | pass | pass | pass | pass | gap |
-| RGB24 → RGBA | pass | pass | pass | pass | pass | gap |
-| GREY → RGB24 | pass | pass | pass | pass | pass | gap |
-| Y16 → RGB24 | pass | pass | pass | pass | pass | gap |
-| RGB48 → RGB24 | pass | pass | pass | pass | pass | gap |
-| YUYV → luma | pass | pass | pass | pass | pass | gap |
+| BGR ↔ RGB (24-bit) | pass | pass | pass | pass | pass | pass |
+| BGRA ↔ RGBA (32-bit) | pass | pass | pass | pass | pass | pass |
+| XRGB32 → RGB24 | pass | pass | pass | pass | pass | pass |
+| RGB → luma | pass | pass | pass | pass | pass | pass |
+| RGB24 → RGBA | pass | pass | pass | pass | pass | pass |
+| GREY → RGB24 | pass | pass | pass | pass | pass | pass |
+| Y16 → RGB24 | pass | pass | pass | pass | pass | pass |
+| RGB48 → RGB24 | pass | pass | pass | pass | pass | pass |
+| YUYV → luma | pass | pass | pass | pass | pass | pass |
 | 2x2 box (luma pyramid) | pass | pass | pass | pass | pass | pass |
-| Row reverse (mirror) | pass | pass | pass | pass | pass | gap |
-| 8x8 transpose (90° rotation) | pass | pass | pass | pass | pass | gap |
+| Row reverse (mirror) | pass | pass | pass | pass | pass | pass |
+| 8x8 transpose (90° rotation) | pass | pass | pass | pass | pass | pass¹⁰ |
 
 ### Codec conversions (`styx-codec` raw decoders)
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
-| YUYV → NV12 chroma | pass | pass | pass | pass | pass | gap |
-| NV12 → RGB | pass | lib | lib | pass⁷ | pass⁷ | gap |
-| YUYV → RGB | pass | lib | lib | pass⁷ | pass⁷ | gap |
-| I420 → RGB | pass | lib | lib | pass⁷ | pass⁷ | gap |
+| YUYV → NV12 chroma | pass | pass | pass | pass | pass | pass |
+| NV12 → RGB | pass | lib | lib | pass⁷ | pass⁷ | pass |
+| YUYV → RGB | pass | lib | lib | pass⁷ | pass⁷ | pass |
+| I420 → RGB | pass | lib | lib | pass⁷ | pass⁷ | pass |
 
 ### Codecs
 
@@ -110,6 +110,8 @@ Notes:
 8. Upstream libjpeg-turbo and x264 have no RVV code. Styx needs its own colour and DCT
    leaves, or the board's encoder (see the fixed-function table below).
 9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. There is no Vulkan Video encode yet.
+10. `GpuConvert::transform` gathers each output pixel rather than working on 8x8 tiles. It
+    gives the bytes of `transform_packed` in all eight orientations, tested against it.
 
 ## Fixed-function units
 
@@ -139,8 +141,8 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | NEON64 | 43 | 0 | 0 |
 | NEON32 | 42 | 0 | 1 |
 | RVV | 39 | 4 | 0 |
-| GPU | 18 | 25 | 0 |
-| **all** | **227** | **30** | **1** |
+| GPU | 33 | 10 | 0 |
+| **all** | **242** | **15** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 
