@@ -164,9 +164,14 @@ memory when it runs.
       ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and
       2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
       box and the reactor's timer map node). **Not counted:**
-      V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw and sliced leases, GPU ISP
-      `Input::Buffer` and its statistics, libcamera, and the kernel's side of the queue on a
-      board.
+      V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw and sliced leases,
+      libcamera, and the kernel's side of the queue on a board. GPU ISP (`crates/gpuisp/tests/it/
+      alloc.rs`): 0 with statistics handed back (`recycle_stats`) and white balance, gain, lens
+      shading and tone changing every frame (`swap_params`, tables rebuilt in place); was a new
+      `IspStats` and new tables per frame. **Not 0, reason stated:** `Input::Buffer` on
+      Daedalus's device, 17 per frame, all in Daedalus's `submit_raw` and wgpu-core's submission
+      (encoder and command buffer `Arc`s, semaphore lists, `GpuTicket`); zero needs a raw-queue
+      submit in Daedalus (asked for).
 - [ ] **GPU import pad from Daedalus.** *Why:* `gpu_import_pad` is a fixed 256 B; Daedalus knows the
       device's need. *Done when:* with a Daedalus context the pad comes from
       `GpuFrameImports::required_len(end)` / `GpuStorage::dmabuf_import_len(gpu, len)`, 256 otherwise.

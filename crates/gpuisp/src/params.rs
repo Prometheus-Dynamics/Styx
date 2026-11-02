@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use styx_softisp::shared::{grid_map, q12};
+use styx_softisp::shared::{grid_map_into, q12};
 use styx_softisp::simd::{RowKind, ToneLut, YuvCoeffs};
 use styx_softisp::{
     CfaPattern, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig, YuvMatrix,
@@ -65,7 +65,7 @@ impl Block {
 }
 
 /// Statistics geometry (as `styx-softisp`'s `StatsSetup`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct StatsSetup {
     pub config: StatsConfig,
     /// Quads per zone in the sampled rows (for the zone luma means).
@@ -92,6 +92,54 @@ pub(crate) struct Tables {
     pub stats: Option<StatsSetup>,
     /// White balance times digital gain, reported with the statistics.
     pub channel_gains: [f32; 3],
+}
+
+/// Tables of parameters gone by ([`Spare::keep`]), written in place by the next
+/// [`Tables::new`], and its working buffers: parameters changing every frame (white balance,
+/// lens shading, tone, as the 3A loop sets them) rebuild without allocating.
+#[derive(Debug, Default)]
+pub(crate) struct Spare {
+    /// Two per kind: a table can come and go (a tone fit that fails) without the other one
+    /// being lost.
+    luts: [Option<Arc<Vec<u32>>>; 2],
+    lscs: [Option<Arc<Vec<u32>>>; 2],
+    stats: Option<StatsSetup>,
+    tone: Option<ToneLut>,
+    x_map: Vec<(usize, usize, f32)>,
+    grid: Vec<(u16, u32)>,
+    wa: Vec<f32>,
+    wb: Vec<f32>,
+    a: Vec<f32>,
+    b: Vec<f32>,
+    g: Vec<f32>,
+    row: Vec<u16>,
+}
+
+impl Spare {
+    /// Keeps `old`'s tables that nothing else holds (a table reused by the tables replacing
+    /// it is not kept).
+    pub fn keep(&mut self, old: Tables) {
+        fn put(slots: &mut [Option<Arc<Vec<u32>>>; 2], t: Option<Arc<Vec<u32>>>) {
+            if let Some(mut t) = t
+                && Arc::get_mut(&mut t).is_some()
+                && let Some(free) = slots.iter_mut().find(|s| s.is_none())
+            {
+                *free = Some(t);
+            }
+        }
+        put(&mut self.luts, old.lut);
+        put(&mut self.lscs, old.lsc);
+        if old.stats.is_some() {
+            self.stats = old.stats;
+        }
+    }
+}
+
+/// A spare table of `slots` (else a new one), emptied for writing.
+fn writable(slots: &mut [Option<Arc<Vec<u32>>>; 2]) -> Arc<Vec<u32>> {
+    let mut t = slots.iter_mut().find_map(Option::take).unwrap_or_default();
+    Arc::get_mut(&mut t).expect("kept unshared").clear();
+    t
 }
 
 fn invalid(s: impl Into<String>) -> IspError {
@@ -159,6 +207,7 @@ impl Tables {
         format: &RawFormat,
         params: &IspParams,
         previous: Option<(&Tables, &IspParams)>,
+        spare: &mut Spare,
     ) -> Result<Self, IspError> {
         validate(format, params)?;
         let (w, h) = (format.width as usize, format.height as usize);
@@ -216,9 +265,11 @@ impl Tables {
                 }
                 _ => {
                     lsc_fresh = true;
-                    let (words, at) = shaded_gains(ls, format, &cell_gain);
+                    let mut words = writable(&mut spare.lscs);
+                    let words_mut = Arc::get_mut(&mut words).expect("unshared");
+                    let at = shaded_gains(ls, format, &cell_gain, spare, words_mut);
                     debug_assert_eq!(at, ymap);
-                    Some(Arc::new(words))
+                    Some(words)
                 }
             };
         }
@@ -238,11 +289,15 @@ impl Tables {
         let (lut, lut_fresh) = match (previous, &params.tone) {
             (Some((p, prev)), Some(_)) if prev.tone == params.tone => (p.lut.clone(), false),
             (_, Some(curve)) => {
-                let lut = ToneLut::from_curve(|x| curve.eval(x));
-                (
-                    Some(Arc::new(lut.full().iter().map(|&v| v as u32).collect())),
-                    true,
-                )
+                let tone = spare
+                    .tone
+                    .get_or_insert_with(|| ToneLut::from_nodes([0; 257]));
+                tone.set_curve(|x| curve.eval(x));
+                let mut lut = writable(&mut spare.luts);
+                Arc::get_mut(&mut lut)
+                    .expect("unshared")
+                    .extend(tone.full().iter().map(|&v| v as u32));
+                (Some(lut), true)
             }
             (_, None) => (None, false),
         };
@@ -254,7 +309,14 @@ impl Tables {
         b.yuv_y_offset = yuv.y_offset as u32;
         b.yuv_u = yuv.u.map(i32::from);
         b.yuv_v = yuv.v.map(i32::from);
-        let stats = params.stats.map(|c| stats_setup(c, w, h)).transpose()?;
+        let stats = match params.stats {
+            Some(c) => {
+                let mut s = spare.stats.take().unwrap_or_default();
+                stats_setup_into(c, w, h, &mut s)?;
+                Some(s)
+            }
+            None => None,
+        };
         if let Some(s) = &stats {
             b.zones_x = s.config.zones_x;
             b.zones_y = s.config.zones_y;
@@ -276,41 +338,67 @@ impl Tables {
 }
 
 /// Q12 gains `[row parity][grid row][column]` as u16 pairs, then one word per image row
-/// (grid row, Q15 weight of the next): the integer arithmetic's `GainRows::Shaded`. Returns
-/// the words and where the row map starts.
+/// (grid row, Q15 weight of the next): the integer arithmetic's `GainRows::Shaded`, written
+/// into `words` (with `spare`'s working buffers). Returns where the row map starts.
 fn shaded_gains(
     ls: &LensShading,
     format: &RawFormat,
     cell_gain: &dyn Fn(usize, usize) -> f32,
-) -> (Vec<u32>, u32) {
+    spare: &mut Spare,
+    words: &mut Vec<u32>,
+) -> u32 {
     let (gw, gh) = (ls.width as usize, ls.height as usize);
     let (w, h) = (format.width as usize, format.height as usize);
     let grids = [&ls.r, &ls.g, &ls.b];
-    let x_map: Vec<(usize, usize, f32)> = grid_map(w, gw)
-        .into_iter()
-        .map(|(i, f)| {
-            let i = i as usize;
-            (i.min(gw - 1), (i + 1).min(gw - 1), f as f32 / 65536.0)
-        })
-        .collect();
+    let Spare {
+        x_map,
+        grid: nodes,
+        wa,
+        wb,
+        a,
+        b,
+        g,
+        row,
+        ..
+    } = spare;
+    grid_map_into(nodes, w, gw);
+    x_map.clear();
+    x_map.extend(nodes.iter().map(|&(i, f)| {
+        let i = i as usize;
+        (i.min(gw - 1), (i + 1).min(gw - 1), f as f32 / 65536.0)
+    }));
     // Per column: the weights (1 - t, t); per grid row, the two nodes gathered, then one
     // straight loop over the row (it vectorises).
-    let (wa, wb): (Vec<f32>, Vec<f32>) = x_map.iter().map(|&(_, _, t)| (1.0 - t, t)).unzip();
-    let (mut a, mut b) = (vec![0f32; w], vec![0f32; w]);
-    let mut row = vec![0u16; w];
-    let mut words: Vec<u32> = Vec::with_capacity(gh * w + h);
+    wa.clear();
+    wa.extend(x_map.iter().map(|&(_, _, t)| 1.0 - t));
+    wb.clear();
+    wb.extend(x_map.iter().map(|&(_, _, t)| t));
+    for v in [&mut *a, &mut *b, &mut *g] {
+        v.clear();
+        v.resize(w, 0.0);
+    }
+    row.clear();
+    row.resize(w, 0);
+    words.reserve(gh * w + h);
     for parity in 0..2 {
         let gain = [0, 1].map(|x| cell_gain(x, parity));
         let grid = [0, 1].map(|x| grids[format.pattern.channel_at(x, parity).index()]);
-        let g: Vec<f32> = (0..w).map(|x| gain[x & 1]).collect();
+        for (x, v) in g.iter_mut().enumerate() {
+            *v = gain[x & 1];
+        }
         for gy in 0..gh {
             for (x, &(i, j, _)) in x_map.iter().enumerate() {
                 let node = &grid[x & 1][gy * gw..][..gw];
                 a[x] = node[i];
                 b[x] = node[j];
             }
-            for (((((d, &a), &b), &wa), &wb), &g) in
-                row.iter_mut().zip(&a).zip(&b).zip(&wa).zip(&wb).zip(&g)
+            for (((((d, &a), &b), &wa), &wb), &g) in row
+                .iter_mut()
+                .zip(a.iter())
+                .zip(b.iter())
+                .zip(wa.iter())
+                .zip(wb.iter())
+                .zip(g.iter())
             {
                 *d = q12(g * (a * wa + b * wb));
             }
@@ -323,15 +411,18 @@ fn shaded_gains(
         }
     }
     let ymap = words.len() as u32;
-    words.extend(
-        grid_map(h, gh)
-            .into_iter()
-            .map(|(i, f)| i as u32 | (f >> 1) << 16),
-    );
-    (words, ymap)
+    grid_map_into(nodes, h, gh);
+    words.extend(nodes.iter().map(|&(i, f)| i as u32 | (f >> 1) << 16));
+    ymap
 }
 
-fn stats_setup(c: StatsConfig, w: usize, h: usize) -> Result<StatsSetup, IspError> {
+/// The statistics setup for `c` on a `w` x `h` frame, written into `out` (its buffer reused).
+fn stats_setup_into(
+    c: StatsConfig,
+    w: usize,
+    h: usize,
+    out: &mut StatsSetup,
+) -> Result<(), IspError> {
     let (qw, qh) = (w / 2, h / 2);
     if c.zones_x == 0 || c.zones_y == 0 || c.zones_x as usize > qw || c.zones_y as usize > qh {
         return Err(invalid(format!(
@@ -346,19 +437,22 @@ fn stats_setup(c: StatsConfig, w: usize, h: usize) -> Result<StatsSetup, IspErro
     }
     let (zx, zy) = (c.zones_x as usize, c.zones_y as usize);
     let step = c.row_step as usize;
-    let mut rows = vec![0u32; zy];
-    for qy in (0..qh).step_by(step) {
-        rows[qy * zy / qh] += 1;
+    // Sampled quad rows of zone row `r`.
+    let rows = |r: usize| {
+        (0..qh)
+            .step_by(step)
+            .filter(|&qy| qy * zy / qh == r)
+            .count() as u32
+    };
+    let cols = |z: usize| ((z + 1) * qw / zx - z * qw / zx) as u32;
+    out.zone_quads.clear();
+    for r in 0..zy {
+        let n = rows(r);
+        out.zone_quads.extend((0..zx).map(|z| n * cols(z)));
     }
-    let cols: Vec<u32> = (0..zx)
-        .map(|z| ((z + 1) * qw / zx - z * qw / zx) as u32)
-        .collect();
-    let zone_quads = (0..zx * zy).map(|z| rows[z / zx] * cols[z % zx]).collect();
-    Ok(StatsSetup {
-        config: c,
-        zone_quads,
-        samples: rows.iter().sum::<u32>() * qw as u32,
-    })
+    out.config = c;
+    out.samples = (0..qh).step_by(step).count() as u32 * qw as u32;
+    Ok(())
 }
 
 #[cfg(test)]

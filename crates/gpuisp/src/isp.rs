@@ -15,7 +15,7 @@ use crate::input::Input;
 use crate::kernels::{Kernels, Plan};
 use crate::layout::{self, Layout, OutputKind};
 use crate::memory::{Buffer, Place};
-use crate::params::Tables;
+use crate::params::{Spare, Tables};
 use crate::stats;
 
 /// A dma-buf registered with a [`GpuIsp`].
@@ -78,6 +78,9 @@ pub struct GpuIsp {
     ring_len: usize,
     ring_next: usize,
     gpu_time: Option<Duration>,
+    /// Statistics handed back ([`Self::recycle_stats`]), written into next.
+    spare_stats: Option<IspStats>,
+    spare_tables: Spare,
 }
 
 impl std::fmt::Debug for GpuIsp {
@@ -107,7 +110,8 @@ impl GpuIsp {
         format: RawFormat,
         params: IspParams,
     ) -> Result<Self, GpuError> {
-        let tables = Tables::new(&format, &params, None)?;
+        let mut spare_tables = Spare::default();
+        let tables = Tables::new(&format, &params, None, &mut spare_tables)?;
         let ctx = Arc::clone(&context.inner);
         let k = Kernels::new(&ctx)?;
         let separate = ctx.info.separate_memory;
@@ -155,6 +159,8 @@ impl GpuIsp {
             ring_len: 4,
             ring_next: 0,
             gpu_time: None,
+            spare_stats: None,
+            spare_tables,
         };
         isp.upload_tables()?;
         Ok(isp)
@@ -166,9 +172,23 @@ impl GpuIsp {
     }
 
     /// Replace the parameters.
-    pub fn set_params(&mut self, params: IspParams) -> Result<(), GpuError> {
-        self.tables = Tables::new(&self.format, &params, Some((&self.tables, &self.params)))?;
-        self.params = params;
+    pub fn set_params(&mut self, mut params: IspParams) -> Result<(), GpuError> {
+        self.swap_params(&mut params)
+    }
+
+    /// [`Self::set_params`], handing the replaced parameters back in `params` (no allocation
+    /// when the caller reuses them, as [`styx_softisp::SoftIsp::swap_params`]): tables of
+    /// parameters gone by are rewritten in place.
+    pub fn swap_params(&mut self, params: &mut IspParams) -> Result<(), GpuError> {
+        let tables = Tables::new(
+            &self.format,
+            params,
+            Some((&self.tables, &self.params)),
+            &mut self.spare_tables,
+        )?;
+        self.spare_tables
+            .keep(std::mem::replace(&mut self.tables, tables));
+        std::mem::swap(&mut self.params, params);
         self.upload_tables()
     }
 
@@ -211,6 +231,12 @@ impl GpuIsp {
             Scale::Full => (self.format.width, self.format.height),
             Scale::Half => (self.format.width / 2, self.format.height / 2),
         }
+    }
+
+    /// Hands a frame's statistics back: the next frame's are written into them (no
+    /// allocation once warm).
+    pub fn recycle_stats(&mut self, stats: IspStats) {
+        self.spare_stats = Some(stats);
     }
 
     /// GPU time of the last frame (timestamp queries; `None` where the queue has none).
@@ -728,7 +754,9 @@ impl GpuIsp {
             Some(s) => {
                 let buf = self.stats_host.as_ref().unwrap_or(&self.stats_dev);
                 buf.invalidate()?;
-                Some(stats::read(buf.bytes(), s, self.tables.channel_gains))
+                let mut out = self.spare_stats.take().unwrap_or_default();
+                stats::read_into(buf.bytes(), s, self.tables.channel_gains, &mut out);
+                Some(out)
             }
             None => None,
         })
