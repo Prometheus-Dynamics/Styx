@@ -656,6 +656,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `styx_kernel::v4l2::M2mSession` runs on Lemnos's memory-to-memory session (Lemnos c546b44,
+  `lemnos-linux` feature `v4l2-m2m`); same API. The source format is now set before the
+  destination's (the stateful order), and `device()` is a duplicate of the session's file.
+  dma-buf CPU-access brackets (`dma_heap::sync`) go through `lemnos_linux::dma::sync`.
 - **A PiSP frame handed out at its first slice carries its extra passes' companions**
   (`NativeIspConfig::deliver_slices`; `PispPipeline::hand_out_passes`,
   `BackEndStream::take_output`/`process_queued_into`): the passes' buffers are taken at the

@@ -38,11 +38,11 @@ pub enum Access {
 }
 
 impl Access {
-    fn bits(self) -> u64 {
+    fn lemnos(self) -> lemnos::Access {
         match self {
-            Access::Read => sys::SYNC_READ,
-            Access::Write => sys::SYNC_WRITE,
-            Access::ReadWrite => sys::SYNC_READ | sys::SYNC_WRITE,
+            Access::Read => lemnos::Access::Read,
+            Access::Write => lemnos::Access::Write,
+            Access::ReadWrite => lemnos::Access::ReadWrite,
         }
     }
 }
@@ -58,14 +58,13 @@ static SYNC_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 /// touching a mapping and `start = false` after. Counted with its time ([`sync_stats`]).
 pub fn sync(dmabuf: BorrowedFd<'_>, access: Access, start: bool) -> Result<()> {
     use std::sync::atomic::Ordering::Relaxed;
-    let flags = access.bits()
-        | if start {
-            sys::SYNC_START
-        } else {
-            sys::SYNC_END
-        };
+    let phase = if start {
+        lemnos::Phase::Begin
+    } else {
+        lemnos::Phase::End
+    };
     let at = std::time::Instant::now();
-    let r = sys::sync(dmabuf, flags);
+    let r = lemnos::sync(dmabuf, phase, access.lemnos());
     SYNCS.fetch_add(1, Relaxed);
     SYNC_NS.fetch_add(at.elapsed().as_nanos() as u64, Relaxed);
     r.map_err(sys_err("DMA_BUF_IOCTL_SYNC"))

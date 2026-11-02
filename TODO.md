@@ -387,10 +387,13 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
       when:* a process that has Daedalus never makes a second device, and the default
       `GpuIsp::new` path either uses Daedalus's device when it exists or is documented as the
       no-Daedalus build. *Blocked by:* the user's go.
-- [ ] **V4L2 M2M session onto Lemnos.** Agreed with Daedalus (2026-11-02): RGA is Daedalus's
-      (`daedalus-rga`); Styx keeps V4L2 M2M for codecs only (stateful encoders, Hantro, rkvenc).
-      After the release, if Lemnos takes `styx-kernel::v4l2::m2m` (`M2mSession`), `daedalus-rga`
-      builds its session on it and drops its own. *Blocked by:* the user's go.
+- [x] **V4L2 M2M session onto Lemnos.** `styx_kernel::v4l2::M2mSession` keeps its API (copy,
+      row-by-row and dma-buf import pushes, held frames, pull, drain) over Lemnos's
+      `v4l2::m2m::M2mSession` (Lemnos c546b44): the source format is set first, then the
+      destination's, read back before the buffers (vicodec sized its coded buffers from the old
+      order). Controls go through `device()`, a duplicate of the session's open file. vim2m and
+      vicodec tests pass. RGA is Daedalus's (`daedalus-rga`); Styx's M2M is for codecs.
+      Decoders (Lemnos 771217a's source-change flow) are not on M2M in Styx yet.
 
 ## Done
 
