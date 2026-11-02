@@ -25,7 +25,8 @@ Cell values:
 
 ### Software ISP, integer path (`styx_softisp::simd`)
 
-The GPU column is `styx-gpuisp`, bit-exact with the CPU.
+The GPU column is `styx-gpuisp`, bit-exact with the CPU except the fp16 row (within the CPU's
+fp16 bounds, note 6).
 
 | Stage | scalar | x86 | NEON64 | NEON32 | RVV | GPU |
 |---|---|---|---|---|---|---|
@@ -34,20 +35,20 @@ The GPU column is `styx-gpuisp`, bit-exact with the CPU.
 | Front end (black, WB, gain, lens shading) | pass | pass | pass | pass | pass | pass |
 | Demosaic, bilinear | pass | pass | pass | pass | pass | pass |
 | Demosaic, Malvar-He-Cutler | pass | pass | pass | pass | pass | pass |
-| Demosaic, edge-directed | pass | pass | pass | pass | pass | gap |
+| Demosaic, edge-directed | pass | pass | pass | pass | pass | pass |
 | Bayer luma (luma-only output) | pass | pass | pass | pass | pass | pass |
 | Half-size quad RGB | pass | pass | pass | pass | pass | pass |
 | Half-size quad luma | pass | pass | pass | pass | pass | pass |
 | Colour matrix | pass | pass | pass | pass | pass | pass |
 | Narrow 16 → 8 bit | pass | pass | pass | pass | pass | pass |
 | Tone curve, 4096-entry table | pass | pass | pass | pass | pass | pass |
-| Tone curve, polynomial | pass | pass | pass | pass | pass | gap¹ |
+| Tone curve, polynomial | pass | pass | pass | pass | pass | pass¹ |
 | Interleave RGB24 | pass | pass | pass | pass | pass | pass |
 | RGB → Y | pass | pass | pass | pass | pass | pass |
 | RGB → UV (4:2:0) | pass | pass | pass | pass | pass | pass |
 | 3A zone sums | pass | pass | pass | pass | pass | pass |
 | Luma histogram | pass | pass | pass | pass | pass | pass |
-| fp16 path (8 kernels) | pass² | gap³ | pass | n/a⁴ | gap⁵ | gap⁶ |
+| fp16 path (8 kernels) | pass² | gap³ | pass | n/a⁴ | gap⁵ | pass⁶ |
 
 ### Software ISP, output stages (`styx_softisp::post`)
 
@@ -97,13 +98,18 @@ The GPU column for the pyramid is `styx-wgpu`'s `BoxPyramid`; for the conversion
 
 Notes:
 
-1. The polynomial tone curve, as a GPU variant beside the table, to measure.
+1. The GPU's quadratics are the CPU's `IntPolyTone` (chosen by `Arithmetic::IntPolyTone`, the
+   table where the fit misses), bit-exact on RADV, NVIDIA and llvmpipe (`tests/it/variants.rs`).
 2. Emulated fp16 on CPUs without fp16 arithmetic. `Arithmetic::Auto` does not choose it there.
 3. AVX-512 FP16 (Sapphire Rapids, Zen 5) has the arithmetic; F16C converts only. Build
    both, measure them, and keep them selectable.
 4. The Cortex-A7 has no fp16 arithmetic.
 5. Worth doing only if the K230D's C908 has Zvfh. Check that on the board.
-6. GPUs have fp16 arithmetic: a `half` shader variant beside the bit-exact integer one.
+6. GPUs have fp16 arithmetic: `full16` and `half16`, beside the integer shaders, opt-in
+   (`GpuIsp::set_half_precision`) where the device has `shaderFloat16`. They run the front end,
+   bilinear demosaic, colour matrix, tone curve and output in float16, within the CPU fp16 path's
+   bounds (`tests/it/fp16.rs`). Not covered: the statistics (`quad_stats_row`) and the
+   lens-shading row conversion (`from_f32_row`), which stay on the integer arithmetic.
 7. yuvutils-rs has no armv7 or RVV code. There, Styx's own rows run instead
    (`styx_core::simd::{nv12,i420,yuyv}_rgb_row`), exact against scalar. They are tested under QEMU
    and written, untested on board.
@@ -141,8 +147,8 @@ There are 43 stages, each in 6 columns, for 258 cells.
 | NEON64 | 43 | 0 | 0 |
 | NEON32 | 42 | 0 | 1 |
 | RVV | 39 | 4 | 0 |
-| GPU | 33 | 10 | 0 |
-| **all** | **242** | **15** | **1** |
+| GPU | 36 | 7 | 0 |
+| **all** | **245** | **12** | **1** |
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board.
 

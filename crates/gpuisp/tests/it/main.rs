@@ -9,5 +9,7 @@ mod convert;
 mod daedalus;
 mod dmabuf;
 mod equivalence;
+mod fp16;
 mod quality;
 mod shaders;
+mod variants;

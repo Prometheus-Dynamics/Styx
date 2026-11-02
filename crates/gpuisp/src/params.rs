@@ -5,9 +5,11 @@
 use std::sync::Arc;
 
 use styx_softisp::shared::{grid_map_into, q12};
+use styx_softisp::simd::poly::{PolyTone, SEGMENTS};
 use styx_softisp::simd::{RowKind, ToneLut, YuvCoeffs};
 use styx_softisp::{
-    CfaPattern, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig, YuvMatrix,
+    Arithmetic, CfaPattern, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig,
+    YuvMatrix,
 };
 
 /// Q12 gain limit (16x), as the integer arithmetic.
@@ -78,7 +80,8 @@ pub(crate) struct StatsSetup {
 #[derive(Debug)]
 pub(crate) struct Tables {
     pub block: Block,
-    /// The tone table, one word per entry (`None`: plain narrowing to 8 bits).
+    /// The tone table, one word per entry, or the quadratics' words (`poly_words`); `None`:
+    /// plain narrowing to 8 bits.
     pub lut: Option<Arc<Vec<u32>>>,
     /// Lens shading gains as u16 pairs, then the per-row map (`None` without lens shading).
     pub lsc: Option<Arc<Vec<u32>>>,
@@ -105,6 +108,7 @@ pub(crate) struct Spare {
     lscs: [Option<Arc<Vec<u32>>>; 2],
     stats: Option<StatsSetup>,
     tone: Option<ToneLut>,
+    poly_weight: Vec<f64>,
     x_map: Vec<(usize, usize, f32)>,
     grid: Vec<(u16, u32)>,
     wa: Vec<f32>,
@@ -273,11 +277,11 @@ impl Tables {
                 }
             };
         }
-        // The GPU has no edge-directed demosaic (nor the output stages: `IspParams::denoise` and
-        // `sharpen` are not applied here): it runs the bilinear one for it, as the CPU's default.
+        // (The output stages, `IspParams::denoise` and `sharpen`, are not applied here.)
         b.demosaic = match params.demosaic {
-            styx_softisp::Demosaic::Bilinear | styx_softisp::Demosaic::EdgeDirected => 0,
+            styx_softisp::Demosaic::Bilinear => 0,
             styx_softisp::Demosaic::Mhc => 1,
+            styx_softisp::Demosaic::EdgeDirected => 2,
         };
         if let Some(c) = &params.ccm {
             b.ccm_on = 1;
@@ -285,18 +289,35 @@ impl Tables {
                 b.ccm[k] = (v * 4096.0).round() as i16 as i32;
             }
         }
-        b.tone_lut = u32::from(params.tone.is_some());
+        // The tone curve: its table (mode 1), or its quadratics (mode 2) when the arithmetic is
+        // `IntPolyTone` and they fit it, as `styx-softisp` (the words go in `lut` either way).
         let (lut, lut_fresh) = match (previous, &params.tone) {
-            (Some((p, prev)), Some(_)) if prev.tone == params.tone => (p.lut.clone(), false),
+            (Some((p, prev)), Some(_))
+                if prev.tone == params.tone && prev.arithmetic == params.arithmetic =>
+            {
+                b.tone_lut = p.block.tone_lut;
+                (p.lut.clone(), false)
+            }
             (_, Some(curve)) => {
                 let tone = spare
                     .tone
                     .get_or_insert_with(|| ToneLut::from_nodes([0; 257]));
                 tone.set_curve(|x| curve.eval(x));
                 let mut lut = writable(&mut spare.luts);
-                Arc::get_mut(&mut lut)
-                    .expect("unshared")
-                    .extend(tone.full().iter().map(|&v| v as u32));
+                let words = Arc::get_mut(&mut lut).expect("unshared");
+                let poly = (params.arithmetic == Arithmetic::IntPolyTone)
+                    .then(|| PolyTone::fit_with(tone.full(), &mut spare.poly_weight))
+                    .flatten();
+                b.tone_lut = match poly {
+                    Some(p) => {
+                        poly_words(&p, words);
+                        2
+                    }
+                    None => {
+                        words.extend(tone.full().iter().map(|&v| v as u32));
+                        1
+                    }
+                };
                 (Some(lut), true)
             }
             (_, None) => (None, false),
@@ -334,6 +355,16 @@ impl Tables {
             stats,
             channel_gains,
         })
+    }
+}
+
+/// The quadratics as words: per segment its three coefficients (two's complement), the layout
+/// `common.glsl`'s `poly_tone` reads.
+fn poly_words(p: &PolyTone, out: &mut Vec<u32>) {
+    for s in 0..SEGMENTS {
+        for k in 0..3 {
+            out.push(p.c[k][s % 2][s / 2] as i32 as u32);
+        }
     }
 }
 

@@ -8,7 +8,7 @@ use styx_gpuisp::{GpuContext, GpuIsp};
 use styx_softisp::*;
 
 /// Gradients, fine stripes, a hard edge, clipped highlights and noise, `bits`-bit.
-fn frame(w: usize, h: usize, pattern: CfaPattern, bits: u8) -> Vec<u16> {
+pub(crate) fn frame(w: usize, h: usize, pattern: CfaPattern, bits: u8) -> Vec<u16> {
     let max = (1u32 << bits) - 1;
     mosaic(w, h, pattern, |x, y| {
         let mut seed = (x as u32 * 7919 + y as u32 * 104_729) ^ 0x2545_F491;
@@ -33,7 +33,13 @@ fn frame(w: usize, h: usize, pattern: CfaPattern, bits: u8) -> Vec<u16> {
     })
 }
 
-fn params(demosaic: Demosaic, shaded: bool, full: bool, bins: u32, row_step: u32) -> IspParams {
+pub(crate) fn params(
+    demosaic: Demosaic,
+    shaded: bool,
+    full: bool,
+    bins: u32,
+    row_step: u32,
+) -> IspParams {
     let mut p = IspParams {
         black_level: Some(BlackLevel {
             r: 64,
@@ -79,7 +85,13 @@ fn params(demosaic: Demosaic, shaded: bool, full: bool, bins: u32, row_step: u32
 }
 
 /// Every output of both ISPs on one frame, compared; the statistics too.
-fn check(ctx: &GpuContext, format: RawFormat, params: &IspParams, raw: &[u8], stride: usize) {
+pub(crate) fn check(
+    ctx: &GpuContext,
+    format: RawFormat,
+    params: &IspParams,
+    raw: &[u8],
+    stride: usize,
+) {
     let mut cpu = SoftIsp::new(format, params.clone()).unwrap();
     let mut gpu = GpuIsp::with_context(ctx, format, params.clone()).unwrap();
     for scale in [Scale::Full, Scale::Half] {

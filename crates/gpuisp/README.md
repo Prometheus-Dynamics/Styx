@@ -7,8 +7,9 @@ swap one for the other (`styx-pipeline`'s `SoftLoop::use_gpu`, feature `gpu`).
 
 Stages: unpacking (8-bit, 16-bit LE, CSI-2 RAW10/RAW12), black level per CFA cell, white
 balance and digital gain, lens shading (the integer path's Q12 gain rows, interpolated per row
-in Q15), bilinear or Malvar-He-Cutler demosaic, Q12 colour matrix with 16-bit saturating sums,
-the 4096-entry tone table, RGB24 / NV12 / I420 / luma (BT.601 full or BT.709 limited) at full
+in Q15), bilinear, Malvar-He-Cutler or edge-directed demosaic, Q12 colour matrix with 16-bit
+saturating sums, the tone curve as the 4096-entry table or (`IntPolyTone`, where it fits) its
+quadratics, RGB24 / NV12 / I420 / luma (BT.601 full or BT.709 limited) at full
 or half size (each quad a pixel), and the 3A statistics: per-zone R/G/B sums of unclipped
 quads, counts, zone luma, luma histogram, on every `row_step`-th quad row.
 
@@ -26,9 +27,13 @@ toolchain or the Vulkan SDK.
   loaded with its `loaded` feature: `libvulkan.so.1` is `dlopen`ed at run time, so binaries
   link nothing Vulkan and start (and fall back to the CPU) where there is no Vulkan.
 * **Shaders.** GLSL in `shaders/` (`common.glsl`: parameters and the front end;
-  `full.comp`, `half.comp`, `stats.comp`), compiled to SPIR-V by `shaders/build.sh` (glslc,
-  Vulkan 1.2) and committed, so building the crate needs no shader compiler. Integer
-  arithmetic only, the same as `styx-softisp`'s scalar oracle. Bytes are read and written
+  `full.comp`, `half.comp`, `stats.comp`; the fp16 pictures `full16.comp`, `half16.comp` with
+  `fp16.glsl`), compiled to SPIR-V by `shaders/build.sh` (glslc, Vulkan 1.2) and committed, so
+  building the crate needs no shader compiler. The integer shaders are the same integer
+  arithmetic as `styx-softisp`'s scalar oracle. The fp16 pictures (`GpuIsp::set_half_precision`,
+  off by default, devices with `shaderFloat16`) run the front end, bilinear demosaic, colour
+  matrix and tone curve in float16, as `styx-softisp`'s `Arithmetic::Half` (within its
+  bounds, not bit-exact); the statistics stay integer. Bytes are read and written
   through 8-bit storage buffers (`storageBuffer8BitAccess`, required).
 * **Full size**: a workgroup of 16x8 invocations makes a 32x16 block, each invocation one
   2x2 quad (one 4:2:0 chroma sample). The block and a 2-sample border (36x20) go through the
@@ -68,9 +73,12 @@ Against `styx-softisp` (this host: Ryzen, x86 with AVX2):
 The fp16 figures are fp16 against the integer arithmetic (the GPU computes the latter); the
 statistics differ from fp16's as the integer arithmetic's do (zone sums up to 5.7% apart in
 the darkest zones, 0.6% of the histogram in a neighbouring bin). Bit-exactness is tested on
-every output, scale, demosaic, colour pattern and packing, with and without lens shading,
-colour matrix and tone curve, odd sizes, both histogram paths, parameter changes between
-frames and skipped statistics (`tests/it/equivalence.rs`), through dma-buf import and export
+every output, scale, demosaic (bilinear, Malvar-He-Cutler, edge-directed), colour pattern and
+packing, with and without lens shading, colour matrix and tone curve, odd sizes, both histogram
+paths, parameter changes between frames and skipped statistics (`tests/it/equivalence.rs`); the
+tone quadratics where they fit, and the table kept where they do not, with the tone mode changing
+between frames (`tests/it/variants.rs`). The fp16 pictures stay within the CPU fp16 bounds (45 dB,
+6 codes, 99.9% within 2; `tests/it/fp16.rs`). Also through dma-buf import and export
 (`tests/it/dmabuf.rs`), and through the whole 3A loop (`styx-pipeline/tests/it/gpu_loop.rs`), on
 RADV and llvmpipe.
 

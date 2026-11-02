@@ -148,7 +148,28 @@ uvec3 colour(uvec3 rgb) {
     return o;
 }
 
+// `simd::poly::PolyTone::apply` with `x` below 4096: the quadratic of its half octave, from
+// `lut[3 segment + k]` (k = 0, 1, 2; two's complement), in the CPU's 16-bit saturating
+// arithmetic. `mulhrs` is `vpmulhrsw`; its products stay within 16 bits here.
+int mulhrs(int a, int b) {
+    return (a * b + (1 << 14)) >> 15;
+}
+
+uint poly_tone(uint x) {
+    uint v = min(x, WORK_MAX) + 32u;
+    uint e = min(uint(findMSB(v)), 11u);
+    int t = int((v << (14u - e)) - (1u << 14));
+    uint seg = 2u * (e - 5u) + uint(min(t >> 13, 1));
+    int inner = clamp(int(lut[3u * seg + 1u]) + mulhrs(int(lut[3u * seg + 2u]), t), -32768, 32767);
+    int y = clamp(int(lut[3u * seg]) + mulhrs(inner, t), -32768, 32767);
+    return uint(clamp(mulhrs(y, 1024), 0, 255));
+}
+
+// Tone mode (`P.tone_lut`): 0 plain narrowing, 1 the 4096-entry table, 2 the quadratics.
 uint tone(uint v) {
+    if (P.tone_lut == 2u) {
+        return poly_tone(v);
+    }
     if (P.tone_lut != 0u) {
         return lut[min(v, WORK_MAX)];
     }

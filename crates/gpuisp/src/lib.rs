@@ -3,10 +3,11 @@
 //! [`GpuIsp`] takes the same [`IspParams`](styx_softisp::IspParams), raw formats, output
 //! buffers and statistics as [`styx_softisp::SoftIsp`] and computes its integer arithmetic
 //! ([`Arithmetic::Int`](styx_softisp::Arithmetic::Int)) bit for bit: unpacking (8/16-bit,
-//! CSI-2 RAW10/RAW12), black level, white balance and digital gain, lens shading, bilinear or
-//! Malvar-He-Cutler demosaic, colour matrix, tone table, RGB24 / NV12 / I420 / luma at full
-//! or half size, and the 3A statistics (zones, histogram). A pipeline can swap one for the
-//! other.
+//! CSI-2 RAW10/RAW12), black level, white balance and digital gain, lens shading, bilinear,
+//! Malvar-He-Cutler or edge-directed demosaic, colour matrix, tone table or quadratics,
+//! RGB24 / NV12 / I420 / luma at full or half size, and the 3A statistics (zones, histogram).
+//! A pipeline can swap one for the other. An opt-in fp16 variant ([`GpuIsp::set_half_precision`],
+//! devices with `shaderFloat16`) runs the picture in float16, as `styx-softisp`'s `Half`.
 //!
 //! * One submission per frame and one wait (its fence): the histogram is cleared, the raw
 //!   frame copied into device memory on GPUs with their own (the copy engine; same-memory
@@ -30,6 +31,7 @@
 mod context;
 mod convert;
 mod error;
+mod fp16;
 mod input;
 mod isp;
 mod kernels;

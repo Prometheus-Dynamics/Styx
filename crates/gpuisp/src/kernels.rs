@@ -13,6 +13,9 @@ use crate::error::{GpuError, VkContext};
 const FULL: &[u8] = include_bytes!("../shaders/full.spv");
 const HALF: &[u8] = include_bytes!("../shaders/half.spv");
 const STATS: &[u8] = include_bytes!("../shaders/stats.spv");
+/// The fp16 pictures (`fp16.glsl`), made only on devices with `shaderFloat16`.
+const FULL16: &[u8] = include_bytes!("../shaders/full16.spv");
+const HALF16: &[u8] = include_bytes!("../shaders/half16.spv");
 
 /// Descriptor sets the ISP may hold at once: the tables, inputs (staging, device copy and
 /// imported dma-bufs) and outputs (staging, device copy and the export ring).
@@ -27,6 +30,9 @@ pub(crate) struct Kernels {
     pub full: vk::Pipeline,
     pub half: vk::Pipeline,
     pub stats: vk::Pipeline,
+    /// The fp16 pictures; null without `shaderFloat16`.
+    pub full16: vk::Pipeline,
+    pub half16: vk::Pipeline,
     pool: vk::DescriptorPool,
     cmd_pool: vk::CommandPool,
     pub cmd: vk::CommandBuffer,
@@ -49,7 +55,7 @@ impl Drop for Kernels {
             d.destroy_fence(self.fence, None);
             d.destroy_command_pool(self.cmd_pool, None);
             d.destroy_descriptor_pool(self.pool, None);
-            for p in [self.full, self.half, self.stats] {
+            for p in [self.full, self.half, self.stats, self.full16, self.half16] {
                 d.destroy_pipeline(p, None);
             }
             d.destroy_pipeline_layout(self.layout, None);
@@ -89,6 +95,8 @@ impl Kernels {
             full: vk::Pipeline::null(),
             half: vk::Pipeline::null(),
             stats: vk::Pipeline::null(),
+            full16: vk::Pipeline::null(),
+            half16: vk::Pipeline::null(),
             pool: vk::DescriptorPool::null(),
             cmd_pool: vk::CommandPool::null(),
             cmd: vk::CommandBuffer::null(),
@@ -115,8 +123,13 @@ impl Kernels {
         // SAFETY: as above.
         k.layout =
             unsafe { d.create_pipeline_layout(&info, None) }.ctx("vkCreatePipelineLayout")?;
+        let fp16 = ctx.info.float16;
+        let mut codes = vec![FULL, HALF, STATS];
+        if fp16 {
+            codes.extend([FULL16, HALF16]);
+        }
         let mut modules = Vec::new();
-        for code in [FULL, HALF, STATS] {
+        for code in codes.iter().copied() {
             let words = spirv(code);
             let info = vk::ShaderModuleCreateInfo::default().code(&words);
             // SAFETY: SPIR-V made by glslc for Vulkan 1.2.
@@ -158,6 +171,9 @@ impl Kernels {
             result: e,
         })?;
         [k.full, k.half, k.stats] = [pipelines[0], pipelines[1], pipelines[2]];
+        if fp16 {
+            [k.full16, k.half16] = [pipelines[3], pipelines[4]];
+        }
         let sizes = [vk::DescriptorPoolSize {
             ty: vk::DescriptorType::STORAGE_BUFFER,
             descriptor_count: MAX_SETS * 4,

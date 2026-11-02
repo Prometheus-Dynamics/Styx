@@ -5,9 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ash::vk;
-use styx_softisp::{
-    Arithmetic, IspError, IspParams, IspStats, OutputBuffers, RawFormat, Scale, Window,
-};
+use styx_softisp::{IspError, IspParams, IspStats, OutputBuffers, RawFormat, Scale, Window};
 
 use crate::context::{DeviceSelect, GpuContext, Inner};
 use crate::error::GpuError;
@@ -46,7 +44,8 @@ struct Imported {
 
 /// The software ISP's pipeline on a Vulkan device: the same parameters ([`IspParams`]),
 /// outputs ([`OutputBuffers`]) and statistics ([`IspStats`]) as [`styx_softisp::SoftIsp`],
-/// computed in its integer arithmetic ([`Arithmetic::Int`]) bit for bit.
+/// computed in its integer arithmetic ([`styx_softisp::Arithmetic::Int`]) bit for bit, or with
+/// the tone curve as quadratics (`IntPolyTone`, also bit for bit) and, opt-in, in fp16.
 ///
 /// Each frame is one submission (statistics histogram cleared, input copied in on devices
 /// with their own memory, the picture, the statistics, results copied out) and one wait on
@@ -54,10 +53,12 @@ struct Imported {
 pub struct GpuIsp {
     ctx: Arc<Inner>,
     context: GpuContext,
-    k: Kernels,
+    pub(crate) k: Kernels,
     format: RawFormat,
     params: IspParams,
-    tables: Tables,
+    pub(crate) tables: Tables,
+    /// fp16 pictures on ([`Self::set_half_precision`]).
+    pub(crate) half: bool,
     statistics: bool,
     separate: bool,
     stride_align: usize,
@@ -140,6 +141,7 @@ impl GpuIsp {
             format,
             params: params.clone(),
             tables,
+            half: false,
             statistics: true,
             separate,
             stride_align: 1,
@@ -198,12 +200,6 @@ impl GpuIsp {
 
     pub fn format(&self) -> RawFormat {
         self.format
-    }
-
-    /// Always [`Arithmetic::Int`]: the GPU computes the integer arithmetic exactly, whatever
-    /// [`IspParams::arithmetic`] asks.
-    pub fn arithmetic(&self) -> Arithmetic {
-        Arithmetic::Int
     }
 
     /// Whether frames gather the statistics their parameters ask for (default: yes).
@@ -724,10 +720,7 @@ impl GpuIsp {
         };
         let plan = Plan {
             sets: [self.set0, in_set, shader_out],
-            pipeline: match scale {
-                Scale::Full => self.k.full,
-                Scale::Half => self.k.half,
-            },
+            pipeline: self.picture_pipeline(scale),
             groups: match region {
                 Region::Stats => (0, 0),
                 Region::Frame | Region::Window { .. } => (

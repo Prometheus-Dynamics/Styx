@@ -1,0 +1,74 @@
+#version 450
+// Half-size output in fp16 (`fp16.glsl`): each Bayer quad becomes one pixel (red, mean green,
+// blue; no demosaic). Each invocation makes a 2x2 block of output pixels, as `half.comp`.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+#include "fp16.glsl"
+
+layout(local_size_x = 16, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 2, binding = 0, std430) writeonly buffer Out {
+    uint8_t outb[];
+};
+
+void put(uint plane, uint x, uint y, uint v) {
+    outb[P.out_offset[plane] + y * P.out_stride[plane] + x] = uint8_t(v);
+}
+
+void main() {
+    uint x0 = gl_GlobalInvocationID.x * 2u;
+    uint y0 = gl_GlobalInvocationID.y * 2u;
+    if (x0 >= P.out_width || y0 >= P.out_height) {
+        return;
+    }
+    uvec3 px[4];
+    bool inside[4];
+    for (uint k = 0u; k < 4u; k++) {
+        uint ox = x0 + (k & 1u), oy = y0 + (k >> 1);
+        inside[k] = ox < P.out_width && oy < P.out_height;
+        if (!inside[k]) {
+            px[k] = uvec3(0u);
+            continue;
+        }
+        float16_t q[4];
+        // The quad at frame position (win_x, win_y) + 2 * (ox, oy).
+        uint sx = P.win_x + 2u * ox, sy = P.win_y + 2u * oy;
+        q[0] = front16(sx, sy);
+        q[1] = front16(sx + 1u, sy);
+        q[2] = front16(sx, sy + 1u);
+        q[3] = front16(sx + 1u, sy + 1u);
+        if (P.out_kind == OUT_LUMA) {
+            put(0u, ox, oy, tone(index16((q[0] + q[1] + q[2] + q[3]) * float16_t(0.25))));
+            continue;
+        }
+        px[k] = tone16(colour16(quad16(q)));
+    }
+    if (P.out_kind == OUT_LUMA) {
+        return;
+    }
+    if (P.out_kind == OUT_RGB24) {
+        for (uint k = 0u; k < 4u; k++) {
+            if (inside[k]) {
+                uint x = (x0 + (k & 1u)) * 3u, y = y0 + (k >> 1);
+                put(0u, x, y, px[k].r);
+                put(0u, x + 1u, y, px[k].g);
+                put(0u, x + 2u, y, px[k].b);
+            }
+        }
+        return;
+    }
+    // 4:2:0 outputs have even sizes, so the whole block is inside.
+    for (uint k = 0u; k < 4u; k++) {
+        put(0u, x0 + (k & 1u), y0 + (k >> 1), luma8(px[k]));
+    }
+    ivec3 m = (ivec3(px[0] + px[1] + px[2] + px[3]) + 2) >> 2;
+    uint cb = chroma8(m, false), cr = chroma8(m, true);
+    if (P.out_kind == OUT_NV12) {
+        put(1u, x0, y0 >> 1, cb);
+        put(1u, x0 + 1u, y0 >> 1, cr);
+    } else {
+        put(1u, x0 >> 1, y0 >> 1, cb);
+        put(2u, x0 >> 1, y0 >> 1, cr);
+    }
+}

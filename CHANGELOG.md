@@ -15,6 +15,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   Host slices in and out, one submission a call, buffers reused. Tested byte for byte on
   llvmpipe over odd and even sizes and padded strides (`tests/it/convert.rs`). Not yet on
   Daedalus's device.
+- GPU ISP variants (`styx-gpuisp`): the edge-directed demosaic (`Demosaic::EdgeDirected`, was
+  bilinear on the GPU), the tone curve as quadratics (`Arithmetic::IntPolyTone`, beside the
+  table, the table where the fit misses) and an opt-in fp16 picture (`GpuIsp::set_half_precision`
+  on devices with `shaderFloat16`, bounded against the CPU's `Arithmetic::Half`). The first two
+  are bit-exact with the CPU on RADV, NVIDIA and llvmpipe.
 - Frame drops are logged by cause (`sensor_sequence_gap`, `isp_skipped`, `queue_overflow`)
   at 1, 2, 4, 8, ... dropped frames, so a capture losing frames says why in its log as well as
   in `CameraMetrics::drops`.

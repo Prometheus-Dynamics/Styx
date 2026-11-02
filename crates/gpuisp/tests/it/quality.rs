@@ -12,12 +12,12 @@ use crate::common::{compare, contexts, mosaic, pack};
 use styx_gpuisp::GpuIsp;
 use styx_softisp::*;
 
-const W: usize = 320;
-const H: usize = 240;
+pub(crate) const W: usize = 320;
+pub(crate) const H: usize = 240;
 
 /// Colour patches (6x4), a grey ramp band, a zone plate and a clipped corner, 10-bit, with
 /// noise.
-fn chart(pattern: CfaPattern) -> (Vec<u8>, usize) {
+pub(crate) fn chart(pattern: CfaPattern) -> (Vec<u8>, usize) {
     let m = mosaic(W, H, pattern, |x, y| {
         let mut seed = (x as u32 * 7919 + y as u32 * 104_729) ^ 0x2545_F491;
         seed ^= seed << 13;
@@ -47,7 +47,7 @@ fn chart(pattern: CfaPattern) -> (Vec<u8>, usize) {
     pack(&m, W, H, RawPacking::Csi2Raw10)
 }
 
-fn params(tone: ToneCurve, shaded: bool, arithmetic: Arithmetic) -> IspParams {
+pub(crate) fn params(tone: ToneCurve, shaded: bool, arithmetic: Arithmetic) -> IspParams {
     IspParams {
         black_level: Some(BlackLevel::uniform(64)),
         white_balance: Some(WhiteBalance {
@@ -79,7 +79,7 @@ fn shading() -> LensShading {
 }
 
 /// The OV9782 tuning's (Raspberry Pi) contrast curve, 16-bit points.
-fn contrast_curve() -> ToneCurve {
+pub(crate) fn contrast_curve() -> ToneCurve {
     const P: [u32; 64] = [
         0, 0, 512, 2518, 1024, 5033, 1536, 7175, 2048, 9309, 2560, 10814, 3072, 12312, 3584, 13773,
         4096, 15225, 4608, 16566, 5120, 17899, 5632, 19221, 6144, 20534, 6656, 21684, 7168, 22826,
@@ -95,7 +95,12 @@ fn contrast_curve() -> ToneCurve {
     }
 }
 
-fn outputs(isp: &mut SoftIsp, raw: &[u8], stride: usize, scale: Scale) -> (Vec<u8>, Vec<u8>) {
+pub(crate) fn outputs(
+    isp: &mut SoftIsp,
+    raw: &[u8],
+    stride: usize,
+    scale: Scale,
+) -> (Vec<u8>, Vec<u8>) {
     let (w, h) = isp.output_size(scale);
     let (w, h) = (w as usize, h as usize);
     let mut rgb = vec![0u8; w * h * 3];
@@ -117,7 +122,12 @@ fn outputs(isp: &mut SoftIsp, raw: &[u8], stride: usize, scale: Scale) -> (Vec<u
 }
 
 /// RGB24 and NV12 of the GPU ISP.
-fn gpu_outputs(isp: &mut GpuIsp, raw: &[u8], stride: usize, scale: Scale) -> (Vec<u8>, Vec<u8>) {
+pub(crate) fn gpu_outputs(
+    isp: &mut GpuIsp,
+    raw: &[u8],
+    stride: usize,
+    scale: Scale,
+) -> (Vec<u8>, Vec<u8>) {
     let (w, h) = isp.output_size(scale);
     let (w, h) = (w as usize, h as usize);
     let mut rgb = vec![0u8; w * h * 3];

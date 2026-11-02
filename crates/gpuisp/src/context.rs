@@ -58,6 +58,9 @@ pub struct DeviceInfo {
     /// Whether device-local memory is separate from what the CPU maps (a discrete GPU): frames
     /// are then copied in and out by the GPU's copy engine within the same submission.
     pub separate_memory: bool,
+    /// `shaderFloat16`: on the device the ISP makes, enabled there; the fp16 pictures
+    /// ([`GpuIsp::set_half_precision`]) run where it is. Off on Daedalus's device.
+    pub float16: bool,
 }
 
 /// Which device [`GpuContext::open`] takes.
@@ -278,6 +281,7 @@ fn candidates(instance: &ash::Instance) -> Result<Vec<Candidate>, GpuError> {
                 ),
                 dmabuf,
                 separate_memory,
+                float16: v12.shader_float16 == vk::TRUE,
             },
         });
     }
@@ -400,8 +404,9 @@ impl GpuContext {
             exts.push(ash::khr::external_memory_fd::NAME.as_ptr());
             exts.push(ash::ext::external_memory_dma_buf::NAME.as_ptr());
         }
-        let mut v12 =
-            vk::PhysicalDeviceVulkan12Features::default().storage_buffer8_bit_access(true);
+        let mut v12 = vk::PhysicalDeviceVulkan12Features::default()
+            .storage_buffer8_bit_access(true)
+            .shader_float16(c.info.float16);
         let create = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queues)
             .enabled_extension_names(&exts)
@@ -468,7 +473,7 @@ impl GpuContext {
                 "Daedalus's device was made without storageBuffer8BitAccess".into(),
             ));
         }
-        let chosen = candidates(&raw.instance)?
+        let mut chosen = candidates(&raw.instance)?
             .into_iter()
             .find(|c| c.physical == raw.physical_device)
             .ok_or_else(|| {
@@ -476,6 +481,8 @@ impl GpuContext {
                     "Daedalus's device lacks Vulkan 1.2 or 8-bit storage buffers".into(),
                 )
             })?;
+        // Its features are Daedalus's: shaderFloat16 is not known to be enabled there.
+        chosen.info.float16 = false;
         // SAFETY: plain queries of a live instance.
         let (memory, limits) = unsafe {
             (
