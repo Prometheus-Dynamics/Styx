@@ -106,11 +106,18 @@ memory when it runs.
       knob covers ISP scalers until this adds an M2M stage to the planner. *Done when:* the
       conversion stage picks RGA through the accelerator knob, scaling within a stated tolerance,
       CPU fallback without it. *Blocked by:* Daedalus's RGA backend (RGA3); a Rockchip board.
-- [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (not written; stateless VPUs, Hantro
-      and rkvenc, too: `V4l2M2mEncoder` is stateful only). *Why:* preview and recording without
-      turbojpeg on the CPU. *Done when:* a `styx-codec` backend over librockchip_mpp encodes dma-buf
-      NV12 from the ISP at 1280x800 120 fps, and the CPU fallback is used without it. *Blocked by:*
-      a Rockchip board on the vendor BSP (`mpp_service`).
+- [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (written, untested on board:
+      `styx_codec::rkmpp::RkMppEncoder`, feature `codec-rkmpp`, MPP opened with `dlopen`). NV12 or
+      YUYV in; the ISP's NV12 in one dma-buf is imported and encoded in place, other frames are
+      copied into two dma-heap staging buffers imported once. The registry offers it when
+      `librockchip_mpp` and `/dev/mpp_service` are here. Stateless V4L2 VPUs (mainline Hantro,
+      rkvenc) are still not written: `V4l2M2mEncoder` is stateful only. *Why:* preview and
+      recording without turbojpeg on the CPU. *Done when:* it encodes the ISP's dma-buf NV12 at
+      1280x800 120 fps with the session importing (no staging copy), keyframes flagged, and the
+      CPU fallback is used without it; the constants in `rkmpp/ffi.rs` (command numbers, coding
+      types, RC and header modes) confirmed against the BSP's headers. Numbers: layout and
+      constant tests on the PC only. *Blocked by:* a Rockchip board on the vendor BSP
+      (`mpp_service`).
 - [ ] **RV1106: pyramid levels from the ISP: the self path written, untested on board.** As the
       other chips (the self path item above); the ISP32's 4x4-sampled outputs
       (`isp32::nodes::MAINPATH_4X4`) are not used yet. *Why:* Eidos on Flame spends the most Styx

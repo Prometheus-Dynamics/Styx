@@ -64,6 +64,8 @@ codec-turbojpeg = ["turbojpeg"]
 codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc"]
 # Hardware encoders, scalers and converters on V4L2 memory-to-memory devices, without FFmpeg.
 codec-v4l2m2m = ["dep:styx-kernel"]
+# Hardware encoders on Rockchip VPUs through MPP (librockchip_mpp, opened at run time).
+codec-rkmpp = ["dep:styx-kernel", "dep:libc"]
 # FFmpeg containers and network streams (libavformat), for netcam and file video.
 codec-ffmpeg-format = ["codec-ffmpeg"]
 serde = ["dep:serde", "styx-core/serde", "styx-capture/serde"]

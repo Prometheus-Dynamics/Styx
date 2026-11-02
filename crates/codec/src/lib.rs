@@ -379,6 +379,8 @@ pub mod mjpeg_zune;
 ))]
 mod par;
 pub mod prelude;
+#[cfg(all(feature = "codec-rkmpp", target_os = "linux"))]
+pub mod rkmpp;
 #[cfg(feature = "codec-turbojpeg")]
 mod turbojpeg_raw;
 #[cfg(all(feature = "codec-v4l2m2m", target_os = "linux"))]

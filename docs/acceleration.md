@@ -123,8 +123,8 @@ Notes:
 | ISP8000 via vvcam (K230D) | the ISP stages and 3A statistics | gap: needs a board |
 | RGA (Rockchip 2D, a V4L2 M2M device on mainline) | colour conversion, scaling, rotation | gap: `V4l2M2mConverter` exists but the conversion stage does not pick it yet |
 | Stateless VPUs (Hantro, rkvenc) | JPEG, H.264 encode | gap: `V4l2M2mEncoder` is stateful only |
-| Rockchip MPP (vendor `/dev/mpp_service`) | H.264, H.265, JPEG encode | gap: needs a board |
-| K230D VPU and 2D unit | H.264, H.265, JPEG encode; rotation, scaling | gap: needs a board |
+| Rockchip MPP (vendor `/dev/mpp_service`) | H.264, H.265, JPEG encode | written, untested on board: `RkMppEncoder` (`codec-rkmpp`) |
+| K230D VPU and 2D unit | H.264, H.265, JPEG encode; rotation, scaling | written, untested on board: the V4L2 M2M codecs, frames imported by dma-buf |
 
 ## Totals
 
@@ -209,7 +209,7 @@ States:
 | rkisp | 3A statistics | unused (board) | software ISP statistics |
 | rkisp | self path (second scaled output) | unused (board) | `box2_row`, software scaling |
 | RGA2 / RGA3 | scale, crop, convert, rotate | unused (board): mainline `rockchip-rga` fits `V4l2M2mConverter`; vendor multi-rga not written | `styx_core::simd` |
-| MPP / rkvenc, Hantro | H.264, H.265, JPEG encode | unused (board) | libjpeg-turbo, FFmpeg |
+| MPP / rkvenc, Hantro | H.264, H.265, JPEG encode | written, untested on board: `RkMppEncoder`, ISP NV12 imported by dma-buf | libjpeg-turbo, FFmpeg |
 | MPP / rkvdec | H.264, H.265 decode | unused (board) | FFmpeg software |
 | IEP | denoise, enhancement (deinterlace n/a: cameras are progressive) | unused (board) | software ISP denoise |
 
@@ -219,7 +219,7 @@ States:
 |---|---|---|---|
 | rkisp | full ISP and 3A statistics | unused (board) | software ISP (armv7 NEON integer path) |
 | rkisp | selfpath scaler and 4x4/8x8 sampling outputs (pyramid) | unused (board) | `box2_row` (NEON) |
-| rkvenc | H.264, H.265 encode | unused (board) | FFmpeg / libjpeg-turbo (NEON) |
+| rkvenc | H.264, H.265 encode | written, untested on board: `RkMppEncoder` | FFmpeg / libjpeg-turbo (NEON) |
 
 ### Hardware-block totals
 

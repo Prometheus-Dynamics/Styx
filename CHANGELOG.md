@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_codec::rkmpp::RkMppEncoder` (feature `codec-rkmpp`): H.264, H.265 and JPEG on Rockchip
+  VPUs through MPP, opened at run time. NV12 in one dma-buf (the ISP's) is encoded in place,
+  other frames through staging dma-bufs. Offered by the registry when MPP and
+  `/dev/mpp_service` are here. Written, untested on board.
 - `M2mSession::open_importing` and `push_dmabuf`: a memory-to-memory device reads source frames
   from the caller's dma-bufs, no copy, holding each frame until the device gives its slot back;
   a dma-buf goes back to the slot that has it attached. `V4l2M2mEncoder` and

@@ -543,6 +543,25 @@ impl CodecRegistry {
             );
         }
 
+        // Hardware encoders on Rockchip VPUs through MPP, looked for when first asked for.
+        #[cfg(all(feature = "codec-rkmpp", target_os = "linux"))]
+        for input in [FourCc::NV12, FourCc::YUYV] {
+            self.register_deferred(
+                input,
+                Box::new(move || {
+                    use crate::rkmpp::{RkMppEncoder, RkMppOptions};
+                    [FourCc::H264, FourCc::H265, FourCc::MJPG]
+                        .into_iter()
+                        .filter(|&output| RkMppEncoder::available(input, output))
+                        .map(|output| {
+                            Arc::new(RkMppEncoder::new(input, output, RkMppOptions::default()))
+                                as Arc<dyn crate::Codec>
+                        })
+                        .collect()
+                }),
+            );
+        }
+
         #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
         self.register(
             FourCc::RG24,
