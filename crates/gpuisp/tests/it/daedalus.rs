@@ -4,17 +4,13 @@
 //! storage buffers.
 
 use crate::common::{mosaic, pack};
-use daedalus_gpu::{GpuBackendKind, GpuOptions, GpuStorage, select_backend};
+use daedalus_gpu::GpuStorage;
 use styx_gpuisp::{ExternalBuffer, GpuContext, GpuError, GpuIsp, Input};
 use styx_softisp::*;
 
 #[test]
 fn processes_on_daedalus_device_from_its_buffer() {
-    let Ok(gpu) = select_backend(&GpuOptions {
-        preferred_backend: Some(GpuBackendKind::Wgpu),
-        ..Default::default()
-    }) else {
-        eprintln!("no Daedalus GPU: skipped");
+    let Some(gpu) = crate::common::daedalus_gpu() else {
         return;
     };
     let ctx = match GpuContext::from_daedalus(&gpu) {
@@ -56,6 +52,7 @@ fn processes_on_daedalus_device_from_its_buffer() {
     let mut bytes = vec![0u8; 256];
     bytes.extend_from_slice(&raw);
     let storage = GpuStorage::with_data(&gpu, &bytes, Some("raw")).unwrap();
+    crate::common::flush_uploads(&gpu);
     // SAFETY: Daedalus's buffer on Daedalus's device, alive and unwritten for the call.
     let input = unsafe {
         let raw_vk = gpu.raw_vulkan().unwrap();

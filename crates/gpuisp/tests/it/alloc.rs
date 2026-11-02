@@ -200,27 +200,14 @@ fn changing_parameters_and_statistics_allocate_nothing_when_warm() {
     assert_eq!(count, 0.0, "allocations per GPU ISP frame");
 }
 
-/// Allocations of one submission through Daedalus's queue (`GpuContextHandle::submit_raw`),
-/// none of them Styx's: wgpu-core's command encoder and command buffer (`Arc`s, the deferred
-/// actions, the encoder's buffer list), its submission (the in-flight encoder list, the
-/// command buffer and semaphore lists of `wgpu-hal`'s Vulkan queue) and Daedalus's ticket
-/// (`GpuTicket::submit_on`, `on_submitted_work_done`): 17 with wgpu 30 (traced with
-/// `STYX_GPU_ALLOC_TRACE=1`). Zero needs a submit path in Daedalus that records into its own
-/// command buffers and submits on wgpu's raw queue.
-#[cfg(feature = "daedalus")]
-const DAEDALUS_SUBMIT: f64 = 17.0;
-
-/// From a buffer of Daedalus's device, as its imported frames come (`Input::Buffer`): nothing
-/// beyond the submission through Daedalus's queue ([`DAEDALUS_SUBMIT`]).
+/// From a buffer of Daedalus's device, as its imported frames come (`Input::Buffer`),
+/// submitted on Daedalus's queue through its `RawSubmitter`: nothing (was 17 a frame in
+/// wgpu-core's submission through `submit_raw`).
 #[cfg(feature = "daedalus")]
 #[test]
 fn a_frame_from_a_device_buffer_allocates_nothing_when_warm() {
-    use daedalus_gpu::{GpuBackendKind, GpuOptions, GpuStorage, select_backend};
-    let Ok(gpu) = select_backend(&GpuOptions {
-        preferred_backend: Some(GpuBackendKind::Wgpu),
-        ..Default::default()
-    }) else {
-        eprintln!("no Daedalus GPU: skipped");
+    use daedalus_gpu::GpuStorage;
+    let Some(gpu) = crate::common::daedalus_gpu() else {
         return;
     };
     let Ok(ctx) = GpuContext::from_daedalus(&gpu) else {
@@ -231,6 +218,7 @@ fn a_frame_from_a_device_buffer_allocates_nothing_when_warm() {
     let (raw, stride, format) = frame(w, h);
     let mut isp = GpuIsp::with_context(&ctx, format, three_a()).unwrap();
     let storage = GpuStorage::with_data(&gpu, &raw, Some("raw")).unwrap();
+    crate::common::flush_uploads(&gpu);
     // SAFETY: Daedalus's buffer on Daedalus's device, alive and unwritten for the calls.
     let input = unsafe {
         let raw_vk = gpu.raw_vulkan().unwrap();
@@ -249,9 +237,8 @@ fn a_frame_from_a_device_buffer_allocates_nothing_when_warm() {
             .expect("statistics asked for");
         isp.recycle_stats(stats);
     });
-    assert!(
-        count <= DAEDALUS_SUBMIT,
-        "{count} allocations per GPU ISP frame from a device buffer, {DAEDALUS_SUBMIT} of them \
-         Daedalus's submission"
+    assert_eq!(
+        count, 0.0,
+        "allocations per GPU ISP frame from a device buffer"
     );
 }

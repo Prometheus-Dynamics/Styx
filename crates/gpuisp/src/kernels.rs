@@ -32,6 +32,10 @@ pub(crate) struct Kernels {
     pub cmd: vk::CommandBuffer,
     pub fence: vk::Fence,
     pub queries: Option<vk::QueryPool>,
+    /// On Daedalus's device: one command buffer and fence on its queue, reused every frame
+    /// (`RawSubmitter`, no allocation per submit).
+    #[cfg(feature = "daedalus")]
+    raw: Option<daedalus_gpu::raw_vulkan::RawSubmitter>,
 }
 
 impl Drop for Kernels {
@@ -89,7 +93,17 @@ impl Kernels {
             cmd: vk::CommandBuffer::null(),
             fence: vk::Fence::null(),
             queries: None,
+            #[cfg(feature = "daedalus")]
+            raw: None,
         };
+        #[cfg(feature = "daedalus")]
+        if let Submit::Daedalus(gpu) = &ctx.submit {
+            // One slot: each frame waits for its own submission.
+            k.raw = Some(
+                daedalus_gpu::raw_vulkan::RawSubmitter::with_slots(gpu, 1)
+                    .map_err(|e| GpuError::Unsupported(format!("Daedalus submitter: {e}")))?,
+            );
+        }
         for (i, b) in [&set0[..], &set1[..], &set1[..]].into_iter().enumerate() {
             let info = vk::DescriptorSetLayoutCreateInfo::default().bindings(b);
             // SAFETY: valid create info; `k` destroys what is made (null handles are ignored).
@@ -226,7 +240,7 @@ impl Kernels {
     /// Record `plan` into the command buffer, submit it and wait for it; returns the GPU
     /// time (timestamp queries). `stats_buf` is the statistics buffer, `dev_in` the device
     /// input buffer of `plan.copy_in`. On Daedalus's device the commands go into its command
-    /// buffer, on its queue (`GpuContextHandle::submit_raw`).
+    /// buffer, on its queue (`RawSubmitter`).
     pub fn run(
         &self,
         plan: &Plan,
@@ -261,13 +275,13 @@ impl Kernels {
                 }
             }
             #[cfg(feature = "daedalus")]
-            Submit::Daedalus(gpu) => {
+            Submit::Daedalus(_) => {
+                let raw = self.raw.as_ref().expect("made with the kernels");
                 // SAFETY: the commands use this device's objects and the caller's buffers,
                 // all alive until the ticket's wait below returns.
-                let ticket = unsafe {
-                    gpu.submit_raw(|d, cmd| self.record(d, cmd, plan, stats_buf, dev_in))
-                }
-                .map_err(|e| GpuError::Unsupported(format!("Daedalus submit: {e}")))?;
+                let ticket =
+                    unsafe { raw.submit(|d, cmd| self.record(d, cmd, plan, stats_buf, dev_in)) }
+                        .map_err(|e| GpuError::Unsupported(format!("Daedalus submit: {e}")))?;
                 ticket.wait();
             }
         }

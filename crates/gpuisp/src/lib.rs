@@ -37,7 +37,9 @@ mod memory;
 mod params;
 mod stats;
 
-pub use context::{DeviceInfo, DeviceKind, DeviceSelect, GpuContext, devices};
+pub use context::{
+    DeviceInfo, DeviceKind, DeviceSelect, GpuContext, devices, vulkan_instance_lock,
+};
 pub use error::GpuError;
 pub use input::{ExternalBuffer, Input};
 pub use isp::{ExportedFrame, GpuIsp, ImportId};

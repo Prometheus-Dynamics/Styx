@@ -8,6 +8,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_gpuisp::vulkan_instance_lock`: held while the GPU ISP creates or destroys a Vulkan
+  instance or device. The loader crashes when another thread does so at the same time; code
+  making other instances in the process (wgpu, Daedalus) can hold it around theirs. The
+  loader is opened once per process. On Daedalus's device the GPU ISP submits through its
+  `RawSubmitter`: a frame from a Daedalus buffer allocates nothing (was 17). Daedalus pinned at
+  febb4fa.
 - `styx_codec::rkmpp::RkMppEncoder` (feature `codec-rkmpp`): H.264, H.265 and JPEG on Rockchip
   VPUs through MPP, opened at run time. NV12 in one dma-buf (the ISP's) is encoded in place,
   other frames through staging dma-bufs. Offered by the registry when MPP and

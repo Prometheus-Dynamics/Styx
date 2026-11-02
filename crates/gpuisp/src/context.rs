@@ -81,7 +81,7 @@ pub(crate) enum Submit {
     /// The context's own device and queue: begun, submitted and waited for here.
     Own(Mutex<vk::Queue>),
     /// Daedalus's device: recorded into its command buffer and submitted on its queue
-    /// (`GpuContextHandle::submit_raw`). Holding the handle keeps the device alive.
+    /// (`RawSubmitter`, one per kernel set). Holding the handle keeps the device alive.
     #[cfg(feature = "daedalus")]
     Daedalus(daedalus_gpu::GpuContextHandle),
 }
@@ -109,6 +109,7 @@ impl Drop for Inner {
         // `Arc` of this, so all are gone.
         unsafe {
             let _ = self.device.device_wait_idle();
+            let _vk = vulkan_instance_lock();
             self.device.destroy_device(None);
             self.instance.destroy_instance(None);
         }
@@ -134,13 +135,37 @@ struct Candidate {
     timestamps: bool,
 }
 
+/// Held while a Vulkan instance or device is created or destroyed. The Vulkan loader (1.4.341
+/// on the development host) crashes in its driver scan, or looking a device up, when one
+/// thread creates an instance or device while another creates or destroys one, so every
+/// instance and device this crate makes or destroys is under this lock. Code making other Vulkan instances in the same process (wgpu's, Daedalus's) can
+/// hold it around theirs, creation and drop.
+pub fn vulkan_instance_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Destroys `instance` (nothing made from it is alive) under [`vulkan_instance_lock`].
+fn destroy(instance: &ash::Instance) {
+    let _vk = vulkan_instance_lock();
+    // SAFETY: the caller made nothing from the instance that is still alive.
+    unsafe { instance.destroy_instance(None) };
+}
+
 fn load() -> Result<(ash::Entry, ash::Instance), GpuError> {
-    // SAFETY: loading the system's Vulkan loader; its initialisation runs no Rust code.
-    let entry = unsafe { ash::Entry::load() }.map_err(|e| GpuError::NoVulkan(e.to_string()))?;
+    // The loader is opened once and kept: unloading it while another thread creates an
+    // instance (wgpu's, another context's) crashes the loader's driver scan.
+    static ENTRY: std::sync::OnceLock<Result<ash::Entry, String>> = std::sync::OnceLock::new();
+    let entry = ENTRY
+        // SAFETY: loading the system's Vulkan loader; its initialisation runs no Rust code.
+        .get_or_init(|| unsafe { ash::Entry::load() }.map_err(|e| e.to_string()))
+        .clone()
+        .map_err(GpuError::NoVulkan)?;
     let app = vk::ApplicationInfo::default()
         .application_name(c"styx-gpuisp")
         .api_version(vk::API_VERSION_1_2);
     let create = vk::InstanceCreateInfo::default().application_info(&app);
+    let _vk = vulkan_instance_lock();
     // SAFETY: valid create info; the instance is destroyed by `Inner::drop` or below.
     let instance = unsafe { entry.create_instance(&create, None) }
         .map_err(|e| GpuError::NoVulkan(format!("vkCreateInstance: {e}")))?;
@@ -238,8 +263,7 @@ pub fn devices() -> Vec<DeviceInfo> {
     let list = candidates(&instance)
         .map(|c| c.into_iter().map(|c| c.info).collect())
         .unwrap_or_default();
-    // SAFETY: nothing was made from the instance.
-    unsafe { instance.destroy_instance(None) };
+    destroy(&instance);
     list
 }
 
@@ -292,8 +316,7 @@ impl GpuContext {
         let chosen = match chosen {
             Ok(c) => c,
             Err(e) => {
-                // SAFETY: nothing was made from the instance.
-                unsafe { instance.destroy_instance(None) };
+                destroy(&instance);
                 return Err(e);
             }
         };
@@ -328,8 +351,8 @@ impl GpuContext {
                 })
             }
             Err(e) => {
-                // SAFETY: the device was not made.
-                unsafe { instance.destroy_instance(None) };
+                // The device was not made.
+                destroy(&instance);
                 Err(e)
             }
         }
@@ -354,9 +377,12 @@ impl GpuContext {
             .queue_create_infos(&queues)
             .enabled_extension_names(&exts)
             .push_next(&mut v12);
+        // The loader looks the new device up in its instance list: under the lock.
+        let vk_lock = vulkan_instance_lock();
         // SAFETY: a valid create info for a device of `instance`.
         let device =
             unsafe { instance.create_device(c.physical, &create, None) }.ctx("vkCreateDevice")?;
+        drop(vk_lock);
         // SAFETY: queue 0 of a family the device was made with.
         let queue = unsafe { device.get_device_queue(c.family, 0) };
         Ok((device, queue))
@@ -368,7 +394,7 @@ impl GpuContext {
     }
 
     /// Run on Daedalus's Vulkan device: frames are recorded into Daedalus's command buffers
-    /// and submitted on its queue, in order with its own work (`GpuContextHandle::submit_raw`),
+    /// and submitted on its queue, in order with its own work (Daedalus's `RawSubmitter`),
     /// and its imported frames are read in place ([`crate::ExternalBuffer::from_frame`]).
     /// `Unsupported` when the context is not wgpu on Vulkan or its device was made without
     /// what the shaders need (Vulkan 1.2, `storageBuffer8BitAccess`: Daedalus c572945 enables
@@ -376,7 +402,7 @@ impl GpuContext {
     #[cfg(feature = "daedalus")]
     pub fn from_daedalus(gpu: &daedalus_gpu::GpuContextHandle) -> Result<Self, GpuError> {
         // SAFETY: the handles are only used as the sync contract allows: work is submitted
-        // through `submit_raw`, nothing of Daedalus's is destroyed (`Inner::drop`), and the
+        // through Daedalus's `RawSubmitter`, nothing of Daedalus's is destroyed (`Inner::drop`), and the
         // handle held in `Submit::Daedalus` keeps them valid.
         let raw = unsafe { gpu.raw_vulkan() }
             .ok_or_else(|| GpuError::Unsupported("Daedalus is not on Vulkan".into()))?;

@@ -197,10 +197,9 @@ memory when it runs.
       their leases return (`slice_states_are_reused_once_free`; were 4 `Arc`s per frame). GPU ISP (`crates/gpuisp/tests/it/
       alloc.rs`): 0 with statistics handed back (`recycle_stats`) and white balance, gain, lens
       shading and tone changing every frame (`swap_params`, tables rebuilt in place); was a new
-      `IspStats` and new tables per frame. **Not 0, reason stated:** `Input::Buffer` on
-      Daedalus's device, 17 per frame, all in Daedalus's `submit_raw` and wgpu-core's submission
-      (encoder and command buffer `Arc`s, semaphore lists, `GpuTicket`); zero needs a raw-queue
-      submit in Daedalus (asked for).
+      `IspStats` and new tables per frame. `Input::Buffer` on Daedalus's device: 0, submitted
+      through Daedalus's `RawSubmitter` (Daedalus fd18808); was 17 per frame in `submit_raw`
+      and wgpu-core's submission.
 - [ ] **GPU import pad from Daedalus.** *Why:* `gpu_import_pad` is a fixed 256 B; Daedalus knows the
       device's need. *Done when:* with a Daedalus context the pad comes from
       `GpuFrameImports::required_len(end)` / `GpuStorage::dmabuf_import_len(gpu, len)`, 256 otherwise.

@@ -101,8 +101,9 @@ latency equals four CPU threads' at a quarter of one thread's CPU. With a captur
 A warm frame allocates nothing on the heap, with the 3A changing the parameters every frame:
 `GpuIsp::swap_params` rebuilds the tables of the parameters before last in place and
 `GpuIsp::recycle_stats` takes a frame's statistics back to read the next ones into
-(`tests/it/alloc.rs`). On Daedalus's device a frame from a Daedalus buffer costs 17
-allocations, all in wgpu-core's submission (`submit_raw`); Daedalus owns that fix.
+(`tests/it/alloc.rs`). On Daedalus's device, a frame from a Daedalus buffer allocates
+nothing either: it is submitted through Daedalus's `RawSubmitter` (Daedalus fd18808), not
+`submit_raw`, whose wgpu-core submission cost 17 allocations a frame.
 
 ## Raspberry Pi 5 / CM5 (V3D 7.1)
 
@@ -150,7 +151,7 @@ let stats = isp.process(&raw, 1600, Scale::Full, OutputBuffers::Rgb24 { data: &m
 
 `GpuContext::from_daedalus(&gpu)` runs the ISP on the Vulkan device behind a Daedalus
 `GpuContextHandle` (wgpu on Vulkan) instead of a device of its own: each frame's commands are
-recorded into Daedalus's command buffer and submitted on its queue (`submit_raw`, in order with
+recorded into Daedalus's command buffer and submitted on its queue (its `RawSubmitter`, in order with
 the graph's own work; gpuisp never submits on that queue itself), and frames Daedalus imported
 (`GpuFrameImports::import`) are read in place with `Input::Buffer(ExternalBuffer::from_frame(&gpu,
 &frame))`. Daedalus's device must have `storageBuffer8BitAccess` enabled; `from_daedalus`
