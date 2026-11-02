@@ -225,6 +225,7 @@ pub(super) fn spawn(
             let mut buffers = Buffers::default();
             let mut held_drops = 0u64;
             let mut sliced: Option<super::pisp_sliced::SlicedOut> = None;
+            let mut slice_states = super::pisp_sliced::SliceStates::default();
             // Raw frames out with consumers (`NativeIspConfig::sensor_raw`): at most the
             // front end's extra buffers, so a slow raw consumer never starves the stream.
             let mut raw_out = 0u32;
@@ -279,7 +280,7 @@ pub(super) fn spawn(
                             orphans.extend(prev.fail(&mut p));
                         }
                         let room = raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
-                        match super::pisp_sliced::slice_leases(&p, &s, &mut buffers, &w, &ret_tx, room) {
+                        match super::pisp_sliced::slice_leases(&p, &s, &mut buffers, &w, &ret_tx, room, &mut slice_states) {
                             Ok(Some((frame, out))) => {
                                 raw_out += u32::from(out.has_raw());
                                 sliced = Some(out);

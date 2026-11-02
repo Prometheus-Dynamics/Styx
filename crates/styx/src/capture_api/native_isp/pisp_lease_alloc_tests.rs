@@ -216,3 +216,55 @@ fn a_pisp_companion_allocates_nothing() {
     assert_eq!(main, 0.0, "allocations per lease");
     assert_eq!(both, 0.0, "allocations with one companion");
 }
+
+/// The raw frame's lease (`NativeIspConfig::sensor_raw`), whole or at a sliced frame's first
+/// slice with a progress of its own, allocates nothing either: its record comes from the
+/// pool and its progress from the reused slice states.
+#[test]
+fn a_raw_lease_allocates_nothing() {
+    let live = CaptureMetrics::default();
+    let (ret_tx, ret_rx) = returns();
+    let buffers: Vec<BeBuffer> = (0..BUFFERS).map(|_| buffer(W, H)).collect();
+    // 16-bit samples: half as many per row as the buffer's bytes.
+    let layout = RawLayout {
+        width: W as u32 / 2,
+        height: H as u32,
+        stride: W as u32,
+        cfa: styx_softisp::CfaPattern::Rggb,
+        bits: 10,
+    };
+    let mut f = frame();
+    let mut states = super::super::pisp_sliced::SliceStates::default();
+    let mut counts = [0u64; 2];
+    for n in 0..FRAMES + 100 {
+        while let RecvOutcome::Data(_) = ret_rx.recv() {}
+        let index = (n % BUFFERS as u64) as u32;
+        f.sequence = n;
+        f.raw_image = Some(index);
+        for (sliced, count) in counts.iter_mut().enumerate() {
+            let ((), made) = allocations(|| {
+                let progress = (sliced == 1).then(|| states.take([0, 0]));
+                let lease = raw_lease_of(
+                    layout,
+                    buffers[index as usize].clone(),
+                    index,
+                    &f,
+                    &ret_tx,
+                    &live,
+                    None,
+                    progress.clone(),
+                )
+                .expect("a raw lease");
+                if let Some(p) = &progress {
+                    p.progress.complete([H as u32, 0]);
+                }
+                assert_eq!(lease.meta().format.resolution.width.get(), W as u32 / 2);
+                drop(lease);
+            });
+            if n >= 100 {
+                *count += made;
+            }
+        }
+    }
+    assert_eq!(counts, [0, 0], "allocations of raw leases (whole, sliced)");
+}

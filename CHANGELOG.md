@@ -25,6 +25,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   parameters before last are rebuilt in place and statistics are read into the buffers handed
   back, so a GPU ISP frame allocates nothing with the 3A changing its parameters every frame.
   The pipeline's GPU engine uses both.
+- PiSP sliced frames (`deliver_slices`) reuse their progress states once their leases return:
+  no allocation per frame (were four).
 - **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
   `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
   its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`

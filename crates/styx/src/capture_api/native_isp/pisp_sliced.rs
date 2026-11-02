@@ -25,6 +25,43 @@ pub(super) struct SliceState {
     pub(super) read: AtomicBool,
 }
 
+/// Slice states kept from frame to frame: one whose leases have all returned is reset and
+/// handed out again, so a sliced frame allocates no state of its own.
+pub(super) struct SliceStates(Vec<Arc<SliceState>>);
+
+/// States kept: more than a sliced frame's two (its own, its raw frame's) times the frames
+/// a consumer holds.
+const KEEP_STATES: usize = 12;
+
+impl Default for SliceStates {
+    fn default() -> Self {
+        Self(Vec::with_capacity(KEEP_STATES))
+    }
+}
+
+impl SliceStates {
+    /// A state of a frame with `rows` final rows, running and unread.
+    pub(super) fn take(&mut self, rows: [u32; 2]) -> Arc<SliceState> {
+        let free = self.0.iter_mut().position(|s| {
+            Arc::get_mut(s).is_some_and(|state| Arc::get_mut(&mut state.progress).is_some())
+        });
+        if let Some(i) = free {
+            let state = Arc::get_mut(&mut self.0[i]).expect("unshared");
+            *Arc::get_mut(&mut state.progress).expect("unshared") = FrameProgress::new(rows);
+            *state.read.get_mut() = false;
+            return self.0[i].clone();
+        }
+        let state = Arc::new(SliceState {
+            progress: Arc::new(FrameProgress::new(rows)),
+            read: AtomicBool::new(false),
+        });
+        if self.0.len() < KEEP_STATES {
+            self.0.push(state.clone());
+        }
+        state
+    }
+}
+
 /// A sliced frame out with the consumer before it completes.
 pub(super) struct SlicedOut {
     pub(super) sequence: u64,
@@ -174,6 +211,7 @@ pub(super) fn slice_leases(
     w: &Worker,
     returns: &Returns,
     raw_room: bool,
+    states: &mut SliceStates,
 ) -> Result<Option<(FrameLease, SlicedOut)>, String> {
     let Some(sensor) = p.frame_values(s.sequence) else {
         return Ok(None);
@@ -199,19 +237,13 @@ pub(super) fn slice_leases(
         raw_image: s.raw_image.filter(|_| raw_room),
         passes: Vec::new(),
     };
-    let state = Arc::new(SliceState {
-        progress: Arc::new(FrameProgress::new(s.rows)),
-        read: AtomicBool::new(false),
-    });
+    let state = states.take(s.rows);
     let Some(lease) = frame_leases(p, &f, buffers, w, returns, Some(state.clone()))? else {
         return Ok(None);
     };
     // Its raw frame, still being written: leased now with a progress of its own, complete
     // with the frame (`SlicedOut::complete`).
-    let raw_state = Arc::new(SliceState {
-        progress: Arc::new(FrameProgress::new([0, 0])),
-        read: AtomicBool::new(false),
-    });
+    let raw_state = states.take([0, 0]);
     let conversion = super::super::native_backend::native_conversion(w.clock);
     let raw = super::pisp_lease::raw_lease(
         p,
@@ -265,5 +297,31 @@ mod tests {
         assert_eq!(raw_end(3, false, Some(None)), RawEnd::Orphan(Some(3)));
         assert_eq!(raw_end(3, false, None), RawEnd::Orphan(Some(3)));
         assert_eq!(raw_end(3, true, None), RawEnd::Orphan(None));
+    }
+
+    /// A state whose holders are all gone comes back reset, without allocating; one still held
+    /// is not reused.
+    #[test]
+    fn slice_states_are_reused_once_free() {
+        let mut states = SliceStates::default();
+        // Two made, both used and given back.
+        let (a, b) = (states.take([4, 2]), states.take([4, 2]));
+        for s in [a, b] {
+            s.progress.complete([8, 4]);
+            s.read.store(true, Ordering::Relaxed);
+        }
+        let held = states.take([0, 0]);
+        let ((), n) = crate::test_alloc::allocations(|| {
+            for _ in 0..100 {
+                let s = states.take([4, 2]);
+                assert!(!Arc::ptr_eq(&s, &held));
+                assert_eq!(s.progress.output(0).rows(), 4);
+                assert!(!s.progress.output(0).is_complete());
+                assert!(!s.read.load(Ordering::Relaxed));
+                s.progress.complete([8, 4]);
+                s.read.store(true, Ordering::Relaxed);
+            }
+        });
+        assert_eq!(n, 0);
     }
 }

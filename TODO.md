@@ -164,8 +164,10 @@ memory when it runs.
       ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and
       2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
       box and the reactor's timer map node). **Not counted:**
-      V4L2 zero-copy (uses the pool, its loop needs a device), PiSP raw and sliced leases,
-      libcamera, and the kernel's side of the queue on a board. GPU ISP (`crates/gpuisp/tests/it/
+      V4L2 zero-copy (uses the pool, its loop needs a device), libcamera, and the kernel's side
+      of the queue on a board. Also asserted 0: the PiSP raw lease, whole and at a sliced frame's
+      first slice (`a_raw_lease_allocates_nothing`), and the sliced frame's states, reused once
+      their leases return (`slice_states_are_reused_once_free`; were 4 `Arc`s per frame). GPU ISP (`crates/gpuisp/tests/it/
       alloc.rs`): 0 with statistics handed back (`recycle_stats`) and white balance, gain, lens
       shading and tone changing every frame (`swap_params`, tables rebuilt in place); was a new
       `IspStats` and new tables per frame. **Not 0, reason stated:** `Input::Buffer` on

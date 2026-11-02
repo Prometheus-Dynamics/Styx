@@ -20,7 +20,7 @@ use styx_core::prelude::{
 };
 use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf};
-use styx_pipeline::device::{PispFrame, PispPipeline};
+use styx_pipeline::device::{PispFrame, PispPipeline, RawLayout};
 use styx_pisp::device::{BeFormat, BeOutputSetup};
 use styx_pisp::uapi::BeCropConfig;
 
@@ -520,6 +520,23 @@ pub(super) fn raw_lease(
     let index = f.raw_image?;
     let layout = p.raw_layout()?;
     let buffer = buffers.get(p, RAW_OUTPUT, index).ok()?;
+    raw_lease_of(
+        layout, buffer, index, f, returns, live, conversion, progress,
+    )
+}
+
+/// [`raw_lease`] of front end buffer `index` (`buffer`, laid out as `layout`).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn raw_lease_of(
+    layout: RawLayout,
+    buffer: BeBuffer,
+    index: u32,
+    f: &PispFrame,
+    returns: &Returns,
+    live: &CaptureMetrics,
+    conversion: Option<ClockConversion>,
+    progress: Option<Arc<SliceState>>,
+) -> Option<FrameLease> {
     let code = FourCc::new(*match layout.cfa {
         styx_softisp::CfaPattern::Bggr => b"BYR2",
         styx_softisp::CfaPattern::Gbrg => b"GB16",
