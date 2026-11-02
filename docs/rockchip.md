@@ -115,9 +115,12 @@ samples' spacing (`equ_segm` 1, equally spaced), and the AE zone scales `AE_RB_F
 `AE_G_FULL`, which assume ISP30's mean bit layout (`ISP2X_RAWAEBIG_GET_MEAN_*`; not checked
 against the ISP21 driver's macros).
 
-The camera pipeline still drives ISP30 only: `styx_pipeline::rkisp` builds
-`Generation::Isp30` buffers. Wiring ISP21 in means choosing the generation from the SoC
-(RK3566 / RK3568) and passing it to `Params::new` and `statistics`.
+The camera pipeline picks the generation from the SoC (written, untested on board):
+`styx_rkisp::Isp::detect` reads the root devicetree compatible list
+(`/proc/device-tree/compatible`): `rockchip,rk3566` and `rk3568` are ISP21, `rk3588` and
+`rk3588s` ISP30, `rv1106` and `rv1103` ISP32, `rk3562` ISP32-lite; anything else (RV1103B's
+ISP33, RK3576) is refused rather than guessed. `RkispPipeline` builds that generation's buffer
+(`AnyParams`, one buffer reset and rebuilt each frame) and reads its statistics.
 
 ## RK3562 and RV1106 (ISP32 and ISP32-lite): written, untested on board
 

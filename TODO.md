@@ -78,11 +78,12 @@ memory when it runs.
       board). *Why:* user decision, both low-cost chips. *Done when:* the chip streams the OV9782
       with 3A converged. The structures, builder and parser have tests; the fixed-point constants
       and vertex layout are the headers' silence, to confirm on the chip. `styx_pipeline::rkisp`
-      passes `Generation::Isp30` only, so the pipeline side is still to write. *Blocked by:* for
-      that, nothing; for the run, an RK3566 board.
+      picks the generation from the SoC (`Isp::detect`, written, untested on board).
+      *Blocked by:* an RK3566 board.
 - [ ] **RK3562: rkisp ISP32-lite** (parameters and statistics, e9adfc0, written, untested on board).
-      *Why:* user decision, both low-cost chips. *Done when:* as RK3566, the pipeline side included:
-      nothing selects `isp32` yet. *Blocked by:* for that, nothing; for the run, an RK3562 board.
+      *Why:* user decision, both low-cost chips. *Done when:* as RK3566. The pipeline selects it
+      from the SoC (`Isp::detect`: `rockchip,rk3562`; written, untested on board). *Blocked by:*
+      an RK3562 board.
 - [ ] **RK3576: rkisp, its generation.** Not written: the docs list it as a fallback, its generation
       is unconfirmed. *Why:* a supported chip. *Done when:* the generation is confirmed from the
       BSP's rkisp hardware table, then as RK3566. *Blocked by:* an RK3576 board and BSP.

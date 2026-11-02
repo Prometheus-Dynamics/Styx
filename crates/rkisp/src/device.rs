@@ -7,10 +7,10 @@
 //!
 //! [`IspDevice`] routes whatever feeds the ISP's sink pad through it into the main path,
 //! sets the pad and node formats, and keeps three queues: parameter buffers in
-//! ([`Params`]), statistics and output frames out. The entity names, pad numbers and meta
+//! ([`ParamBuffer`]: any generation's), statistics and output frames out. The entity names, pad numbers and meta
 //! formats are the vendor kernel's (`drivers/media/platform/rockchip/isp`, one driver for
 //! ISP21 and ISP30: `isp_params.c`, `isp_stats.c`, `rkisp.h`, `capture.h`), so the same
-//! node set serves both generations; [`Params`] carries the layout each one takes. Nothing
+//! node set serves every generation; the parameter buffer carries the layout each one takes. Nothing
 //! here has run on a board yet (written, untested on board).
 
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ use styx_kernel::v4l2::{
     VideoDevice,
 };
 
-use crate::Params;
+use crate::ParamBuffer;
 
 /// The ISP subdevice.
 pub const ISP_ENTITY: &str = "rkisp-isp-subdev";
@@ -319,7 +319,7 @@ impl IspDevice {
 
     /// Queues `first` (the parameters for the first frames), every statistics and output
     /// buffer, and starts streaming (the main path last: the sensor starts with it).
-    pub fn start(&mut self, first: &Params) -> Result<()> {
+    pub fn start(&mut self, first: &impl ParamBuffer) -> Result<()> {
         if !self.queue_params(first)? {
             return Err(DeviceError::Setup("no parameter buffer".into()));
         }
@@ -338,14 +338,14 @@ impl IspDevice {
 
     /// Queues a parameter buffer; `false` when every buffer is still with the driver (the
     /// parameters were not queued; the ISP keeps the last ones it took).
-    pub fn queue_params(&mut self, params: &Params) -> Result<bool> {
+    pub fn queue_params(&mut self, params: &impl ParamBuffer) -> Result<bool> {
         while let Some(b) = self.params.try_dequeue()? {
             self.free_params.push(b.index);
         }
         let Some(i) = self.free_params.pop() else {
             return Ok(false);
         };
-        let bytes = params.as_bytes();
+        let bytes = params.param_bytes();
         let map = &mut self.params.maps[i as usize][0];
         let Some(dst) = map.as_mut_slice().get_mut(..bytes.len()) else {
             self.free_params.push(i);

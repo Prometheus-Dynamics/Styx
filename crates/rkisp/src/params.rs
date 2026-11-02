@@ -93,6 +93,15 @@ impl Params {
         Self { cfg }
     }
 
+    /// Every module off and unchanged again, in the same buffer (no allocation).
+    pub fn reset(mut self) -> Self {
+        match &mut self.cfg {
+            Config::Isp21(c) => bytemuck::bytes_of_mut(&mut **c).fill(0),
+            Config::Isp30(c) => bytemuck::bytes_of_mut(&mut **c).fill(0),
+        }
+        self
+    }
+
     /// The generation these parameters are for.
     pub fn generation(&self) -> Generation {
         match self.cfg {

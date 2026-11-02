@@ -45,6 +45,12 @@ impl Params {
         }
     }
 
+    /// Every module off and unchanged again, in the same buffer (no allocation).
+    pub fn reset(mut self) -> Self {
+        bytemuck::bytes_of_mut(&mut *self.cfg).fill(0);
+        self
+    }
+
     /// The variant these parameters are for.
     pub fn variant(&self) -> Variant {
         self.variant

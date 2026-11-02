@@ -30,6 +30,7 @@ use crate::error::{PipelineError, Result};
 use crate::process::Algorithms;
 use crate::rkisp::{params, statistics};
 use crate::sensor::{ISSUE_LATENCY, SensorInfo};
+use styx_rkisp::{AnyParams, Isp};
 
 impl From<styx_rkisp::device::DeviceError> for PipelineError {
     fn from(e: styx_rkisp::device::DeviceError) -> Self {
@@ -63,6 +64,9 @@ pub struct RkispPipeline {
     sensor: Option<SensorStream>,
     stats: Statistics,
     warm_override: Option<Option<WarmStart>>,
+    /// The ISP's generation (from the SoC) and its parameter buffer, reused frame to frame.
+    isp: Isp,
+    param_buf: Option<AnyParams>,
 }
 
 impl std::fmt::Debug for RkispPipeline {
@@ -73,7 +77,7 @@ impl std::fmt::Debug for RkispPipeline {
     }
 }
 
-/// Whether the system has a Rockchip ISP30 (its media device, from the vendor driver).
+/// Whether the system has a Rockchip ISP (its media device, from the vendor driver).
 pub fn has_rkisp() -> bool {
     !find_isps().is_empty()
 }
@@ -106,6 +110,13 @@ impl RkispPipeline {
         output: (u32, u32),
         gpu_pad: u32,
     ) -> Result<Self> {
+        let isp = Isp::detect().ok_or_else(|| {
+            PipelineError::Device(
+                "rkisp: this SoC's ISP generation is not one Styx knows (ISP21, ISP30, ISP32, \
+                 ISP32-lite)"
+                    .into(),
+            )
+        })?;
         let mode = select_mode(&camera.info().modes, settings, &camera.info().raw_formats)?.clone();
         let code = camera.bus_code(mode.code, settings.hflip, settings.vflip);
         let configured = camera.configure_external(settings)?;
@@ -139,7 +150,14 @@ impl RkispPipeline {
             sensor: None,
             stats: Statistics::default(),
             warm_override: None,
+            isp,
+            param_buf: Some(isp.params()),
         })
+    }
+
+    /// The ISP generation in use (from the SoC).
+    pub fn isp(&self) -> Isp {
+        self.isp
     }
 
     /// The configuration in effect.
@@ -194,10 +212,16 @@ impl RkispPipeline {
         };
         self.algo.controller().set_warm_start(warm);
         let (w, h) = (self.info.width, self.info.height);
+        let (isp, buf) = (self.isp, &mut self.param_buf);
         let started = self
             .algo
             .start(&self.controls)
-            .and_then(|s| Ok(dev.start(&params(&s.isp, 0, w, h))?))
+            .and_then(|s| {
+                let p = params(buf.take().unwrap_or_else(|| isp.params()), &s.isp, 0, w, h);
+                let r = dev.start(&p);
+                *buf = Some(p);
+                Ok(r?)
+            })
             .and_then(|()| Ok(self.camera.resume_external()?));
         if let Err(e) = started {
             self.camera.quiesce_external();
@@ -217,8 +241,9 @@ impl RkispPipeline {
             _ => return Err(PipelineError::Device("not started".into())),
         };
         let (w, h) = (self.info.width, self.info.height);
-        let stats = &mut self.stats;
-        let (seq, _, measured) = dev.next_statistics(timeout, |b| statistics(b, w, h, stats))?;
+        let (isp, stats) = (self.isp, &mut self.stats);
+        let (seq, _, measured) =
+            dev.next_statistics(timeout, |b| statistics(isp, b, w, h, stats))?;
         let seq = u64::from(seq);
         sensor.frame_done(seq);
         let controls = sensor
@@ -232,7 +257,11 @@ impl RkispPipeline {
             None
         };
         let settings = self.algo.settings(&values);
-        dev.queue_params(&params(settings, seq as u32 + 1, w, h))?;
+        let p = self.param_buf.take().unwrap_or_else(|| isp.params());
+        let p = params(p, settings, seq as u32 + 1, w, h);
+        let queued = dev.queue_params(&p);
+        self.param_buf = Some(p);
+        queued?;
         let output = dev.next_output(timeout)?;
         Ok(RkispFrame {
             output,

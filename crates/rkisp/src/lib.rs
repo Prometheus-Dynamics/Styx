@@ -11,6 +11,9 @@
 //! - `device` (feature `device`): the vendor driver's ISP, parameter, statistics and main
 //!   path nodes (the same names on both generations).
 //!
+//! [`Isp`] names a system's ISP (from the SoC, [`Isp::detect`]) and builds its parameter
+//! buffer ([`AnyParams`]) and reads its statistics whatever the generation.
+//!
 //! [`Generation`] selects the layout. The two share the modules and most of the layouts; the
 //! lens shading (8x8 sectors on ISP21, 16x16 on ISP30) and the output gamma (45 samples on
 //! ISP21, 49 on ISP30) differ.
@@ -34,12 +37,14 @@ extern crate std;
 
 #[cfg(feature = "device")]
 pub mod device;
+mod isp;
 pub mod isp32;
 
 mod params;
 mod stats;
 pub mod uapi;
 
+pub use isp::{AnyParams, Isp, ParamBuffer};
 pub use params::{
     CCM_ONE, GAIN_ONE, GAMMA_OUT_MAX, Generation, ISP21_GAMMA_SAMPLES, ISP21_LSC_SECTORS,
     ISP30_LSC_SECTORS, LSC_ONE, Params,

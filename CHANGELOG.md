@@ -33,6 +33,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - AVX-512 VBMI exact tone table (written, untested on an AVX-512 host): `vpermi2b` node
   lookups, 64 pixels at a time. Breaking: `X86FeatureSet::avx512vbmi` and
   `SimdBackend::X86Avx512Vbmi`.
+- Rockchip: `styx_rkisp::Isp` names the SoC's ISP (`Isp::detect`, from the devicetree:
+  ISP21, ISP30, ISP32, ISP32-lite) and `AnyParams` builds any generation's parameter buffer;
+  `RkispPipeline` uses them instead of ISP30 only, and reuses one parameter buffer per frame
+  (written, untested on board). Breaking: `styx_pipeline::rkisp::params` and `statistics`
+  take the buffer and the `Isp`; `IspDevice::start` and `queue_params` take any
+  `ParamBuffer`.
 - **GPU ISP on Daedalus's device** (`styx-gpuisp` feature `daedalus`):
   `GpuContext::from_daedalus` records each frame into Daedalus's command buffer and submits on
   its queue (`GpuContextHandle::submit_raw`, Daedalus 29ae351), and `Input::Buffer`
