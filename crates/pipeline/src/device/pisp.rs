@@ -656,7 +656,7 @@ impl PispPipeline {
                 be.dev,
                 &mut self.passes,
                 be.builder,
-                image.index,
+                (seq, image.index),
                 jobs,
                 timeout,
             ) {

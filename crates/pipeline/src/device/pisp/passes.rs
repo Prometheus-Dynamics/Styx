@@ -46,6 +46,39 @@ impl PispPipeline {
         }
     }
 
+    /// Frame `seq` is handed out at its first slice ([`super::PispEvent::Slice`]), before its
+    /// extra passes run: takes a buffer for each pass now, into `out` by slot (`None`: no pass
+    /// in the slot, or no free buffer), so its companions can go out with it. The passes write
+    /// them before the frame completes, and only them (a pass without one does not run). The
+    /// buffers are the caller's, given back with [`Self::release_output`], whether the frame
+    /// comes or not.
+    pub fn hand_out_passes(&mut self, seq: u64, out: &mut Vec<Option<PassOutput>>) {
+        out.clear();
+        self.passes.hand_out(seq);
+        let Some(dev) = self.be_dev.as_mut() else {
+            return;
+        };
+        for k in 0..self.passes.len() {
+            let pass = self.passes.spec(k).and_then(|spec| {
+                let index = dev.take_output(spec.output)?;
+                self.passes.reserve(k, index);
+                Some(PassOutput {
+                    output: spec.output,
+                    index,
+                    elapsed: Duration::ZERO,
+                    spec,
+                })
+            });
+            out.push(pass);
+        }
+    }
+
+    /// Frame `seq` was not handed out after all ([`Self::hand_out_passes`]; the caller gives
+    /// the buffers back): its passes run as any frame's.
+    pub fn keep_passes(&mut self, seq: u64) {
+        let _ = self.passes.handed_out(seq);
+    }
+
     /// Gives the frame's pass buffers back (see [`Self::release`]).
     pub fn release_passes(&mut self, passes: &[Option<PassOutput>]) {
         for p in passes.iter().flatten() {
@@ -64,15 +97,17 @@ impl PispPipeline {
 /// [`QUEUED_JOBS`]) are queued back to back, the input buffer in each, and waited for in
 /// order, so the back end goes from one to the next without a round trip through this thread
 /// between them; `jobs` 1 runs them one at a time. A pass without a free output buffer is
-/// skipped this frame.
+/// skipped this frame. A frame handed out before its passes ([`PassConfigs::hand_out`]) runs
+/// only the passes given a buffer, into it.
 pub(super) fn run(
     dev: &mut BackEndStream,
     passes: &mut PassConfigs,
     main: &BeConfigBuilder,
-    input: u32,
+    (seq, input): (u64, u32),
     jobs: usize,
     timeout: Duration,
 ) -> Result<Vec<Option<PassOutput>>> {
+    let handed_out = passes.handed_out(seq);
     let jobs = jobs.clamp(1, QUEUED_JOBS);
     let mut out: Vec<Option<PassOutput>> = Vec::with_capacity(passes.len());
     let mut queued = Ring::default();
@@ -80,6 +115,10 @@ pub(super) fn run(
     for k in 0..passes.len() {
         out.push(None);
         let Some(spec) = passes.spec(k) else { continue };
+        let into = passes.reserved(k).filter(|_| handed_out);
+        if handed_out && into.is_none() {
+            continue;
+        }
         let cfg = match passes.config(k, main) {
             Ok(Some(cfg)) => cfg,
             Ok(None) => continue,
@@ -94,7 +133,15 @@ pub(super) fn run(
             failed = Some(e);
             break;
         }
-        match dev.process_queued(input, cfg) {
+        let job = match into {
+            Some(b) => {
+                let mut outputs = [None; 2];
+                outputs[spec.output] = Some(b);
+                dev.process_queued_into(input, cfg, outputs)
+            }
+            None => dev.process_queued(input, cfg),
+        };
+        match job {
             Ok(job) => queued.push((k, spec, job)),
             Err(DeviceError::OutputsHeld(_)) => {}
             Err(e) => {
@@ -111,7 +158,8 @@ pub(super) fn run(
         }
     }
     if let Some(e) = failed {
-        for p in out.iter().flatten() {
+        // A handed-out frame's buffers are its leases'.
+        for p in out.iter().flatten().filter(|_| !handed_out) {
             dev.release_output(p.output, p.index);
         }
         return Err(e.into());

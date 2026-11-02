@@ -131,14 +131,16 @@ pub(super) struct Worker {
 
 /// Frame `f` as delivered: the main output's lease with its companions (the second output's,
 /// the extra passes'). Buffers not leased go back through `returns`. `None`: no main output.
+/// A sliced frame's leases follow `progress`: its outputs' (`.0`) and its passes' (`.1`).
 pub(super) fn frame_leases(
     p: &PispPipeline,
     f: &styx_pipeline::device::PispFrame,
     buffers: &mut Buffers,
     w: &Worker,
     returns: &super::pisp_lease::Returns,
-    progress: Option<std::sync::Arc<super::pisp_sliced::SliceState>>,
+    progress: Option<[std::sync::Arc<super::pisp_sliced::SliceState>; 2]>,
 ) -> Result<Option<FrameLease>, String> {
+    let [progress, pass_progress] = progress.map_or([None, None], |p| p.map(Some));
     let mut leaser = Leaser {
         p,
         f,
@@ -182,6 +184,7 @@ pub(super) fn frame_leases(
         }
     }
     let at = [0, 1].map(|i| w.specs[i].map(|s| placed(i, s)));
+    leaser.progress = pass_progress;
     let passes = match (at[0], failed.is_none()) {
         (Some(_), true) => w.regions.pass_companions(&mut leaser, f, at, &mut unleased),
         _ => {
@@ -226,6 +229,8 @@ pub(super) fn spawn(
             let mut held_drops = 0u64;
             let mut sliced: Option<super::pisp_sliced::SlicedOut> = None;
             let mut slice_states = super::pisp_sliced::SliceStates::default();
+            // A sliced frame's pass buffers, taken at its first slice (kept: no allocation).
+            let mut slice_passes = Vec::new();
             // Raw frames out with consumers (`NativeIspConfig::sensor_raw`): at most the
             // front end's extra buffers, so a slow raw consumer never starves the stream.
             let mut raw_out = 0u32;
@@ -280,7 +285,8 @@ pub(super) fn spawn(
                             orphans.extend(prev.fail(&mut p));
                         }
                         let room = raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
-                        match super::pisp_sliced::slice_leases(&p, &s, &mut buffers, &w, &ret_tx, room, &mut slice_states) {
+                        let mut slice = super::pisp_sliced::Slice { s: &s, raw_room: room, states: &mut slice_states, passes: &mut slice_passes };
+                        match super::pisp_sliced::slice_leases(&mut p, &mut slice, &mut buffers, &w, &ret_tx) {
                             Ok(Some((frame, out))) => {
                                 raw_out += u32::from(out.has_raw());
                                 sliced = Some(out);
@@ -358,12 +364,9 @@ pub(super) fn spawn(
                     if !raw_taken {
                         give_back_raw(&mut p);
                     }
-                    // Its passes ran after it went out: nobody gets their buffers, so they go
-                    // back now (kept, they drained the output until two frames in three
-                    // dropped: Raze, 2026-11-02).
-                    for pass in f.passes.iter().flatten() {
-                        p.release_output(pass.output, pass.index);
-                    }
+                    // Its passes wrote the buffers leased with it (`hand_out_passes`): they are
+                    // its leases' (a pass buffer left out drained the output until two frames
+                    // in three dropped: Raze, 2026-11-02).
                     continue;
                 }
                 if let Some(prev) = sliced.take() {

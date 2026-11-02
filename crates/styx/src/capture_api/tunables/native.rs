@@ -224,7 +224,9 @@ pub struct NativeIspConfig {
     pub slice_line: Option<u16>,
     /// With [`Self::slice_line`], hand each frame out at its first slice: its leases carry a
     /// `FrameLease::progress` saying how many rows are final, and complete on the same leases
-    /// (default `false`: frames are handed out complete).
+    /// (default `false`: frames are handed out complete). Its companions go out with it: the
+    /// second output's follow the frame's progress, the extra passes' (regions, pyramid levels
+    /// past 1) are written after the last slice and complete just before the frame.
     pub deliver_slices: bool,
     /// Threads of the software ISP (cameras without a PiSP). `None` (default): half the
     /// cores, at most 4 (2 on the CM5). More can hang a CM5 at 2.4 GHz within seconds (three

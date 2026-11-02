@@ -289,3 +289,20 @@ fn temporal_denoise_only_where_the_main_pass_updated_it() {
     assert!(!reads(&c));
     assert_eq!(c.tdn.reset, 1);
 }
+
+/// A frame handed out runs only its reserved passes, once; one that never came is forgotten
+/// at the next frame.
+#[test]
+fn a_handed_out_frame_runs_its_reserved_passes_once() {
+    let mut passes = PassConfigs::default();
+    assert!(!passes.handed_out(7));
+    passes.hand_out(7);
+    passes.reserve(2, 5);
+    assert!(passes.handed_out(7));
+    assert_eq!((passes.reserved(0), passes.reserved(2)), (None, Some(5)));
+    assert!(!passes.handed_out(7));
+    passes.hand_out(8);
+    assert_eq!(passes.reserved(2), None);
+    assert!(!passes.handed_out(9));
+    assert!(!passes.handed_out(10));
+}

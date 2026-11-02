@@ -70,6 +70,10 @@ pub struct PassConfigs {
     buffers: [Option<ImageFormatConfig>; 2],
     /// Full prepares of passes (the pass moved, or the main config was re-prepared).
     prepares: u64,
+    /// A frame handed out before its passes run ([`Self::hand_out`]).
+    handed_out: Option<u64>,
+    /// The buffer each slot's pass writes for that frame ([`Self::reserve`]), by slot.
+    reserved: Vec<Option<u32>>,
 }
 
 impl PassConfigs {
@@ -112,6 +116,35 @@ impl PassConfigs {
         for p in self.passes.iter_mut().flatten() {
             p.generation = u64::MAX;
         }
+    }
+
+    /// Frame `seq` goes out before its passes run (a sliced frame handed out at its first
+    /// slice): only the slots given a buffer ([`Self::reserve`]) run, into that buffer, since
+    /// only those passes' companions went out with it. One frame at a time: a later call
+    /// replaces it.
+    pub fn hand_out(&mut self, seq: u64) {
+        self.handed_out = Some(seq);
+        self.reserved.clear();
+    }
+
+    /// Slot `k`'s pass writes buffer `index` for the frame handed out.
+    pub fn reserve(&mut self, k: usize, index: u32) {
+        if self.reserved.len() <= k {
+            self.reserved.resize(k + 1, None);
+        }
+        self.reserved[k] = Some(index);
+    }
+
+    /// Whether frame `seq` was handed out ([`Self::reserved`] then says which passes run);
+    /// forgets the frame either way (frames come in order: it is this one or one that never
+    /// came).
+    pub fn handed_out(&mut self, seq: u64) -> bool {
+        self.handed_out.take() == Some(seq)
+    }
+
+    /// The buffer slot `k`'s pass writes for the frame handed out.
+    pub fn reserved(&self, k: usize) -> Option<u32> {
+        self.reserved.get(k).copied().flatten()
     }
 
     /// How many times a pass's tiles were prepared.

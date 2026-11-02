@@ -102,6 +102,9 @@ pub struct QueuedJob {
     start_mono: Duration,
     /// The frame's last job (its only one, unless split: [`BackEndStream::process_queued_part`]).
     last: bool,
+    /// Its outputs are the caller's ([`BackEndStream::process_queued_into`]): a failed job
+    /// leaves them with the caller.
+    given: bool,
 }
 
 struct Output {
@@ -469,6 +472,24 @@ impl BackEndStream {
         self.process_queued_part(input, cfg, None, true)
     }
 
+    /// Output `i`'s next free buffer, as a job would take it: the caller's, written by a job
+    /// it queues with [`Self::process_queued_into`], given back with [`Self::release_output`].
+    /// `None`: every buffer is out.
+    pub fn take_output(&mut self, i: usize) -> Option<u32> {
+        self.outputs.get_mut(i)?.as_mut()?.take()
+    }
+
+    /// As [`Self::process_queued`], writing `outputs` (from [`Self::take_output`]) instead of
+    /// taking buffers: they stay the caller's whether the job completes or fails.
+    pub fn process_queued_into(
+        &mut self,
+        input: u32,
+        cfg: &BeTilesConfig,
+        outputs: [Option<u32>; 2],
+    ) -> Result<QueuedJob> {
+        self.queue_part(input, cfg, Some(outputs), true, true)
+    }
+
     /// Queues one job of a frame split into several (`styx_pisp::be::split_tiles`): the first
     /// (`held: None`) takes output buffers and the temporal-denoise slots as a whole frame
     /// does; the next ones pass the outputs the first returned ([`BeJob::outputs`]) and write
@@ -481,6 +502,19 @@ impl BackEndStream {
         held: Option<[Option<u32>; 2]>,
         last: bool,
     ) -> Result<QueuedJob> {
+        self.queue_part(input, cfg, held, false, last)
+    }
+
+    /// `given`: `held` are the caller's, for a job of its own (never handed back here).
+    fn queue_part(
+        &mut self,
+        input: u32,
+        cfg: &BeTilesConfig,
+        held: Option<[Option<u32>; 2]>,
+        given: bool,
+        last: bool,
+    ) -> Result<QueuedJob> {
+        let give_back = |s: &mut Self, picked| (!given).then(|| s.give_back(picked));
         if !self.config.free() || self.input_slots.pick(input).is_none() {
             return Err(DeviceError::Setup(format!(
                 "{QUEUED_JOBS} back end jobs are already queued"
@@ -502,17 +536,17 @@ impl BackEndStream {
             {
                 // Every buffer is out and no spare is ready: the frame is dropped, not waited for.
                 let Some(b) = o.take() else {
-                    self.give_back(picked);
+                    give_back(self, picked);
                     return Err(DeviceError::OutputsHeld(i));
                 };
                 picked[i] = Some(b);
             }
         }
         if let Some(t) = &mut self.tdn
-            && let Err(e) = t.queue_part(cfg.config.global.bayer_enables, held.is_none())
+            && let Err(e) = t.queue_part(cfg.config.global.bayer_enables, held.is_none() || given)
         {
             t.abandon();
-            self.give_back(picked);
+            give_back(self, picked);
             return Err(e);
         }
         let queued = self.queue_job(input, picked, bytes.len() as u32);
@@ -522,9 +556,10 @@ impl BackEndStream {
                 start,
                 start_mono,
                 last,
+                given,
             }),
             Err(e) => {
-                self.give_back(picked);
+                give_back(self, picked);
                 Err(e)
             }
         }
@@ -544,7 +579,7 @@ impl BackEndStream {
                 Err(_) => t.abandon(),
             }
         }
-        if result.is_err() {
+        if result.is_err() && !job.given {
             // Whatever completed is unusable; hand the buffers back.
             self.give_back(job.outputs);
         }

@@ -611,6 +611,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- **A PiSP frame handed out at its first slice carries its extra passes' companions**
+  (`NativeIspConfig::deliver_slices`; `PispPipeline::hand_out_passes`,
+  `BackEndStream::take_output`/`process_queued_into`): the passes' buffers are taken at the
+  first slice and leased with the frame under a progress of their own, the passes write them
+  after the second slice, and they complete just before the frame does. A sliced `pyramid(3)`
+  request now gets levels 1-3 (it got level 1 only, the passes ran for nobody), and regions
+  come with sliced frames too. A pass with no free buffer at the slice does not run.
 - **PiSP back end output rows are 256-byte aligned** (`styx_pisp::device::OUTPUT_STRIDE_ALIGN`,
   `output_stride`): every output plane, so pyramid levels and extra passes too, asks the
   `pispbe` output nodes for a stride rounded up to 256 bytes, what GPU texture uploads take

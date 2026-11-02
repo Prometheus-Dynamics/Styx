@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use smallvec::SmallVec;
 use styx_core::buffer::FrameProgress;
 use styx_kernel::dma_heap::{self, Access};
-use styx_pipeline::device::{PispFrame, PispPipeline, PispSlice};
+use styx_pipeline::device::{PassOutput, PispFrame, PispPipeline, PispSlice};
 use styx_pisp::device::BeJob;
 
 use super::pisp_lease::{Buffers, RAW_OUTPUT, Returns};
@@ -29,9 +29,9 @@ pub(super) struct SliceState {
 /// handed out again, so a sliced frame allocates no state of its own.
 pub(super) struct SliceStates(Vec<Arc<SliceState>>);
 
-/// States kept: more than a sliced frame's two (its own, its raw frame's) times the frames
-/// a consumer holds.
-const KEEP_STATES: usize = 12;
+/// States kept: more than a sliced frame's three (its own, its passes', its raw frame's)
+/// times the frames a consumer holds.
+const KEEP_STATES: usize = 16;
 
 impl Default for SliceStates {
     fn default() -> Self {
@@ -75,12 +75,16 @@ pub(super) struct SlicedOut {
     /// Its raw frame leased with it (`NativeIspConfig::sensor_raw`): the progress of that
     /// lease, the front end buffer and the frame's height.
     raw: Option<(Arc<SliceState>, u32, u32)>,
+    /// Its extra passes' companions, written after it went out: their progress and (output,
+    /// buffer) each.
+    passes: (Arc<SliceState>, SmallVec<[(usize, u32); 4]>),
 }
 
 impl SlicedOut {
     /// Whether `(output, buffer)` is one of the frame's.
     pub(super) fn holds(&self, i: usize, index: u32) -> bool {
         self.buffers.contains(&Some((i, index)))
+            || self.passes.1.contains(&(i, index))
             || (i == RAW_OUTPUT && self.raw.as_ref().is_some_and(|r| r.1 == index))
     }
 
@@ -121,13 +125,11 @@ impl SlicedOut {
         p: &mut PispPipeline,
         frame_raw: Option<u32>,
     ) -> (bool, Option<u32>) {
-        if self.state.read.load(Ordering::Acquire) {
-            for &(i, index) in self.buffers.iter().flatten() {
-                if let Some((fd, true)) = buffers.fd(i, index) {
-                    let _ = dma_heap::sync(fd, Access::Read, true);
-                }
-            }
-        }
+        // The passes first: the frame's consumers read them once it is complete.
+        let (passes, pass_buffers) = &self.passes;
+        resync(buffers, passes, pass_buffers.iter().copied());
+        passes.progress.complete(self.heights);
+        resync(buffers, &self.state, self.buffers.iter().flatten().copied());
         self.state.progress.complete(self.heights);
         let raw_back = self.release(p);
         let Some((raw, index, height)) = self.raw.clone() else {
@@ -157,6 +159,7 @@ impl SlicedOut {
     /// buffer to ignore when it returns: the front end has that buffer back (the frame that
     /// would have held it never came).
     pub(super) fn fail(mut self, p: &mut PispPipeline) -> Option<u32> {
+        self.passes.0.progress.fail();
         self.state.progress.fail();
         if let Some((raw, ..)) = &self.raw {
             raw.progress.fail();
@@ -165,6 +168,18 @@ impl SlicedOut {
         match self.raw.as_ref().map(|r| raw_end(r.1, raw_back, None)) {
             Some(RawEnd::Orphan(orphan)) => orphan,
             _ => None,
+        }
+    }
+}
+
+/// Invalidates the caches of `outputs` (cached ones) again if a lease of `state` was read on
+/// the CPU before the back end finished writing them.
+fn resync(buffers: &Buffers, state: &SliceState, outputs: impl Iterator<Item = (usize, u32)>) {
+    if state.read.load(Ordering::Acquire) {
+        for (i, index) in outputs {
+            if let Some((fd, true)) = buffers.fd(i, index) {
+                let _ = dma_heap::sync(fd, Access::Read, true);
+            }
         }
     }
 }
@@ -195,6 +210,7 @@ impl Drop for SlicedOut {
     /// A frame dropped without [`SlicedOut::complete`] or [`SlicedOut::fail`] (a worker that
     /// ended) fails, so nothing waits for it; after either, this changes nothing.
     fn drop(&mut self) {
+        self.passes.0.progress.fail();
         self.state.progress.fail();
         if let Some((raw, ..)) = &self.raw {
             raw.progress.fail();
@@ -202,23 +218,35 @@ impl Drop for SlicedOut {
     }
 }
 
+/// A sliced frame's first slice, and what leasing it uses.
+pub(super) struct Slice<'a> {
+    pub(super) s: &'a PispSlice,
+    /// Room for its raw frame's lease (`NativeIspConfig::sensor_raw`).
+    pub(super) raw_room: bool,
+    pub(super) states: &'a mut SliceStates,
+    /// Its pass buffers (`PispPipeline::hand_out_passes`), kept from frame to frame.
+    pub(super) passes: &'a mut Vec<Option<PassOutput>>,
+}
+
 /// The leases of a sliced frame's first slice, and what completes them later. `None` when the
-/// frame's sensor values are unknown (the frame then just arrives whole).
+/// frame's sensor values are unknown, or it has no main output (the frame then just arrives
+/// whole). Its extra passes run after it goes out: their buffers are taken now and leased with
+/// it, complete before it.
 pub(super) fn slice_leases(
-    p: &PispPipeline,
-    s: &PispSlice,
+    p: &mut PispPipeline,
+    sl: &mut Slice<'_>,
     buffers: &mut Buffers,
     w: &Worker,
     returns: &Returns,
-    raw_room: bool,
-    states: &mut SliceStates,
 ) -> Result<Option<(FrameLease, SlicedOut)>, String> {
+    let s = sl.s;
     let Some(sensor) = p.frame_values(s.sequence) else {
         return Ok(None);
     };
+    p.hand_out_passes(s.sequence, sl.passes);
     // The frame as far as it is known: its timestamp (the start of frame), sensor values and
     // buffers; the back end's times come with the frame.
-    let f = PispFrame {
+    let mut f = PispFrame {
         sequence: s.sequence,
         timestamp: s.timestamp,
         dequeued: Instant::now(),
@@ -234,16 +262,32 @@ pub(super) fn slice_leases(
         flicker: 1.0,
         times: Default::default(),
         raw: None,
-        raw_image: s.raw_image.filter(|_| raw_room),
-        passes: Vec::new(),
+        raw_image: s.raw_image.filter(|_| sl.raw_room),
+        passes: std::mem::take(sl.passes),
     };
-    let state = states.take(s.rows);
-    let Some(lease) = frame_leases(p, &f, buffers, w, returns, Some(state.clone()))? else {
-        return Ok(None);
+    let state = sl.states.take(s.rows);
+    let pass_state = sl.states.take([0, 0]);
+    let progress = Some([state.clone(), pass_state.clone()]);
+    let leased = frame_leases(p, &f, buffers, w, returns, progress);
+    let pass_buffers = f
+        .passes
+        .iter()
+        .flatten()
+        .map(|x| (x.output, x.index))
+        .collect();
+    *sl.passes = std::mem::take(&mut f.passes);
+    // Not handed out (its pass buffers come back with their leases): its passes run as any
+    // whole frame's.
+    let lease = match leased {
+        Ok(Some(lease)) => lease,
+        other => {
+            p.keep_passes(s.sequence);
+            return other.map(|_| None);
+        }
     };
     // Its raw frame, still being written: leased now with a progress of its own, complete
     // with the frame (`SlicedOut::complete`).
-    let raw_state = states.take([0, 0]);
+    let raw_state = sl.states.take([0, 0]);
     let conversion = super::super::native_backend::native_conversion(w.clock);
     let raw = super::pisp_lease::raw_lease(
         p,
@@ -275,6 +319,7 @@ pub(super) fn slice_leases(
             heights,
             deferred: SmallVec::new(),
             raw,
+            passes: (pass_state, pass_buffers),
         },
     )))
 }

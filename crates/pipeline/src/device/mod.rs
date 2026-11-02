@@ -21,7 +21,9 @@ use crate::process::SensorControls;
 use styx_algo::{LensConfig, LensRequest, LensState, PdafZone, Pwl, SensorRequest, ZoneGrid};
 use styx_native::{CameraControls, FrameControls, NativeCamera, NativeError};
 
-pub use pisp::{PispFrame, PispPipeline, PispStartup, PispTimes, RAW_LEASE_BUFFERS, RawLayout};
+pub use pisp::{
+    PassOutput, PispFrame, PispPipeline, PispStartup, PispTimes, RAW_LEASE_BUFFERS, RawLayout,
+};
 pub use pisp_options::PispOptions;
 pub use pisp_slices::{PispEvent, PispSlice, SliceCounts};
 pub use rkisp::{RKISP_BUFFERS, RkispFrame, RkispPipeline, has_rkisp};
