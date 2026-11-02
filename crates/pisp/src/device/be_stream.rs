@@ -278,19 +278,16 @@ impl BackEndStream {
                 g.planes
             )));
         }
-        let input_slots = Slots::new(inputs.len() as u32, QUEUED_JOBS as u32);
-        let got = in_dev.request_buffers(
-            BufType::VideoOutputMplane,
-            Memory::DmaBuf,
-            input_slots.count(),
-        )?;
-        if got.count < input_slots.count() {
-            return Err(DeviceError::Setup(format!(
-                "pispbe-input gave {} of {} buffers",
-                got.count,
-                input_slots.count()
-            )));
-        }
+        // `inputs × QUEUED_JOBS` indices keep every attachment mapped; the node gives at most
+        // 32 (VIDEO_MAX_FRAME), and the slots fit what it gave down to QUEUED_JOBS.
+        let (own, jobs) = (inputs.len() as u32, QUEUED_JOBS as u32);
+        let got = in_dev.request_buffers(BufType::VideoOutputMplane, Memory::DmaBuf, own * jobs)?;
+        let input_slots = Slots::fit(own, jobs, got.count).ok_or_else(|| {
+            DeviceError::Setup(format!(
+                "pispbe-input gave {} buffers, under the {jobs} queued jobs",
+                got.count
+            ))
+        })?;
         let mut outs: [Option<Output>; 2] = [None, None];
         for (i, setup) in outputs.iter().enumerate() {
             let Some(o) = setup else { continue };

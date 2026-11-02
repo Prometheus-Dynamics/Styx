@@ -893,6 +893,11 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- PiSP back end: a camera whose input ring times `QUEUED_JOBS` came to more than 32 (V4L2's
+  `VIDEO_MAX_FRAME`) failed to start with "pispbe-input gave 32 of 40 buffers" when
+  `queue_safe` was loaded. The input slots now fit the indices the node grants: own indices
+  per buffer where they fit, plus spares shared by every buffer, down to `QUEUED_JOBS` in all.
+
 - **A client leaving the camera service gives the others their own capture back.** The
   capture stayed as planned for everyone, the departed client included, until the next join
   or frame-rate change. So a mode a larger client had moved the camera to (1280x800 for a
