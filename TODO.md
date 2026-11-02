@@ -162,20 +162,19 @@ memory when it runs.
       (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG (2). Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
       `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
-- [ ] **Software ISP: AVX-512 VBMI exact tone table: written, run under no AVX-512 host yet.**
+- [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**
       `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
       pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected
-      (`X86FeatureSet::avx512vbmi`, `SimdBackend::X86Avx512Vbmi`), and the AVX2 leaf still tested
-      there. *Why:* the fastest exact table on such hosts. *Done when:* `lut_every_code` and the
-      conformance tests pass on an AVX-512 VBMI CPU or under Intel SDE, and its time is in
-      PERFORMANCE.md. *Blocked by:* a run there: the dev PC is a Zen 3 and QEMU 10.2's TCG has no
-      AVX-512; Intel SDE needs the user's OK to download. CI's "AVX-512 VBMI tone leaf" step
-      runs `avx512vbmi_tone_leaf` on every push and prints the runner's CPU. It runs the leaf when
-      the CPU has VBMI (some hosted runners are Ice Lake or Zen 4) and prints "skipped: no
-      AVX-512 here" otherwise. Runs that exercised it: none yet; record the run id and CPU here
-      when one does. *Numbers:* none yet. Beside it: colour
-      matrix 1.1 ms and tone table 1.5 ms per frame on the A76's integer path; never measured on
-      a real Cortex-A72.
+      (`X86FeatureSet::avx512vbmi`, `SimdBackend::X86Avx512Vbmi`). *Why:* the fastest exact
+      table on such hosts. *Done when:* its time is in PERFORMANCE.md from a real AVX-512 VBMI
+      CPU. *Blocked by:* such a CPU (the dev PC is a Zen 3). CI's "AVX-512 VBMI tone leaf"
+      step runs `avx512vbmi_tone_leaf` on every push and prints "ran on AVX-512 VBMI" or
+      "skipped: no AVX-512 here"; record the run id and CPU here when one runs it.
+      *Numbers:* correctness, 2026-11-02, `scripts/check-sde.sh` under SDE 10.13.1 `-icx`:
+      `avx512vbmi_tone_leaf` ran the leaf, `lut_every_code` matched scalar on every code and
+      node shape, and all styx-softisp (46 lib, 27 it, 3 alloc) and styx-core (158) tests
+      passed. Beside it: colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76's
+      integer path; never measured on a real Cortex-A72.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
       *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device
