@@ -29,13 +29,23 @@ pub const CAP_FILTER5X5: &str = "styx.pisp.filter5x5";
 /// Bayer demosaic, then a 3x3 colour matrix with offsets ([`demosaic_ccm`]).
 pub const CAP_DEMOSAIC_CCM: &str = "styx.pisp.demosaic_ccm";
 
+/// 2x2 area halving on output 0, geometry exact, values within 1: the resampler as a box
+/// at a fixed 2.0 step
+/// ([`box2`]).
+pub const CAP_BOX2: &str = "styx.pisp.box2";
+/// Two pyramid levels in one job: [`box2`] on output 0 and a 4x area downscale on output 1,
+/// both from the input ([`pyramid2`]).
+pub const CAP_PYRAMID2: &str = "styx.pisp.pyramid2";
+
 /// Every capability this module configures.
-pub const CAPABILITIES: [&str; 5] = [
+pub const CAPABILITIES: [&str; 7] = [
     CAP_RESAMPLE,
     CAP_DOWNSCALE,
     CAP_LUT,
     CAP_FILTER5X5,
     CAP_DEMOSAIC_CCM,
+    CAP_BOX2,
+    CAP_PYRAMID2,
 ];
 
 /// A caller image's pixel layout (input and output alike).
@@ -90,6 +100,9 @@ pub struct BeOp {
     pub out: ImageFormatConfig,
     /// Its V4L2 pixel format.
     pub out_fourcc: [u8; 4],
+    /// A second image on output 1, in the same pixel format, when the op writes both outputs
+    /// (`output` is then 0).
+    pub out1: Option<ImageFormatConfig>,
 }
 
 impl BeOp {
@@ -102,6 +115,18 @@ impl BeOp {
             self.output,
             BeOutputFormatConfig {
                 image: out,
+                ..Default::default()
+            },
+        );
+    }
+
+    /// Sets the second output's format (with the stride its node chose) in the config.
+    pub fn set_out1_format(&mut self, out1: ImageFormatConfig) {
+        self.out1 = Some(out1);
+        self.backend.set_output_format(
+            1,
+            BeOutputFormatConfig {
+                image: out1,
                 ..Default::default()
             },
         );
@@ -182,6 +207,7 @@ fn passthrough(pixels: Pixels, size: (u16, u16), output: usize, out: (u16, u16))
         input_fourcc: pixels.fourcc(),
         out: image(out, pixels.pisp_format()),
         out_fourcc: pixels.fourcc(),
+        out1: None,
     };
     op.set_formats(op.input, op.out);
     op
@@ -222,7 +248,7 @@ pub fn resample(
 ///
 /// Exactness: an area mean over whole, non-overlapping blocks (`size` a multiple of
 /// `factor`); the division's rounding is the hardware's (owed a CM5 measurement against an
-/// area resize rounding half up). A pyramid is one job per level.
+/// area resize rounding half up). [`pyramid2`] writes two levels in one job.
 pub fn downscale(pixels: Pixels, size: (u16, u16), factor: u16) -> Result<BeOp, OpError> {
     check_size(size)?;
     if !(2..=8).contains(&factor)
@@ -408,10 +434,14 @@ pub fn demosaic_ccm(
         input_fourcc: bayer,
         out: image(size, formats::RGB888),
         out_fourcc: *b"RGB3",
+        out1: None,
     };
     op.set_formats(op.input, op.out);
     Ok(op)
 }
+
+mod pyramid;
+pub use pyramid::{BOX2, box2, pyramid2};
 
 #[cfg(test)]
 mod tests;

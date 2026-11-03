@@ -144,10 +144,13 @@ memory when it runs.
 - [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`:
       written, untested on board). *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs,
       5x5 filters and demosaic + CCM onto the BE memory to memory on its own dma-bufs. *Done when:*
-      each of `styx.pisp.{resample,downscale,lut,filter5x5,demosaic_ccm}` runs on the CM5 and its
-      exactness is measured: downscale and resample against the CPU references (max abs error),
-      the LUT against `LutFit`, the 5x5 and demosaic as tolerances; GREY in through the greyscale
-      Bayer path confirmed accepted by `pispbe-input`. *Blocked by:* a Raze slot. *Numbers:* none yet.
+      each of `styx.pisp.{resample,downscale,lut,filter5x5,demosaic_ccm,box2,pyramid2}` runs on
+      the CM5 and its exactness is measured: downscale, box2 and pyramid2 against
+      `(a+b+c+d+2)>>2` (which codes differ, if any, and whether the rounding truncates), resample
+      against the CPU reference (max abs error), the LUT against `LutFit`, the 5x5 and demosaic
+      as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
+      `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
+      downscaler after all (libpisp says output 1 only). *Blocked by:* a Raze slot. *Numbers:* none yet.
 - [ ] **pispbe patch: carried** (user decision: we keep carrying it; the drafts in
       `kernel-modules/pispbe/README.md` stay unsent, nothing gets filed). *Why:* it takes the config
       write from 117 to 8 µs per job and makes queued jobs safe; the stock driver overwrites a held

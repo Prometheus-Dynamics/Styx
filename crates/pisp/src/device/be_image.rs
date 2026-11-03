@@ -1,5 +1,5 @@
 //! One `pispbe` node group running [`crate::be::ops`] jobs on the caller's dma-bufs: an
-//! image in, one output, the config fixed at open. Written from the driver's node API as
+//! image in, one output or both, the config fixed at open. Written from the driver's node API as
 //! [`super::BackEndStream`] drives it; untested on the board.
 
 use std::os::fd::BorrowedFd;
@@ -18,11 +18,13 @@ use crate::be::ops::BeOp;
 use crate::format::formats;
 use crate::uapi::{BeTilesConfig, ImageFormatConfig};
 
-/// A node group set up for one op: the input and output import the caller's dma-bufs.
+/// A node group set up for one op: the input and outputs import the caller's dma-bufs.
 pub struct BeImageDevice {
     _media: MediaDevice,
     input: MmapQueue,
     output: MmapQueue,
+    /// Output 1 of an op writing both ([`BeOp::out1`]), and its size.
+    output1: Option<(MmapQueue, u32)>,
     config: Queue,
     cfg_len: u32,
     input_len: u32,
@@ -73,7 +75,7 @@ impl BeImageDevice {
     /// Opens node group `group` (0 or 1) for `op`: sets its formats on the nodes, writes the
     /// strides they chose into `op`, prepares the config and starts streaming. The input and
     /// output dma-bufs given to [`Self::run`] must hold [`Self::input_len`] and
-    /// [`Self::output_len`] bytes.
+    /// [`Self::output_len`] bytes; an op writing both outputs runs with [`Self::run2`].
     pub fn open(group: usize, op: &mut BeOp) -> Result<Self> {
         let path = find_media("pispbe")
             .into_iter()
@@ -103,6 +105,19 @@ impl BeImageDevice {
             out_name,
         )?;
         op.set_formats(input, out);
+        let mut output1 = None;
+        if let Some(out1) = op.out1 {
+            let dev = node(&t, "pispbe-output1")?;
+            let (out1, len) = negotiate(
+                &dev,
+                BufType::VideoCaptureMplane,
+                out1,
+                op.out_fourcc,
+                "pispbe-output1",
+            )?;
+            op.set_out1_format(out1);
+            output1 = Some((dev, len));
+        }
         let cfg = op
             .backend
             .prepare()
@@ -124,6 +139,14 @@ impl BeImageDevice {
                 .with_timer(timer),
             output: MmapQueue::importing(out_dev, BufType::VideoCaptureMplane, 1, out_name)?
                 .with_timer(timer),
+            output1: match output1 {
+                Some((dev, len)) => Some((
+                    MmapQueue::importing(dev, BufType::VideoCaptureMplane, 1, "pispbe-output1")?
+                        .with_timer(timer),
+                    len,
+                )),
+                None => None,
+            },
             cfg_len: bytes.len() as u32,
             config,
             input_len,
@@ -132,6 +155,9 @@ impl BeImageDevice {
         };
         s.input.stream_on()?;
         s.output.stream_on()?;
+        if let Some((q, _)) = &s.output1 {
+            q.stream_on()?;
+        }
         s.config.stream_on()?;
         Ok(s)
     }
@@ -146,12 +172,49 @@ impl BeImageDevice {
         self.output_len
     }
 
+    /// The bytes an output 1 dma-buf must hold, for an op writing both outputs.
+    pub fn output1_len(&self) -> Option<u32> {
+        self.output1.as_ref().map(|(_, len)| *len)
+    }
+
     /// Runs the op once: `input` read, `output` written (both dma-bufs, imported per job,
     /// nothing copied or allocated). Returns the time from queueing the job to its output.
     pub fn run(
         &mut self,
         input: BorrowedFd<'_>,
         output: BorrowedFd<'_>,
+        timeout: Duration,
+    ) -> Result<Duration> {
+        if self.output1.is_some() {
+            return Err(DeviceError::Setup(
+                "the op writes both outputs: use run2".into(),
+            ));
+        }
+        self.run_job(input, output, None, timeout)
+    }
+
+    /// [`Self::run`] for an op writing both outputs: `output` gets output 0, `output1`
+    /// output 1, from the one job.
+    pub fn run2(
+        &mut self,
+        input: BorrowedFd<'_>,
+        output: BorrowedFd<'_>,
+        output1: BorrowedFd<'_>,
+        timeout: Duration,
+    ) -> Result<Duration> {
+        if self.output1.is_none() {
+            return Err(DeviceError::Setup(
+                "the op writes one output: use run".into(),
+            ));
+        }
+        self.run_job(input, output, Some(output1), timeout)
+    }
+
+    fn run_job(
+        &mut self,
+        input: BorrowedFd<'_>,
+        output: BorrowedFd<'_>,
+        output1: Option<BorrowedFd<'_>>,
         timeout: Duration,
     ) -> Result<Duration> {
         let plane = |fd, len, used| {
@@ -165,6 +228,11 @@ impl BeImageDevice {
         let mut q = QueueBuffer::dmabuf(BufType::VideoCaptureMplane, 0, &[output]);
         q.planes = plane(output, self.output_len, 0);
         self.output.dev.queue(&q)?;
+        if let (Some(fd), Some((queue, len))) = (output1, &self.output1) {
+            let mut q = QueueBuffer::dmabuf(BufType::VideoCaptureMplane, 0, &[fd]);
+            q.planes = plane(fd, *len, 0);
+            queue.dev.queue(&q)?;
+        }
         let mut q = QueueBuffer::dmabuf(BufType::VideoOutputMplane, 0, &[input]);
         q.planes = plane(input, self.input_len, self.input_len);
         self.input.dev.queue(&q)?;
@@ -174,11 +242,23 @@ impl BeImageDevice {
             .output
             .dequeue_within(timeout)?
             .ok_or(DeviceError::Timeout(self.output.name));
+        let done1 = match &mut self.output1 {
+            Some((q, _)) => Some(match q.dequeue_within(timeout) {
+                Ok(d) => d.ok_or(DeviceError::Timeout(q.name)),
+                Err(e) => Err(e.into()),
+            }),
+            None => None,
+        };
         let elapsed = start.elapsed();
-        // Take the input and config back whatever the output did, so the next run can queue.
+        // Take the input and config back whatever the outputs did, so the next run can queue.
         let a = self.input.dequeue_within(timeout);
         let b = self.config.dequeue(timeout);
         let done = done?;
+        if let Some(d) = done1
+            && d?.flags.contains(BufferFlags::ERROR)
+        {
+            return Err(DeviceError::Setup("pispbe returned an error buffer".into()));
+        }
         a?.ok_or(DeviceError::Timeout(self.input.name))?;
         b?;
         if done.flags.contains(BufferFlags::ERROR) {
@@ -192,6 +272,9 @@ impl BeImageDevice {
         let a = self.config.close();
         let b = self.input.close();
         let c = self.output.close();
-        a.and(b.map_err(Into::into)).and(c.map_err(Into::into))
+        let d = self.output1.map_or(Ok(()), |(q, _)| q.close());
+        a.and(b.map_err(Into::into))
+            .and(c.map_err(Into::into))
+            .and(d.map_err(Into::into))
     }
 }

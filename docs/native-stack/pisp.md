@@ -173,7 +173,8 @@ only the words that differ (enables, crops, formats, TDN) are written. See
   input's format that swap every job, queued whenever the job's config enables
   `TDN_OUTPUT`/`TDN_INPUT`), and
   `profile`, optional timing of every device call.
-- `be::ops`: memory-to-memory image ops for other libraries (resample, area downscale, tone LUT
+- `be::ops`: memory-to-memory image ops for other libraries (resample, area downscale, a 2x2
+  halving with exact geometry and two pyramid levels per job (`box2`, `pyramid2`), tone LUT
   through the gamma block, a 5x5 sharpen kernel, demosaic + CCM with offsets), each a `BeOp`
   with a capability name and what its configuration makes exact; `device::BeImageDevice` runs
   one on the caller's dma-bufs. Grey goes in through the greyscale Bayer path with RGB to YCbCr

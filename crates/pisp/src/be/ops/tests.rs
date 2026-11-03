@@ -140,3 +140,58 @@ fn demosaic_ccm_sets_matrix_and_offsets() {
         OpError::NotColour
     );
 }
+
+#[test]
+fn box2_steps_exactly_two_on_phase_0() {
+    for p in PIXELS {
+        let mut op = box2(p, (1280, 800)).unwrap();
+        let tiles = op.backend.prepare().expect("prepare");
+        let c = op.backend.config();
+        assert_ne!(c.global.rgb_enables & rgb_enable::RESAMPLE0, 0);
+        assert_eq!(
+            (c.resample[0].scale_factor_h, c.resample[0].scale_factor_v),
+            (2 << 12, 2 << 12)
+        );
+        assert_eq!(c.resample[0].coef, BOX2);
+        assert_eq!(op.out.width, 640);
+        // Luma's phase in every tile: whole pixels, so tap 2 is the block's first pixel.
+        for t in &tiles.tiles[..tiles.num_tiles as usize] {
+            assert_eq!(t.resample_phase_x[0] % (1 << 12), 0, "{p:?}");
+            assert_eq!(t.resample_phase_y[0] % (1 << 12), 0, "{p:?}");
+        }
+    }
+    // The taps sum to unity and put weight on the pixel and the next one only.
+    for phase in BOX2.chunks(6) {
+        assert_eq!(phase, [0, 0, 512, 512, 0, 0]);
+    }
+    assert_eq!(
+        box2(Pixels::Grey8, (33, 32)).unwrap_err(),
+        OpError::Factor(2)
+    );
+}
+
+#[test]
+fn pyramid2_writes_both_levels() {
+    for p in PIXELS {
+        let mut op = pyramid2(p, (1280, 800)).unwrap();
+        let en = prepares(&mut op);
+        assert_eq!(op.output, 0);
+        for bit in [
+            rgb_enable::RESAMPLE0,
+            rgb_enable::OUTPUT0,
+            rgb_enable::downscale(1),
+            rgb_enable::OUTPUT1,
+        ] {
+            assert_ne!(en & bit, 0, "{p:?} {bit:#x}");
+        }
+        assert_eq!(en & rgb_enable::resample(1), 0);
+        let c = op.backend.config();
+        assert_eq!(c.downscale[1].scale_factor_h, 4 << 12);
+        assert_eq!(c.output_format[1].image.width, 320);
+        assert_eq!(op.out1.map(|o| (o.width, o.height)), Some((320, 200)));
+    }
+    assert_eq!(
+        pyramid2(Pixels::Grey8, (36, 34)).unwrap_err(),
+        OpError::Factor(4)
+    );
+}

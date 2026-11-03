@@ -30,6 +30,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   fixed QP, keyframe interval, I420, NV12 or grey in, Annex B out; the deblocking filter is off
   so the reconstruction (the reference) is what a decoder holds, and FFmpeg's decode matches it
   bit for bit in the tests. CAVLC tables ported from OpenH264 (BSD-2-Clause).
+- `styx_pisp::be::ops::{box2, pyramid2}` (`styx.pisp.box2`, `styx.pisp.pyramid2`): 2x2 area
+  halving through the resampler at a fixed 2.0 step (`BackEnd::set_resample_step`), and two
+  pyramid levels from one job (the halving on output 0, a 4x area downscale on output 1);
+  `BeOp::out1` and `BeImageDevice::run2`. Written, untested on board.
 - `styx_pisp::be::ops`: the PiSP back end as memory-to-memory image ops for a caller's images,
   each a `BeOp` with its capability name and an exactness statement: `resample` (caller's
   16-phase 6-tap coefficients, `styx.pisp.resample`), `downscale` (area mean by 2–8 on output 1,

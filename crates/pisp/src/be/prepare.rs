@@ -278,8 +278,13 @@ impl BackEnd {
                 if sw < 2 || sh < 2 {
                     return fail("resampler output size too small");
                 }
-                let fh = ((w - 1) << SCALE_PRECISION) / (sw - 1);
-                let fv = ((h - 1) << SCALE_PRECISION) / (sh - 1);
+                let (fh, fv) = self.resample_step[i].map_or(
+                    (
+                        ((w - 1) << SCALE_PRECISION) / (sw - 1),
+                        ((h - 1) << SCALE_PRECISION) / (sh - 1),
+                    ),
+                    |(h, v)| (u32::from(h), u32::from(v)),
+                );
                 let ok = |s: u32| (UNITY_SCALE / 16..16 * UNITY_SCALE).contains(&s);
                 if !ok(fh) || !ok(fv) {
                     return fail("resample factors must be under 16x either way");

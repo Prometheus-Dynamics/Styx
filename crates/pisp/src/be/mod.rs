@@ -48,6 +48,8 @@ pub struct BackEnd {
     downscale_extra: [BeDownscaleExtra; BE_NUM_OUTPUTS],
     resample_extra: [BeResampleExtra; BE_NUM_OUTPUTS],
     smart_resize: [(u16, u16); BE_NUM_OUTPUTS],
+    /// Fixed resampler steps (4.12) in place of the corner-aligned ones.
+    resample_step: [Option<(u16, u16)>; BE_NUM_OUTPUTS],
     lsc_extra: BeLscExtra,
     max_tile_width: u16,
     max_stripe_height: u16,
@@ -81,6 +83,7 @@ impl BackEnd {
             downscale_extra: Default::default(),
             resample_extra: Default::default(),
             smart_resize: Default::default(),
+            resample_step: Default::default(),
             lsc_extra: BeLscExtra::default(),
             max_tile_width: MAX_TILE_WIDTH,
             max_stripe_height: MAX_STRIPE_HEIGHT,
@@ -320,6 +323,13 @@ impl BackEnd {
     /// Output `i` resampler target size and phases.
     pub fn set_resample(&mut self, i: usize, e: BeResampleExtra) {
         self.resample_extra[i] = e;
+    }
+
+    /// Fixes output `i`'s resampler step (4.12, horizontal and vertical) instead of the
+    /// corner-aligned `(in - 1) / (out - 1)`: `Some((2 << 12, 2 << 12))` puts output pixel
+    /// `x` at input `2x` exactly, every pixel on phase 0. `None` goes back to corner-aligned.
+    pub fn set_resample_step(&mut self, i: usize, step: Option<(u16, u16)>) {
+        self.resample_step[i] = step;
     }
 
     /// Limits the tile width (for testing tiling; at most [`MAX_TILE_WIDTH`]).
