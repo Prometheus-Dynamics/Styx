@@ -1953,12 +1953,12 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 [[package]]
 name = "daedalus-accel"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 
 [[package]]
 name = "daedalus-core"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "crossbeam-queue",
  "portable-atomic",
@@ -1971,7 +1971,7 @@ dependencies = [
 [[package]]
 name = "daedalus-data"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-kernels",
  "hashbrown 0.17.1",
@@ -1987,7 +1987,7 @@ dependencies = [
 [[package]]
 name = "daedalus-engine"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-core",
  "daedalus-data",
@@ -2008,7 +2008,7 @@ dependencies = [
 [[package]]
 name = "daedalus-gpu"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "ash",
  "bitflags 2.13.2",
@@ -2028,7 +2028,7 @@ dependencies = [
 [[package]]
 name = "daedalus-kernels"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-accel",
 ]
@@ -2036,7 +2036,7 @@ dependencies = [
 [[package]]
 name = "daedalus-macros"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-wgsl-infer",
  "proc-macro-crate 3.5.0",
@@ -2048,7 +2048,7 @@ dependencies = [
 [[package]]
 name = "daedalus-nodes"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-core",
  "daedalus-data",
@@ -2063,7 +2063,7 @@ dependencies = [
 [[package]]
 name = "daedalus-planner"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-core",
  "daedalus-data",
@@ -2083,7 +2083,7 @@ dependencies = [
 [[package]]
 name = "daedalus-registry"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-core",
  "daedalus-data",
@@ -2097,7 +2097,7 @@ dependencies = [
 [[package]]
 name = "daedalus-rga"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "lemnos-linux",
  "libc",
@@ -2106,7 +2106,7 @@ dependencies = [
 [[package]]
 name = "daedalus-rs"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-core",
  "daedalus-data",
@@ -2123,7 +2123,7 @@ dependencies = [
 [[package]]
 name = "daedalus-runtime"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "crossbeam-queue",
  "daedalus-core",
@@ -2148,7 +2148,7 @@ dependencies = [
 [[package]]
 name = "daedalus-transport"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 dependencies = [
  "daedalus-core",
  "hashbrown 0.17.1",
@@ -2162,7 +2162,7 @@ dependencies = [
 [[package]]
 name = "daedalus-wgsl-infer"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#3cd23687172d6ad62698168279d41f31a281e10a"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#5a1404c3eba32d25e9761ce8a3b03931e3a8d892"
 
 [[package]]
 name = "darling"
@@ -2439,7 +2439,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4617,7 +4617,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4892,7 +4892,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4949,7 +4949,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5812,7 +5812,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6885,7 +6885,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
