@@ -700,6 +700,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The GPU ISP (feature `gpu-isp`) is off by default on devices measured slower than the
+  software ISP on the CPU: V3D (Raspberry Pi 5 / CM5), 28 fps against the CPU's 60 at 1280x800.
+  `STYX_GPU_ISP=1` takes it there; `STYX_GPU_ISP=0` still keeps it off everywhere.
 - `styx_kernel::v4l2::M2mSession` runs on Lemnos's memory-to-memory session (Lemnos c546b44,
   `lemnos-linux` feature `v4l2-m2m`); same API. The source format is now set before the
   destination's (the stateful order), and `device()` is a duplicate of the session's file.

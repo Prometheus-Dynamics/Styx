@@ -28,7 +28,8 @@ user lifts them.
       FPS FRAMES --soft-isp`). *Why:* an estimate is all we have (`crates/gpuisp/README.md` and
       docs/native-stack/pipeline.md say so). *Done when:* ms per 1280x800 frame and CPU measured
       there and written into both. *Blocked by:* nothing: measured, now
-      the shader's 35 ms needs profiling (or the GPU ISP stays off on the CM5). *Numbers:*
+      the shader's 35 ms needs profiling, after the other alpha items; the GPU ISP is off by
+      default on V3D meanwhile (`STYX_GPU_ISP=1` takes it). *Numbers:*
       2026-11-02, live 1280x800 at 60 asked: 28.3 fps (~35 ms GPU), latency 133 ms, CPU 1.97 ms
       a frame; CPU software ISP 59.98 fps, 12.3 ms, 9.5 ms CPU. Estimated 4-8 ms GPU against
       2.6-3.0 ms fp16 NEON. `styx-wgpu`'s pyramid on the same
