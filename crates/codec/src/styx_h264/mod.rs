@@ -1,7 +1,7 @@
 //! Styx's own H.264 encoder (pure Rust): Constrained Baseline, CAVLC, one slice and one
 //! reference frame, the deblocking filter off. I frames are Intra16x16 (vertical,
 //! horizontal or DC by SAD) with DC chroma; P frames add P_Skip and P_L0_16x16 with a
-//! whole-pel diamond motion search. A fixed QP, or a QP per picture from a bitrate target
+//! whole-pel diamond motion search refined to quarter pels ([`StyxH264::set_subpel`]). A fixed QP, or a QP per picture from a bitrate target
 //! ([`StyxH264::set_rate`]).
 //!
 //! The decoder's reconstruction is kept bit for bit (no deblocking, so reference pictures are
@@ -16,6 +16,7 @@ mod headers;
 mod mb;
 mod picture;
 mod rate;
+mod subpel;
 mod tables;
 #[cfg(test)]
 mod tests;
@@ -136,6 +137,9 @@ pub struct StyxH264 {
     cur: Picture,
     reference: Picture,
     motion: Vec<Motion>,
+    /// The reference's half-pel planes, and whether vectors are refined to quarter pels.
+    half: subpel::HalfPel,
+    subpel: bool,
     /// Whole-pel search starts per macroblock from a motion search elsewhere (the GPU's),
     /// empty without one.
     hints: Vec<[i32; 2]>,
@@ -181,6 +185,8 @@ impl StyxH264 {
             cur: Picture::default(),
             reference: Picture::default(),
             motion: Vec::new(),
+            half: subpel::HalfPel::default(),
+            subpel: true,
             hints: Vec::new(),
             counts: Counts::default(),
             code: Box::default(),
@@ -202,6 +208,12 @@ impl StyxH264 {
     pub fn set_rate(&mut self, target: Option<RateTarget>) {
         self.rate = target.map(RateControl::new);
         self.qp = self.base_qp;
+    }
+
+    /// Whether motion vectors are refined from whole to half and quarter pels (on by
+    /// default; off codes whole-pel vectors only, faster and larger).
+    pub fn set_subpel(&mut self, on: bool) {
+        self.subpel = on;
     }
 
     /// The bitrate held, if any.
@@ -278,6 +290,9 @@ impl StyxH264 {
         self.bits.clear();
         let idr_id = idr.then_some(self.idr_id);
         headers::slice_header(&mut self.bits, idr_id, self.frame_num, self.qp);
+        if !idr && self.subpel {
+            self.half.build(&self.reference.y);
+        }
         self.code_picture(idr);
         self.bits.trailing();
         nal(
@@ -503,6 +518,41 @@ impl StyxH264 {
         ([best.0[0] * 4, best.0[1] * 4], best.1)
     }
 
+    /// Refines the whole-pel `best` (the block inside the reference) to the half pel, then
+    /// the quarter pel, around it with the least SAD and vector cost.
+    fn refine(
+        &self,
+        (mbx, mby): (usize, usize),
+        mut best: ([i32; 2], u32),
+        mvp: [i32; 2],
+        lambda: u32,
+    ) -> ([i32; 2], u32) {
+        let xy = (mbx * 16, mby * 16);
+        let mut pred = [0u8; 256];
+        for step in [2, 1] {
+            let centre = best.0;
+            for d in [
+                [-1, -1],
+                [0, -1],
+                [1, -1],
+                [-1, 0],
+                [1, 0],
+                [-1, 1],
+                [0, 1],
+                [1, 1],
+            ] {
+                let mv = [centre[0] + step * d[0], centre[1] + step * d[1]];
+                self.half.predict(&self.reference.y, xy, mv, &mut pred);
+                let cost = picture::sad16(&self.src.y, xy, &pred)
+                    + lambda * (se_bits(mv[0] - mvp[0]) + se_bits(mv[1] - mvp[1]));
+                if cost < best.1 {
+                    best = (mv, cost);
+                }
+            }
+        }
+        best
+    }
+
     /// Codes `self.code` as an inter macroblock predicted at `mv`; leaves the predictions in
     /// `pred`.
     fn code_inter(
@@ -512,7 +562,11 @@ impl StyxH264 {
         pred: &mut ([u8; 256], [u8; 64], [u8; 64]),
     ) {
         let (xy, cxy) = ((at.0 * 16, at.1 * 16), (at.0 * 8, at.1 * 8));
-        picture::luma_mc(&self.reference.y, xy, mv, &mut pred.0);
+        if mv[0] % 4 == 0 && mv[1] % 4 == 0 {
+            picture::luma_mc(&self.reference.y, xy, mv, &mut pred.0);
+        } else {
+            self.half.predict(&self.reference.y, xy, mv, &mut pred.0);
+        }
         picture::chroma_mc(&self.reference.u, cxy, mv, &mut pred.1);
         picture::chroma_mc(&self.reference.v, cxy, mv, &mut pred.2);
         let (qp, qpc) = (self.qp, self.chroma_qp());
@@ -538,7 +592,10 @@ impl StyxH264 {
         let mv = if skip {
             skip_mv
         } else {
-            let (mv, cost) = self.search(at, mvp, lambda);
+            let (mut mv, mut cost) = self.search(at, mvp, lambda);
+            if self.subpel {
+                (mv, cost) = self.refine(at, (mv, cost), mvp, lambda);
+            }
             let mut ipred = [0u8; 256];
             let (_, intra) = self.best_intra16(at, &mut ipred);
             if intra.saturating_add(8 * lambda) < cost {

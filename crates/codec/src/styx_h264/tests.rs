@@ -332,3 +332,82 @@ fn rate_control_holds_the_target() {
         }
     }
 }
+
+/// The half-pel planes' predictions against the per-sample definition, for every fraction,
+/// inside the picture, at its edges and past the padding.
+#[test]
+fn quarter_pel_prediction_matches_the_standard() {
+    let (w, h) = (48, 32);
+    let mut rf = Picture::new((w / 16, h / 16)).y;
+    let (y, _, _) = scene(w, h, 5);
+    rf.fill(&y, w, 1, (w, h));
+    let mut half = subpel::HalfPel::default();
+    half.build(&rf);
+    let mut out = [0u8; 256];
+    for (x, y) in [(16, 16), (0, 0), (32, 16)] {
+        for mvx in (-60..-52).chain(-6..6).chain(52..60) {
+            for mvy in [-50, -9, -5, -2, -1, 0, 1, 2, 3, 6, 7, 41] {
+                half.predict(&rf, (x, y), [mvx, mvy], &mut out);
+                let (sx, sy) = (
+                    x as isize + (mvx >> 2) as isize,
+                    y as isize + (mvy >> 2) as isize,
+                );
+                for (i, &o) in out.iter().enumerate() {
+                    let (c, r) = ((i % 16) as isize, (i / 16) as isize);
+                    let want =
+                        subpel::sample(&rf, sx + c, sy + r, (mvx & 3) as usize, (mvy & 3) as usize);
+                    assert_eq!(o, want, "block ({x}, {y}) mv [{mvx}, {mvy}] at {c},{r}");
+                }
+            }
+        }
+    }
+}
+
+/// Half-pel motion (a scene made at twice the size, moved a pixel a picture and halved):
+/// quarter-pel refinement codes it smaller than whole-pel vectors, and both decode to the
+/// reconstruction.
+#[test]
+fn subpel_motion_is_smaller_and_decodes() {
+    let (w, h) = (96, 64);
+    let frames = 8;
+    let pictures: Vec<_> = (0..frames)
+        .map(|f| {
+            let (big, _, _) = scene(2 * w, 2 * h, f);
+            let y: Vec<u8> = (0..w * h)
+                .map(|i| {
+                    let (x, r) = (2 * (i % w), 2 * (i / w));
+                    let s = |dx: usize, dy: usize| u32::from(big[(r + dy) * 2 * w + x + dx]);
+                    ((s(0, 0) + s(1, 0) + s(0, 1) + s(1, 1) + 2) >> 2) as u8
+                })
+                .collect();
+            y
+        })
+        .collect();
+    let mut sizes = Vec::new();
+    for on in [false, true] {
+        let mut enc = StyxH264::new(26, 100);
+        enc.set_subpel(on);
+        let (mut stream, mut recon, mut out) = (Vec::new(), Vec::new(), Vec::new());
+        for y in &pictures {
+            let input = StyxH264Input::Gray {
+                y,
+                width: w,
+                height: h,
+                stride: w,
+            };
+            enc.encode(&input, &mut out).unwrap();
+            stream.extend_from_slice(&out);
+            let r = &enc.reference;
+            recon.extend(plane_rows(&r.y, (w, h)));
+            recon.extend(plane_rows(&r.u, (w / 2, h / 2)));
+            recon.extend(plane_rows(&r.v, (w / 2, h / 2)));
+        }
+        if let Some(decoded) = ffmpeg_decode(&stream) {
+            assert_eq!(decoded, recon, "subpel {on}");
+        }
+        let fractional = enc.motion.iter().filter(|m| m.mv[0] % 4 != 0).count();
+        assert_eq!(fractional > 0, on, "{fractional} fractional vectors");
+        sizes.push(stream.len());
+    }
+    assert!(sizes[1] < sizes[0], "{sizes:?}");
+}

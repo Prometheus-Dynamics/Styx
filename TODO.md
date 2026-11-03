@@ -177,16 +177,6 @@ memory when it runs.
       (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG decode. Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
       `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
-- [ ] **Styx's own H.264 encoder: sub-pel search** (`styx_codec::styx_h264`,
-      decodes bit for bit to its reconstruction under FFmpeg). *Why:* the H.264 cells on
-      RVV and the GPU are gaps with no library to lean on. *Done when:* (done: the RVV leaves in
-      `styx_core::simd::h264`, the GPU's motion search `GpuStyxH264`, `StyxH264Encoder`
-      registered for I420/YU12/NV12/GREY/R8 in builds without `codec-ffmpeg`, and picture-level
-      rate control, `set_rate`: 150 and 600 kb/s targets held to +0.3 % and +0.2 % over 300
-      noisy 176x144 pictures) half/quarter-pel motion cuts bytes on sub-pixel motion. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
-      the dev PC (Zen 3, load ~34–59 from other sessions): scalar I 21.9 ms, P 26.0 ms a picture; on the
-      `simd::h264` kernels I 16.3 ms, P 17.3 ms; with neighbours' vectors as search starts
-      12.8 ms a picture and 10x fewer bytes on 11 px/picture of motion.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**
       `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
       pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected
@@ -420,6 +410,14 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
 Numbers are as of the commit named.
 
 ### Since the last audit
+- [x] **Styx's own H.264 encoder** (d7807c0 encoder, 7c0d27e RVV leaves, 83a383d GPU search,
+      d6c9686 `StyxH264Encoder` registered without `codec-ffmpeg`, 49a990b rate control, this
+      commit quarter-pel motion): Baseline CAVLC, decoding bit for bit to its reconstruction
+      under FFmpeg. 1280x720 QP 26, dev PC under load ~45: textured scene moving 0.5 / 1.25 / 3
+      px a picture, P bytes 30796 → 5799, 38024 → 7165, 25736 → 9459 with quarter pels (time
+      within noise of whole-pel at that load); a static-noise scene with a moving square, 700 →
+      767 bytes (+10 %), `set_subpel(false)` keeps whole pels. Rate control: 150 and 600 kb/s
+      held to +0.3 % and +0.2 % over 300 noisy 176x144 pictures.
 - [x] **UVC bulk: a whole frame in one transfer keeps its buffer** (475e07a): the URB's buffer becomes
       the frame, the URB goes back with an empty pool buffer. Written, untested on a camera (open
       above). `UvcFrame::data` is now `FrameData`.

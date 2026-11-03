@@ -8,6 +8,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_codec::styx_h264`: quarter-pel motion (half-pel planes of the reference made once a
+  picture, vectors refined half then quarter pel); `StyxH264::set_subpel(false)` keeps whole pels.
 - `styx_codec::styx_h264::RateTarget`, `StyxH264::set_rate` and `StyxH264Encoder::set_rate`:
   picture-level rate control (a QP per picture from each type's last bits × quantiser step,
   correcting an eighth of the running excess per picture).
