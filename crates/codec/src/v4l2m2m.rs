@@ -497,7 +497,9 @@ impl Codec for V4l2M2mEncoder {
         stream.run(input, self.options.timeout, |session, frame, meta| {
             let data = session.data(frame, 0);
             let mut buf = pool.lease();
-            buf.replace_owned(data.to_vec());
+            // Into the pool's buffer: no allocation once it has grown to a packet's size.
+            buf.resize(data.len());
+            buf.as_mut_slice()[..data.len()].copy_from_slice(data);
             let mut packet = FrameLease::single_plane(
                 FrameMeta::new(
                     MediaFormat::new(output, meta.format.resolution, meta.format.color),
