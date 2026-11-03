@@ -86,7 +86,11 @@ impl RateControl {
     pub(super) fn coded(&mut self, idr: bool, qp: u8, bits: usize) {
         let bits = bits as f64;
         self.excess += bits - self.per_picture();
-        let kind = if idr { &mut self.intra } else { &mut self.inter };
+        let kind = if idr {
+            &mut self.intra
+        } else {
+            &mut self.inter
+        };
         kind.last = Some((bits.max(1.0) * qstep(i32::from(qp)), i32::from(qp)));
     }
 }
