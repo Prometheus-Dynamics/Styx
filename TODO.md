@@ -51,10 +51,6 @@ user lifts them.
       as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
       `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
       downscaler after all (libpisp says output 1 only). *Blocked by:* a Raze slot. *Numbers:* none yet.
-- [ ] **Zero copy: Daedalus importing software ISP frames on the CM5.** The output path is written and
-      in (8b1daa4, 93ed532). *Why:* the point of dma-heap outputs. *Done when:* Daedalus reads those
-      frames on the CM5 without a copy. *Blocked by:* a Raze slot and Daedalus's side.
-      *Numbers:* none on the board for this path.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
       *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device
@@ -411,6 +407,11 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
 Numbers are as of the commit named.
 
 ### Since the last audit
+- [x] **Zero copy: Daedalus importing software ISP frames on the CM5** (8b1daa4, 93ed532 output
+      path; `daedalus_import_check`, this commit). Raze 2026-11-02, run by Daedalus 3/3: a
+      1280x800 NV12 frame from the software ISP's dma-heap buffer imported with
+      `GpuStorage::import_dmabuf` in 95-97 µs, 0 of 1536000 bytes differ on the GPU's read, and a
+      sentinel written through the CPU mapping reads back on the GPU (the same memory).
 - [x] **GPU import pad from the device** (measured on the Raze 2026-11-02, Styx d9fd78a). `GpuContext::import_pad(len)`
       asks the GPU ISP's device what a dma-buf needs past its size; the native software ISP path
       pads its output buffers to at least that when it has a GPU ISP device. A Daedalus consumer

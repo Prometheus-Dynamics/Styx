@@ -19,6 +19,8 @@ file-backend = ["styx/file-backend"]
 daedalus = ["styx/daedalus", "dep:daedalus"]
 # Daedalus GPU nodes (wgpu) for `daedalus_gpu_node`.
 daedalus-gpu = ["daedalus", "daedalus/gpu-wgpu"]
+# A software-ISP frame imported into Daedalus's GPU without a copy (`daedalus_import_check`).
+daedalus-import = ["daedalus", "daedalus/gpu-dmabuf", "native"]
 hotplug = ["styx/hotplug"]
 libcamera = ["styx/libcamera"]
 netcam = ["styx/netcam"]
@@ -73,6 +75,12 @@ name = "uvc_capture"
 path = "04_performance/uvc_capture.rs"
 test = false
 required-features = ["uvc"]
+
+[[bin]]
+name = "daedalus_import_check"
+path = "04_performance/daedalus_import_check.rs"
+test = false
+required-features = ["daedalus-import"]
 
 [[bin]]
 name = "native_processed"
