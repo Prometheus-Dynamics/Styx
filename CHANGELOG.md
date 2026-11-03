@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_codec::styx_h264::RateTarget`, `StyxH264::set_rate` and `StyxH264Encoder::set_rate`:
+  picture-level rate control (a QP per picture from each type's last bits × quantiser step,
+  correcting an eighth of the running excess per picture).
 - `styx_codec::styx_h264::StyxH264Encoder`: the H.264 encoder as a `Codec` (I420, YU12, NV12,
   GREY or R8 in; H264 packets out with `delta` set on P pictures; `request_keyframe`,
   `new_instance`), registered by `with_enabled_codecs` in builds without `codec-ffmpeg`.

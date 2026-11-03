@@ -1,7 +1,8 @@
 //! Styx's own H.264 encoder (pure Rust): Constrained Baseline, CAVLC, one slice and one
 //! reference frame, the deblocking filter off. I frames are Intra16x16 (vertical,
 //! horizontal or DC by SAD) with DC chroma; P frames add P_Skip and P_L0_16x16 with a
-//! whole-pel diamond motion search. A fixed QP (no rate control yet).
+//! whole-pel diamond motion search. A fixed QP, or a QP per picture from a bitrate target
+//! ([`StyxH264::set_rate`]).
 //!
 //! The decoder's reconstruction is kept bit for bit (no deblocking, so reference pictures are
 //! exactly what a decoder holds), and a steady stream of one size allocates nothing.
@@ -14,6 +15,7 @@ mod gpu;
 mod headers;
 mod mb;
 mod picture;
+mod rate;
 mod tables;
 #[cfg(test)]
 mod tests;
@@ -25,6 +27,8 @@ pub use codec::StyxH264Encoder;
 pub use gpu::{GPU_SEARCH_RANGE, GpuStyxH264};
 use mb::{Counts, MbCode, write_residual};
 use picture::{I16_DC, I16_HORIZONTAL, I16_VERTICAL, Picture};
+use rate::RateControl;
+pub use rate::RateTarget;
 
 use crate::CodecError;
 
@@ -121,7 +125,10 @@ struct Motion {
 /// and the per-picture state, all kept between pictures.
 #[derive(Debug)]
 pub struct StyxH264 {
+    /// The QP being coded with; `base_qp` without rate control.
     qp: u8,
+    base_qp: u8,
+    rate: Option<RateControl>,
     keyframe_interval: u32,
     size: (usize, usize),
     mbs: (usize, usize),
@@ -165,6 +172,8 @@ impl StyxH264 {
     pub fn new(qp: u8, keyframe_interval: u32) -> Self {
         Self {
             qp: qp.min(51),
+            base_qp: qp.min(51),
+            rate: None,
             keyframe_interval: keyframe_interval.max(1),
             size: (0, 0),
             mbs: (0, 0),
@@ -183,8 +192,21 @@ impl StyxH264 {
         }
     }
 
+    /// The QP of the last picture (the fixed one without rate control).
     pub fn qp(&self) -> u8 {
         self.qp
+    }
+
+    /// Holds `target` from the next picture on by choosing each picture's QP (starting from
+    /// the fixed one), or back to the fixed QP with `None`.
+    pub fn set_rate(&mut self, target: Option<RateTarget>) {
+        self.rate = target.map(RateControl::new);
+        self.qp = self.base_qp;
+    }
+
+    /// The bitrate held, if any.
+    pub fn rate(&self) -> Option<RateTarget> {
+        self.rate.as_ref().map(RateControl::target)
     }
 
     /// Makes the next picture an IDR picture.
@@ -238,6 +260,9 @@ impl StyxH264 {
                 return Err(CodecError::Codec("styx-h264: a hint per macroblock".into()));
             }
         }
+        if let Some(rate) = &self.rate {
+            self.qp = rate.qp(idr, self.base_qp);
+        }
         out.clear();
         if idr {
             self.force_key = false;
@@ -261,6 +286,9 @@ impl StyxH264 {
             if idr { 5 } else { 1 },
             self.bits.bytes(),
         );
+        if let Some(rate) = &mut self.rate {
+            rate.coded(idr, self.qp, out.len() * 8);
+        }
         if idr {
             self.idr_id = (self.idr_id + 1) % 2;
         }

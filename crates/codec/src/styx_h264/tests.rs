@@ -257,12 +257,78 @@ fn the_codec_encodes_frames() {
     if let Some(decoded) = ffmpeg_decode(&stream) {
         assert_eq!(decoded.len(), 5 * w * h * 3 / 2);
     }
+    let target = RateTarget {
+        bits_per_second: 100_000,
+        fps: 25.0,
+    };
+    codec.set_rate(Some(target));
     let fresh = codec.new_instance().expect("an encoder per stream");
     assert_eq!(fresh.descriptor().impl_name, "styx-h264");
+    let fresh = (fresh.as_ref() as &dyn std::any::Any)
+        .downcast_ref::<StyxH264Encoder>()
+        .unwrap();
+    assert_eq!(fresh.lock().0.rate(), Some(target));
     let wrong = StyxH264Encoder::with_defaults(FourCc::NV12);
     let fmt = MediaFormat::new(FourCc::I420, res, ColorSpace::Srgb);
     let mut buf = pool.lease();
     buf.resize(w * h * 3 / 2);
     let frame = FrameLease::single_plane(FrameMeta::new(fmt, 0), buf, w * h * 3 / 2, w);
     assert!(wrong.process_ref(&frame).is_err());
+}
+
+/// Rate control holds a bitrate on a scene with fresh noise in every picture (so P pictures
+/// cost bits too), and the stream, its QP moving picture to picture, still decodes to the
+/// reconstruction.
+#[test]
+fn rate_control_holds_the_target() {
+    let (w, h) = (176, 144);
+    let (fps, frames) = (30.0, 300);
+    for bits_per_second in [150_000u32, 600_000] {
+        let mut enc = StyxH264::new(26, 30);
+        enc.set_rate(Some(RateTarget {
+            bits_per_second,
+            fps,
+        }));
+        let (mut stream, mut recon, mut out) = (Vec::new(), Vec::new(), Vec::new());
+        let mut qps = std::collections::BTreeSet::new();
+        let mut s = bits_per_second | 1;
+        for f in 0..frames {
+            let (mut y, u, v) = scene(w, h, 2 * f);
+            for p in &mut y {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                *p = p.saturating_add((s >> 29) as u8);
+            }
+            let input = StyxH264Input::I420 {
+                y: &y,
+                u: &u,
+                v: &v,
+                width: w,
+                height: h,
+                y_stride: w,
+                c_stride: w / 2,
+            };
+            enc.encode(&input, &mut out).unwrap();
+            qps.insert(enc.qp());
+            stream.extend_from_slice(&out);
+            if f < 60 {
+                let r = &enc.reference;
+                recon.extend(plane_rows(&r.y, (w, h)));
+                recon.extend(plane_rows(&r.u, (w / 2, h / 2)));
+                recon.extend(plane_rows(&r.v, (w / 2, h / 2)));
+            }
+        }
+        let rate = stream.len() as f64 * 8.0 * fps / frames as f64;
+        let error = rate / f64::from(bits_per_second) - 1.0;
+        assert!(
+            error.abs() < 0.1,
+            "{bits_per_second} b/s: got {rate:.0} ({:+.1} %), QPs {qps:?}",
+            100.0 * error
+        );
+        assert!(qps.len() > 1, "{qps:?}");
+        if let Some(decoded) = ffmpeg_decode(&stream) {
+            assert_eq!(&decoded[..recon.len()], &recon[..], "{bits_per_second} b/s");
+        }
+    }
 }

@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use styx_core::prelude::*;
 
-use super::{StyxH264, StyxH264Input};
+use super::{RateTarget, StyxH264, StyxH264Input};
 #[cfg(target_os = "linux")]
 use crate::shared_packet_frame;
 use crate::{
@@ -68,6 +68,16 @@ impl StyxH264Encoder {
             force_key: AtomicBool::new(false),
             state: Mutex::new((StyxH264::new(qp, keyframe_interval), Vec::new())),
         }
+    }
+
+    /// Holds `target` from the next frame on, or back to the fixed QP with `None` (see
+    /// [`StyxH264::set_rate`]).
+    pub fn set_rate(&self, target: Option<RateTarget>) {
+        self.lock().0.set_rate(target);
+    }
+
+    pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, (StyxH264, Vec<u8>)> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Encode `input` and hand the packet and whether it is inter-coded to `emit`.
@@ -159,7 +169,7 @@ impl StyxH264Encoder {
                 )));
             }
         };
-        let mut guard = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.lock();
         let (encoder, packet) = &mut *guard;
         if self.force_key.swap(false, Ordering::AcqRel) {
             encoder.force_keyframe();
@@ -211,11 +221,9 @@ impl Codec for StyxH264Encoder {
     }
 
     fn new_instance(&self) -> Option<Arc<dyn Codec>> {
-        Some(Arc::new(Self::new(
-            self.descriptor.input,
-            self.qp,
-            self.keyframe_interval,
-        )))
+        let fresh = Self::new(self.descriptor.input, self.qp, self.keyframe_interval);
+        fresh.set_rate(self.lock().0.rate());
+        Some(Arc::new(fresh))
     }
 
     #[cfg(target_os = "linux")]

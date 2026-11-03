@@ -174,13 +174,13 @@ memory when it runs.
       (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG decode. Fixed-function:
       5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
       `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
-- [ ] **Styx's own H.264 encoder: rate control, sub-pel search** (`styx_codec::styx_h264`,
+- [ ] **Styx's own H.264 encoder: sub-pel search** (`styx_codec::styx_h264`,
       decodes bit for bit to its reconstruction under FFmpeg). *Why:* the H.264 cells on
       RVV and the GPU are gaps with no library to lean on. *Done when:* (done: the RVV leaves in
-      `styx_core::simd::h264`, the GPU's motion search `GpuStyxH264`, and `StyxH264Encoder`
-      registered for I420/YU12/NV12/GREY/R8 in builds without `codec-ffmpeg`) a bitrate target
-      holds within 10 % over a 300-picture clip, and half/quarter-pel motion cuts bytes on
-      sub-pixel motion. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
+      `styx_core::simd::h264`, the GPU's motion search `GpuStyxH264`, `StyxH264Encoder`
+      registered for I420/YU12/NV12/GREY/R8 in builds without `codec-ffmpeg`, and picture-level
+      rate control, `set_rate`: 150 and 600 kb/s targets held to +0.3 % and +0.2 % over 300
+      noisy 176x144 pictures) half/quarter-pel motion cuts bytes on sub-pixel motion. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
       the dev PC (Zen 3, load ~34–59 from other sessions): scalar I 21.9 ms, P 26.0 ms a picture; on the
       `simd::h264` kernels I 16.3 ms, P 17.3 ms; with neighbours' vectors as search starts
       12.8 ms a picture and 10x fewer bytes on 11 px/picture of motion.
