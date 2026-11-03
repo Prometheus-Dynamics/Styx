@@ -15,8 +15,81 @@ gets tested on boards before anything ships, unless the user says otherwise. **H
 **paused** items wait for the user. Accelerators are chosen through plain `StyxConfig` knobs per
 device, with a CPU fallback for each; CPU SIMD stays detected, as it changes no output.
 
-## Open: the 2026-10-27 freeze list
+## Alpha (Raze)
 
+The next release is an alpha for the Raze (CM5, OV9782, PiSP) only; the other boards follow
+right after it. These items come first. Paused and held items stay paused or held until the
+user lifts them.
+
+- [ ] **GPU ISP on the Pi 5: timing** (import and output verified on the Raze's v3dv at eeefd6d:
+      dma-buf import and export pass, Daedalus buffer path and equivalence bit-exact, 0 validation
+      messages; again at d9fd78a on HeliOS dev.844, VVL 1.4.309 with sync validation). The replay
+      source's software ISP does not use it: only live native captures do (`native_isp_bench single
+      FPS FRAMES --soft-isp`). *Why:* an estimate is all we have (`crates/gpuisp/README.md` and
+      docs/native-stack/pipeline.md say so). *Done when:* ms per 1280x800 frame and CPU measured
+      there and written into both. *Blocked by:* a Raze slot. *Numbers:* no frame
+      timing; estimated 4-8 ms GPU against 2.6-3.0 ms fp16 NEON. `styx-wgpu`'s pyramid on the same
+      GPU: 1.67 ms p50 and 0.38 ms CPU for 3 levels (42fb407).
+- [ ] **Queued PiSP passes on the Raze** (220aff5, a083112: written, the detection untested on board).
+      *Why:* `pass_jobs` 0 now means all queued when the driver has `queue_safe`, 1 otherwise, and
+      that has not run. *Done when:* `/sys/module/pisp_be/parameters/queue_safe` reads `Y` on the
+      Raze with the patched module and a capture resolves `pass_jobs` to `QUEUED_JOBS`, 0 "not safe"
+      messages. *Blocked by:* HeliOS's image bump. *Numbers:* with the module and `--pass-jobs 4`
+      (a62f285): 0 messages, no hang, 0.251 vs 0.276 ms of pass time per frame, latency p50 8.53 vs
+      8.56 ms, CPU 0.1 ms either way.
+- [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`:
+      written, untested on board). *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs,
+      5x5 filters and demosaic + CCM onto the BE memory to memory on its own dma-bufs. *Done when:*
+      each of `styx.pisp.{resample,downscale,lut,filter5x5,demosaic_ccm,box2,pyramid2}` runs on
+      the CM5 and its exactness is measured: downscale, box2 and pyramid2 against
+      `(a+b+c+d+2)>>2` (which codes differ, if any, and whether the rounding truncates), resample
+      against the CPU reference (max abs error), the LUT against `LutFit`, the 5x5 and demosaic
+      as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
+      `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
+      downscaler after all (libpisp says output 1 only). *Blocked by:* a Raze slot. *Numbers:* none yet.
+- [ ] **Zero copy: Daedalus importing software ISP frames on the CM5.** The output path is written and
+      in (8b1daa4, 93ed532). *Why:* the point of dma-heap outputs. *Done when:* Daedalus reads those
+      frames on the CM5 without a copy. *Blocked by:* a Raze slot and Daedalus's side.
+      *Numbers:* none on the board for this path.
+- [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
+      every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
+      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device
+      for the worker loops; nothing for the rest. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
+      without a companion, UVC frame lease, GPU ISP frame from memory, PiSP processed path on a host
+      (`pisp_alloc`). Also asserted 0: software ISP output lease and rkisp lease
+      (`frames_allocate_nothing`, `BackingPool`); a `SoftIsp` frame at 1 and 4 threads, plain and post
+      stages, RGB24/NV12/I420, and with statistics when the caller uses `recycle_stats`
+      (`crates/softisp/tests/alloc.rs`), also with white balance, gain, lens shading and tone changing
+      every frame (`swap_params`, Int, IntPolyTone and Half). The software ISP loop (`SoftLoop`, the
+      algorithms included) on a host when its outputs are handed back (`SoftLoop::recycle`): 0.00 per
+      frame over 300 frames, 176 with the algorithms and 124 settled ones without (`soft_alloc`; was
+      129.83). The replay source's software ISP (`replay_isp.rs`): 0, its NV12 frames in pooled
+      buffers (`a_replayed_frame_allocates_nothing_when_warm`; was a new buffer, a copy and the
+      controls' clone per frame). Also asserted 0 (`crates/styx/tests/worker_alloc.rs`): the capture workers on a
+      simulated OV9782 (the real `NativeCamera`, queue, sensor driver and control schedule), raw
+      frames (`styx-native-capture`, its lease records now from a `BackingPool`) and the software
+      ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and
+      2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
+      box and the reactor's timer map node). **Not counted:**
+      V4L2 zero-copy (uses the pool, its loop needs a device), libcamera, and the kernel's side
+      of the queue on a board. Also asserted 0: the PiSP raw lease, whole and at a sliced frame's
+      first slice (`a_raw_lease_allocates_nothing`), and the sliced frame's states, reused once
+      their leases return (`slice_states_are_reused_once_free`; were 4 `Arc`s per frame). GPU ISP (`crates/gpuisp/tests/it/
+      alloc.rs`): 0 with statistics handed back (`recycle_stats`) and white balance, gain, lens
+      shading and tone changing every frame (`swap_params`, tables rebuilt in place); was a new
+      `IspStats` and new tables per frame. `Input::Buffer` on Daedalus's device: 0, submitted
+      through Daedalus's `RawSubmitter` (Daedalus fd18808); was 17 per frame in `submit_raw`
+      and wgpu-core's submission.
+- [ ] **`native-pipeline regcheck`: `0x0101` and `0x1000` read back 0.** *Why:* docs/portability-design.md
+      still says all 93 identical. *Done when:* they are excluded as write-only or self-clearing, or the
+      description is fixed. *Blocked by:* a Raze slot to confirm. *Numbers:* 2 of 93 differ.
+- [ ] **Still JPEG encoding numbers.** *Why:* the default features fall back to the `image` crate. *Done when:*
+      the ~45 ms still thread time is re-measured with turbojpeg. *Blocked by:* a Raze slot. *Numbers:*
+      ~45 ms, before turbojpeg.
+- [ ] **CM5 HEVC decode check** (`hevc_v4l2request` through FFmpeg). *Why:* HEVC recordings only; Styx
+      records MJPEG and raw. *Done when:* a recording decodes through `rpi-hevc-dec`. *Blocked by:*
+      an Atlas image with that driver; HeliOS says when. *Numbers:* none: the driver is not in the
+      image.
 - [ ] **Anti-flicker verified at 120 fps** (paused: the user paused bench tests). *Why:* AE chased
       100 Hz flicker at 120 fps under mains lamps. *Done when:* `flicker_check` on the CM5/Raze
       under a 50 Hz lamp at 120 fps: AE locks and the output frame-to-frame spread stays under
@@ -134,34 +207,12 @@ memory when it runs.
       pipeline selection as RK3562). *Why:* the Flame board. *Done when:* rkisp, rkcif graph and
       rkvenc run the OV9782 within the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a
       Flame board and its BSP.
-- [ ] **Queued PiSP passes on the Raze** (220aff5, a083112: written, the detection untested on board).
-      *Why:* `pass_jobs` 0 now means all queued when the driver has `queue_safe`, 1 otherwise, and
-      that has not run. *Done when:* `/sys/module/pisp_be/parameters/queue_safe` reads `Y` on the
-      Raze with the patched module and a capture resolves `pass_jobs` to `QUEUED_JOBS`, 0 "not safe"
-      messages. *Blocked by:* HeliOS's image bump. *Numbers:* with the module and `--pass-jobs 4`
-      (a62f285): 0 messages, no hang, 0.251 vs 0.276 ms of pass time per frame, latency p50 8.53 vs
-      8.56 ms, CPU 0.1 ms either way.
-- [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`:
-      written, untested on board). *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs,
-      5x5 filters and demosaic + CCM onto the BE memory to memory on its own dma-bufs. *Done when:*
-      each of `styx.pisp.{resample,downscale,lut,filter5x5,demosaic_ccm,box2,pyramid2}` runs on
-      the CM5 and its exactness is measured: downscale, box2 and pyramid2 against
-      `(a+b+c+d+2)>>2` (which codes differ, if any, and whether the rounding truncates), resample
-      against the CPU reference (max abs error), the LUT against `LutFit`, the 5x5 and demosaic
-      as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
-      `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
-      downscaler after all (libpisp says output 1 only). *Blocked by:* a Raze slot. *Numbers:* none yet.
 - [ ] **pispbe patch: carried** (user decision: we keep carrying it; the drafts in
       `kernel-modules/pispbe/README.md` stay unsent, nothing gets filed). *Why:* it takes the config
       write from 117 to 8 µs per job and makes queued jobs safe; the stock driver overwrites a held
       job. A kernel bump stops the image build until the patch is redone. *Done when:* the user
       decides otherwise; until then this is a standing cost, not work. *Blocked by:* the user.
       *Numbers:* Styx API 0.35 → 0.23-0.26 ms/frame at 30 fps; stock driver 455 "not safe" in 5 s.
-- [ ] **CM5 HEVC decode check** (`hevc_v4l2request` through FFmpeg). *Why:* HEVC recordings only; Styx
-      records MJPEG and raw. *Done when:* a recording decodes through `rpi-hevc-dec`. *Blocked by:*
-      an Atlas image with that driver; HeliOS says when. *Numbers:* none: the driver is not in the
-      image.
-
 ## Open: every stage on every backend, and allocations
 
 - [ ] **Every stage accelerated on every backend** ([docs/acceleration.md](docs/acceleration.md)).
@@ -190,59 +241,11 @@ memory when it runs.
       node shape, and all styx-softisp (46 lib, 27 it, 3 alloc) and styx-core (158) tests
       passed. Beside it: colour matrix 1.1 ms and tone table 1.5 ms per frame on the A76's
       integer path; never measured on a real Cortex-A72.
-- [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
-      every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
-      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device
-      for the worker loops; nothing for the rest. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
-      without a companion, UVC frame lease, GPU ISP frame from memory, PiSP processed path on a host
-      (`pisp_alloc`). Also asserted 0: software ISP output lease and rkisp lease
-      (`frames_allocate_nothing`, `BackingPool`); a `SoftIsp` frame at 1 and 4 threads, plain and post
-      stages, RGB24/NV12/I420, and with statistics when the caller uses `recycle_stats`
-      (`crates/softisp/tests/alloc.rs`), also with white balance, gain, lens shading and tone changing
-      every frame (`swap_params`, Int, IntPolyTone and Half). The software ISP loop (`SoftLoop`, the
-      algorithms included) on a host when its outputs are handed back (`SoftLoop::recycle`): 0.00 per
-      frame over 300 frames, 176 with the algorithms and 124 settled ones without (`soft_alloc`; was
-      129.83). The replay source's software ISP (`replay_isp.rs`): 0, its NV12 frames in pooled
-      buffers (`a_replayed_frame_allocates_nothing_when_warm`; was a new buffer, a copy and the
-      controls' clone per frame). Also asserted 0 (`crates/styx/tests/worker_alloc.rs`): the capture workers on a
-      simulated OV9782 (the real `NativeCamera`, queue, sensor driver and control schedule), raw
-      frames (`styx-native-capture`, its lease records now from a `BackingPool`) and the software
-      ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and
-      2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
-      box and the reactor's timer map node). **Not counted:**
-      V4L2 zero-copy (uses the pool, its loop needs a device), libcamera, and the kernel's side
-      of the queue on a board. Also asserted 0: the PiSP raw lease, whole and at a sliced frame's
-      first slice (`a_raw_lease_allocates_nothing`), and the sliced frame's states, reused once
-      their leases return (`slice_states_are_reused_once_free`; were 4 `Arc`s per frame). GPU ISP (`crates/gpuisp/tests/it/
-      alloc.rs`): 0 with statistics handed back (`recycle_stats`) and white balance, gain, lens
-      shading and tone changing every frame (`swap_params`, tables rebuilt in place); was a new
-      `IspStats` and new tables per frame. `Input::Buffer` on Daedalus's device: 0, submitted
-      through Daedalus's `RawSubmitter` (Daedalus fd18808); was 17 per frame in `submit_raw`
-      and wgpu-core's submission.
-- [ ] **GPU import pad from the device** (written; v3dv untested). `GpuContext::import_pad(len)`
-      asks the GPU ISP's device what a dma-buf needs past its size; the native software ISP path
-      pads its output buffers to at least that when it has a GPU ISP device. A Daedalus consumer
-      takes it from `GpuStorage::dmabuf_import_len` and sets `capture_gpu_import_pad`; other
-      paths keep the configured 256. *Why:* the fixed 256 B is v3dv's need, not every
-      device's. *Done when:* `import_pads_are_what_the_device_says` reads 256 on the Raze's v3dv.
-      *Numbers:* 0 on RADV (RX 6800 XT), NVIDIA (RTX 4060) and llvmpipe. *Blocked by:* a Raze
-      slot.
-- [ ] **GPU ISP on the Pi 5: timing** (import and output verified on the Raze's v3dv at eeefd6d:
-      dma-buf import and export pass, Daedalus buffer path and equivalence bit-exact, 0 validation
-      messages). *Why:* an estimate is all we have (`crates/gpuisp/README.md` and
-      docs/native-stack/pipeline.md say so). *Done when:* ms per 1280x800 frame and CPU measured
-      there and written into both. *Blocked by:* a Raze slot. *Numbers:* no frame
-      timing; estimated 4-8 ms GPU against 2.6-3.0 ms fp16 NEON. `styx-wgpu`'s pyramid on the same
-      GPU: 1.67 ms p50 and 0.38 ms CPU for 3 levels (42fb407).
 - [ ] **GPU ISP: outputs through the capture, and the tables.** *Why:* `GpuIsp` exports dma-bufs
       (869416a) but the capture copies them into heap frames; the 0.2 ms table rebuild per settings
       change could move to the GPU at the cost of bit-exactness. *Done when:* the capture hands out the
       exported dma-buf with `CopySite` zero; the table variant measured behind a knob. *Blocked by:*
       nothing. *Numbers:* RX 6800 XT 0.47 ms CPU, 0.21 ms GPU per frame; tables 0.2 ms.
-- [ ] **Zero copy: Daedalus importing software ISP frames on the CM5.** The output path is written and
-      in (8b1daa4, 93ed532). *Why:* the point of dma-heap outputs. *Done when:* Daedalus reads those
-      frames on the CM5 without a copy. *Blocked by:* a Raze slot and Daedalus's side.
-      *Numbers:* none on the board for this path.
 - [ ] **Userspace UVC: a bulk / UVC 1.5 / SuperSpeed camera on hardware.** The single-transfer lease
       is written, untested on a camera (475e07a). *Why:* only the C270 (isochronous) has run. *Done
       when:* a bulk camera's frames reach consumers with `CopySite::Capture` at zero. Isochronous
@@ -326,18 +329,12 @@ Not on the freeze list. *Numbers:* none measured unless stated.
 - [ ] **Native provider hotplug on uevents.** *Why:* `crates/native/src/provider.rs` polls sysfs every second;
       `styx::watch` already uses `lemnos_linux::uevent`. *Done when:* the provider does too. *Blocked by:*
       nothing. *Numbers:* up to 1 s latency.
-- [ ] **`native-pipeline regcheck`: `0x0101` and `0x1000` read back 0.** *Why:* docs/portability-design.md
-      still says all 93 identical. *Done when:* they are excluded as write-only or self-clearing, or the
-      description is fixed. *Blocked by:* a Raze slot to confirm. *Numbers:* 2 of 93 differ.
 - [ ] **`no_std` replays across builds.** *Why:* libm can differ from std in the last bits, and `Auto` picks by
       build. *Done when:* documented comparison runs ask for `Int`, or the results are shown equal. *Blocked
       by:* nothing. *Numbers:* identical over `nostd-camera`'s 90 frames.
 - [ ] **Stills, remaining.** *Why:* V4L2 stills reconfigure; UVC still-image methods are missing; stills on
       a capture without a processed native mode leave the consumer one frame short. *Done when:* each
       is gone. *Blocked by:* a camera with still methods for UVC.
-- [ ] **Still JPEG encoding numbers.** *Why:* the default features fall back to the `image` crate. *Done when:*
-      the ~45 ms still thread time is re-measured with turbojpeg. *Blocked by:* a Raze slot. *Numbers:*
-      ~45 ms, before turbojpeg.
 - [ ] **DNG: `dng_validate` and a per-camera `NoiseProfile`.** *Why:* only LibRaw has read our DNGs; no
       `NoiseProfile` is written. *Done when:* Adobe's validator passes and the tag comes from the tuning's
       noise model. *Blocked by:* the DNG SDK for the validator.
@@ -410,6 +407,13 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
 Numbers are as of the commit named.
 
 ### Since the last audit
+- [x] **GPU import pad from the device** (measured on the Raze 2026-11-02, Styx d9fd78a). `GpuContext::import_pad(len)`
+      asks the GPU ISP's device what a dma-buf needs past its size; the native software ISP path
+      pads its output buffers to at least that when it has a GPU ISP device. A Daedalus consumer
+      takes it from `GpuStorage::dmabuf_import_len` and sets `capture_gpu_import_pad`; other
+      paths keep the configured 256. *Why:* the fixed 256 B is v3dv's need, not every
+      device's. *Numbers:* `import_pads_are_what_the_device_says` reads 256 on the Raze's v3dv (V3D
+      7.1.10.2, HeliOS dev.844); 0 on RADV (RX 6800 XT), NVIDIA (RTX 4060) and llvmpipe.
 - [x] **Styx's own H.264 encoder** (d7807c0 encoder, 7c0d27e RVV leaves, 83a383d GPU search,
       d6c9686 `StyxH264Encoder` registered without `codec-ffmpeg`, 49a990b rate control, this
       commit quarter-pel motion): Baseline CAVLC, decoding bit for bit to its reconstruction
