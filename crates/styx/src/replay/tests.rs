@@ -258,19 +258,22 @@ fn looped_replay_keeps_timestamps_increasing() {
 fn realtime_replay_follows_recorded_timing() {
     let path = temp_path("realtime");
     record(&path, (0..6).map(|i| frame(i, u64::from(i) * 20_000_000)));
+    // Before the open: the pace's anchor (the first delivery) is no earlier, and each frame
+    // is due no earlier than the anchor plus its recorded offset, so the last arrives at
+    // least 100 ms after this however loaded the machine is (a late consumer that takes the
+    // frames in a burst cannot make it shorter, as it could the span between receipts).
+    let start = Instant::now();
     let handle = CaptureRequest::replay_source(ReplaySourceConfig::new(&path))
         .unwrap()
         .open()
         .unwrap();
-    let mut first = None;
     let mut received = 0;
-    let mut last = Instant::now();
+    let mut last = start;
     loop {
         match handle.recv_blocking(Duration::from_secs(2)) {
             RecvOutcome::Data(_) => {
                 received += 1;
                 last = Instant::now();
-                first.get_or_insert(last);
             }
             RecvOutcome::Closed => break,
             RecvOutcome::Empty => panic!("replay stalled"),
@@ -278,8 +281,8 @@ fn realtime_replay_follows_recorded_timing() {
     }
     handle.stop();
     assert_eq!(received, 6);
-    let span = last - first.unwrap();
-    assert!(span >= Duration::from_millis(90), "{span:?}");
+    let span = last - start;
+    assert!(span >= Duration::from_millis(100), "{span:?}");
     let _ = std::fs::remove_file(path);
 }
 

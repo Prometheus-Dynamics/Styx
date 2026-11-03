@@ -1,7 +1,7 @@
 //! A replay capture's playback controls: pause, seek, step, speed, hold at the end, length,
 //! rebased timestamps.
 
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use super::tests::{frame, grey, header, temp_path};
 use super::*;
@@ -135,19 +135,21 @@ fn speed_paces_and_rebased_timestamps_are_delivery_times() {
     handle
         .set_control(ids::REPLAY_SPEED, ControlValue::Float(4.0))
         .unwrap();
-    let start = Instant::now();
     let mut stamps = Vec::new();
     while let RecvOutcome::Data(f) = handle.recv_blocking(Duration::from_secs(2)) {
         assert_eq!(f.meta().clock, Some(TimestampClock::Monotonic));
         stamps.push(f.meta().timestamp);
     }
-    // 180 ms of recording at 4x: about 45 ms (the first frame may have gone at 1x).
     assert_eq!(stamps.len(), 10);
-    assert!(
-        start.elapsed() < Duration::from_millis(170),
-        "{:?}",
-        start.elapsed()
-    );
+    // The pace, from the delivery times rather than a wall-clock window: frames are due at
+    // an anchor plus the recorded gap over the speed, so lateness the machine adds shifts
+    // the deliveries without adding up, and the median gap stays at 20 ms / 4 (the first
+    // frame may have gone at 1x; a stall's catch-up only shortens gaps). At 1x it would be
+    // 20 ms.
+    let mut gaps: Vec<u64> = stamps.windows(2).map(|w| w[1] - w[0]).collect();
+    gaps.sort_unstable();
+    let median = gaps[gaps.len() / 2];
+    assert!(median < 12_500_000, "median gap {median} ns, gaps {gaps:?}");
     // Delivery times: increasing, on the monotonic clock of this process.
     assert!(stamps.windows(2).all(|w| w[1] >= w[0]));
     let now = TimestampClock::Monotonic.now_ns().unwrap();
