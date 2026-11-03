@@ -991,6 +991,12 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- `styx_gpuisp`: a SIGSEGV in the Vulkan loader (1.4.341) when contexts open in parallel:
+  `vkEnumeratePhysicalDevices` rescans and `dlclose`s the drivers while another thread's
+  `vkGetDeviceProcAddr` walks the same lists. Device enumeration is now under
+  `vulkan_instance_lock` too (in-process convert + Daedalus tests: 3 crashes in 20 before,
+  0 in 200 after).
+
 - Software-ISP frames in dma-heap buffers (the simulated cameras, UVC Bayer, the K230D raw path)
   said the CPU could not read them (`cpu_access` `None`, the dma-buf default), in process and
   once received over IPC, so consumers that check `can_read_planes` (Eidos) refused every one.

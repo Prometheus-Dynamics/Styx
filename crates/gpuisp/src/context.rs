@@ -149,10 +149,13 @@ struct Candidate {
     timestamps: bool,
 }
 
-/// Held while a Vulkan instance or device is created or destroyed. The Vulkan loader (1.4.341
-/// on the development host) crashes in its driver scan, or looking a device up, when one
-/// thread creates an instance or device while another creates or destroys one, so every
-/// instance and device this crate makes or destroys is under this lock. With the `daedalus`
+/// Held while a Vulkan instance or device is created or destroyed, or an instance's physical
+/// devices are enumerated. The Vulkan loader (1.4.341 on the development host) crashes in its
+/// driver scan, or looking a device up, when one thread does any of these while another
+/// does one: `vkEnumeratePhysicalDevices` rescans the drivers and unloads the ones it found
+/// before (`dlclose`), under another thread's `vkGetDeviceProcAddr` walking the same lists.
+/// So every instance and device this crate makes or destroys, and every enumeration, is
+/// under this lock. With the `daedalus`
 /// feature it is Daedalus's driver lock (`daedalus_gpu::driver_lock`), which Daedalus holds
 /// around its own creations: do not make a Daedalus GPU while holding it (it is not
 /// reentrant). Without it, a lock of this crate's that other code making instances in the
@@ -212,6 +215,9 @@ fn has_extension(props: &[vk::ExtensionProperties], name: &CStr) -> bool {
 
 /// The suitable devices of `instance`, in enumeration order.
 fn candidates(instance: &ash::Instance) -> Result<Vec<Candidate>, GpuError> {
+    // The whole scan: the enumeration rescans the loader's drivers (see
+    // `vulkan_instance_lock`), and the queries after it are quick.
+    let _vk = vulkan_instance_lock();
     // SAFETY: plain queries of a live instance.
     let physicals =
         unsafe { instance.enumerate_physical_devices() }.ctx("vkEnumeratePhysicalDevices")?;
