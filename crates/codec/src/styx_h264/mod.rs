@@ -8,6 +8,7 @@
 
 mod bits;
 mod cavlc;
+mod codec;
 #[cfg(all(feature = "gpu-h264", target_os = "linux"))]
 mod gpu;
 mod headers;
@@ -19,6 +20,7 @@ mod tests;
 mod transform;
 
 use bits::{Bits, nal};
+pub use codec::StyxH264Encoder;
 #[cfg(all(feature = "gpu-h264", target_os = "linux"))]
 pub use gpu::{GPU_SEARCH_RANGE, GpuStyxH264};
 use mb::{Counts, MbCode, write_residual};

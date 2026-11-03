@@ -596,6 +596,16 @@ impl CodecRegistry {
             );
         }
 
+        // Styx's own H.264 encoder where FFmpeg's isn't built (hardware encoders still win on
+        // speed where present).
+        #[cfg(not(feature = "codec-ffmpeg"))]
+        for input in crate::styx_h264::StyxH264Encoder::INPUTS {
+            self.register(
+                input,
+                Arc::new(crate::styx_h264::StyxH264Encoder::with_defaults(input)),
+            );
+        }
+
         #[cfg(all(feature = "codec-mozjpeg", not(feature = "codec-turbojpeg")))]
         self.register(
             FourCc::RG24,

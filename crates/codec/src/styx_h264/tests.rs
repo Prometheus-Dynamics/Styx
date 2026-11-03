@@ -222,3 +222,47 @@ fn bad_sizes_are_refused() {
         assert!(enc.encode(&input, &mut out).is_err(), "{w}x{h}");
     }
 }
+
+#[test]
+fn the_codec_encodes_frames() {
+    use styx_core::prelude::*;
+
+    use crate::Codec;
+
+    let (w, h) = (48, 32);
+    let res = Resolution::new(w as u32, h as u32).unwrap();
+    let codec = StyxH264Encoder::new(FourCc::I420, 26, 3);
+    assert_eq!(codec.descriptor().impl_name, "styx-h264");
+    let pool = BufferPool::with_limits(1, w * h * 3 / 2, 1);
+    let mut stream = Vec::new();
+    let mut deltas = Vec::new();
+    for i in 0..5 {
+        let (y, u, v) = scene(w, h, 2 * i);
+        let pixels: Vec<u8> = [y, u, v].concat();
+        let mut buf = pool.lease();
+        buf.resize(pixels.len());
+        buf.as_mut_slice().copy_from_slice(&pixels);
+        let fmt = MediaFormat::new(FourCc::I420, res, ColorSpace::Srgb);
+        let frame = FrameLease::single_plane(FrameMeta::new(fmt, i as u64), buf, pixels.len(), w);
+        if i == 1 {
+            codec.request_keyframe();
+        }
+        let out = codec.process_ref(&frame).expect("encodes");
+        assert_eq!(out.meta().format.code, FourCc::H264);
+        deltas.push(out.meta().delta);
+        stream.extend_from_slice(out.planes()[0].data());
+    }
+    // IDR first, on request, then every third picture.
+    assert_eq!(deltas, [false, false, true, true, false]);
+    if let Some(decoded) = ffmpeg_decode(&stream) {
+        assert_eq!(decoded.len(), 5 * w * h * 3 / 2);
+    }
+    let fresh = codec.new_instance().expect("an encoder per stream");
+    assert_eq!(fresh.descriptor().impl_name, "styx-h264");
+    let wrong = StyxH264Encoder::with_defaults(FourCc::NV12);
+    let fmt = MediaFormat::new(FourCc::I420, res, ColorSpace::Srgb);
+    let mut buf = pool.lease();
+    buf.resize(w * h * 3 / 2);
+    let frame = FrameLease::single_plane(FrameMeta::new(fmt, 0), buf, w * h * 3 / 2, w);
+    assert!(wrong.process_ref(&frame).is_err());
+}

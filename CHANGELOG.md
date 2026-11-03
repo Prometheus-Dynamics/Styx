@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_codec::styx_h264::StyxH264Encoder`: the H.264 encoder as a `Codec` (I420, YU12, NV12,
+  GREY or R8 in; H264 packets out with `delta` set on P pictures; `request_keyframe`,
+  `new_instance`), registered by `with_enabled_codecs` in builds without `codec-ffmpeg`.
 - `styx_codec::styx_h264::GpuStyxH264` (feature `gpu-h264`, Linux): the H.264 encoder with each
   P picture's motion search started from the GPU's exhaustive whole-pel search
   (`styx_gpuisp::GpuConvert::motion_search`, `shaders/h264_me.comp`, bit for bit
