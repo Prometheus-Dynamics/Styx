@@ -9,6 +9,9 @@
 
 use super::SimdBackend;
 
+mod hpel;
+pub use hpel::*;
+
 /// The largest level magnitude produced: CAVLC in Baseline codes up to here at any suffix
 /// length.
 pub const LEVEL_MAX: i32 = 2047;

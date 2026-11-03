@@ -6,6 +6,8 @@
 //! reference with its coordinates clamped as the decoder clamps them; blocks reaching
 //! further take the per-sample path ([`sample`]), which is also the tests' oracle.
 
+use styx_core::simd::h264;
+
 use super::picture::Plane;
 
 /// Samples of the half-pel planes beyond each edge.
@@ -29,9 +31,11 @@ pub(super) struct HalfPel {
     b: Vec<u8>,
     h: Vec<u8>,
     j: Vec<u8>,
-    /// The horizontal filter's unrounded sums on the picture's rows.
-    b1: Vec<i32>,
-    row: Vec<i32>,
+    /// The horizontal filter's unrounded sums and half samples on the picture's rows, and
+    /// a padded row.
+    b1: Vec<i16>,
+    b_rows: Vec<u8>,
+    row: Vec<u8>,
     stride: usize,
     size: (usize, usize),
 }
@@ -48,6 +52,7 @@ impl HalfPel {
             p.resize(stride * rows, 0);
         }
         self.b1.resize(stride * h, 0);
+        self.b_rows.resize(stride * h, 0);
         self.row.resize(stride + 5, 0);
         let clamp_row = |y: isize| y.clamp(0, h as isize - 1) as usize;
         // Full-pel rows, padded both ways.
@@ -58,47 +63,37 @@ impl HalfPel {
             dst[PAD..PAD + w].copy_from_slice(src);
             dst[PAD + w..].fill(src[w - 1]);
         }
-        // Horizontal sums on the picture's rows (columns clamped once more for the taps
-        // reaching past the padding).
+        // Horizontal sums and half samples on the picture's rows (columns clamped once more
+        // for the taps reaching past the padding).
+        let bhalf = &mut self.b_rows;
         for y in 0..h {
             let g = &self.g[(y + PAD) * stride..][..stride];
             let row = &mut self.row;
-            row[..2].fill(i32::from(g[0]));
-            for (r, &v) in row[2..2 + stride].iter_mut().zip(g) {
-                *r = i32::from(v);
-            }
-            row[2 + stride..].fill(i32::from(g[stride - 1]));
-            let out = &mut self.b1[y * stride..][..stride];
-            for (x, o) in out.iter_mut().enumerate() {
-                *o = TAPS.iter().zip(&row[x..x + 6]).map(|(t, v)| t * v).sum();
-            }
+            row[..2].fill(g[0]);
+            row[2..2 + stride].copy_from_slice(g);
+            row[2 + stride..].fill(g[stride - 1]);
+            h264::hpel_h(
+                row,
+                &mut self.b1[y * stride..][..stride],
+                &mut bhalf[y * stride..][..stride],
+            );
         }
         for y in 0..rows {
             let yc = y as isize - PAD as isize;
-            let b1 = &self.b1[clamp_row(yc) * stride..][..stride];
-            for (o, &s) in self.b[y * stride..][..stride].iter_mut().zip(b1) {
-                *o = clip((s + 16) >> 5);
-            }
+            self.b[y * stride..][..stride]
+                .copy_from_slice(&bhalf[clamp_row(yc) * stride..][..stride]);
             // Vertical taps: rows yc - 2 to yc + 3, clamped.
             let taps: [usize; 6] = core::array::from_fn(|k| clamp_row(yc - 2 + k as isize));
-            let grow = |k: usize| &self.g[(taps[k] + PAD) * stride..][..stride];
-            let (g0, g1, g2, g3, g4, g5) = (grow(0), grow(1), grow(2), grow(3), grow(4), grow(5));
-            let hrow = &mut self.h[y * stride..][..stride];
-            for x in 0..stride {
-                let s = i32::from(g0[x]) - 5 * i32::from(g1[x])
-                    + 20 * i32::from(g2[x])
-                    + 20 * i32::from(g3[x])
-                    - 5 * i32::from(g4[x])
-                    + i32::from(g5[x]);
-                hrow[x] = clip((s + 16) >> 5);
-            }
-            let brow = |k: usize| &self.b1[taps[k] * stride..][..stride];
-            let (b0, b1r, b2, b3, b4, b5) = (brow(0), brow(1), brow(2), brow(3), brow(4), brow(5));
-            let jrow = &mut self.j[y * stride..][..stride];
-            for x in 0..stride {
-                let s = b0[x] - 5 * b1r[x] + 20 * b2[x] + 20 * b3[x] - 5 * b4[x] + b5[x];
-                jrow[x] = clip((s + 512) >> 10);
-            }
+            let g = &self.g;
+            h264::hpel_v(
+                taps.map(|t| &g[(t + PAD) * stride..][..stride]),
+                &mut self.h[y * stride..][..stride],
+            );
+            let b1 = &self.b1;
+            h264::hpel_j(
+                taps.map(|t| &b1[t * stride..][..stride]),
+                &mut self.j[y * stride..][..stride],
+            );
         }
     }
 
@@ -147,13 +142,7 @@ impl HalfPel {
             (3, 2) => ((j, at(0, 0)), (hh, at(1, 0))),
             _ => ((hh, at(1, 0)), (b, at(0, 1))),
         };
-        for r in 0..16 {
-            let a = &p.0[p.1 + r * self.stride..][..16];
-            let c = &q.0[q.1 + r * self.stride..][..16];
-            for ((o, &u), &v) in out[r * 16..][..16].iter_mut().zip(a).zip(c) {
-                *o = ((u16::from(u) + u16::from(v) + 1) >> 1) as u8;
-            }
-        }
+        h264::avg16(&p.0[p.1..], self.stride, &q.0[q.1..], self.stride, out);
     }
 }
 

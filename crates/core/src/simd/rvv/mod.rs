@@ -6,6 +6,7 @@
 //! result.
 
 pub(super) mod h264;
+pub(super) mod h264_hpel;
 pub(super) mod jpeg;
 pub(super) mod rows;
 pub(super) mod transform;

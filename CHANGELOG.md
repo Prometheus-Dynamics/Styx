@@ -8,6 +8,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_core::simd::h264::{hpel_h, hpel_v, hpel_j, avg16}` (and `_scalar` oracles): the H.264
+  six-tap half-pel filters over rows and the rounded mean of two blocks, with RVV leaves.
 - `styx_codec::styx_h264`: quarter-pel motion (half-pel planes of the reference made once a
   picture, vectors refined half then quarter pel); `StyxH264::set_subpel(false)` keeps whole pels.
 - `styx_codec::styx_h264::RateTarget`, `StyxH264::set_rate` and `StyxH264Encoder::set_rate`:

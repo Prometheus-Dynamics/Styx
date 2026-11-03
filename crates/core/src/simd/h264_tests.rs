@@ -194,3 +194,80 @@ fn full_search_finds_a_shift() {
     let flat = vec![9u8; w * h];
     assert_eq!(full_search(&flat, &flat, (w, h), (2, 1), 16), ([0, 0], 0));
 }
+
+#[test]
+fn half_pel_filters_match_the_oracle() {
+    for (i, n) in [1usize, 7, 16, 33, 255, 1296].into_iter().enumerate() {
+        for extreme in [false, true] {
+            let mut src = bytes(n + 5 + 3, i as u64);
+            if extreme {
+                // Full-scale steps: the sums' ends and the clipping both ways.
+                for (k, v) in src.iter_mut().enumerate() {
+                    *v = if (k / 2) % 2 == 0 { 255 } else { 0 };
+                }
+            }
+            let (mut s, mut h) = (vec![7i16; n + 1], vec![7u8; n + 1]);
+            let (mut s2, mut h2) = (s.clone(), h.clone());
+            assert_eq!(hpel_h(&src, &mut s[..n], &mut h[..n]), expected());
+            hpel_h_scalar(&src, &mut s2[..n], &mut h2[..n]);
+            assert_eq!((&s, &h), (&s2, &h2), "h n {n}");
+            assert_eq!((s[n], h[n]), (7, 7), "guard");
+
+            let rows: Vec<Vec<u8>> = (0..6)
+                .map(|k| {
+                    let r = bytes(n, (i * 6 + k) as u64 + 50);
+                    if extreme {
+                        r.iter()
+                            .map(|&v| if (v > 127) ^ (k % 2 == 0) { 255 } else { 0 })
+                            .collect()
+                    } else {
+                        r
+                    }
+                })
+                .collect();
+            let rows: [&[u8]; 6] = core::array::from_fn(|k| &rows[k][..]);
+            let (mut o, mut o2) = (vec![7u8; n + 1], vec![7u8; n + 1]);
+            assert_eq!(hpel_v(rows, &mut o[..n]), expected());
+            hpel_v_scalar(rows, &mut o2[..n]);
+            assert_eq!(o, o2, "v n {n}");
+
+            // Sums over the filter's whole range, -2550 to 10710.
+            let sums: Vec<Vec<i16>> = (0..6)
+                .map(|k| {
+                    bytes(2 * n, (i * 6 + k) as u64 + 90)
+                        .chunks(2)
+                        .map(|c| {
+                            let v = (i32::from(c[0]) << 8 | i32::from(c[1])) % 13261 - 2550;
+                            if extreme {
+                                if k % 3 == 0 { -2550 } else { 10710 }
+                            } else {
+                                v as i16
+                            }
+                        })
+                        .collect()
+                })
+                .collect();
+            let rows: [&[i16]; 6] = core::array::from_fn(|k| &sums[k][..]);
+            let (mut o, mut o2) = (vec![7u8; n + 1], vec![7u8; n + 1]);
+            assert_eq!(hpel_j(rows, &mut o[..n]), expected());
+            hpel_j_scalar(rows, &mut o2[..n]);
+            assert_eq!(o, o2, "j n {n}");
+            assert_eq!(o[n], 7, "guard");
+        }
+    }
+}
+
+#[test]
+fn avg16_matches_the_oracle() {
+    for (sa, sb) in [(16, 16), (21, 40)] {
+        let (a, b) = (bytes(15 * sa + 16, 3), bytes(15 * sb + 16, 4));
+        let (mut o, mut o2) = ([0u8; 256], [0u8; 256]);
+        assert_eq!(avg16(&a, sa, &b, sb, &mut o), expected());
+        avg16_scalar(&a, sa, &b, sb, &mut o2);
+        assert_eq!(o, o2);
+    }
+    let (z, f) = (vec![254u8; 256], vec![255u8; 256]);
+    let mut o = [0u8; 256];
+    avg16(&z, 16, &f, 16, &mut o);
+    assert_eq!(o, [255; 256]);
+}

@@ -126,8 +126,9 @@ Notes:
    with quantisation (`styx_core::simd::jpeg`), exact against the scalar oracle, tested under
    QEMU at VLEN 128, 256, 512 and 1024; Huffman coding is serial and scalar. Written, untested
    on board. H.264 encode: Styx's own encoder (`styx_codec::styx_h264`, Baseline CAVLC) with RVV
-   leaves for motion-search SAD, the residual transform with quantisation and the
-   reconstruction (`styx_core::simd::h264`), exact against the scalar oracle under QEMU at VLEN
+   leaves for motion-search SAD, the residual transform with quantisation, the
+   reconstruction and the quarter-pel planes (six-tap half-pel filters, rounded means;
+   `styx_core::simd::h264`), exact against the scalar oracle under QEMU at VLEN
    128, 256 and 1024; CAVLC is serial and scalar. Written, untested on board. H.265 has no RVV
    path beyond the board's VPU. JPEG decode still needs its own leaves, or the board's units
    (see the fixed-function table below).
