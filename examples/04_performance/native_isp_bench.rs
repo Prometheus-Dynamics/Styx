@@ -3,7 +3,7 @@
 //! pass), and consumers in another process through the camera service.
 //!
 //! ```sh
-//! native_isp_bench single FPS FRAMES [--read]          # NV12 1280x800
+//! native_isp_bench single FPS FRAMES [--read] [--soft-isp]  # NV12 1280x800
 //! native_isp_bench shared FPS FRAMES [--read]          # NV12 1280x800 + RG24 640x400
 //! native_isp_bench pyramid FPS FRAMES [--read] [--software]  # luma + 2 pyramid levels
 //! native_isp_bench serve SOCKET SECONDS                # camera service for other processes
@@ -12,7 +12,9 @@
 //!
 //! `--read` reads every pixel of each frame (a CPU consumer); without it frames are only
 //! received (a consumer handing them to hardware). Latency is the frame's capture timestamp
-//! (frame start) to the consumer having it. CPU covers the whole process.
+//! (frame start) to the consumer having it. CPU covers the whole process. `--soft-isp` runs
+//! the software ISP instead of the PiSP: on the GPU with the `styx/gpu-isp` feature, on the CPU
+//! with `STYX_GPU_ISP=0`.
 
 use std::time::{Duration, Instant};
 
@@ -224,8 +226,14 @@ fn run(args: &[String]) -> Result<(), String> {
         "single" => {
             let (fps, frames) = (num(2, 30) as u32, num(3, 300) as usize);
             let dev = native_device()?;
-            let plan = styx::planner::plan_many(&dev, &[req(FourCc::NV12, fps)])
-                .map_err(|e| e.to_string())?;
+            let mut r = req(FourCc::NV12, fps);
+            if args.iter().any(|a| a == "--soft-isp") {
+                r = r.accelerators(styx::planner::Accelerators {
+                    isp: styx::planner::Hardware::Off,
+                    ..Default::default()
+                });
+            }
+            let plan = styx::planner::plan_many(&dev, &[r]).map_err(|e| e.to_string())?;
             print!("{plan}");
             let mut out = plan.start().map_err(|e| e.to_string())?;
             let mut p = out.remove(0);
