@@ -179,10 +179,10 @@ memory when it runs.
       RVV and the GPU are gaps with no library to lean on. *Done when:* (the RVV leaves in
       `styx_core::simd::h264` and the GPU's motion search, `GpuStyxH264`, are done) the encoder
       is a registered `Codec` (H264 out of I420/NV12/GREY) on hosts without another H.264 encoder;
-      rate control, sub-pel motion and a wider CPU search (the diamond misses fast motion the
-      GPU's exhaustive search finds: 10x the bytes at 11 px/picture) follow. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
+      rate control and sub-pel motion follow. *Blocked by:* nothing. *Numbers:* 1280x720 QP 26 on
       the dev PC (Zen 3, load ~34–59 from other sessions): scalar I 21.9 ms, P 26.0 ms a picture; on the
-      `simd::h264` kernels I 16.3 ms, P 17.3 ms.
+      `simd::h264` kernels I 16.3 ms, P 17.3 ms; with neighbours' vectors as search starts
+      12.8 ms a picture and 10x fewer bytes on 11 px/picture of motion.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**
       `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
       pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected

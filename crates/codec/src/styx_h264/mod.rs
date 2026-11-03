@@ -415,8 +415,9 @@ impl StyxH264 {
         (mvp, skip)
     }
 
-    /// Whole-pel diamond search around the best of zero and `mvp`, the block kept inside the
-    /// reference; returns the vector (quarter pels) and its cost.
+    /// Whole-pel diamond search around the best of zero, `mvp`, the hint and the neighbours'
+    /// vectors, the block kept inside the reference; returns the vector (quarter pels) and its
+    /// cost.
     fn search(&self, (mbx, mby): (usize, usize), mvp: [i32; 2], lambda: u32) -> ([i32; 2], u32) {
         let (x, y) = (mbx as i32 * 16, mby as i32 * 16);
         let (w, h) = (self.reference.y.w as i32, self.reference.y.h as i32);
@@ -442,12 +443,20 @@ impl StyxH264 {
         let start = [(mvp[0] + 2) >> 2, (mvp[1] + 2) >> 2];
         let mut best = ([0, 0], cost([0, 0]).unwrap_or(u32::MAX));
         let hint = self.hints.get(mby * self.mbs.0 + mbx).copied();
-        for cand in [Some(start), hint].into_iter().flatten() {
+        // Neighbours' vectors: left, above and above-right from this picture; this
+        // macroblock, the next and the one below as the last picture left them (not coded yet).
+        let (bx, by) = (mbx as isize, mby as isize);
+        let neighbours = [(-1, 0), (0, -1), (1, -1), (0, 0), (1, 0), (0, 1)].map(|(dx, dy)| {
+            self.neighbour(bx + dx, by + dy)
+                .filter(|m| m.ref_idx == 0)
+                .map(|m| [m.mv[0] >> 2, m.mv[1] >> 2])
+        });
+        for cand in [Some(start), hint].into_iter().chain(neighbours).flatten() {
             if let Some(c) = cost(cand).filter(|&c| c < best.1) {
                 best = (cand, c);
             }
         }
-        for step in [8, 4, 2, 1] {
+        for step in [16, 8, 4, 2, 1] {
             for _ in 0..16 {
                 let centre = best.0;
                 for d in [[step, 0], [-step, 0], [0, step], [0, -step]] {

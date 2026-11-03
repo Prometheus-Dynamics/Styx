@@ -134,9 +134,12 @@ Notes:
 9. VA-API (`h264_vaapi`, `hevc_vaapi`) on x86 GPUs. On any Vulkan device, Styx's H.264 encoder
    (`styx_codec::styx_h264::GpuStyxH264`, feature `gpu-h264`) starts each macroblock's motion
    search from the GPU's exhaustive whole-pel search (`shaders/h264_me.comp`, ±16, bit for bit
-   `styx_core::simd::h264::full_search`); refinement and coding stay on the CPU. 1280x720 QP 26,
-   11 px/picture of motion: CPU 25.0 ms and 3.49 MB for 20 pictures, RADV 16.3 ms and 0.35 MB,
-   NVIDIA 17.6 ms, llvmpipe 125.7 ms. There is no Vulkan Video encode yet.
+   `styx_core::simd::h264::full_search`); refinement and coding stay on the CPU. It pays where
+   neighbours' vectors predict nothing: 176x144 QP 26 of 32x32 tiles each moving its own way,
+   31.5 KB against the CPU search's 47.0 KB for 6 pictures. On uniform motion (1280x720, 11
+   px/picture, 20 pictures) both find it, 0.35 MB: CPU 12.8 ms a picture, RADV 16.0 ms, NVIDIA
+   19.1 ms, llvmpipe 172 ms (the round trip per picture costs more than the search saves on
+   the CPU there). There is no Vulkan Video encode yet.
 10. `GpuConvert::transform` gathers each output pixel rather than working on 8x8 tiles. It
     gives the bytes of `transform_packed` in all eight orientations, tested against it.
 11. `GpuConvert::jpeg_blocks` (`shaders/jpeg.comp`): JFIF colour, the DCT and quantisation, one

@@ -70,7 +70,25 @@ mod tests {
     use styx_gpuisp::DeviceSelect;
 
     use super::*;
-    use crate::styx_h264::tests::{ffmpeg_decode, plane_rows, scene};
+    use crate::styx_h264::tests::{ffmpeg_decode, plane_rows};
+
+    /// A texture of `w` x `h` whose 32x32 tiles each sample it at their own offset, moving
+    /// `f` steps of the tile's own velocity.
+    fn tiles(w: usize, h: usize, f: usize) -> Vec<u8> {
+        let texture = |x: i64, y: i64| -> u8 {
+            let n = (x.wrapping_mul(73_856_093) ^ y.wrapping_mul(19_349_663)) as u64;
+            ((x * 5 + y * 3) as u8) ^ ((n.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 59) as u8)
+        };
+        (0..w * h)
+            .map(|i| {
+                let (x, y) = ((i % w) as i64, (i / w) as i64);
+                let t = (x / 32 * 7 + y / 32 * 13) as u64;
+                let vx = (t.wrapping_mul(2_654_435_761) % 25) as i64 - 12;
+                let vy = (t.wrapping_mul(40_503) % 25) as i64 - 12;
+                texture(x - vx * f as i64, y - vy * f as i64)
+            })
+            .collect()
+    }
 
     #[test]
     fn gpu_search_decodes_and_finds_fast_motion() {
@@ -83,9 +101,11 @@ mod tests {
             let mut cpu = StyxH264::new(26, 30);
             let (mut stream, mut recon) = (Vec::new(), Vec::new());
             let (mut out, mut gpu_bytes, mut cpu_bytes) = (Vec::new(), 0, 0);
+            let (u, v) = (vec![110u8; w * h / 4], vec![140u8; w * h / 4]);
             for f in 0..6 {
-                // 13 pixels a picture: beyond what the diamond reaches from zero alone.
-                let (y, u, v) = scene(w, h, f * 13);
+                // 32x32 tiles of texture, each moving its own way up to 12 pixels a picture:
+                // neighbours' vectors predict nothing, the exhaustive search finds each.
+                let y = tiles(w, h, f);
                 let input = StyxH264Input::I420 {
                     y: &y,
                     u: &u,
@@ -106,7 +126,7 @@ mod tests {
                 cpu_bytes += out.len();
             }
             assert!(
-                gpu_bytes <= cpu_bytes,
+                gpu_bytes * 10 < cpu_bytes * 9,
                 "{}: gpu {gpu_bytes} cpu {cpu_bytes}",
                 d.name
             );
