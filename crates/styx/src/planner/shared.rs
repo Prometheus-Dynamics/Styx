@@ -538,6 +538,16 @@ impl SharedFramePlan {
             .unwrap_or_default()
             .capture_queue_depth(1)
             .capture_extra_buffers(held);
+        // The hardware the plan chose for (the consumers share one device, so one set of
+        // knobs), as a single consumer's plan starts with (`FramePlan::start_config`).
+        if let Some(a) = self
+            .consumers
+            .iter()
+            .map(|p| p.request.accelerators)
+            .find(|a| *a != Default::default())
+        {
+            config.accelerators = a;
+        }
         // Frames that only leave as descriptors (a camera service's) are read, and synced, by
         // the processes that get them: syncing them on the capture thread too is wasted.
         if self.consumers.iter().all(|p| p.exportable) {

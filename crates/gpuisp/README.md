@@ -138,7 +138,16 @@ camera service's user. About 10-15 MB of image.
 
 The time per frame there is not measured yet (TODO.md, "GPU ISP on the Pi 5: timing"). On
 the same GPU `styx-wgpu`'s pyramid takes 1.67 ms p50 and 0.38 ms of CPU for 3 levels of
-1280x800 (42fb407). Estimate: V3D 7.1 has 12 QPUs (3 slices) of 16-lane SIMD at
+1280x800 (42fb407).
+
+Measured 2026-11-02 on the Raze (HeliOS dev.844, live OV9782 1280x800 NV12 asked at 60 fps,
+`native_isp_bench single 60 300 --soft-isp`): 28.3 fps, so about 35 ms of GPU per frame,
+latency median 133 ms (frames queue behind the GPU), 1.97 ms of CPU per frame (1.76 ms on the
+ISP thread). The CPU software ISP on the same capture (`STYX_GPU_ISP=0`): 59.98 fps, latency
+median 12.34 ms, 9.5 ms of CPU per frame over two threads. Both handed out dma-heap frames.
+
+The estimate below was 4-8 ms; the measured frame is about 4-8 times that, so the shader
+is far off V3D's peak (not yet profiled). Estimate: V3D 7.1 has 12 QPUs (3 slices) of 16-lane SIMD at
 about 1 GHz, issuing roughly 4 lane-operations per cycle each (~50 G lane-ops/s), with texture
 and memory units (TMUs) shared per slice. The integer full-size shader costs about 150-250
 operations and 10-14 memory accesses (byte loads of the packed raw, table lookups, byte

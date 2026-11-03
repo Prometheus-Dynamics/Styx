@@ -686,11 +686,11 @@ loaded at run time (`ash`), so nothing links against it.
   2.9 ms/MP (`planner/cost.rs`, `GPUISP_*`), executed as `Hardware`.
 * **CM5 / Pi 5**: the CM5 image has Mesa's v3dv (V3D 7.1). There the GPU ISP imports
   capture dma-bufs and exports its output, bit-exact against the CPU with no validation
-  messages (eeefd6d; README, "Raspberry Pi 5"); its time per frame is not measured yet.
-  Estimated at 4-8 ms of GPU per 1280x800 frame, V3D would not beat the A76's fp16 NEON path (2.6-3.0 ms on one core) on
-  time; it would take the ISP off the CPU (about 2.5% of a core left at 30 fps instead of
-  9-10%) at a few ms more latency. The CM5 has the PiSP; the GPU ISP is for boards with a GPU
-  and no ISP.
+  messages (eeefd6d; README, "Raspberry Pi 5"). It is slow there: 28.3 fps live at
+  1280x800, about 35 ms of GPU a frame (estimated 4-8 ms), latency 133 ms, against the CPU
+  software ISP's 60 fps at 12.3 ms latency and 9.5 ms of CPU (2026-11-02, README). The CM5 has
+  the PiSP; the GPU ISP is for boards with a GPU and no ISP, and `STYX_GPU_ISP=0` keeps the
+  CM5's software fallback on the CPU.
 
 ## Planner
 

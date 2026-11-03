@@ -114,6 +114,15 @@ mod tests {
     }
 
     #[test]
+    fn a_shared_plan_starts_with_its_consumers_knobs() {
+        let d = pisp("pisp");
+        let off = knobs(|a| a.isp = Hardware::Off);
+        let plan = super::super::plan_many_with(&d, &[req(off)], &registry()).unwrap();
+        assert_eq!(native_isp(&plan.device.backends[0]), Some("software"));
+        assert_eq!(plan.capture_config(0).accelerators.isp, Hardware::Off);
+    }
+
+    #[test]
     fn isp_off_runs_the_software_isp_and_required_refuses_it() {
         let d = pisp("pisp");
         let off = knobs(|a| a.isp = Hardware::Off);

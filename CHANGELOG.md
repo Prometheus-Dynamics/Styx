@@ -996,6 +996,9 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- A shared plan (`plan_many`, the camera service's) started its capture without the
+  consumers' `Accelerators`: `isp: Hardware::Off` planned the software ISP and the capture ran
+  the PiSP. The capture config now takes them, as a single plan's start does.
 - `styx_gpuisp`: a SIGSEGV in the Vulkan loader (1.4.341) when contexts open in parallel:
   `vkEnumeratePhysicalDevices` rescans and `dlclose`s the drivers while another thread's
   `vkGetDeviceProcAddr` walks the same lists. Device enumeration is now under
