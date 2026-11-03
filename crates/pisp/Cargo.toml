@@ -27,3 +27,7 @@ styx-math.workspace = true
 
 [lints]
 workspace = true
+
+[[example]]
+name = "be_ops_check"
+required-features = ["device"]

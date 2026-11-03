@@ -34,13 +34,6 @@ user lifts them.
       a frame; CPU software ISP 59.98 fps, 12.3 ms, 9.5 ms CPU. Estimated 4-8 ms GPU against
       2.6-3.0 ms fp16 NEON. `styx-wgpu`'s pyramid on the same
       GPU: 1.67 ms p50 and 0.38 ms CPU for 3 levels (42fb407).
-- [ ] **Queued PiSP passes on the Raze** (220aff5, a083112: written, the detection untested on board).
-      *Why:* `pass_jobs` 0 now means all queued when the driver has `queue_safe`, 1 otherwise, and
-      that has not run. *Done when:* `/sys/module/pisp_be/parameters/queue_safe` reads `Y` on the
-      Raze with the patched module and a capture resolves `pass_jobs` to `QUEUED_JOBS`, 0 "not safe"
-      messages. *Blocked by:* HeliOS's image bump. *Numbers:* with the module and `--pass-jobs 4`
-      (a62f285): 0 messages, no hang, 0.251 vs 0.276 ms of pass time per frame, latency p50 8.53 vs
-      8.56 ms, CPU 0.1 ms either way.
 - [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`:
       written, untested on board). *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs,
       5x5 filters and demosaic + CCM onto the BE memory to memory on its own dma-bufs. *Done when:*
@@ -50,11 +43,16 @@ user lifts them.
       against the CPU reference (max abs error), the LUT against `LutFit`, the 5x5 and demosaic
       as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
       `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
-      downscaler after all (libpisp says output 1 only). *Blocked by:* a Raze slot. *Numbers:* none yet.
+      downscaler after all (libpisp says output 1 only). *Blocked by:* the GREY input: `be_ops_check` (crates/pisp/examples)
+      on the Raze 2026-11-02 fails every GREY op at `VIDIOC_REQBUFS` (EINVAL), so the greyscale
+      Bayer path or its buffer setup needs fixing first. *Numbers:* `demosaic_ccm` with the
+      identity matrix: 0.223 ms a 640x480 job, four flat RGGB patches come out exactly.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
-      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device
-      for the worker loops; nothing for the rest. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
+      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* nothing for the PiSP path; a
+      device for V4L2 and libcamera. Raze 2026-11-02, `hop_breakdown inproc` (PiSP NV12
+      1280x800 30 fps, whole process, every thread): 0.00 heap allocations per frame in steady
+      state (median of 9 one-second windows), 0.04 over the whole run. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
       without a companion, UVC frame lease, GPU ISP frame from memory, PiSP processed path on a host
       (`pisp_alloc`). Also asserted 0: software ISP output lease and rkisp lease
       (`frames_allocate_nothing`, `BackingPool`); a `SoftIsp` frame at 1 and 4 threads, plain and post
@@ -82,9 +80,12 @@ user lifts them.
       and wgpu-core's submission.
 - [ ] **`native-pipeline regcheck`: `0x0101` and `0x1000` read back 0.** *Why:* docs/portability-design.md
       still says all 93 identical. *Done when:* they are excluded as write-only or self-clearing, or the
-      description is fixed. *Blocked by:* a Raze slot to confirm. *Numbers:* 2 of 93 differ.
+      description is fixed. *Blocked by:* a Raze run with the OV9782's description: on 2026-11-02
+      `regcheck` without `--description` wrote 0 registers, so nothing was checked. *Numbers:* 2 of 93 differ.
 - [ ] **Still JPEG encoding numbers.** *Why:* the default features fall back to the `image` crate. *Done when:*
-      the ~45 ms still thread time is re-measured with turbojpeg. *Blocked by:* a Raze slot. *Numbers:*
+      the ~45 ms still thread time is re-measured with turbojpeg. *Blocked by:* a still that lands: on the Raze 2026-11-02
+      `still_capture DIR 30 native` (turbojpeg) failed with "still: timed out", a finding to
+      look into before any timing. *Numbers:*
       ~45 ms, before turbojpeg.
 - [ ] **CM5 HEVC decode check** (`hevc_v4l2request` through FFmpeg). *Why:* HEVC recordings only; Styx
       records MJPEG and raw. *Done when:* a recording decodes through `rpi-hevc-dec`. *Blocked by:*
@@ -407,6 +408,11 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
 Numbers are as of the commit named.
 
 ### Since the last audit
+- [x] **Queued PiSP passes on the Raze** (220aff5, a083112). Raze 2026-11-02 (HeliOS dev.844,
+      patched module): `queue_safe` reads `Y`; `native-pipeline pisp --passes` with the default
+      `--pass-jobs 0` over 150 frames at 30 fps: 0 "not safe" messages, 0 skipped, pass time
+      0.122 ms a frame (p95 0.146), 0.062 ms a job, both regions bit-exact against the main
+      output's crop.
 - [x] **Zero copy: Daedalus importing software ISP frames on the CM5** (8b1daa4, 93ed532 output
       path; `daedalus_import_check`, this commit). Raze 2026-11-02, run by Daedalus 3/3: a
       1280x800 NV12 frame from the software ISP's dma-heap buffer imported with
