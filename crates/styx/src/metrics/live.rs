@@ -34,6 +34,11 @@ pub(crate) struct BufferStats {
     pub(crate) held_bytes: AtomicI64,
     pub(crate) peak_held: AtomicI64,
     pub(crate) hold: Ring,
+    /// Output buffers from the `system` dma-heap because `linux,cma` would not open.
+    pub(crate) system_heap: AtomicU64,
+    /// Output buffers in process memory (not dma-bufs) because no dma-heap would open or
+    /// allocate one.
+    pub(crate) process_memory: AtomicU64,
 }
 
 /// One consumer of a shared capture or of the camera service.

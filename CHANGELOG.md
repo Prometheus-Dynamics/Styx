@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `metrics::Buffers::{system_heap_buffers, process_memory_buffers}` (OpenMetrics
+  `styx_camera_output_buffers_{system_heap,process_memory}_total`): software-ISP and Rockchip
+  output buffers that did not come from `linux,cma` (the `system` heap, or plain process memory
+  when no heap opens or allocates), with a warning on the first one of a capture. A device
+  mapping only contiguous memory (K230D VGLite) copies each such frame.
 - `styx_core::simd::h264::{hpel_h, hpel_v, hpel_j, avg16}` (and `_scalar` oracles): the H.264
   six-tap half-pel filters over rows and the rounded mean of two blocks, with RVV leaves.
 - `styx_codec::styx_h264`: quarter-pel motion (half-pel planes of the reference made once a

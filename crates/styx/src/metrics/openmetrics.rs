@@ -274,6 +274,20 @@ impl Text {
         ] {
             self.gauge(name, help, &l, Some(v as f64));
         }
+        for (name, help, v) in [
+            (
+                "styx_camera_output_buffers_system_heap_total",
+                "Output buffers from the system dma-heap: linux,cma would not open.",
+                b.system_heap_buffers,
+            ),
+            (
+                "styx_camera_output_buffers_process_memory_total",
+                "Output buffers in process memory, not dma-bufs: no dma-heap would allocate.",
+                b.process_memory_buffers,
+            ),
+        ] {
+            self.counter(name, help, &l, v);
+        }
         self.window(
             "styx_camera_buffer_hold_ms",
             "Capture buffer delivery to release (quantile 1: max).",

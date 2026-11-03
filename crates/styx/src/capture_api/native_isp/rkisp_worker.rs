@@ -138,7 +138,7 @@ fn spawn(mut p: RkispPipeline, mut w: RkispWorker) -> Result<thread::JoinHandle<
             w.live.register_thread();
             let (ret_tx, ret_rx) = returns();
             let mut spare = Spare::default();
-            let heap = super::out_buf::out_heap(w.driver_buffers, w.gpu_pad);
+            let heap = super::out_buf::out_heap(w.driver_buffers, w.gpu_pad, &w.live);
             let mut direct = RkBuffers::new(&p);
             if direct.is_none() {
                 crate::trace::warn!(backend = "native", "the main path's buffers do not export: copying every frame");

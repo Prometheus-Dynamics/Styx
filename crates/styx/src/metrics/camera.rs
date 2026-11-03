@@ -213,6 +213,14 @@ pub struct Buffers {
     pub peak_held: u64,
     /// Delivery to release of each buffer.
     pub hold: Window,
+    /// Output buffers allocated from the `system` dma-heap because `linux,cma` would not
+    /// open (the software ISP's outputs; a device mapping only contiguous memory copies them).
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub system_heap_buffers: u64,
+    /// Output buffers allocated in process memory, not dma-bufs, because no dma-heap would
+    /// open or allocate one: consumers wanting a dma-buf copy every frame in them.
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub process_memory_buffers: u64,
 }
 
 /// One consumer of a shared capture, or one client of the camera service.
@@ -454,6 +462,8 @@ impl CaptureMetrics {
                 held_bytes: buffers.held_bytes.load(Relaxed).max(0) as u64 + ext_bytes,
                 peak_held: buffers.peak_held.load(Relaxed).max(0) as u64 + ext_peak,
                 hold: buffers.hold.window(),
+                system_heap_buffers: buffers.system_heap.load(Relaxed),
+                process_memory_buffers: buffers.process_memory.load(Relaxed),
             },
             consumers,
             stills: {

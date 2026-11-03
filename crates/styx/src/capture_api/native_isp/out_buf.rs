@@ -6,6 +6,7 @@
 
 use std::os::fd::AsFd;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
@@ -19,7 +20,7 @@ use styx_kernel::Mapping;
 use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
 
 use super::layouts;
-use crate::metrics::{CaptureMetrics, MeteredBacking};
+use crate::metrics::{BufferStats, CaptureMetrics, MeteredBacking};
 
 /// Where leases hand their buffers back (a ring: no allocation per frame; a buffer coming
 /// back to a full ring is freed), and their backing records, reused so a frame allocates none.
@@ -47,23 +48,53 @@ const HEAPS: [&str; 2] = ["linux,cma", "system"];
 
 /// A dma-heap output buffers come from, and the room left past each frame.
 pub(super) struct OutHeap {
-    heap: DmaHeap,
+    /// `None`: no heap would open, every buffer is process memory.
+    heap: Option<DmaHeap>,
+    /// The heap is `system`: `linux,cma` would not open.
+    system: bool,
     /// Bytes past the frame a GPU importing the dma-buf may read
     /// (`CaptureConfig::gpu_import_pad`; a 1280x800 NV12 frame is a whole number of pages, so
     /// page rounding alone leaves none).
     pad: usize,
+    /// Where buffers outside `linux,cma` are counted.
+    stats: Arc<BufferStats>,
+    /// A fallback was logged (once a capture: a failing heap fails every frame).
+    warned: AtomicBool,
 }
 
-/// The heap output buffers come from, `gpu_pad` bytes left past each frame: `None` for plain
-/// heap memory (`driver`, or no heap).
-pub(super) fn out_heap(driver: bool, gpu_pad: u32) -> Option<Arc<OutHeap>> {
+impl OutHeap {
+    /// Counts a buffer outside `linux,cma` in `counter`, logging the first.
+    fn fell_back(&self, counter: &AtomicU64, what: &'static str) {
+        counter.fetch_add(1, Relaxed);
+        if !self.warned.swap(true, Relaxed) {
+            crate::trace::warn!(
+                backend = "native",
+                fallback = what,
+                "output buffers not from linux,cma: devices mapping only contiguous memory copy them"
+            );
+        }
+    }
+}
+
+/// The heap output buffers come from, `gpu_pad` bytes left past each frame, fallbacks counted
+/// in `live`: `None` for plain heap memory by request (`driver`).
+pub(super) fn out_heap(driver: bool, gpu_pad: u32, live: &CaptureMetrics) -> Option<Arc<OutHeap>> {
     if driver {
         return None;
     }
-    let heap = HEAPS.iter().find_map(|n| DmaHeap::open(n).ok())?;
+    let (heap, system) = match HEAPS
+        .iter()
+        .find_map(|n| Some((DmaHeap::open(n).ok()?, *n)))
+    {
+        Some((h, n)) => (Some(h), n == "system"),
+        None => (None, false),
+    };
     Some(Arc::new(OutHeap {
         heap,
+        system,
         pad: gpu_pad as usize,
+        stats: live.0.buffers.clone(),
+        warned: AtomicBool::new(false),
     }))
 }
 
@@ -147,7 +178,7 @@ impl Spare {
             Some(OutBuf {
                 mem: Mem::Heap(mut v),
                 ..
-            }) if heap.is_none() => {
+            }) if heap.is_none_or(|h| h.heap.is_none()) => {
                 v.resize(len, 0);
                 OutBuf {
                     mem: Mem::Heap(v),
@@ -161,13 +192,21 @@ impl Spare {
 
 fn allocate(heap: Option<&OutHeap>, len: usize) -> OutBuf {
     let dma = heap.and_then(|h| {
-        let buf = h.heap.allocate((len + h.pad).next_multiple_of(4096)).ok()?;
-        let map = buf.map().ok()?;
-        Some(Mem::Dma {
-            buf,
-            map,
-            pad: h.pad,
-        })
+        let mem = h.heap.as_ref().and_then(|heap| {
+            let buf = heap.allocate((len + h.pad).next_multiple_of(4096)).ok()?;
+            let map = buf.map().ok()?;
+            Some(Mem::Dma {
+                buf,
+                map,
+                pad: h.pad,
+            })
+        });
+        match &mem {
+            Some(_) if h.system => h.fell_back(&h.stats.system_heap, "system heap"),
+            Some(_) => {}
+            None => h.fell_back(&h.stats.process_memory, "process memory"),
+        }
+        mem
     });
     OutBuf {
         mem: dma.unwrap_or_else(|| Mem::Heap(vec![0; len])),
@@ -341,7 +380,7 @@ mod tests {
     #[test]
     fn heap_buffers_are_dmabufs_consumers_import() {
         // Where no dma-heap is open to this user, the heap-memory path is what runs.
-        let Some(heap) = out_heap(false, 256) else {
+        let Some(heap) = out_heap(false, 256, &CaptureMetrics::default()) else {
             return;
         };
         let (tx, rx) = returns();
@@ -361,6 +400,26 @@ mod tests {
             planes.iter().map(|p| (p.offset, p.len)).collect::<Vec<_>>(),
             [(0, 64 * 32), (64 * 32, 64 * 16)]
         );
+    }
+
+    #[test]
+    fn buffers_outside_cma_are_counted() {
+        let live = CaptureMetrics::default();
+        let heap = OutHeap {
+            heap: None,
+            system: false,
+            pad: 0,
+            stats: live.0.buffers.clone(),
+            warned: AtomicBool::new(false),
+        };
+        let (_tx, rx) = returns();
+        let mut spare = Spare::default();
+        let b = spare.take(Some(&heap), &rx, 2, 64);
+        assert!(matches!(b.mem, Mem::Heap(_)));
+        drop(b);
+        spare.take(Some(&heap), &rx, 2, 64);
+        let b = live.snapshot().buffers;
+        assert_eq!((b.process_memory_buffers, b.system_heap_buffers), (2, 0));
     }
 
     /// The soft ISP's output path after a warm-up: a buffer back from the consumer, written,
@@ -414,7 +473,7 @@ mod tests {
 
     #[test]
     fn dmabuf_frames_allocate_nothing() {
-        if let Some(heap) = out_heap(false, 256) {
+        if let Some(heap) = out_heap(false, 256, &CaptureMetrics::default()) {
             frames_allocate_nothing(Some(&heap));
         }
     }

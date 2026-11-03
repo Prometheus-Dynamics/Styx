@@ -657,7 +657,7 @@ pub(super) fn start_processed(
                     clock: timestamp_clock,
                     controls: controls.clone(),
                     sensor_raw: config.backends.native.sensor_raw,
-                    heap: out_buf::out_heap(config.backends.native.driver_buffers, gpu_pad),
+                    heap: out_buf::out_heap(config.backends.native.driver_buffers, gpu_pad, &live),
                 },
             )?;
             (controls, worker)

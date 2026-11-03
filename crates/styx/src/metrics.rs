@@ -45,6 +45,8 @@ pub use camera::{
 pub use export::{MetricKind, MetricSample, render_prometheus};
 #[cfg(feature = "native")]
 pub(crate) use live::AaaSample;
+#[cfg(feature = "native")]
+pub(crate) use live::BufferStats;
 pub(crate) use live::ConsumerStats;
 #[cfg(feature = "native")]
 pub(crate) use live::MeteredBacking;
