@@ -4,10 +4,14 @@
 //! measured slower than the CPU at it ([`SLOWER_THAN_CPU`]). `STYX_GPU_ISP=0` keeps them on the
 //! CPU, `STYX_GPU_ISP=1` takes the GPU on any device; `STYX_GPUISP_DEVICE` picks the device
 //! (index or part of its name; a software rasteriser such as llvmpipe only when named).
+//!
+//! With feature `daedalus` the ISP runs on the process's Daedalus device, so a graph and the ISP
+//! share one device and queue. A device named with `STYX_GPUISP_DEVICE`, or a process device the
+//! ISP cannot use, gets the ISP a device of its own.
 
 use std::sync::OnceLock;
 
-use styx_pipeline::styx_gpuisp::{DeviceInfo, DeviceSelect, GpuContext};
+use styx_pipeline::styx_gpuisp::{DeviceInfo, DeviceSelect, GpuContext, GpuError};
 
 fn disabled() -> bool {
     matches!(
@@ -34,6 +38,22 @@ fn preferred(name: &str, forced: bool) -> bool {
     forced || !SLOWER_THAN_CPU.iter().any(|p| name.starts_with(p))
 }
 
+#[cfg(not(feature = "daedalus"))]
+fn open() -> Result<GpuContext, GpuError> {
+    GpuContext::open(DeviceSelect::Auto)
+}
+
+#[cfg(feature = "daedalus")]
+fn open() -> Result<GpuContext, GpuError> {
+    if std::env::var_os("STYX_GPUISP_DEVICE").is_some_and(|v| !v.is_empty()) {
+        return GpuContext::open(DeviceSelect::Auto);
+    }
+    GpuContext::shared().or_else(|e| {
+        crate::trace::info!(error = %e, "GPU ISP on a device of its own");
+        GpuContext::open(DeviceSelect::Auto)
+    })
+}
+
 /// The process's GPU ISP device, opened on first use (`None`: no Vulkan, no suitable
 /// device, or disabled).
 pub(crate) fn context() -> Option<GpuContext> {
@@ -42,7 +62,7 @@ pub(crate) fn context() -> Option<GpuContext> {
         if disabled() {
             return None;
         }
-        match GpuContext::open(DeviceSelect::Auto) {
+        match open() {
             Ok(c) if !preferred(&c.info().name, forced()) => {
                 let i = c.info();
                 crate::trace::info!(device = %i.name, "GPU ISP slower than the CPU here: off (STYX_GPU_ISP=1 takes it)");

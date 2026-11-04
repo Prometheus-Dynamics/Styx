@@ -27,6 +27,8 @@ default = []
 daedalus = ["dep:daedalus-gpu"]
 
 [dev-dependencies]
+# `tests/one_device.rs`: an engine and the ISP on the process's device.
+daedalus = { workspace = true, features = ["engine", "plugins", "gpu-wgpu"] }
 libc.workspace = true
 styx-kernel.workspace = true
 

@@ -520,4 +520,25 @@ impl GpuContext {
             }),
         })
     }
+
+    /// Run on the process's Vulkan device, the one Daedalus's engines take
+    /// (`daedalus_gpu::shared_context`), opening it if none is open: one device and one queue
+    /// for the graph and the ISP. The first caller in the process picks the device.
+    /// `Unsupported` when it is not usable ([`Self::from_daedalus`]) or is a software rasteriser.
+    #[cfg(feature = "daedalus")]
+    pub fn shared() -> Result<Self, GpuError> {
+        let gpu = daedalus_gpu::shared_context(&daedalus_gpu::GpuOptions {
+            preferred_backend: Some(daedalus_gpu::GpuBackendKind::Wgpu),
+            ..Default::default()
+        })
+        .map_err(|e| GpuError::Unsupported(format!("Daedalus's device: {e}")))?;
+        let ctx = Self::from_daedalus(&gpu)?;
+        if ctx.inner.info.kind == DeviceKind::Cpu {
+            return Err(GpuError::Unsupported(format!(
+                "the process's device is a software rasteriser ({})",
+                ctx.inner.info.name
+            )));
+        }
+        Ok(ctx)
+    }
 }

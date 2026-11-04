@@ -666,7 +666,10 @@ CPU mapping or cache maintenance). Styx's native backend (feature `gpu-isp`) ope
 device once per process (`STYX_GPU_ISP=0` turns it off, `STYX_GPUISP_DEVICE` picks one; never
 a software rasteriser unless named) and runs processed modes of cameras without a PiSP on it,
 falling back to the software ISP where there is none; the planner prices it (below). Vulkan is
-loaded at run time (`ash`), so nothing links against it.
+loaded at run time (`ash`), so nothing links against it. With feature `daedalus` as well, the
+device is the process's Daedalus device (`GpuContext::shared`): a graph and the ISP share one
+device and queue, without the fp16 pictures (`shaderFloat16` is not enabled there). A device
+named with `STYX_GPUISP_DEVICE` stays the ISP's own.
 
 * **Quality** (`native-pipeline gpu-quality --recording BASE`, 160 recorded OV9782 frames with
   the loop's settings; `crates/gpuisp/tests`): identical to the integer arithmetic, pictures

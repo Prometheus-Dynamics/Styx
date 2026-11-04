@@ -151,7 +151,8 @@ metrics-serde = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde"]
 # `styx::metrics::serve_http`: a tiny HTTP endpoint serving the metrics as Prometheus text.
 metrics-http = ["facade"]
 # Styx frames in Daedalus graphs: `styx::core::daedalus` (owned by styx-core-rs; docs/daedalus.md).
-daedalus = ["styx-core/daedalus"]
+# With `gpu-isp`, the GPU ISP runs on the process's Daedalus device instead of opening its own.
+daedalus = ["styx-core/daedalus", "styx-pipeline?/gpu-daedalus"]
 facade = [
     "dep:futures-core",
     "dep:styx-graph",

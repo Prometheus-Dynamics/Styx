@@ -51,6 +51,8 @@ device = [
 ]
 # The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
 gpu = ["std", "dep:styx-gpuisp"]
+# With `gpu`: `GpuContext::shared`, the ISP on the process's Daedalus device.
+gpu-daedalus = ["styx-gpuisp?/daedalus"]
 # The PiSP debug hooks: styx-pisp's `debug-hooks` (config dumps, block patch, lines probe), and
 # the slicing and timing probes (`STYX_PISP_FE_ILINES`, `STYX_PISP_BE_STRIPE`, `STYX_PISP_SLICE_LOG`).
 pisp-debug-hooks = ["device", "styx-pisp/debug-hooks"]
