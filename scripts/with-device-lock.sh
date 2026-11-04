@@ -4,12 +4,12 @@
 #   scripts/with-device-lock.sh <owner> <remote shell command>
 #   DEVICE=root@<device> DMESG_LOG=target/dmesg-x.log WAIT=1 scripts/with-device-lock.sh ...
 #
-# - The lock is taken atomically (mkdir) with a random token in its owner file; the command runs
-#   only if that succeeded.
-# - Release removes the lock only if the token is still ours, so it can never delete someone
-#   else's lock (a reboot wipes /tmp, and another agent may have taken it since).
-# - WAIT=1 retries every 60 s while someone else holds it; otherwise exits 3 when busy.
-# - DMESG_LOG streams the device's kernel log to that host file while the lock is held.
+# - The lock is flock(1) on /run/lock/raze-gpu.lock on the device (LOCK names another), the one
+#   every project's board runs share. The kernel frees it when the holder dies, so it cannot go
+#   stale. The owner's name is in the file while it is held.
+# - The command runs without the lock's descriptor: a daemon it starts does not keep the lock.
+# - WAIT=1 blocks until the lock is free; otherwise exits 3 when busy.
+# - DMESG_LOG streams the device's kernel log to that host file during the run.
 # The command's exit code is returned. Restore the device baseline inside the command.
 
 set -u
@@ -17,24 +17,21 @@ owner="${1:?owner}"
 shift
 cmd="${1:?remote command}"
 dev="${DEVICE:?set DEVICE to the device to lock, e.g. DEVICE=root@<device>}"
-lock=/tmp/styx-device-lock
-token="$owner $(date +%s)-$$-$(od -An -N4 -tx4 /dev/urandom | tr -d ' ')"
+lock="${LOCK:-/run/lock/raze-gpu.lock}"
+nonblock=-n
+[ "${WAIT:-0}" = 1 ] && nonblock=
 
-take() {
-    ssh -o BatchMode=yes "$dev" "mkdir $lock 2>/dev/null && printf '%s\n' '$token' > $lock/owner"
-}
-release() {
-    ssh -o BatchMode=yes "$dev" "[ \"\$(cat $lock/owner 2>/dev/null)\" = '$token' ] && rm -rf $lock" ||
-        echo "with-device-lock: lock no longer ours (rebooted or taken); left as is" >&2
-}
-
-until take; do
-    if [ "${WAIT:-0}" != 1 ]; then
-        echo "with-device-lock: busy: $(ssh -o BatchMode=yes "$dev" "cat $lock/owner 2>/dev/null")" >&2
-        exit 3
-    fi
-    sleep 60
-done
+quoted="'$(printf %s "$cmd" | sed "s/'/'\\\\''/g")'"
+remote="exec 9>>$lock
+if ! flock $nonblock 9; then
+    echo \"with-device-lock: busy: \$(cat $lock 2>/dev/null)\" >&2
+    exit 3
+fi
+echo '$owner' \"\$(date)\" >$lock
+sh -c $quoted 9>&-
+rc=\$?
+: >$lock
+exit \$rc"
 
 dmesg_pid=""
 if [ -n "${DMESG_LOG:-}" ]; then
@@ -42,9 +39,8 @@ if [ -n "${DMESG_LOG:-}" ]; then
     dmesg_pid=$!
 fi
 
-ssh -o BatchMode=yes "$dev" "$cmd"
+ssh -o BatchMode=yes "$dev" "$remote"
 rc=$?
 
 [ -n "$dmesg_pid" ] && kill "$dmesg_pid" 2>/dev/null
-release
 exit "$rc"

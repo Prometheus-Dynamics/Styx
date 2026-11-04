@@ -137,17 +137,15 @@ limits at that fps.
     module, then reboot).
   - Read-only probing needs no lock.
   - **Use `scripts/with-device-lock.sh <owner> '<remote command>'` for every device run**
-    (`WAIT=1` to queue, `DMESG_LOG=<file>` to stream the kernel log). It takes the lock
-    atomically, runs nothing if that fails, and releases only its own lock. Hand-written
-    `mkdir … ; … ; rm -rf` chains have deleted other agents' locks three times.
+    (`WAIT=1` to queue, `DMESG_LOG=<file>` to stream the kernel log). It holds `flock` on
+    `/run/lock/raze-gpu.lock`, the lock every project's board runs share, and runs nothing if
+    that fails. The kernel frees it when the holder dies, so it cannot go stale.
   - Anything that uses a camera or changes device state (stopping `<camera service>`,
     binding/unbinding drivers, runtime overlays via configfs, loading our modules, streaming,
-    switching the camera mode, rebooting) needs the device lock, taken atomically with
-    `ssh root@<device> 'mkdir /tmp/styx-device-lock && echo "<agent> $(date)" > /tmp/styx-device-lock/owner'`
-    (retry every 60 s while it exists; never delete someone else's lock). Chain every device step
-    after the lock with `&&` or `set -e` so nothing runs if taking the lock fails. A reboot wipes
-    `/tmp`, the lock with it: take it again when the device is back. Keep it only as long as
-    needed, and before releasing it (`rm -rf /tmp/styx-device-lock`) restore the device to its
+    switching the camera mode, rebooting) needs the device lock. Run it through the script, or
+    hold `flock /run/lock/raze-gpu.lock` around it. A reboot drops the lock: take it again when
+    the device is back. Keep it only as long as needed, and before releasing it restore the
+    device to its
     baseline (`sh /usr/local/lib/styx-bridge/camera-mode.sh status` says `configured: native`,
     `running: native (bridge bound at boot)`; if not, `camera-mode.sh native` reboots into it).
   - For libcamera runs (`ov9282`, libcamera, the installed `<camera service>`):
