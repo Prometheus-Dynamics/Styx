@@ -1036,6 +1036,8 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- Userspace UVC allocated once a frame: the stream's frame list lost its capacity. Now 0 in
+  steady state.
 - `be::ops::filter5x5` set the sharpen block's `white` and `black`, which force samples to 255
   and 0, and used a rising table as a transfer curve when it multiplies the response: the output
   was 1 or 255 whatever the image. Each sample now gets the kernel's response at unit gain,

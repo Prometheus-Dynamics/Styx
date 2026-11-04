@@ -442,10 +442,11 @@ impl UvcStream {
                 return Err(UvcError::from_usb(e));
             }
         }
-        let frames = std::mem::take(&mut self.scratch);
-        for f in frames {
+        let mut frames = std::mem::take(&mut self.scratch);
+        for f in frames.drain(..) {
             self.deliver(f);
         }
+        self.scratch = frames;
         Ok(())
     }
 
