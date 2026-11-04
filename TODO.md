@@ -6,8 +6,7 @@ underneath. No libcamera, no `v4l` crate, no per-sensor kernel driver. Design an
 
 No patches on other people's code; our own kernel modules are fine. The stock V4L2 path stays
 working in Styx everywhere: SystemCore and other kernels we don't control depend on it. The
-`rp1-cfe` fork and the sensor bridge in `kernel-modules/` are what runs today, not the plan: the
-kernel module is happening in Lemnos, with the drivers in Rust in userspace
+sensor bridge in `kernel-modules/` is not the plan: the kernel module is happening in Lemnos, with the drivers in Rust in userspace
 ([Decided](#decided-starts-when-the-user-says), item 4).
 
 Audited against the code at 475e07a (2026-11-01). Numbers are from the CM5 / Raze with the OV9782
@@ -41,6 +40,22 @@ The list from the coordinator, 2026-11-03. Every agent finishes this, then pause
 - [x] **The bridge from the 2026-10-02 A/B** (kernel 6.12, not re-measured): reported to the
       coordinator. HeliOS does not need it. It would end the device package's two OV9782 patches
       only if every variant moved, and the libcamera variants still use the `ov9282` driver.
+- [x] **The timer path replaces the patched line event** (user's go, 2026-11-03; `rp1-cfe` module
+      and package removed). Stock `FRAME_SYNC`, no thread: a 16-byte marker starts the row after
+      the slice line in every raw buffer before it is queued, and at `line × line_time + 0.4 ms`
+      from the sensor's mode a marker gone raises the line event; one still there runs the frame
+      whole. Raze #1, 7.2.9, line 600 of 800 at 9.1 µs lines (delay 5.86 ms), 1200 frames:
+      complete frames 8.14 ms (p95 8.25) at 120 fps against 9.30 whole, 8.15 at 60, 8.08 at 30, 0
+      early in all of them. RAW8 at 7.58 µs lines, line 400 (delay 3.43 ms), through a camera
+      service at 120 fps with a raw client: 962 frames, 0 early. Under load (4 spinning threads on
+      the 4 cores, 120 fps): 0 early; 1171 of 1200 sliced, the other 29 lost to late wake-ups (23
+      replaced by the next frame's start, 6 a frame behind), worst 1.79 ms late; 8.15 ms (p95 9.68)
+      against 9.31 (p95 11.09) whole. Pixels, `--no-tdn`, every 8th frame re-run from its final raw
+      buffer: 729 frames, 282 of them under load, byte-identical to one job with the same stripes,
+      so no job read a row before it landed. Against one stripe, the unsliced path, every frame
+      differs around the stripe's edge (about 28000 of 2.3 M bytes, at most 14 codes): the tiling,
+      not the timing; the old event used the same stripes. Stock node, patched module still in the
+      slot; `FRAME_SYNC` there is the import's, unchanged.
 - [x] **Finish the Raze list.** 2571ba4 gated and pushed. No-reader overflow count: `Drops::unread`,
       Raze #1 2026-11-03 on a V4L2 camera with `pause_when_idle`: 0 with a client, 13 in 3 s with
       none, still 13 with the client back, `total` 0 throughout. UVC run: moved to
@@ -66,10 +81,9 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
       pipeline and tuning. *Why:* hardware blocks live in one place. *Done when:* `crates/kernel`
       holds nothing generic, and the V4L2 path behaves as before.
 4. [ ] **Move onto the Lemnos kernel module and Rust userspace drivers.** An own receiver replaces
-      the `rp1-cfe` fork, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
+      the stock `rp1-cfe`, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
       the OV9782 patches retire. The stock V4L2 path stays as the fallback. *Why:* one small module
-      of ours (claim, DMA, dma-buf, interrupts, registers) instead of forks of other people's
-      drivers. *Done when:* the Raze runs on it and matches the targets in [Now](#now), and the
+      of ours (claim, DMA, dma-buf, interrupts, registers) instead of other people's drivers. *Done when:* the Raze runs on it and matches the targets in [Now](#now), and the
       stock path still passes. *Numbers:* 552 rows by about 6.15 ms, the whole frame by 8.1-8.5 ms,
       a line signal by 5.74 ms.
 5. [ ] **`Submit::Own` in gpuisp: agree device ownership** per gpu-seam.md. *Why:* in a `daedalus`

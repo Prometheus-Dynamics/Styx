@@ -8,15 +8,27 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Removed
 
-- `kernel-modules/ov9282` and `kernel-modules/pispbe` with their packaging, and the OV9782's
-  1280x480 kernel mode: Styx runs on the image's stock `ov9282` and `pisp_be`. The `STYX_KMODS`
-  Buildroot tree moved to `kernel-modules/rp1-cfe/buildroot` and keeps only `styx-rp1-cfe`;
-  `BR2_LINUX_KERNEL_EXT_STYX_PISPBE` is gone.
+- `kernel-modules/ov9282`, `kernel-modules/pispbe` and `kernel-modules/rp1-cfe` with their
+  packaging, the `STYX_KMODS` Buildroot tree, and the OV9782's 1280x480 kernel mode: Styx runs on
+  the image's stock `ov9282`, `pisp_be` and `rp1-cfe`. `BR2_LINUX_KERNEL_EXT_STYX_PISPBE` and
+  `BR2_PACKAGE_STYX_RP1_CFE` are gone.
+- `styx_pisp::fe::FrontEnd::set_ilines`, `STYX_PISP_FE_ILINES` and `STYX_PISP_FE_LINES_PROBE`.
 - `styx_pisp::device::driver_queue_safe`. `PispOptions::pass_jobs` 0 now means one job at a time
   on every driver; more than one needs `unsafe_queued_passes`.
 
+### Changed
+
+- Sliced frames no longer need a patched receiver: the stock `FRAME_SYNC`, a delay from the
+  sensor's line time, and a marker below the slice line in each raw buffer say when the rows are
+  in; a frame whose marker is still there runs whole. `FrontEndDevice::enable_line_events` takes
+  the line, `set_line_delay`, `read_frame_starts`, `line_event_due` and `line_timer_counts` are
+  new, and `PispPipeline::slice_counts` reports early fires apart from late wake-ups.
+  `LineEvent::frame_start` is the event's time, microseconds after the buffer's timestamp.
+- `styx_kernel::poll_into` waits with nanosecond precision (`ppoll`).
+
 ### Added
 
+- `VideoDevice::map_buffer_writable`.
 - `metrics::Drops::unread` (OpenMetrics cause `unread`): consumer queue overflow with no consumer
   at all, from a service's capture running on after its last client left, until it pauses. It
   used to count as `queue_overflow`, so `drops` rose on an idle camera; now `queue_overflow`

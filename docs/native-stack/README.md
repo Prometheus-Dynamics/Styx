@@ -176,12 +176,11 @@ limits at that fps.
 
 Two kernels are in use: Raspberry Pi `stable_20250916` (6.12.47-v8-16k), and `rpi-7.2.y`
 (7.2.9-v8-16k at `53679a5`). Both
-`kernel-modules/` builds take `STYX_KERNEL=6.12|7.2` (`kernel-modules/kernel-env.sh`); the
-bridge and the PiSP back end use one source for both. Checked on the host for 7.2 (no device
+The `kernel-modules/` build takes `STYX_KERNEL=6.12|7.2` (`kernel-modules/kernel-env.sh`); the
+bridge uses one source for both. Checked on the host for 7.2 (no device
 run yet): the bridge builds unchanged (`W=1` and checkpatch clean, the subdev, async, fwnode,
 control and event APIs it uses did not change), the overlays' labels all exist in the 7.2
-`bcm2712-rpi-cm5-cm5io`/`bcm2712-rpi-5-b` trees, `pisp_be` re-imported with the Styx patch
-applying unchanged. In rpi-7.2.y the receiver module is `rp1-cfe-downstream`
+`bcm2712-rpi-cm5-cm5io`/`bcm2712-rpi-5-b` trees. In rpi-7.2.y the receiver module is `rp1-cfe-downstream`
 (`drivers/media/platform/raspberrypi/rp1_cfe/`, same driver name `rp1-cfe`, compatible
 `raspberrypi,rp1-cfe` and node names), next to the mainline driver `rp1-cfe`
 (`raspberrypi,rp1-cfe-upstream`, not used by the Raspberry Pi device trees). Its sensor-facing
