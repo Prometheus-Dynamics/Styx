@@ -1016,6 +1016,9 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- `styx_pisp::be::ops`: `Pixels::Grey8` jobs never finished and stopped the back end for every
+  client until a reboot. Grey now goes in as an `NV12` luma plane, so its input buffer is
+  `input_len`, 1.5x the image; `prepare` refuses 8-bit uncompressed Bayer input.
 - `convert.spv` had an 8-bit constant without the `Int8` capability
   (`VUID-VkShaderModuleCreateInfo-pCode-08737` on V3D): `glslc -O` folded the RGBA alpha store.
 - A shared plan (`plan_many`, the camera service's) started its capture without the

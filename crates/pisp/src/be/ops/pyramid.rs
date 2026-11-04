@@ -28,8 +28,8 @@ const STEP_2: u16 = 2 << 12;
 /// so output `x` sits on input `2x` at phase 0 for every pixel and tile, and the taps weigh
 /// `x` and `x + 1` by 512/1024 each: the block-aligned 2x2 mean, no shift. The value is
 /// within 1 of `(a + b + c + d + 2) >> 2`: 8-bit samples enter the 16-bit pipeline as
-/// `v * 257`, and the halvings and the 16-to-8-bit conversion round in ways the
-/// documentation doesn't fix (owed a CM5 measurement of which codes differ). Luma (and
+/// `v * 257`, and the result is truncated: on the Raze, 2026-11-03, never above that value and
+/// at most 1 below it. Luma (and
 /// grey) only; the chroma of YUV inputs passes through the back end's 4:4:4 stage and is
 /// not claimed.
 pub fn box2(pixels: Pixels, size: (u16, u16)) -> Result<BeOp, OpError> {
@@ -58,8 +58,8 @@ pub fn box2(pixels: Pixels, size: (u16, u16)) -> Result<BeOp, OpError> {
 /// output 0 (`out`) and a 4x area downscale on output 1 (`out1`, a quarter of `size`).
 ///
 /// Exactness: output 0 as [`box2`]. Output 1 is the 4x4 block mean of the input, which
-/// differs from halving output 0 again by at most 1 (that rounds twice); its own final
-/// rounding as `downscale`'s (owed a CM5 measurement).
+/// differs from halving output 0 again by at most 1 (that rounds twice); truncated as
+/// `downscale`'s.
 pub fn pyramid2(pixels: Pixels, size: (u16, u16)) -> Result<BeOp, OpError> {
     if !size.0.is_multiple_of(4) || !size.1.is_multiple_of(4) {
         return Err(OpError::Factor(4));

@@ -11,8 +11,10 @@ const CAPABILITY_INT8: u32 = 39;
 /// The widths of the constants of `spv` narrower than 32 bits its capabilities do not allow.
 fn invalid_constants(spv: &[u8]) -> Vec<u32> {
     let w: Vec<u32> = spv
-        .chunks_exact(4)
-        .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(|&c| u32::from_le_bytes(c))
         .collect();
     assert_eq!(w[0], 0x0723_0203, "not SPIR-V");
     let (mut caps, mut ints, mut consts) = (Vec::new(), Vec::new(), Vec::new());

@@ -177,9 +177,12 @@ only the words that differ (enables, crops, formats, TDN) are written. See
   halving with exact geometry and two pyramid levels per job (`box2`, `pyramid2`), tone LUT
   through the gamma block, a 5x5 sharpen kernel, demosaic + CCM with offsets), each a `BeOp`
   with a capability name and what its configuration makes exact; `device::BeImageDevice` runs
-  one on the caller's dma-bufs. Grey goes in through the greyscale Bayer path with RGB to YCbCr
-  on, so channel 0 (what a `GREY` output writes) is luma equal to the input. Written, untested
-  on board.
+  one on the caller's dma-bufs. Grey goes in as the luma plane of an `NV12` image, so the input
+  buffer has room for the chroma (`input_len`), never written or read into the result; a `GREY`
+  output writes channel 0. 8-bit uncompressed input on the Bayer path never finishes and stops
+  the engine for every client until a reboot (`prepare` refuses it), and the RGB input always
+  reads three interleaved channels. Raze, 2026-11-03: 4232 runs on node group 1 beside live
+  frames on group 0, 0 failed and 0 drops. `box2`, `downscale` and `pyramid2` truncate.
 - Per-frame configs in `styx-pipeline` (`pisp_be::BeConfigBuilder`): the back end config and
   tiles are prepared once and patched where the algorithms' settings changed; see
   [pipeline.md](pipeline.md#pisp-path) for the frame path and its costs. The stock driver writes

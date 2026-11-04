@@ -55,18 +55,45 @@ fn downscale_prepares_on_output_1() {
 }
 
 #[test]
-fn grey_runs_the_mono_bayer_path_into_luma() {
-    let op = downscale(Pixels::Grey8, (64, 64), 2).unwrap();
+fn grey_runs_the_rgb_input() {
+    let mut op = downscale(Pixels::Grey8, (64, 64), 2).unwrap();
     let g = op.backend.config().global;
-    assert_eq!(g.bayer_order, BayerOrder::Greyscale as u8);
-    assert_eq!(g.bayer_enables, bayer_enable::INPUT);
-    assert_ne!(g.rgb_enables & rgb_enable::YCBCR, 0);
-    assert_eq!(g.rgb_enables & rgb_enable::INPUT, 0);
-    // The JPEG luma row sums to exactly 1.0, so luma is the input.
-    let y = &op.backend.config().ycbcr.coeffs[..3];
-    assert_eq!(y.iter().map(|&c| i32::from(c)).sum::<i32>(), 1024);
-    let op = downscale(Pixels::Nv12, (64, 64), 2).unwrap();
-    assert_eq!(op.backend.config().global.bayer_enables, 0);
+    assert_eq!(g.bayer_enables, 0);
+    assert_ne!(g.rgb_enables & rgb_enable::INPUT, 0);
+    // Nothing between input and output that would mix the one channel with the empty two.
+    assert_eq!(g.rgb_enables & rgb_enable::YCBCR, 0);
+    prepares(&mut op);
+}
+
+#[test]
+fn eight_bit_uncompressed_bayer_input_is_refused() {
+    let mut be = BackEnd::new();
+    be.set_global(
+        bayer_enable::INPUT,
+        rgb_enable::output(0),
+        BayerOrder::Greyscale,
+    );
+    let mut op = BeOp {
+        backend: be,
+        output: 0,
+        input: image((64, 64), image_format::BPS_8),
+        input_fourcc: *b"GREY",
+        out: image((64, 64), image_format::BPS_8),
+        out_fourcc: *b"GREY",
+        out1: None,
+    };
+    op.set_formats(
+        ImageFormatConfig {
+            stride: 64,
+            ..op.input
+        },
+        ImageFormatConfig {
+            stride: 64,
+            ..op.out
+        },
+    );
+    let e = op.backend.prepare().unwrap_err().to_string();
+    assert!(e.contains("stalls"), "{e}");
 }
 
 #[test]

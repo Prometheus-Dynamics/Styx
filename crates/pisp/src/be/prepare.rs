@@ -200,6 +200,11 @@ impl BackEnd {
             if decompress && input.format & f::BPS_MASK != f::BPS_8 {
                 return fail("compressed input must be 8 bit");
             }
+            // Raze, 2026-11-03: the job starts and never finishes, and the engine, shared by every
+            // client, stays stuck until a reboot. 16-bit input runs the same job in 0.2 ms.
+            if !compressed && input.format & f::BPS_MASK == f::BPS_8 {
+                return fail("8-bit uncompressed Bayer input stalls the back end");
+            }
         } else if (input.stride & 15 != 0) || (input.stride2 & 15 != 0) {
             return fail("input strides must be 16-byte aligned");
         }

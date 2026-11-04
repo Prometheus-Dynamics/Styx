@@ -34,22 +34,16 @@ user lifts them.
       a frame; CPU software ISP 59.98 fps, 12.3 ms, 9.5 ms CPU. Estimated 4-8 ms GPU against
       2.6-3.0 ms fp16 NEON. `styx-wgpu`'s pyramid on the same
       GPU: 1.67 ms p50 and 0.38 ms CPU for 3 levels (42fb407).
-- [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`:
-      written, untested on board). *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs,
-      5x5 filters and demosaic + CCM onto the BE memory to memory on its own dma-bufs. *Done when:*
-      each of `styx.pisp.{resample,downscale,lut,filter5x5,demosaic_ccm,box2,pyramid2}` runs on
-      the CM5 and its exactness is measured: downscale, box2 and pyramid2 against
-      `(a+b+c+d+2)>>2` (which codes differ, if any, and whether the rounding truncates), resample
-      against the CPU reference (max abs error), the LUT against `LutFit`, the 5x5 and demosaic
-      as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
-      `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
-      downscaler after all (libpisp says output 1 only). *Blocked by:* a GREY job the hardware never finishes: since 2ea67b8
-      (REQBUFS fixed) GREY jobs wedge the back end on Raze #2 (2026-11-03): `downscale` on output 1
-      and `lut` on output 0, with and without a camera on group 0, stopping that camera until a
-      reboot. `demosaic_ccm` and live mono run 16-bit input, these 8-bit: `lut-y16` and `lut-nv12`
-      split input from output. One op per process (`be_ops_check WxH GROUP OP`), camera stopped.
-      *Numbers:* `demosaic_ccm` with the
-      identity matrix: 0.223 ms a 640x480 job, four flat RGGB patches come out exactly.
+- [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`).
+      *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs, 5x5 filters and demosaic + CCM
+      onto the BE memory to memory on its own dma-bufs. *Done when:* `filter5x5` has a measured
+      tolerance (a zero kernel should pass the image) and `resample` a CPU reference (max abs
+      error); `be_ops_check` compares it with the 2x2 mean only, a sanity bound. *Blocked by:* a
+      board slot. *Numbers:* Raze #2, 2026-11-03, GREY 640x480, buffers from `linux,cma`: `box2`,
+      `downscale`, `pyramid2` 0.40-0.42 ms, truncated (59280 of 76800 one below rounding half up,
+      none further; 10680 of 19200 on level 2); `lut` 0.72 ms, max 5 from the table against
+      `LutFit`'s predicted 4; `resample` 0.40 ms; `demosaic_ccm` 0.22 ms, four flat patches exact.
+      4232 runs on group 1 beside live frames on group 0: 0 failed, 0 drops.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
       *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* nothing for the PiSP path; a
@@ -214,9 +208,10 @@ memory when it runs.
       Flame board and its BSP.
 - [ ] **pispbe: a job that never finishes** (`job_timeout_ms` watchdog in the module: a stuck job
       returned error buffers on Raze #2 in about 2 s and the process exited). *Why:* a stuck job left
-      an unkillable process and stopped every client of the back end silently. *Done when:* BE ops
-      run beside live frames with no drops. *Blocked by:* the GREY job below; the engine stays stuck
-      until a reboot, no reset is known. *Numbers:* none yet.
+      an unkillable process and stopped every client of the back end silently. *Done when:* the
+      engine recovers without a reboot, or that is shown impossible. *Blocked by:* no reset of the
+      block is known: it stayed stuck through a clock gate and the module's reload.
+      *Numbers:* error buffer about 2 s after queueing (`job_timeout_ms` 1000, client wait 2 s).
 - [ ] **pispbe patch: carried** (user decision: we keep carrying it; the drafts in
       `kernel-modules/pispbe/README.md` stay unsent, nothing gets filed). *Why:* it takes the config
       write from 117 to 8 µs per job and makes queued jobs safe; the stock driver overwrites a held

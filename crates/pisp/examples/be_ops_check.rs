@@ -8,9 +8,7 @@
 //!
 //! `OP` runs one of `downscale`, `box2`, `pyramid2`, `resample`, `lut`, `filter5x5` or `demosaic`;
 //! `downscale-rgb` and `resample-rgb` run those on `RGB3` (the RGB input, no greyscale Bayer path)
-//! and say only whether the job finishes; `lut-y16` runs the LUT from 16-bit `Y16` in (the width
-//! a mono camera's frames are) and `lut-nv12` to `NV12` out, likewise. None runs without being
-//! named.
+//! and say only whether the job finishes. Neither runs without being named.
 //! The back end is one engine whichever group a job comes through: a job that never finishes
 //! stops a camera on the other group too, until a reboot. Stop the camera first.
 //!
@@ -23,8 +21,8 @@
 //! - `demosaic_ccm` on flat Bayer patches with the identity matrix: the RGB each patch comes
 //!   out as.
 //!
-//! Every op but demosaic takes `GREY` through the greyscale Bayer path, so a run also says the
-//! input node accepts it.
+//! Every op but demosaic takes `GREY` through the RGB input, so a run also says the one channel
+//! comes out unchanged.
 
 use std::os::fd::AsFd;
 use std::time::Duration;
@@ -34,7 +32,7 @@ use styx_kernel::dma_heap::{Access, DmaBuf, DmaHeap, sync};
 use styx_pisp::be::defaults;
 use styx_pisp::be::ops::{self, BeOp, Pixels};
 use styx_pisp::device::BeImageDevice;
-use styx_pisp::uapi::{BayerOrder, image_format};
+use styx_pisp::uapi::BayerOrder;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -113,6 +111,10 @@ fn compare(name: &str, got: &[u8], want: &[u8]) {
         "  {name}: {differ} of {} differ, max {max}, {below} exactly one below",
         want.len()
     );
+    if differ != 0 {
+        println!("    got  {:?}", &got[..got.len().min(24)]);
+        println!("    want {:?}", &want[..want.len().min(24)]);
+    }
 }
 
 struct Runner {
@@ -218,24 +220,6 @@ fn main() -> Result<()> {
     if only.as_deref() == Some("resample-rgb") {
         let op = ops::resample(Pixels::Rgb888, (w, h), (w / 2, h / 2), &defaults::LANCZOS3)?;
         report("resample to half, RGB3", rgb(op));
-    }
-    let identity: [u8; 256] = core::array::from_fn(|v| v as u8);
-    if only.as_deref() == Some("lut-y16") {
-        let (mut op, _) = ops::lut(Pixels::Grey8, (w, h), &identity)?;
-        op.input.format = image_format::BPS_16;
-        op.input_fourcc = *b"Y16 ";
-        op.set_formats(op.input, op.out);
-        let res = r.run(op, |b, op| {
-            fill_grey(b, wu * 2, hu, op.input.stride as usize)
-        });
-        report("lut, Y16 in, GREY out", res);
-    }
-    if only.as_deref() == Some("lut-nv12") {
-        let (mut op, _) = ops::lut(Pixels::Grey8, (w, h), &identity)?;
-        op.out.format = Pixels::Nv12.pisp_format();
-        op.out_fourcc = Pixels::Nv12.fourcc();
-        op.set_formats(op.input, op.out);
-        report("lut, GREY in, NV12 out", r.grey(op));
     }
     if want("downscale")
         && let Some((got, _)) = report(

@@ -4,9 +4,9 @@
 //! 5x5 filter, demosaic with a colour matrix. Each names its capability ([`CAPABILITIES`]) and
 //! says how exact it is.
 //!
-//! Written from `pisp_be_config.h` and libpisp's back end; untested on the board. The
-//! exactness statements are what the configuration fixes; the hardware's rounding inside a
-//! block is owed a CM5 measurement.
+//! Written from `pisp_be_config.h` and libpisp's back end, and run on the Raze. The exactness
+//! statements are what the configuration fixes, with the rounding measured where each op says
+//! so.
 
 use super::{BackEnd, defaults};
 use crate::format::formats;
@@ -51,7 +51,9 @@ pub const CAPABILITIES: [&str; 7] = [
 /// A caller image's pixel layout (input and output alike).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Pixels {
-    /// 8-bit grey (`GREY`), through the greyscale Bayer path as a mono sensor's frames go.
+    /// 8-bit grey (`GREY`) out, from the luma plane of an `NV12` input: the input buffer has
+    /// room for the chroma after it ([`crate::device::BeImageDevice::input_len`]), which is not
+    /// read into the result and need not be written.
     Grey8,
     /// Packed R, G, B bytes (`RGB3`).
     Rgb888,
@@ -181,30 +183,26 @@ fn image((width, height): (u16, u16), format: u32) -> ImageFormatConfig {
 /// A job reading `pixels` (`size`) and writing them to output `output` at `out`, every block
 /// between off: the image passes unchanged but for what the op enables.
 ///
-/// Grey goes in as greyscale Bayer (R = G = B after the Bayer stages, as `simple_bayer`
-/// runs a mono sensor) with RGB to YCbCr on (JPEG, its luma row summing to exactly 1.0) and
-/// not inverted, so channel 0, the one a `GREY` output writes, is luma equal to the input,
-/// the channel the sharpen block works on.
+/// Grey goes in as the luma plane of an `NV12` image, its chroma unread by a `GREY` output. 8-bit
+/// uncompressed input on the Bayer path stalls the back end, and the RGB input always reads
+/// three interleaved channels, whatever the format says.
 fn passthrough(pixels: Pixels, size: (u16, u16), output: usize, out: (u16, u16)) -> BeOp {
-    let mut backend = BackEnd::new();
-    if pixels == Pixels::Grey8 {
-        backend.set_global(
-            bayer_enable::INPUT,
-            rgb_enable::YCBCR | rgb_enable::output(output),
-            BayerOrder::Greyscale,
-        );
+    let input = if pixels == Pixels::Grey8 {
+        Pixels::Nv12
     } else {
-        backend.set_global(
-            0,
-            rgb_enable::INPUT | rgb_enable::output(output),
-            BayerOrder::Rggb,
-        );
-    }
+        pixels
+    };
+    let mut backend = BackEnd::new();
+    backend.set_global(
+        0,
+        rgb_enable::INPUT | rgb_enable::output(output),
+        BayerOrder::Rggb,
+    );
     let mut op = BeOp {
         backend,
         output,
-        input: image(size, pixels.pisp_format()),
-        input_fourcc: pixels.fourcc(),
+        input: image(size, input.pisp_format()),
+        input_fourcc: input.fourcc(),
         out: image(out, pixels.pisp_format()),
         out_fourcc: pixels.fourcc(),
         out1: None,
@@ -247,8 +245,8 @@ pub fn resample(
 /// the downscaler: each output pixel the mean of a `factor` x `factor` block.
 ///
 /// Exactness: an area mean over whole, non-overlapping blocks (`size` a multiple of
-/// `factor`); the division's rounding is the hardware's (owed a CM5 measurement against an
-/// area resize rounding half up). [`pyramid2`] writes two levels in one job.
+/// `factor`), truncated: Raze, 2026-11-03, by 2 at 640x480, never above the mean rounded half up
+/// and at most 1 below it. [`pyramid2`] writes two levels in one job.
 pub fn downscale(pixels: Pixels, size: (u16, u16), factor: u16) -> Result<BeOp, OpError> {
     check_size(size)?;
     if !(2..=8).contains(&factor)
@@ -361,8 +359,9 @@ fn fit(table: &[u8; 256], gamma: &BeGammaConfig) -> LutFit {
 /// is `blur - identity`.
 ///
 /// Exactness: not claimed. The response arithmetic (threshold, strength and function scales)
-/// is documented by field name only; tolerance owed a CM5 measurement. Luma only: chroma
-/// passes unchanged.
+/// is documented by field name only; tolerance owed a CM5 measurement (a centre-24 high-pass
+/// saturated every sample read on the Raze; a zero kernel, which should pass the image, is
+/// not measured yet). Luma only: chroma passes unchanged.
 pub fn filter5x5(
     pixels: Pixels,
     size: (u16, u16),
