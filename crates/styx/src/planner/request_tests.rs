@@ -40,6 +40,7 @@ fn camera(modes: Vec<Mode>) -> ProbedDevice {
         identity: DeviceIdentity {
             display: "test-camera".into(),
             keys: Vec::new(),
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::Virtual,

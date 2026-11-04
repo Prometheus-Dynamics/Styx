@@ -88,7 +88,11 @@ pub(crate) fn read_header(r: &mut impl Read) -> Result<RecordingHeader, ReplayEr
         }
     };
     Ok(RecordingHeader {
-        device: DeviceIdentity { display, keys },
+        device: DeviceIdentity {
+            display,
+            keys,
+            product: None,
+        },
         backend,
         format,
         interval,

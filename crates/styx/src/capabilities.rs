@@ -563,6 +563,7 @@ mod tests {
             identity: crate::DeviceIdentity {
                 display: "cap-test".into(),
                 keys: vec!["cap-test".into()],
+                product: None,
             },
             backends: vec![crate::ProbedBackend {
                 kind: backend,

@@ -229,3 +229,49 @@ mod merged {
         assert_eq!(paths(&devices[1]), ["/dev/video2", "/dev/video3"]);
     }
 }
+
+#[cfg(any(
+    feature = "v4l2",
+    feature = "libcamera",
+    feature = "native",
+    feature = "uvc"
+))]
+fn props(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+    pairs
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect()
+}
+
+#[cfg(any(
+    feature = "v4l2",
+    feature = "libcamera",
+    feature = "native",
+    feature = "uvc"
+))]
+#[test]
+fn a_product_name_comes_from_usb_strings_then_ids_then_the_sensor() {
+    let name = |p: &[(&str, &str)]| product_name(&props(p));
+    assert_eq!(
+        name(&[("usb_manufacturer", "Acme"), ("usb_product_name", "Eye 2")]).as_deref(),
+        Some("Acme Eye 2")
+    );
+    assert_eq!(
+        name(&[
+            ("usb_manufacturer", "Acme"),
+            ("usb_product_name", "ACME Eye")
+        ])
+        .as_deref(),
+        Some("ACME Eye"),
+        "a product string naming its maker is not doubled"
+    );
+    assert_eq!(
+        name(&[("usb_vendor", "046D"), ("usb_product", "0825")]).as_deref(),
+        Some("Logitech C270")
+    );
+    assert_eq!(name(&[("sensor", "ov9782")]).as_deref(), Some("OV9782"));
+    assert_eq!(
+        name(&[("usb_vendor", "1234"), ("usb_product", "5678")]),
+        None
+    );
+}

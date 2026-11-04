@@ -37,6 +37,7 @@ fn camera(dir: &Path) -> ProbedDevice {
         device: styx::DeviceIdentity {
             display: "ov9782 replay".into(),
             keys: vec![],
+            product: None,
         },
         backend: "native".into(),
         format,

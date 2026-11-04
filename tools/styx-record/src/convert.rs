@@ -187,6 +187,7 @@ pub fn run(a: &ConvertArgs) -> Result<Converted, String> {
         device: styx::DeviceIdentity {
             display: name,
             keys: vec![format!("file:{input}")],
+            product: None,
         },
         backend: "file".into(),
         format,

@@ -42,6 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         device: styx::DeviceIdentity {
             display: "replay_isp_bench".into(),
             keys: vec![],
+            product: None,
         },
         backend: "native".into(),
         format,

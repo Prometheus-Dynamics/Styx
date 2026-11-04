@@ -165,6 +165,7 @@ fn resolved_descriptor_returns_only_selected_mode() {
         identity: crate::DeviceIdentity {
             display: "virtual".to_string(),
             keys: vec!["virtual".to_string()],
+            product: None,
         },
         backends: vec![backend],
     };
@@ -223,6 +224,7 @@ fn camera_request_selects_best_matching_mode() {
         identity: crate::DeviceIdentity {
             display: "virtual".to_string(),
             keys: vec!["virtual".to_string()],
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::Virtual,
@@ -265,6 +267,7 @@ fn camera_request_uses_backend_priority() {
         identity: crate::DeviceIdentity {
             display: "dual".to_string(),
             keys: vec!["dual".to_string()],
+            product: None,
         },
         backends: vec![
             ProbedBackend {
@@ -329,6 +332,7 @@ fn camera_request_accepts_string_format_priority_and_selects_all() {
         identity: crate::DeviceIdentity {
             display: "formats-a".to_string(),
             keys: vec!["formats-a".to_string()],
+            product: None,
         },
         backends: vec![
             make_backend(BackendKind::Virtual, rg24),
@@ -339,6 +343,7 @@ fn camera_request_accepts_string_format_priority_and_selects_all() {
         identity: crate::DeviceIdentity {
             display: "formats-b".to_string(),
             keys: vec!["formats-b".to_string()],
+            product: None,
         },
         backends: vec![make_backend(BackendKind::Virtual, rg24)],
     };
@@ -397,6 +402,7 @@ fn camera_request_filters_and_ranks_resolution_priority() {
         identity: crate::DeviceIdentity {
             display: "resolutions".to_string(),
             keys: vec!["resolutions".to_string()],
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::Virtual,

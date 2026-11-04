@@ -206,6 +206,12 @@ fn properties(info: &UsbCameraInfo) -> Vec<(String, String)> {
     if let Some(s) = &info.serial {
         p.push(("serial".into(), s.clone()));
     }
+    if let Some(s) = &info.manufacturer {
+        p.push(("usb_manufacturer".into(), s.clone()));
+    }
+    if let Some(s) = &info.product {
+        p.push(("usb_product_name".into(), s.clone()));
+    }
     p
 }
 
@@ -229,9 +235,11 @@ fn merge(devices: &mut Vec<ProbedDevice>, info: &UsbCameraInfo, backend: ProbedB
         &format!("{:04x}", info.vendor_id),
         &format!("{:04x}", info.product_id),
     );
+    let product = device_identity::product_name(&backend.properties);
     match devices.iter_mut().find(|d| d.identity.keys.contains(&usb)) {
         Some(d) => {
             d.backends.push(backend);
+            d.identity.product = d.identity.product.take().or(product);
             if !d.identity.keys.contains(&key) {
                 d.identity.keys.push(key);
             }
@@ -240,6 +248,7 @@ fn merge(devices: &mut Vec<ProbedDevice>, info: &UsbCameraInfo, backend: ProbedB
             identity: DeviceIdentity {
                 display: info.name(),
                 keys: vec![info.bus_info.clone(), usb, key],
+                product,
             },
             backends: vec![backend],
         }),

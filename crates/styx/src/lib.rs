@@ -312,10 +312,15 @@ impl ProbedDevice {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "schema", derive(utoipa::ToSchema))]
 pub struct DeviceIdentity {
-    /// Display-friendly identifier.
+    /// Stable name of the device: apps key on it, so it keeps its form. For people, show
+    /// `product`.
     pub display: String,
     /// Fingerprint keys used for matching.
     pub keys: Vec<String>,
+    /// Product name for people (`Logitech C270`, `OV9782`), when one is known: the device's own
+    /// strings, else a table of vendor:product ids, else the sensor's model.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub product: Option<String>,
 }
 
 /// Backend-specific probe failure.
@@ -546,6 +551,7 @@ pub(crate) fn probe_backends_with_errors_with_options(
 
 #[cfg(all(feature = "facade", any(feature = "v4l2", feature = "libcamera")))]
 fn merge_backend(devices: &mut Vec<ProbedDevice>, id: String, backend: ProbedBackend) {
+    let product = device_identity::product_name(&backend.properties);
     let new_keys: HashSet<String> = device_identity::derive_keys(&id, &backend.properties)
         .into_iter()
         .collect();
@@ -561,11 +567,15 @@ fn merge_backend(devices: &mut Vec<ProbedDevice>, id: String, backend: ProbedBac
             }
             existing.identity.keys.push(k);
         }
+        if existing.identity.product.is_none() {
+            existing.identity.product = product;
+        }
     } else {
         devices.push(ProbedDevice {
             identity: DeviceIdentity {
                 display: device_identity::pick_display_id(&id, &backend.properties),
                 keys: new_keys_vec,
+                product,
             },
             backends: vec![backend],
         });

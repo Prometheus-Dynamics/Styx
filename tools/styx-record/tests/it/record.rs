@@ -51,6 +51,7 @@ fn replay_camera_with(
         device: styx::DeviceIdentity {
             display: "ov9782 replay".into(),
             keys: vec!["replay:front".into()],
+            product: None,
         },
         backend: "native".into(),
         format,
@@ -598,6 +599,7 @@ fn round_trip_recording_of_a_grey_image() {
         device: styx::DeviceIdentity {
             display: "grey image".into(),
             keys: vec![],
+            product: None,
         },
         backend: "native".into(),
         format,

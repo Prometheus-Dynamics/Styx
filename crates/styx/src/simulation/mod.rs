@@ -316,6 +316,7 @@ pub fn make_simulation_device(
         identity: DeviceIdentity {
             display: name.to_string(),
             keys: vec![scene_path.to_string_lossy().to_string()],
+            product: None,
         },
         backends: vec![backend],
     }

@@ -269,11 +269,15 @@ fn merge_backend_into_devices(
                 existing.identity.keys.push(key);
             }
         }
+        if existing.identity.product.is_none() {
+            existing.identity.product = identity.product.clone();
+        }
     } else {
         devices.push(ProbedDevice {
             identity: crate::DeviceIdentity {
                 display: identity.display.clone(),
                 keys: new_keys_vec,
+                product: identity.product.clone(),
             },
             backends: vec![backend],
         });

@@ -80,6 +80,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         device: styx::DeviceIdentity {
             display: "record_bench".into(),
             keys: vec![],
+            product: None,
         },
         backend: "service".into(),
         format,

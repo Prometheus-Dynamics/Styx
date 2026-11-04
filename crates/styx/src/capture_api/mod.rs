@@ -394,6 +394,7 @@ pub fn make_virtual_device(name: &str, modes: impl IntoIterator<Item = Mode>) ->
         identity: DeviceIdentity {
             display: name.to_string(),
             keys: vec!["virtual".into(), name.to_string()],
+            product: None,
         },
         backends: vec![backend],
     }
@@ -505,6 +506,7 @@ pub fn make_netcam_device(
         identity: DeviceIdentity {
             display: name.to_string(),
             keys: vec![url.to_string()],
+            product: None,
         },
         backends: vec![backend],
     }
@@ -673,6 +675,7 @@ pub fn make_file_device(
                 .iter()
                 .filter_map(|p| p.to_str().map(|s| s.to_string()))
                 .collect(),
+            product: None,
         },
         backends: vec![backend],
     }

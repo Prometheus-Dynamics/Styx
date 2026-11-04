@@ -67,6 +67,49 @@ pub(crate) fn pick_display_id(id: &str, props: &[(String, String)]) -> String {
     id.to_string()
 }
 
+/// USB cameras that report no product string, by vendor:product.
+#[cfg(any(
+    feature = "v4l2",
+    feature = "libcamera",
+    feature = "native",
+    feature = "uvc"
+))]
+const USB_PRODUCTS: &[(&str, &str, &str)] = &[
+    ("045e", "075d", "Microsoft LifeCam Cinema"),
+    ("045e", "0779", "Microsoft LifeCam HD-3000"),
+    ("046d", "0825", "Logitech C270"),
+    ("046d", "082d", "Logitech C920"),
+    ("046d", "0843", "Logitech C930e"),
+    ("046d", "085c", "Logitech C922"),
+];
+
+/// The name people know a device by: its USB strings, then [`USB_PRODUCTS`], then its sensor's
+/// model in capitals. `None` when none of those is known.
+#[cfg(any(
+    feature = "v4l2",
+    feature = "libcamera",
+    feature = "native",
+    feature = "uvc"
+))]
+pub(crate) fn product_name(props: &[(String, String)]) -> Option<String> {
+    let maker = prop(props, "usb_manufacturer");
+    if let Some(name) = prop(props, "usb_product_name") {
+        return Some(match maker {
+            Some(m) if !name.to_lowercase().contains(&m.to_lowercase()) => format!("{m} {name}"),
+            _ => name.to_string(),
+        });
+    }
+    let (vendor, product) = (prop(props, "usb_vendor"), prop(props, "usb_product"));
+    if let (Some(vendor), Some(product)) = (vendor, product)
+        && let Some((.., name)) = USB_PRODUCTS
+            .iter()
+            .find(|(v, p, _)| v.eq_ignore_ascii_case(vendor) && p.eq_ignore_ascii_case(product))
+    {
+        return Some((*name).to_string());
+    }
+    prop(props, "sensor").map(str::to_uppercase)
+}
+
 /// The first non-empty value of a property, by name (ASCII case-insensitive), trimmed.
 fn prop<'a>(props: &'a [(String, String)], name: &str) -> Option<&'a str> {
     props

@@ -79,8 +79,9 @@ the CM5 (Styx's PiSP path; in-kernel timestamps per phase over 200 jobs, `functi
 4. **A job that never finishes fails instead of hanging.** The stock
    driver has no timeout: a job the hardware takes and never finishes keeps its buffers, so
    `stop_streaming` waits uninterruptibly (the process cannot be killed) and every later job, on
-   either node group, stays queued behind it. Raze, 2026-11-03: `be_ops_check` did this, with and
-   without a camera on the other group; only a reboot cleared it. Now a delayed work, armed while
+   either node group, stays queued behind it. Raze, 2026-11-03: `be_ops_check` did this on an
+   earlier build of this module, without the timeout, with and without a camera on the other
+   group; only a reboot cleared it. Not provoked on the unmodified driver. Now a delayed work, armed while
    the hardware holds a job and restarted by each interrupt, fires after `job_timeout_ms`
    (default 1000, writable at runtime, 0 off): it logs the status registers, returns the job's
    buffers and those of every job behind it with `VB2_BUF_STATE_ERROR`, and refuses jobs from then
@@ -102,6 +103,22 @@ changes and restores blocks): every NV12 output identical (md5) between the stoc
 the patched driver with and without `skip_unchanged_config`, after loading by `insmod` and
 after booting with it. libcamera (`<camera service>`, `styx-compare --backend libcamera`) runs
 on it unchanged.
+
+### Against the unmodified driver
+
+Raze #2, 2026-11-03, `pisp-be.ko` built from the import (`4296562`) against the image's kernel
+tree, alternated twice with this module (a build without item 4). Same binaries, OV9782:
+
+| | unmodified | this module |
+|---|---|---|
+| config `QBUF`, live 30 / 120 fps | 121 / 120 µs | 7.0 / 5.8 µs |
+| back end job median, live | 0.81 ms | 0.695 ms |
+| CPU per frame, 30 / 120 fps | 0.215 / 0.17 ms | 0.098 / 0.058 ms |
+| three passes at 120 fps, CPU per frame | 0.56 ms | 0.10 ms |
+| `be::ops` job p50, GREY 640x480 (`demosaic_ccm`) | 449-489 (316) µs | 328-368 (194) µs |
+
+Styx runs on the unmodified driver with no change, one job at a time (no `queue_safe`). A camera
+service at 30 fps delivered the same frames on both, no drops, at 2.6% against 1.9% of a core.
 
 ## Build, install, uninstall
 

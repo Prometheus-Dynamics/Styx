@@ -105,6 +105,7 @@ fn c270_recording() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
         device: DeviceIdentity {
             display: "c270 fixture".into(),
             keys: vec!["fixture:c270".into()],
+            product: None,
         },
         backend: "v4l2".into(),
         format,

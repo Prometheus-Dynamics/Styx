@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `DeviceIdentity::product`: a name for people (`Logitech C270`, `OV9782`), from the USB
+  strings, a small table of vendor:product ids, or the sensor's model. `display` keeps its form
+  for apps that key on it. Struct literals need the new field.
 - `pisp_be` module: `job_timeout_ms` (default 1000, 0 off). A job with no interrupt for that long
   fails with error buffers, along with every job behind it on either node group, and jobs fail at
   once until the hardware reads idle; before, it left an unkillable process and a silent stall.

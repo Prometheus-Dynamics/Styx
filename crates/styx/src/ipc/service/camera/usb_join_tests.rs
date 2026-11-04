@@ -46,6 +46,7 @@ fn usb2_webcam(name: &str) -> ProbedDevice {
         identity: DeviceIdentity {
             display: name.into(),
             keys: vec![format!("test:{name}")],
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::V4l2,

@@ -22,6 +22,7 @@ fn device(id: &str, keys: &[&str], path: &str) -> ProbedDevice {
         identity: DeviceIdentity {
             display: id.to_string(),
             keys: keys.iter().map(|key| (*key).to_string()).collect(),
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::V4l2,
@@ -59,6 +60,7 @@ fn diff_devices_ignores_key_and_property_order() {
         identity: DeviceIdentity {
             display: "cam-a".into(),
             keys: vec!["b".into(), "a".into()],
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::V4l2,
@@ -79,6 +81,7 @@ fn diff_devices_ignores_key_and_property_order() {
         identity: DeviceIdentity {
             display: "cam-a".into(),
             keys: vec!["a".into(), "b".into()],
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::V4l2,
@@ -108,6 +111,7 @@ fn normalize_probe_result_sorts_backend_descriptor_content() {
             identity: DeviceIdentity {
                 display: "cam-a".into(),
                 keys: vec!["b".into(), "a".into(), "a".into()],
+                product: None,
             },
             backends: vec![ProbedBackend {
                 kind: BackendKind::V4l2,
@@ -217,6 +221,7 @@ fn merge_probe_result_retains_untouched_backends() {
             identity: DeviceIdentity {
                 display: "cam".into(),
                 keys: vec!["shared".into()],
+                product: None,
             },
             backends: vec![
                 ProbedBackend {
@@ -405,6 +410,7 @@ fn finish_scoped_refresh_ignores_degraded_libcamera_removal() {
                 identity: DeviceIdentity {
                     display: "cam-a".into(),
                     keys: vec!["a".into(), "shared".into()],
+                    product: None,
                 },
                 backends: vec![
                     ProbedBackend {

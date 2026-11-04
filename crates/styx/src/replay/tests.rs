@@ -24,6 +24,7 @@ pub(super) fn header(format: MediaFormat) -> RecordingHeader {
         device: DeviceIdentity {
             display: "test camera".into(),
             keys: vec!["test:1".into()],
+            product: None,
         },
         backend: "libcamera".into(),
         format,

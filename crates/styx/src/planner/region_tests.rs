@@ -26,6 +26,7 @@ pub(super) fn pisp(isp: &str) -> ProbedDevice {
         identity: DeviceIdentity {
             display: "ov9782".into(),
             keys: Vec::new(),
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::Native,

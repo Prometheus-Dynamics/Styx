@@ -358,9 +358,10 @@ fn fit(table: &[u8; 256], gamma: &BeGammaConfig) -> LutFit {
 /// the kernel's response added at unit gain, `clamp(y + sum(k * neighbourhood))`. A high-pass
 /// kernel sums to 0; a smoothing filter is `blur - identity`, in whole coefficients.
 ///
-/// The gain is `func * strength * scale / 2^30` (`func` multiplies the response, it is not a
-/// transfer curve; a scale of 4096 reads as 0). `white` and `black` stay 0: set, they force
-/// samples to 255 and 0.
+/// Unit gain is `func` 4096, strength 256, scale 1024. `func` multiplies the response, it is
+/// not a transfer curve, and a scale of 4096 reads as 0. Lower gains are not measured to hold:
+/// the same product split differently came out up to 62 off on a strong kernel. `white` and
+/// `black` stay 0: set, they force samples to 255 and 0.
 ///
 /// Exactness: exact on the Raze, 2026-11-03, GREY 640x480: a zero kernel passes all 307200
 /// samples, and two high-passes equal the clamped sum on all 302736 samples clear of the 2-pixel

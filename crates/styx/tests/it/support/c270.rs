@@ -16,6 +16,7 @@ pub fn c270_recording(name: &str) -> PathBuf {
         device: DeviceIdentity {
             display: "c270 fixture".into(),
             keys: vec!["fixture:c270".into()],
+            product: None,
         },
         backend: "v4l2".into(),
         format,

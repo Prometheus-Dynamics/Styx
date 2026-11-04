@@ -350,6 +350,7 @@ pub(super) fn header_from_map(
         device: DeviceIdentity {
             display: get("device")?.clone(),
             keys: keys.lines().map(str::to_string).collect(),
+            product: None,
         },
         backend: get("backend")?.clone(),
         format: MediaFormat::new(

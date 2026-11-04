@@ -56,6 +56,7 @@ fn device(isp: &str) -> crate::ProbedDevice {
         identity: DeviceIdentity {
             display: "ov9782".into(),
             keys: vec!["native:ov9782".into()],
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::Native,

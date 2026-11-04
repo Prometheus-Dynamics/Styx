@@ -192,6 +192,7 @@ impl MediaFrames {
             device: DeviceIdentity {
                 display: name,
                 keys: vec![format!("file:{}", path.display())],
+                product: None,
             },
             backend: "file".into(),
             format,

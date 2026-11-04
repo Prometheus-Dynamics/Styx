@@ -226,6 +226,7 @@ pub(crate) fn probed_device(info: &CameraInfo) -> ProbedDevice {
         identity: DeviceIdentity {
             display: info.display_name(),
             keys: info.identity(),
+            product: crate::device_identity::product_name(&properties),
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::Native,
@@ -581,6 +582,7 @@ mod tests {
             identity: DeviceIdentity {
                 display: "ov9782".into(),
                 keys: vec!["native:ov9782".into()],
+                product: None,
             },
             backends: vec![ProbedBackend {
                 kind: BackendKind::Native,

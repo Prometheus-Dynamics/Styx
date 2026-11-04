@@ -40,6 +40,17 @@ fn read_usb_id(path: &std::path::Path, attr: &str) -> Option<String> {
         .filter(|s| s.len() == 4 && s.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
+/// A string of the node's USB device (sysfs `manufacturer` / `product`), absent on devices that
+/// report none.
+fn read_usb_string(path: &std::path::Path, attr: &str) -> Option<String> {
+    let node = path.file_name()?.to_string_lossy();
+    let sysfs = format!("/sys/class/video4linux/{node}/device/../{attr}");
+    std::fs::read_to_string(sysfs)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
 /// Whether virtual capture nodes (v4l2loopback, "OBS Virtual Camera", ...) are kept: set
 /// `STYX_V4L2_ALLOW_VIRTUAL=1`. They are skipped by default because they are usually fed by
 /// another application rather than being cameras; they are useful for testing.
@@ -194,6 +205,12 @@ fn build_info(path: &std::path::Path) -> Result<Probed, Box<dyn std::error::Erro
         }
         if let Some(product) = read_usb_id(path, "idProduct") {
             properties.push(("usb_product".into(), product));
+        }
+        if let Some(name) = read_usb_string(path, "manufacturer") {
+            properties.push(("usb_manufacturer".into(), name));
+        }
+        if let Some(name) = read_usb_string(path, "product") {
+            properties.push(("usb_product_name".into(), name));
         }
     }
     Ok(Probed::Camera(V4l2DeviceInfo {

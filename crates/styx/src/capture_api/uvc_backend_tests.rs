@@ -73,6 +73,7 @@ fn v4l2_device() -> ProbedDevice {
                 "usb-xhci-hcd.1-1".into(),
                 "046d:0825@usb-xhci-hcd.1-1".into(),
             ],
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind: BackendKind::V4l2,

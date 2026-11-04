@@ -23,6 +23,7 @@ pub(super) fn device(kind: BackendKind, handle: BackendHandle, modes: Vec<Mode>)
         identity: DeviceIdentity {
             display: "test-camera".into(),
             keys: Vec::new(),
+            product: None,
         },
         backends: vec![ProbedBackend {
             kind,
