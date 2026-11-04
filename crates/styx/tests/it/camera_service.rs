@@ -92,10 +92,15 @@ fn clients_ask_for_frames_and_share_one_capture() {
     frame(&detector);
 
     service.stop();
-    assert!(matches!(
-        detector.recv(Duration::from_secs(1)),
-        RecvOutcome::Closed | RecvOutcome::Empty
-    ));
+    // Frames already on their way still arrive; then it ends.
+    let mut last = detector.recv(Duration::from_secs(1));
+    for _ in 0..16 {
+        if !matches!(last, RecvOutcome::Data(_)) {
+            break;
+        }
+        last = detector.recv(Duration::from_secs(1));
+    }
+    assert!(matches!(last, RecvOutcome::Closed | RecvOutcome::Empty));
     let _ = std::fs::remove_file(recording);
 }
 
