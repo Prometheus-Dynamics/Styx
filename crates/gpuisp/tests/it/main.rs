@@ -15,4 +15,5 @@ mod jpeg;
 mod post;
 mod quality;
 mod shaders;
+mod spirv;
 mod variants;

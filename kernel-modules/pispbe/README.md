@@ -76,7 +76,7 @@ the CM5 (Styx's PiSP path; in-kernel timestamps per phase over 200 jobs, `functi
    validates that copy, and copies only the validated number of tiles into the coherent buffer
    the hardware reads them from. The job uses the copy.
 
-4. **A job that never finishes fails instead of hanging.** Written, untested on board. The stock
+4. **A job that never finishes fails instead of hanging.** The stock
    driver has no timeout: a job the hardware takes and never finishes keeps its buffers, so
    `stop_streaming` waits uninterruptibly (the process cannot be killed) and every later job, on
    either node group, stays queued behind it. Raze, 2026-11-03: `be_ops_check` did this, with and
@@ -86,7 +86,10 @@ the CM5 (Styx's PiSP path; in-kernel timestamps per phase over 200 jobs, `functi
    buffers and those of every job behind it with `VB2_BUF_STATE_ERROR`, and refuses jobs from then
    on, each failing at once. No reset of the block is known, so this makes the failure visible
    and killable; it does not revive the hardware. The refusal lifts at the next runtime resume
-   only if the registers read idle; otherwise a reboot is still needed.
+   only if the registers read idle; otherwise a reboot is still needed. Raze #2, 2026-11-03: a
+   stuck job came back as an error buffer in about 2 s and the process exited; the engine stayed
+   stuck through a clock gate (status `0x2`, started one ahead of done), and a reloaded module
+   then fails its probe with "HW is stuck or busy" though `insmod` returns 0.
 
 Not changed: the per-job `kzalloc` of the job descriptor (~0.2 µs) and the address readback.
 

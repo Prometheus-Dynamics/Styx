@@ -44,10 +44,11 @@ user lifts them.
       as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
       `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
       downscaler after all (libpisp says output 1 only). *Blocked by:* a GREY job the hardware never finishes: since 2ea67b8
-      (REQBUFS fixed) the first GREY op, `downscale` on output 1, wedges the back end on Raze #2
-      (2026-11-03), one interrupt then none, with and without a camera on group 0, and stops that
-      camera until a reboot. Same device layer as `demosaic_ccm`, so the job's config is the lead.
-      Run one op per process (`be_ops_check WxH GROUP OP`), camera stopped. *Numbers:* `demosaic_ccm` with the
+      (REQBUFS fixed) GREY jobs wedge the back end on Raze #2 (2026-11-03): `downscale` on output 1
+      and `lut` on output 0, with and without a camera on group 0, stopping that camera until a
+      reboot. `demosaic_ccm` and live mono run 16-bit input, these 8-bit: `lut-y16` and `lut-nv12`
+      split input from output. One op per process (`be_ops_check WxH GROUP OP`), camera stopped.
+      *Numbers:* `demosaic_ccm` with the
       identity matrix: 0.223 ms a 640x480 job, four flat RGGB patches come out exactly.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
@@ -211,10 +212,11 @@ memory when it runs.
       pipeline selection as RK3562). *Why:* the Flame board. *Done when:* rkisp, rkcif graph and
       rkvenc run the OV9782 within the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a
       Flame board and its BSP.
-- [ ] **pispbe: a job that never finishes** (`job_timeout_ms` watchdog in the module: written, untested
-      on board). *Why:* a stuck job left an unkillable process and stopped every client of the back
-      end silently. *Done when:* a stuck job returns error buffers on the board and `close` returns,
-      and BE ops run beside live frames with no drops. *Blocked by:* a board slot. *Numbers:* none yet.
+- [ ] **pispbe: a job that never finishes** (`job_timeout_ms` watchdog in the module: a stuck job
+      returned error buffers on Raze #2 in about 2 s and the process exited). *Why:* a stuck job left
+      an unkillable process and stopped every client of the back end silently. *Done when:* BE ops
+      run beside live frames with no drops. *Blocked by:* the GREY job below; the engine stays stuck
+      until a reboot, no reset is known. *Numbers:* none yet.
 - [ ] **pispbe patch: carried** (user decision: we keep carrying it; the drafts in
       `kernel-modules/pispbe/README.md` stay unsent, nothing gets filed). *Why:* it takes the config
       write from 117 to 8 µs per job and makes queued jobs safe; the stock driver overwrites a held

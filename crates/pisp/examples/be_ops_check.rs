@@ -6,7 +6,11 @@
 //! be_ops_check [WIDTHxHEIGHT] [GROUP] [OP]   default 640x480 on node group 0, every op
 //! ```
 //!
-//! `OP` runs one of `downscale`, `box2`, `pyramid2`, `resample`, `lut`, `filter5x5` or `demosaic`.
+//! `OP` runs one of `downscale`, `box2`, `pyramid2`, `resample`, `lut`, `filter5x5` or `demosaic`;
+//! `downscale-rgb` and `resample-rgb` run those on `RGB3` (the RGB input, no greyscale Bayer path)
+//! and say only whether the job finishes; `lut-y16` runs the LUT from 16-bit `Y16` in (the width
+//! a mono camera's frames are) and `lut-nv12` to `NV12` out, likewise. None runs without being
+//! named.
 //! The back end is one engine whichever group a job comes through: a job that never finishes
 //! stops a camera on the other group too, until a reboot. Stop the camera first.
 //!
@@ -30,7 +34,7 @@ use styx_kernel::dma_heap::{Access, DmaBuf, DmaHeap, sync};
 use styx_pisp::be::defaults;
 use styx_pisp::be::ops::{self, BeOp, Pixels};
 use styx_pisp::device::BeImageDevice;
-use styx_pisp::uapi::BayerOrder;
+use styx_pisp::uapi::{BayerOrder, image_format};
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -200,6 +204,39 @@ fn main() -> Result<()> {
         }
     };
 
+    let rgb = |op| {
+        r.run(op, |b, op| {
+            fill_grey(b, wu * 3, hu, op.input.stride as usize)
+        })
+    };
+    if only.as_deref() == Some("downscale-rgb") {
+        report(
+            "downscale x2, RGB3",
+            rgb(ops::downscale(Pixels::Rgb888, (w, h), 2)?),
+        );
+    }
+    if only.as_deref() == Some("resample-rgb") {
+        let op = ops::resample(Pixels::Rgb888, (w, h), (w / 2, h / 2), &defaults::LANCZOS3)?;
+        report("resample to half, RGB3", rgb(op));
+    }
+    let identity: [u8; 256] = core::array::from_fn(|v| v as u8);
+    if only.as_deref() == Some("lut-y16") {
+        let (mut op, _) = ops::lut(Pixels::Grey8, (w, h), &identity)?;
+        op.input.format = image_format::BPS_16;
+        op.input_fourcc = *b"Y16 ";
+        op.set_formats(op.input, op.out);
+        let res = r.run(op, |b, op| {
+            fill_grey(b, wu * 2, hu, op.input.stride as usize)
+        });
+        report("lut, Y16 in, GREY out", res);
+    }
+    if only.as_deref() == Some("lut-nv12") {
+        let (mut op, _) = ops::lut(Pixels::Grey8, (w, h), &identity)?;
+        op.out.format = Pixels::Nv12.pisp_format();
+        op.out_fourcc = Pixels::Nv12.fourcc();
+        op.set_formats(op.input, op.out);
+        report("lut, GREY in, NV12 out", r.grey(op));
+    }
     if want("downscale")
         && let Some((got, _)) = report(
             "downscale x2 (output 1)",

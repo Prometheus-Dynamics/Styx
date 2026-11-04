@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <linux/version.h>
 #include <linux/workqueue.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
@@ -678,12 +679,19 @@ err_return_buffers:
 	return -ENODEV;
 }
 
+/* system_wq's name from 6.17, which warns at the old one; the module builds on 6.12 too. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 17, 0)
+#define PISPBE_WATCHDOG_WQ system_percpu_wq
+#else
+#define PISPBE_WATCHDOG_WQ system_wq
+#endif
+
 static void pispbe_arm_watchdog(struct pispbe_dev *pispbe)
 {
 	unsigned int ms = READ_ONCE(job_timeout_ms);
 
 	if (ms)
-		mod_delayed_work(system_wq, &pispbe->watchdog,
+		mod_delayed_work(PISPBE_WATCHDOG_WQ, &pispbe->watchdog,
 				 msecs_to_jiffies(ms));
 }
 

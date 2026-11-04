@@ -133,7 +133,9 @@ void main() {
         wr(d, rd(s));
         wr(d + 1u, rd(s + 1u));
         wr(d + 2u, rd(s + 2u));
-        wr(d + 3u, 255u);
+        // 255 as the store's low byte, from a push constant: a literal folds to an 8-bit constant,
+        // which needs the Int8 capability this module does not have.
+        wr(d + 3u, A.op | 255u);
         break;
     }
     case OP_GRAY8_RGB24: {

@@ -1016,6 +1016,8 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- `convert.spv` had an 8-bit constant without the `Int8` capability
+  (`VUID-VkShaderModuleCreateInfo-pCode-08737` on V3D): `glslc -O` folded the RGBA alpha store.
 - A shared plan (`plan_many`, the camera service's) started its capture without the
   consumers' `Accelerators`: `isp: Hardware::Off` planned the software ISP and the capture ran
   the PiSP. The capture config now takes them, as a single plan's start does.
