@@ -57,15 +57,6 @@ impl BeFormat {
 /// before [`BackEndStream::wait_job`]): the main job's and the extra passes', back to back.
 pub const QUEUED_JOBS: usize = 4;
 
-/// Whether the loaded `pisp_be` driver takes several queued jobs safely: our patched one
-/// (`kernel-modules/pispbe`, read-only parameter `queue_safe`) defers a job while the hardware
-/// still holds one; the stock driver overwrites it, and a lost completion can then wedge
-/// `STREAMOFF`.
-pub fn driver_queue_safe() -> bool {
-    std::fs::read_to_string("/sys/module/pisp_be/parameters/queue_safe")
-        .is_ok_and(|v| v.trim() == "Y")
-}
-
 /// One output: format and size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BeOutputSetup {

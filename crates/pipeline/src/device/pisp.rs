@@ -33,7 +33,7 @@ use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::device::{BackEndStream, FrontEndDevice, FrontEndSetup, driver_queue_safe, profile};
+use styx_pisp::device::{BackEndStream, FrontEndDevice, FrontEndSetup, profile};
 use styx_pisp::fe::FrontEnd;
 use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
@@ -95,10 +95,10 @@ impl Isp {
         options: &PispOptions,
         want_tdn: bool,
     ) -> Result<(Self, Duration, Duration)> {
-        if options.pass_jobs > 1 && !options.unsafe_queued_passes && !driver_queue_safe() {
+        if options.pass_jobs > 1 && !options.unsafe_queued_passes {
             return Err(PipelineError::Device(
-                "pass_jobs above 1 can wedge the stock pisp_be driver \
-                 (load kernel-modules/pispbe, or PispOptions::unsafe_queued_passes)"
+                "pass_jobs above 1 can wedge the pisp_be driver \
+                 (PispOptions::unsafe_queued_passes allows it)"
                     .into(),
             ));
         }

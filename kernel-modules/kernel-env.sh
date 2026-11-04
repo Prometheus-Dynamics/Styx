@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-2.0
 #
-# Kernel selection shared by styx-sensor-bridge/build.sh and pispbe/build.sh (sourced, bash).
+# Kernel selection for styx-sensor-bridge/build.sh (sourced, bash).
 #
 # Two Raspberry Pi kernels are supported:
 #

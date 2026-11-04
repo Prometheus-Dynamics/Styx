@@ -29,7 +29,7 @@ Everything else is unchanged: module name, uAPI and register programming.
 | `*.c`, `*.h` | The driver. Git history has two commits: the unchanged import, then the Styx patch (`./build.sh diff`) |
 | `Kbuild` | Out-of-tree build, object `rp1-cfe-downstream.ko` |
 | `build.sh` | Builds against an image's own kernel tree. `verify` checks vermagic and the `struct module` size against a device |
-| `../ov9282/buildroot/package/styx-rp1-cfe` | The Buildroot package, in the `STYX_KMODS` external tree shared with `styx-ov9282` |
+| `buildroot/` | A `BR2_EXTERNAL` tree (`STYX_KMODS`) with the `styx-rp1-cfe` package |
 
 ## Provenance
 
@@ -71,8 +71,8 @@ systemctl start <your camera service>
 
 ## Images (Styx variants only)
 
-The package is `styx-rp1-cfe` (`BR2_PACKAGE_STYX_RP1_CFE=y`), in the same external tree as
-`styx-ov9282` (`kernel-modules/ov9282/buildroot`, `STYX_KMODS`). It works the same way:
+The package is `styx-rp1-cfe` (`BR2_PACKAGE_STYX_RP1_CFE=y`), in the external tree
+`kernel-modules/rp1-cfe/buildroot` (`STYX_KMODS`):
 - Built with Buildroot's `kernel-module` infrastructure against the image's own `linux` build.
 - Installed with `INSTALL_MOD_DIR=updates`, so `depmod` picks it over the kernel's own
   `rp1-cfe-downstream.ko`. The kernel image and every other module are unchanged.

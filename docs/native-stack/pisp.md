@@ -91,13 +91,7 @@ The configuration reaches the hardware only through registers (MMIO); the tiles 
 part it reads from memory (DMA, from the driver's coherent copy). The stock driver writes all
 1589 configuration words with `writel()` on every job: 117 µs of CPU per job on the CM5
 (113.8 µs of it the 71.6 ns barrier-plus-store per word), on the thread that queues the last
-buffer of the job, so on the frame's latency too. Styx's patched build of the driver
-([`kernel-modules/pispbe`](../../kernel-modules/pispbe/README.md), installed on the dev box
-as an override of the image's module) writes the same values with relaxed MMIO writes and
-skips words equal to the ones last written (the registers keep their values between jobs; it
-forgets them when the clock is gated), and reads the configuration from a cached copy:
-7-8 µs per job, identical outputs. With it a config needs no dirty tracking on our side:
-writing an unchanged block costs nothing.
+buffer of the job, so on the frame's latency too.
 
 The tiles are the userspace's job: each `pisp_tile` gives the input window (with 16 pixels of
 context each side for the Bayer/RGB pipeline), per-output crops that remove the context,
@@ -185,9 +179,9 @@ only the words that differ (enables, crops, formats, TDN) are written. See
   frames on group 0, 0 failed and 0 drops. `box2`, `downscale` and `pyramid2` truncate.
 - Per-frame configs in `styx-pipeline` (`pisp_be::BeConfigBuilder`): the back end config and
   tiles are prepared once and patched where the algorithms' settings changed; see
-  [pipeline.md](pipeline.md#pisp-path) for the frame path and its costs. The stock driver writes
-  the whole `pisp_be_config` to the hardware on every job (0.12 ms of CPU on the CM5); the
-  patched one in `kernel-modules/pispbe` only the changed words (8 µs), see "Back end (per job)".
+  [pipeline.md](pipeline.md#pisp-path) for the frame path and its costs. The driver writes the
+  whole `pisp_be_config` to the hardware on every job (0.12 ms of CPU on the CM5), see
+  "Back end (per job)".
 
 ### Licences
 

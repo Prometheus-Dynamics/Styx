@@ -56,7 +56,6 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `crates/dng` | `styx-dng` | DNG 1.4 writer and reader in pure Rust (no Styx dependencies): raw frames with calibration, lens shading opcodes, EXIF, preview; camera DNGs read for calibration; see [stills-and-dng.md](../stills-and-dng.md) | stills agent |
 | `crates/uvc` | `styx-uvc` | USB Video Class cameras from userspace over usbfs (`lemnos-usb`; hotplug through `lemnos_linux::uevent`): descriptors, PROBE/COMMIT, isochronous/bulk streaming, frame assembly, PTS/SCR timestamps, controls, hotplug; `styx` backend `BackendKind::Uvc` (feature `uvc`); see [uvc.md](../uvc.md) | usb-uvc agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
-| `kernel-modules/pispbe` | (C, GPL-2.0) | The Raspberry Pi PiSP back end driver (`pisp_be`) patched for a cheaper per-job config write (117 → 8 µs), build and install scripts | pisp agent |
 
 `styx-core-rs`, `styx-sensor`, `styx-pisp` (without `device`), `styx-algo`, `styx-softisp` and
 `styx-dng` build as `no_std` + `alloc` without their default `std` feature, for targets with no
@@ -128,9 +127,7 @@ limits at that fps.
     `config.txt` (`dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous` in place of the image's
     `ov9782-overlay`; `overlays/styx-sensor-bridge-cm5.dtbo`) with `styx_sensor_bridge.ko` in
     `/lib/modules/$(uname -r)/updates/` (on the root overlay's upper layer, `depmod`ed: udev
-    loads it at boot). The patched back end driver `pisp-be.ko` is there too, overriding the
-    image's `pisp_be` in both camera modes (`kernel-modules/pispbe/install/`; `uninstall.sh`
-    goes back to the image's). The bridge is bound at boot, `ov9282` is not,
+    loads it at boot). The bridge is bound at boot, `ov9282` is not,
     `<camera service>` and
     `styx-bridge.service` are disabled. Installed by
     `kernel-modules/styx-sensor-bridge/install/install.sh` (rerun it after rebuilding the

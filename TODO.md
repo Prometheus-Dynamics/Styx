@@ -206,18 +206,6 @@ memory when it runs.
       pipeline selection as RK3562). *Why:* the Flame board. *Done when:* rkisp, rkcif graph and
       rkvenc run the OV9782 within the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a
       Flame board and its BSP.
-- [ ] **pispbe: a job that never finishes** (`job_timeout_ms` watchdog in the module: a stuck job
-      returned error buffers on Raze #2 in about 2 s and the process exited). *Why:* a stuck job left
-      an unkillable process and stopped every client of the back end silently. *Done when:* the
-      engine recovers without a reboot, or that is shown impossible. *Blocked by:* no reset of the
-      block is known: it stayed stuck through a clock gate and the module's reload.
-      *Numbers:* error buffer about 2 s after queueing (`job_timeout_ms` 1000, client wait 2 s).
-- [ ] **pispbe patch: carried** (user decision: we keep carrying it; the drafts in
-      `kernel-modules/pispbe/README.md` stay unsent, nothing gets filed). *Why:* it takes the config
-      write from 117 to 8 µs per job and makes queued jobs safe; the stock driver overwrites a held
-      job. A kernel bump stops the image build until the patch is redone. *Done when:* the user
-      decides otherwise; until then this is a standing cost, not work. *Blocked by:* the user.
-      *Numbers:* Styx API 0.35 → 0.23-0.26 ms/frame at 30 fps; stock driver 455 "not safe" in 5 s.
 ## Open: every stage on every backend, and allocations
 
 - [ ] **Every stage accelerated on every backend** ([docs/acceleration.md](docs/acceleration.md)).
@@ -406,6 +394,9 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
 Numbers are as of the commit named.
 
 ### Since the last audit
+- [x] **ov9282 and pisp_be patches dropped** (user decision, 2026-11-03): `kernel-modules/ov9282`,
+      `kernel-modules/pispbe`, their packaging and the `queue_safe` check are gone. Pass jobs run one
+      at a time, the 1280x480 mode is gone, and the stock driver has no watchdog for a stuck job.
 - [x] **Queued PiSP passes on the Raze** (220aff5, a083112). Raze 2026-11-02 (HeliOS dev.844,
       patched module): `queue_safe` reads `Y`; `native-pipeline pisp --passes` with the default
       `--pass-jobs 0` over 150 frames at 30 fps: 0 "not safe" messages, 0 skipped, pass time

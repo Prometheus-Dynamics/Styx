@@ -118,7 +118,7 @@ pub struct LineEvent {
 }
 
 /// The part of the sensor's field a mode reads, when it reads a window of it (a mode of
-/// fewer lines at full pitch, e.g. the OV9782's 1280x480 in Styx's ov9282 module): its
+/// fewer lines at full pitch, e.g. the OV9782's 1280x720): its
 /// position and size in the field's coordinates (the full mode's frame, e.g. 1280x800).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SensorWindow {
@@ -635,7 +635,7 @@ impl FrontEndDevice {
 mod window_tests {
     use super::SensorWindow;
 
-    /// What the ov9282 driver reports: crop bounds 1280x800 at (8, 8); Styx's 1280x480 mode
+    /// What the ov9282 driver reports: crop bounds 1280x800 at (8, 8); a 1280x480 window
     /// crops array rows 168..647.
     #[test]
     fn a_windowed_mode_is_placed_in_the_full_field() {

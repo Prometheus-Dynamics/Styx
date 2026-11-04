@@ -24,18 +24,13 @@ pub struct PispOptions {
     /// More buffers per output, for the extra passes that write into them
     /// ([`super::PispPipeline::set_pass`]).
     pub pass_buffers: [u32; 2],
-    /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1` waits
-    /// for each before queuing the next; `0` (default) is `QUEUED_JOBS` on our patched driver
-    /// ([`styx_pisp::device::driver_queue_safe`]) and `1` on the stock one. More than 1 is
-    /// refused unless the loaded driver is the patched one or
-    /// [`Self::unsafe_queued_passes`]: the stock driver overwrites a job the hardware still
-    /// holds ("not safe to queue new job!"), and on the CM5 (2026-10-31) a lost completion
-    /// left `STREAMOFF` stuck in `vb2_wait_for_all_buffers` until a reboot
-    /// (`kernel-modules/pispbe/README.md` "Queued jobs"). With the patched driver four queued
-    /// jobs took 0.251 ms per frame against 0.276 ms one at a time.
+    /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1` and `0`
+    /// (default) wait for each before queuing the next. More than 1 is refused without
+    /// [`Self::unsafe_queued_passes`]: the driver overwrites a job the hardware still holds
+    /// ("not safe to queue new job!"), and on the CM5 (2026-10-31) a lost completion left
+    /// `STREAMOFF` stuck in `vb2_wait_for_all_buffers` until a reboot.
     pub pass_jobs: usize,
-    /// Allow [`Self::pass_jobs`] above 1 on any driver (on the stock one it can hang; may
-    /// need a reboot).
+    /// Allow [`Self::pass_jobs`] above 1 (it can hang; may need a reboot).
     pub unsafe_queued_passes: bool,
     /// Back end node group (0 or 1).
     pub be_group: usize,
@@ -75,13 +70,9 @@ pub struct PispOptions {
 }
 
 impl PispOptions {
-    /// [`Self::pass_jobs`] with `0` resolved for the loaded driver.
+    /// [`Self::pass_jobs`] with `0` resolved.
     pub fn pass_jobs_resolved(&self) -> usize {
-        match self.pass_jobs {
-            0 if styx_pisp::device::driver_queue_safe() => styx_pisp::device::QUEUED_JOBS,
-            0 => 1,
-            n => n,
-        }
+        self.pass_jobs.max(1)
     }
 
     /// NV12 at the sensor size on output 0 and RGB24 at half size on output 1.

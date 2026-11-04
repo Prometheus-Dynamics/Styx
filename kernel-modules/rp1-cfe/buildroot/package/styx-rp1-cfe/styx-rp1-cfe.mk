@@ -10,7 +10,7 @@
 ################################################################################
 
 STYX_RP1_CFE_VERSION = 1
-STYX_RP1_CFE_SITE = $(BR2_EXTERNAL_STYX_KMODS_PATH)/../../rp1-cfe
+STYX_RP1_CFE_SITE = $(BR2_EXTERNAL_STYX_KMODS_PATH)/..
 STYX_RP1_CFE_SITE_METHOD = local
 STYX_RP1_CFE_LICENSE = GPL-2.0
 STYX_RP1_CFE_MODULE_MAKE_OPTS = INSTALL_MOD_DIR=updates

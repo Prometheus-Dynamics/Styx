@@ -218,7 +218,7 @@ fn early_access_opens_the_window_on_the_capture_thread() {
     assert!(CpuPrep::new(&Default::default()).sync);
 }
 
-/// A sensor window (Styx's OV9782 1280x480: rows 160..639 of the 1280x800 field) places
+/// A sensor window (1280x480: rows 160..639 of a 1280x800 field) places
 /// a frame, and any back end crop of it, in the field's coordinates.
 #[test]
 fn crops_are_reported_in_the_sensors_field() {

@@ -57,13 +57,6 @@ mode = "1280x720"
 hblank = { min = 176, max = 31487, default = 176 }
 vblank = { min = 41, max = 51540, default = 1022 }
 
-# A 1280x480 window centred on the array: not in the stock driver, only in Styx's patched
-# ov9282 module (kernel-modules/ov9282); the blanking is the 1280-wide modes'.
-[[modes]]
-mode = "1280x480"
-hblank = { min = 176, max = 31487, default = 176 }
-vblank = { min = 41, max = 51540, default = 1022 }
-
 [[modes]]
 mode = "640x400"
 hblank = { min = 816, max = 32127, default = 816 }

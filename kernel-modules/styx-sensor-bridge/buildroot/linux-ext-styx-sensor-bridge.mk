@@ -6,8 +6,7 @@
 # the whole kernel-modules/styx-sensor-bridge directory to
 # linux/styx-sensor-bridge in the external tree, then place this file (and the
 # Config.ext.in entries) in linux/ next to it. Buildroot includes
-# linux/linux-ext-*.mk automatically. For the optional PiSP back end driver,
-# copy kernel-modules/pispbe to linux/pispbe as well.
+# linux/linux-ext-*.mk automatically.
 #
 # Kernel-agnostic: the module is staged as drivers/media/platform/styx/ of
 # whatever kernel the package builds (Raspberry Pi 6.12 for image release 1.0.x,
@@ -58,38 +57,5 @@ define STYX_BRIDGE_BUILD_OVERLAYS
 endef
 
 LINUX_POST_INSTALL_IMAGES_HOOKS += STYX_BRIDGE_BUILD_OVERLAYS
-
-endif
-
-################################################################################
-# Optional: the PiSP back end driver with Styx's cheaper per-job config write
-# (kernel-modules/pispbe) in place of the kernel's own pisp_be.c.
-#
-# Only applied when the kernel's stock pisp_be.c is the one the Styx version
-# was made from (sha256 below: rpi-7.2.y 53679a5, see pispbe/README.md). Any
-# other kernel keeps its own driver and the build log says so: a kernel bump
-# never silently ships a driver from another kernel. Re-import to update.
-################################################################################
-
-ifeq ($(BR2_LINUX_KERNEL_EXT_STYX_PISPBE),y)
-
-STYX_PISPBE_EXT_DIR := $(dir $(lastword $(MAKEFILE_LIST)))pispbe
-STYX_PISPBE_KDIR = $(LINUX_DIR)/drivers/media/platform/raspberrypi/pisp_be
-STYX_PISPBE_STOCK_SHA256 = 6d36c1076af7276aeb5b3f5f9d8f3f88ee6a3deb16477d1e3a977ca2459adbce
-
-define STYX_PISPBE_COPY_FILES
-	@if [ "$$(sha256sum $(STYX_PISPBE_KDIR)/pisp_be.c | cut -d' ' -f1)" = "$(STYX_PISPBE_STOCK_SHA256)" ]; then \
-		echo "[styx-pispbe] replacing pisp_be.c with the Styx version"; \
-		cp -f $(STYX_PISPBE_EXT_DIR)/pisp_be.c $(STYX_PISPBE_EXT_DIR)/pisp_be_formats.h \
-			$(STYX_PISPBE_KDIR)/; \
-	elif cmp -s $(STYX_PISPBE_EXT_DIR)/pisp_be.c $(STYX_PISPBE_KDIR)/pisp_be.c; then \
-		echo "[styx-pispbe] pisp_be.c is already the Styx version"; \
-	else \
-		echo "[styx-pispbe] WARNING: this kernel's pisp_be.c is not the one the Styx version"; \
-		echo "[styx-pispbe] was made from; keeping the kernel's driver"; \
-	fi
-endef
-
-LINUX_POST_PATCH_HOOKS += STYX_PISPBE_COPY_FILES
 
 endif

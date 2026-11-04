@@ -17,9 +17,9 @@ driven from userspace by Styx. Written once; no sensor-specific code, no I²C ac
 | `install/` | Dev-box install: `install.sh` (boot overlay and module), `camera-mode.sh` (native / libcamera switch), `styx-bridge.service` (the runtime path, libcamera mode only) |
 | `Kbuild`, `Makefile`, `Kconfig` | Out-of-tree and in-tree build glue |
 | `build.sh` | Builds the `.ko` and `.dtbo`s for an exact device kernel (6.12 or 7.2), test-applies the overlays, checks vermagic/CRCs |
-| `../kernel-env.sh` | Kernel selection shared with `../pispbe/build.sh` (`STYX_KERNEL=6.12\|7.2`) |
+| `../kernel-env.sh` | Kernel selection (`STYX_KERNEL=6.12\|7.2`) |
 | `tools/check_crcs.py` | Compares a `Module.symvers` with the CRCs recorded in modules from the device |
-| `buildroot/` | Buildroot linux extension (`linux-ext-styx-sensor-bridge.mk`, `Config.ext.in`), kernel-agnostic; optionally the PiSP back end driver |
+| `buildroot/` | Buildroot linux extension (`linux-ext-styx-sensor-bridge.mk`, `Config.ext.in`), kernel-agnostic |
 
 ## Kernels
 

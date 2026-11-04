@@ -67,7 +67,7 @@ pub use be_image::BeImageDevice;
 pub use be_output::OutputMemory;
 pub use be_stream::{
     BackEndStream, BeFormat, BeJob, BeOutputSetup, OUTPUT_STRIDE_ALIGN, QUEUED_JOBS, QueuedJob,
-    driver_queue_safe, output_stride,
+    output_stride,
 };
 pub use config_buf::ConfigMemory;
 pub use fe::{

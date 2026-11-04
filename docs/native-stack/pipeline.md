@@ -259,10 +259,10 @@ it) and about 0.05 ms on the host.
 The largest piece of the PiSP path's CPU was not Styx's: the `QBUF` that completes a back end
 job ran the driver's `pispbe_queue_job()`, which writes all 1589 configuration words to the
 registers with `writel()` (117 µs per job, `function_graph`: everything inside
-`pispbe_schedule()`, 113.8 µs of it the per-word barrier). `kernel-modules/pispbe` is the same
-driver patched to write with relaxed MMIO, skip words equal to the last ones written, and read
-the config from a cached copy ([README](../../kernel-modules/pispbe/README.md)). On the dev box
-it is installed as an override of the image's `pisp_be` (`updates/`, loaded at boot).
+`pispbe_schedule()`, 113.8 µs of it the per-word barrier). Styx carried the same driver patched
+to write with relaxed MMIO, skip words equal to the last ones written, and read the config from
+a cached copy, until 2026-11-03: the patch is gone (see git history for `kernel-modules/pispbe`)
+and Styx runs on the stock driver. The numbers below are what it bought.
 
 Measured 2026-10-03 (CM5, the OV9782 tuning with temporal denoise, 3 rounds alternating the stock
 and the patched module by `rmmod`/`insmod` in one session; Styx API = `native_isp_bench single`,
@@ -352,11 +352,9 @@ indices of their own (`buffer + buffers * k`, so an index always holds the same 
 vb2 keeps it mapped), waited for in order. On the CM5 (2026-10-31, three 320x320 passes,
 120 fps) queued jobs at shared spare indices took 0.40 ms per frame against 0.28 ms one at
 a time, 0.35 ms of it kernel time re-mapping the buffers; with the fixed indices four queued
-jobs wedged the patched `pisp_be` (`kernel-modules/pispbe/README.md` "Queued jobs"). One at a
-time on the stock driver and all queued at once on the patched one by default
-(`PispOptions::pass_jobs` 0); more than one is refused unless the loaded driver exports
-`/sys/module/pisp_be/parameters/queue_safe` (our patched one, which defers a job while the
-hardware holds one: 0.251 against 0.276 ms per frame) or `PispOptions::unsafe_queued_passes`. Passes write into an
+jobs wedged the driver. One at a time by default (`PispOptions::pass_jobs` 0); more than one is
+refused without `PispOptions::unsafe_queued_passes`, since the driver overwrites a job the
+hardware still holds. Passes write into an
 output's buffers, the main output's unless a region is in the second output's format
 (`PispOptions::pass_buffers` more of them per output; a capture gives each pass half as many again as an
 output has, at least 3), and a pass without a free buffer skips that frame. Cached output
@@ -1083,10 +1081,8 @@ fps); CPU unchanged. It is a Styx setting now (see "Denoise settings").
   memory traffic between front and back end).
 * The front end statistics set-up is fixed except for the histogram's zone weights (the
   metering mode's, as libcamera); AGC meters the AWB zones.
-* PiSP CPU left (see "PiSP path performance"): with the stock `pispbe` driver half of it is
-  the driver writing the whole back end config to the hardware by MMIO on every job (0.12 ms;
-  8 µs with the patched driver in `kernel-modules/pispbe`, which images would need to carry
-  as a kernel patch until something like it is upstream). The pipeline thread waits
+* PiSP CPU left (see "PiSP path performance"): half of it is the `pispbe` driver writing the
+  whole back end config to the hardware by MMIO on every job (0.12 ms). The pipeline thread waits
   twice per frame, for the front end's statistics and 0.84 ms later for the back end job; the
   two cannot share a wait without delaying the frame.
 * Algorithms at 15 Hz while settled: a scene change is seen up to one 15 Hz period later

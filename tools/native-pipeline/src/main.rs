@@ -62,9 +62,8 @@
 //!                        sessions (stop, reconfigure for another rate, start)
 //!   --passes REGIONS     (pisp) extra back end passes over every frame: WxH@X,Y[;...]
 //!   --pass-tdn MODE      (pisp) temporal denoise in the passes: read (default) or off
-//!   --pass-jobs N        (pisp) pass jobs queued at once, 1 to 4; 0 (default): 4 on the patched
-//!                        pisp_be, 1 on the stock one; above 1 on the stock driver can wedge
-//!                        it until a reboot (kernel-modules/pispbe/README.md)
+//!   --pass-jobs N        (pisp) pass jobs queued at once, 1 to 4; 0 (default): 1; above 1 can
+//!                        wedge the driver until a reboot
 //!   --pass-move PX       (pisp) move the regions PX pixels right every frame
 //!   --pass-probe         (pisp) measure the --passes regions in the main output, run none
 //!   --main-crops REGIONS (pisp) crop output 0 (and 1) of the main pass: WxH@X,Y[;WxH@X,Y]

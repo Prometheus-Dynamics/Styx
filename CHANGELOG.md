@@ -6,6 +6,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Removed
+
+- `kernel-modules/ov9282` and `kernel-modules/pispbe` with their packaging, and the OV9782's
+  1280x480 kernel mode: Styx runs on the image's stock `ov9282` and `pisp_be`. The `STYX_KMODS`
+  Buildroot tree moved to `kernel-modules/rp1-cfe/buildroot` and keeps only `styx-rp1-cfe`;
+  `BR2_LINUX_KERNEL_EXT_STYX_PISPBE` is gone.
+- `styx_pisp::device::driver_queue_safe`. `PispOptions::pass_jobs` 0 now means one job at a time
+  on every driver; more than one needs `unsafe_queued_passes`.
+
 ### Added
 
 - `metrics::Drops::unread` (OpenMetrics cause `unread`): consumer queue overflow with no consumer
