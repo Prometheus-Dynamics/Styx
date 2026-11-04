@@ -188,6 +188,7 @@ impl Camera {
             low,
             frames: slot.clone(),
         });
+        note_reader(&state);
         Ok((ClientToken { id, token }, text, delivered, slot))
     }
 
@@ -423,6 +424,7 @@ impl Camera {
         if state.clients.is_empty() && !pause {
             state.running = None;
         }
+        note_reader(&state);
         if self.replan_remaining(&mut state, config) {
             counters.restarts.fetch_add(1, Ordering::Relaxed);
         }
@@ -493,6 +495,14 @@ impl Camera {
     }
 }
 
+/// Tell the running capture whether anyone reads it (see `Drops::unread`).
+fn note_reader(state: &State) {
+    if let Some(running) = &state.running {
+        let live = running.session.capture().live_metrics();
+        live.set_reader(!state.clients.is_empty());
+    }
+}
+
 /// A client's token: not guessable by other processes (a fresh random hash per client).
 fn new_token(id: u64) -> u64 {
     use std::hash::BuildHasher;
@@ -550,6 +560,7 @@ fn restart(
         requests,
         owners,
     });
+    note_reader(state);
     Ok(frames)
 }
 

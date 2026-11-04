@@ -293,3 +293,44 @@ fn drops_are_logged_when_they_double() {
     assert!(doubled(3, 9));
     assert!(!doubled(5, 7));
 }
+
+#[test]
+fn overflow_with_no_reader_is_not_a_drop() {
+    let (tx, rx) = styx_core::queue::bounded_with(1, QueueOverflow::DropOldest);
+    let m = CaptureMetrics::default();
+    m.0.attached.get_or_init(|| super::super::camera::Attached {
+        queue: rx,
+        worker_error: Arc::default(),
+        retry: Default::default(),
+        external: Vec::new(),
+        gaps: Arc::default(),
+    });
+    let format = MediaFormat::new(
+        FourCc::GREY,
+        Resolution::new(4, 4).unwrap(),
+        ColorSpace::Srgb,
+    );
+    let push = |n: usize| {
+        for _ in 0..n {
+            let _ = tx.send(FrameLease::allocate_host_owned(format, 1).unwrap());
+        }
+    };
+    // One frame fills the queue; each after it replaces one.
+    push(3);
+    m.set_reader(false);
+    push(4);
+    let d = m.snapshot().drops;
+    assert_eq!((d.queue_overflow, d.unread, d.total), (2, 4, 2));
+    m.set_reader(true);
+    push(1);
+    let d = m.snapshot().drops;
+    assert_eq!((d.queue_overflow, d.unread, d.total), (3, 4, 3));
+    // Without a reader again: the first stretch stays counted.
+    m.set_reader(false);
+    m.set_reader(false);
+    push(1);
+    m.set_reader(true);
+    m.set_reader(true);
+    let d = m.snapshot().drops;
+    assert_eq!((d.queue_overflow, d.unread, d.total), (3, 5, 3));
+}

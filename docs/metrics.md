@@ -68,9 +68,10 @@ window, `max_ever_ms` since the start.
 | `fps.measured` | the rate the sensor delivers now | 1 / mean of the differences between consecutive sensor timestamps over the window |
 | `fps.average` | since the start | `captured` / uptime (includes start-up) |
 | `drops.sensor_sequence_gaps` | frames lost before Styx got them (sensor, receiver, driver) | gaps in the sensor sequence numbers (native, V4L2; libcamera from timestamps), less frames the ISP skipped |
-| `drops.queue_overflow` | the consumer was too slow | consumer queue send timeouts (`Backpressure`) plus frames replaced by newer ones (`DropOldest`) |
+| `drops.queue_overflow` | a consumer there to read was too slow | consumer queue send timeouts (`Backpressure`) plus frames replaced by newer ones (`DropOldest`), less `drops.unread` |
 | `drops.corrupted` | corrupt frames | receiver error flag (native `error`, V4L2 `V4L2_BUF_FLAG_ERROR`, UVC `error`), and UVC frames dropped as damaged (gaps in its sequence) |
 | `drops.isp_skipped` | frames the ISP dropped because consumers held all its output buffers | PiSP worker, `OutputsHeld` |
+| `drops.unread` | the same overflow with no consumer at all: a service's capture running on after its last client left, until it pauses. Not in `total` | the queue's overflow between the last client leaving and the next one joining |
 | `drops.total` | the sum | |
 | `latency.sensor_to_delivery` | sensor timestamp to the frame entering the consumer queue (exposure end/readout, receiver, ISP, Styx) | `clock_gettime` of the frame's timestamp clock (`FrameMeta::clock`) minus the timestamp, when the clock is a system clock (monotonic, boottime, realtime; not stream-relative sources) |
 | `latency.sensor_to_receive` | the same up to the consumer taking the frame (adds the time in the queue) | the same, in `recv*` |
@@ -331,7 +332,7 @@ Multi-camera sync (label `group`, and `camera` per camera): `styx_sync_groups_to
 
 Per camera (labels `camera`, `id`, `backend`): `styx_camera_frames_total{stage}` (captured,
 delivered, received), `styx_camera_fps{kind}` (configured, measured, average),
-`styx_camera_drops_total{cause}` (sensor_sequence_gap, queue_overflow, corrupted, isp_skipped),
+`styx_camera_drops_total{cause}` (sensor_sequence_gap, queue_overflow, corrupted, isp_skipped, raw_skipped, unread),
 `styx_camera_latency_ms{path,quantile}` (sensor_to_delivery, sensor_to_receive; quantile 0.5,
 0.95, 1 = window max), `styx_camera_isp_ms{isp,stage,quantile}` (isp, processing),
 `styx_camera_cpu_seconds_total`, `styx_camera_cpu_per_frame_us`, `styx_camera_ae_converged`,

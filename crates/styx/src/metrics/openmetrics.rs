@@ -104,6 +104,7 @@ impl Text {
             ("corrupted", d.corrupted),
             ("isp_skipped", d.isp_skipped),
             ("raw_skipped", d.raw_skipped),
+            ("unread", d.unread),
         ] {
             self.counter(
                 "styx_camera_drops_total",

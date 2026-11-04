@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `metrics::Drops::unread` (OpenMetrics cause `unread`): consumer queue overflow with no consumer
+  at all, from a service's capture running on after its last client left, until it pauses. It
+  used to count as `queue_overflow`, so `drops` rose on an idle camera; now `queue_overflow`
+  means a reader missed a frame, and `unread` is not in `total`.
 - `ControlDescriptor::inactive` and `ControlRefusal::Inactive`, from V4L2's `INACTIVE`: a control
   another control holds (a colour temperature under auto white balance) is listed as such, and
   refusing it is no longer a generic failure. `ControlApplyKind::Inactive` underneath. Struct

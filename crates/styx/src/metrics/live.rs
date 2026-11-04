@@ -145,6 +145,15 @@ pub(crate) struct Info {
     pub isp: Option<&'static str>,
 }
 
+/// Consumer queue overflow with nobody there to read it (see `Drops::unread`).
+#[derive(Default)]
+struct Unread {
+    /// The overflow when the last reader left, while there is none.
+    since: Option<u64>,
+    /// Overflow of the earlier times without a reader.
+    frames: u64,
+}
+
 pub(crate) struct Live {
     pub(crate) id: u64,
     pub(crate) started: Instant,
@@ -154,6 +163,7 @@ pub(crate) struct Live {
     gaps_are_corrupt: AtomicBool,
     /// The consumer queue's overflow (send timeouts and evictions) last logged against.
     overflow_seen: AtomicU64,
+    unread: Mutex<Unread>,
     pub(crate) buffers: Arc<BufferStats>,
     /// Worker threads (Linux thread ids) and their CPU time when last read.
     threads: Mutex<Vec<(i32, u64)>>,
@@ -179,6 +189,7 @@ impl Default for CaptureMetrics {
             counters: Counters::default(),
             gaps_are_corrupt: AtomicBool::new(false),
             overflow_seen: AtomicU64::new(0),
+            unread: Mutex::default(),
             buffers: Arc::default(),
             threads: Mutex::new(Vec::new()),
             current: Mutex::new(None),
@@ -367,6 +378,33 @@ impl CaptureMetrics {
                 "frames dropped: the consumer queue was full"
             );
         }
+    }
+
+    /// Whether the capture has a reader now: a capture kept running without one (lingering
+    /// until it pauses) overflows its queue with no consumer to be too slow, and that counts as
+    /// `Drops::unread`. Needs the queue attached, as [`Self::snapshot`] does.
+    pub(crate) fn set_reader(&self, present: bool) {
+        let overflow = self.0.attached.get().map_or(0, |a| {
+            let queue = a.queue.stats();
+            queue.send_timeouts + queue.evictions
+        });
+        if let Ok(mut unread) = self.0.unread.lock() {
+            match (present, unread.since) {
+                (false, None) => unread.since = Some(overflow),
+                (true, Some(since)) => {
+                    unread.frames += overflow.saturating_sub(since);
+                    unread.since = None;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// How much of the queue's `overflow` so far had no reader.
+    pub(crate) fn unread(&self, overflow: u64) -> u64 {
+        self.0.unread.lock().map_or(0, |u| {
+            u.frames + u.since.map_or(0, |s| overflow.saturating_sub(s))
+        })
     }
 
     /// Time the ISP spent on a frame (`isp`: the back end job or the software ISP pass) and the

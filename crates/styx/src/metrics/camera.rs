@@ -92,7 +92,7 @@ pub struct Drops {
     /// Missing from the sensor's sequence numbers: lost before Styx got them.
     pub sensor_sequence_gaps: u64,
     /// The consumer queue was full (send timed out) or a queued frame was replaced by a newer one:
-    /// the consumer was too slow.
+    /// a consumer there to read it was too slow.
     pub queue_overflow: u64,
     /// The receiver flagged the frame as corrupt, or the backend dropped it as damaged.
     pub corrupted: u64,
@@ -102,6 +102,10 @@ pub struct Drops {
     /// front end can spare. Not in `total` (the other consumers got the frame).
     #[cfg_attr(feature = "metrics-serde", serde(default))]
     pub raw_skipped: u64,
+    /// The same overflow with no consumer at all: frames of a capture kept running after its
+    /// last client left. Nobody missed them, so not in `total`.
+    #[cfg_attr(feature = "metrics-serde", serde(default))]
+    pub unread: u64,
     pub total: u64,
 }
 
@@ -347,12 +351,15 @@ impl CaptureMetrics {
         };
         let uptime = l.started.elapsed();
         let gaps = self.gap_count() + current.as_ref().map_or(0, CaptureMetrics::gap_count);
+        let overflow = queue.send_timeouts + queue.evictions;
+        let unread = self.unread(overflow);
         let drops = Drops {
             sensor_sequence_gaps: gaps,
-            queue_overflow: queue.send_timeouts + queue.evictions,
+            queue_overflow: overflow.saturating_sub(unread),
             corrupted: both(&|m| m.0.counters.rt.corrupted.get()),
             isp_skipped: both(&|m| m.0.counters.rt.isp_skipped.get()),
             raw_skipped: both(&|m| m.0.counters.rt.raw_skipped.get()),
+            unread,
             total: 0,
         };
         let drops = Drops {
