@@ -1,10 +1,10 @@
-//! USB Video Class (UVC 1.0–1.5) cameras from userspace, over Linux usbfs: no `uvcvideo`, no
-//! libusb, no C.
+//! USB Video Class (UVC 1.0–1.5) cameras from userspace, over Linux usbfs (`lemnos-usb`): no
+//! `uvcvideo`, no libusb, no C.
 //!
 //! - [`enumerate`] finds cameras in sysfs (no device access needed) and parses their
 //!   descriptors ([`descriptors`]): units and terminals, formats (YUY2, NV12, MJPEG,
 //!   frame-based), frame sizes and intervals, alternate settings.
-//! - [`UvcDevice::open`] claims the camera's video interfaces through usbfs (optionally
+//! - [`UvcDevice::open`] claims the camera's video interfaces (optionally
 //!   detaching `uvcvideo` from just those, [`OpenOptions::detach_kernel_driver`]), and drives
 //!   its controls ([`controls`], V4L2 ids and units, as `uvcvideo` maps them).
 //! - [`UvcDevice::start`] negotiates (PROBE/COMMIT), picks the alternate setting by
@@ -36,7 +36,7 @@ pub use device::{OpenOptions, UvcDevice, find_mode};
 pub use hotplug::{Hotplug, HotplugEvent};
 pub use payload::{FrameFlags, Scr};
 pub use stream::{FrameData, StreamConfig, StreamFormat, StreamStats, UvcFrame, UvcStream};
-pub use sysfs::{UsbCameraInfo, enumerate};
+pub use sysfs::{Speed, UsbCameraInfo, enumerate};
 
 /// Errors of this crate.
 #[derive(Debug, thiserror::Error)]
@@ -45,7 +45,7 @@ pub enum UvcError {
     #[error("descriptors: {0}")]
     Descriptor(String),
     #[error("{0}")]
-    Kernel(styx_kernel::Error),
+    Usb(lemnos_usb::Error),
     /// A kernel driver holds one of the camera's interfaces.
     #[error(
         "interface {interface} is bound to the kernel driver {driver} (unbind it, or open with detach_kernel_driver)"
@@ -67,14 +67,11 @@ pub enum UvcError {
 }
 
 impl UvcError {
-    /// Maps a kernel error, recognising a vanished device.
-    pub fn from_kernel(e: styx_kernel::Error) -> UvcError {
-        match e.errno() {
-            Some(libc::ENODEV | libc::ESHUTDOWN) => UvcError::Disconnected,
-            Some(libc::ENOENT) if matches!(e, styx_kernel::Error::Open { .. }) => {
-                UvcError::Disconnected
-            }
-            _ => UvcError::Kernel(e),
+    /// Maps a USB error, recognising a vanished device.
+    pub fn from_usb(e: lemnos_usb::Error) -> UvcError {
+        match e.kind() {
+            lemnos_usb::ErrorKind::Disconnected => UvcError::Disconnected,
+            _ => UvcError::Usb(e),
         }
     }
 

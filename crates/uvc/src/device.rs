@@ -1,11 +1,14 @@
-//! An opened UVC camera: its interfaces claimed through usbfs, controls, and stream
-//! negotiation.
+//! An opened UVC camera: its interfaces claimed through Lemnos's USB layer, controls, and
+//! stream negotiation.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use styx_kernel::usbfs::{ControlSetup, UsbDevice};
+use lemnos_usb::{
+    ControlKind, ControlRecipient, ControlSetup, Direction, ErrorKind, Interface, UsbDevice,
+    UsbLocation,
+};
 
 use crate::controls::{self, ControlDef, ControlInfo, Info, Kind, Unit, request};
 use crate::descriptors::{Format, Frame, StreamingInterface, UvcFunction};
@@ -14,8 +17,6 @@ use crate::stream::{StreamConfig, UvcStream};
 use crate::sysfs::UsbCameraInfo;
 use crate::{Result, UvcError};
 
-const REQ_GET: u8 = 0xa1;
-const REQ_SET: u8 = 0x21;
 /// Some cameras take seconds to answer a control while they reconfigure (`uvcvideo` waits 5 s).
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -30,27 +31,19 @@ pub struct OpenOptions {
 }
 
 pub(crate) struct Inner {
-    pub(crate) usb: Arc<UsbDevice>,
+    pub(crate) usb: UsbDevice,
     pub(crate) info: UsbCameraInfo,
-    claimed: Mutex<Vec<u8>>,
-    detached: Vec<u8>,
+    /// The claimed interfaces, control first.
+    interfaces: Vec<Interface>,
     pub(crate) streaming: AtomicBool,
 }
 
 impl Drop for Inner {
     fn drop(&mut self) {
-        let claimed = self.claimed.lock().map(|c| c.clone()).unwrap_or_default();
-        for n in claimed {
-            let _ = self.usb.release_interface(n);
-        }
-        // Rebinding the control interface's driver probes the whole function again (uvcvideo
-        // claims the streaming interfaces itself); the rest is for drivers that bind each.
-        for &n in &self.detached {
-            if let Err(_e) = self.usb.attach_kernel_driver(n) {
-                #[cfg(feature = "tracing")]
-                tracing::debug!(interface = n, error = %_e, "uvc: reattaching the kernel driver");
-            }
-        }
+        // Released last to first, each giving a detached driver back: rebinding the control
+        // interface's driver probes the whole function again (uvcvideo claims the streaming
+        // interfaces itself), so those have to be free by then.
+        while self.interfaces.pop().is_some() {}
     }
 }
 
@@ -73,21 +66,24 @@ impl std::fmt::Debug for UvcDevice {
 impl UvcDevice {
     /// Opens a camera found with [`crate::enumerate`] and claims its video interfaces.
     pub fn open(info: UsbCameraInfo, options: OpenOptions) -> Result<UvcDevice> {
-        let usb = Arc::new(UsbDevice::open(info.node()).map_err(UvcError::from_kernel)?);
+        let location: UsbLocation = info.port.parse().map_err(UvcError::from_usb)?;
+        let usb = UsbDevice::open_location(&location).map_err(|e| match e.kind() {
+            ErrorKind::NotFound => UvcError::Disconnected,
+            _ => UvcError::from_usb(e),
+        })?;
         let f = &info.function;
         let wanted: Vec<u8> = std::iter::once(f.control.number)
             .chain(f.streaming.iter().map(|s| s.number))
             .collect();
-        let mut claimed = Vec::new();
-        let mut detached = Vec::new();
+        let mut interfaces = Vec::new();
         let result = (|| {
             for &n in &wanted {
-                match usb.driver(n).map_err(UvcError::from_kernel)? {
-                    None => usb.claim_interface(n).map_err(|e| match e.errno() {
-                        Some(libc::EBUSY) => {
+                let interface = match usb.driver(n).map_err(UvcError::from_usb)? {
+                    None => usb.claim_interface(n).map_err(|e| match e.kind() {
+                        ErrorKind::Busy => {
                             UvcError::Busy(format!("interface {n} is claimed by another process"))
                         }
-                        _ => UvcError::from_kernel(e),
+                        _ => UvcError::from_usb(e),
                     })?,
                     Some(d) if d == "usbfs" => {
                         return Err(UvcError::Busy(format!(
@@ -95,12 +91,14 @@ impl UvcDevice {
                         )));
                     }
                     Some(driver) if options.detach_kernel_driver => {
-                        match usb.detach_and_claim(n) {
-                            Ok(()) => detached.push(n),
+                        #[cfg(feature = "tracing")]
+                        tracing::info!(interface = n, %driver, "uvc: detaching the kernel driver");
+                        match usb.detach_and_claim_interface(n) {
+                            Ok(interface) => interface,
                             // Released meanwhile (uvcvideo lets go of the streaming
                             // interfaces when its control interface goes).
-                            Err(e) if e.errno() == Some(libc::ENODATA) => {
-                                usb.claim_interface(n).map_err(UvcError::from_kernel)?;
+                            Err(e) if e.os_code() == Some(libc::ENODATA) => {
+                                usb.claim_interface(n).map_err(UvcError::from_usb)?
                             }
                             Err(e) => {
                                 return Err(UvcError::Busy(format!(
@@ -108,8 +106,6 @@ impl UvcDevice {
                                 )));
                             }
                         }
-                        #[cfg(feature = "tracing")]
-                        tracing::info!(interface = n, %driver, "uvc: detached the kernel driver");
                     }
                     Some(driver) => {
                         return Err(UvcError::KernelDriver {
@@ -117,16 +113,15 @@ impl UvcDevice {
                             driver,
                         });
                     }
-                }
-                claimed.push(n);
+                };
+                interfaces.push(interface);
             }
             Ok(())
         })();
         let inner = Inner {
             usb,
             info,
-            claimed: Mutex::new(claimed),
-            detached,
+            interfaces,
             streaming: AtomicBool::new(false),
         };
         // On failure dropping `inner` releases and reattaches what was taken.
@@ -153,22 +148,51 @@ impl UvcDevice {
         &self.inner.info.function
     }
 
-    /// The usbfs device.
-    pub fn usb(&self) -> &Arc<UsbDevice> {
+    /// The USB device.
+    pub fn usb(&self) -> &UsbDevice {
         &self.inner.usb
     }
 
-    fn entity_request(&self, req: u8, entity: u8, selector: u8, data: &mut [u8]) -> Result<usize> {
-        let setup = ControlSetup {
-            request_type: if req & 0x80 != 0 { REQ_GET } else { REQ_SET },
-            request: req,
-            value: u16::from(selector) << 8,
-            index: (u16::from(entity) << 8) | u16::from(self.function().control.number),
-        };
+    /// Selects alternate setting `alt` of the claimed interface `number`.
+    pub(crate) fn set_alternate(&self, number: u8, alt: u8) -> Result<()> {
         self.inner
-            .usb
-            .control(setup, data, CONTROL_TIMEOUT)
-            .map_err(UvcError::from_kernel)
+            .interfaces
+            .iter()
+            .find(|i| i.number() == number)
+            .ok_or_else(|| UvcError::Invalid(format!("interface {number} is not claimed")))?
+            .set_alternate(alt)
+            .map_err(UvcError::from_usb)
+    }
+
+    /// A class request to an interface or an entity on it: `data` is read into (GET requests,
+    /// bit 7 set) or written out; the bytes that moved.
+    fn class_request(&self, req: u8, value: u16, index: u16, data: &mut [u8]) -> Result<usize> {
+        let mut setup = ControlSetup {
+            direction: Direction::Out,
+            kind: ControlKind::Class,
+            recipient: ControlRecipient::Interface,
+            request: req,
+            value,
+            index,
+        };
+        let usb = &self.inner.usb;
+        if req & 0x80 == 0 {
+            return usb
+                .control_out(&setup, data, CONTROL_TIMEOUT)
+                .map_err(UvcError::from_usb);
+        }
+        setup.direction = Direction::In;
+        let got = usb
+            .control_in(&setup, data.len() as u16, CONTROL_TIMEOUT)
+            .map_err(UvcError::from_usb)?;
+        let n = got.len().min(data.len());
+        data[..n].copy_from_slice(&got[..n]);
+        Ok(n)
+    }
+
+    fn entity_request(&self, req: u8, entity: u8, selector: u8, data: &mut [u8]) -> Result<usize> {
+        let index = (u16::from(entity) << 8) | u16::from(self.function().control.number);
+        self.class_request(req, u16::from(selector) << 8, index, data)
     }
 
     pub(crate) fn streaming_request(
@@ -178,16 +202,7 @@ impl UvcDevice {
         selector: u8,
         data: &mut [u8],
     ) -> Result<usize> {
-        let setup = ControlSetup {
-            request_type: if req & 0x80 != 0 { REQ_GET } else { REQ_SET },
-            request: req,
-            value: u16::from(selector) << 8,
-            index: u16::from(interface),
-        };
-        self.inner
-            .usb
-            .control(setup, data, CONTROL_TIMEOUT)
-            .map_err(UvcError::from_kernel)
+        self.class_request(req, u16::from(selector) << 8, u16::from(interface), data)
     }
 
     fn entity_of(&self, def: &ControlDef) -> Option<(u8, u64)> {

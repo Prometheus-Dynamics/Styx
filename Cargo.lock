@@ -1347,7 +1347,7 @@ dependencies = [
  "regex",
  "rustc-hash 2.1.3",
  "shlex 2.0.1",
- "syn 3.0.9",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -3202,6 +3202,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-kit-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06d3a048d09fbb6597dbf7c69f40d14df4a49487db1487191618c893fc3b1c26"
+dependencies = [
+ "core-foundation-sys",
+ "mach2",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3342,7 +3352,7 @@ checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
 [[package]]
 name = "lemnos-bus"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "embedded-hal 1.0.0",
  "lemnos-core",
@@ -3353,7 +3363,7 @@ dependencies = [
 [[package]]
 name = "lemnos-core"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "lemnos-device",
  "lemnos-hal",
@@ -3365,7 +3375,7 @@ dependencies = [
 [[package]]
 name = "lemnos-device"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -3375,7 +3385,7 @@ dependencies = [
 [[package]]
 name = "lemnos-discovery"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "lemnos-core",
  "thiserror 2.0.21",
@@ -3384,7 +3394,7 @@ dependencies = [
 [[package]]
 name = "lemnos-drivers-vcm"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#01939e9d32fa1522bda04ed3fdb718aa9edf9179"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -3396,7 +3406,7 @@ dependencies = [
 [[package]]
 name = "lemnos-hal"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -3405,7 +3415,7 @@ dependencies = [
 [[package]]
 name = "lemnos-linux"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
@@ -3420,7 +3430,7 @@ dependencies = [
 [[package]]
 name = "lemnos-linux-sys"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "libc",
 ]
@@ -3428,9 +3438,21 @@ dependencies = [
 [[package]]
 name = "lemnos-uevent"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#a6a5cd1dabb092b25fa7cd096dcaf3e04083505c"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "lemnos-linux-sys",
+]
+
+[[package]]
+name = "lemnos-usb"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
+dependencies = [
+ "futures-core",
+ "lemnos-linux-sys",
+ "lemnos-uevent",
+ "libc",
+ "nusb",
 ]
 
 [[package]]
@@ -3562,6 +3584,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6bd8c0d6c6ed0cd30b3652886bb8711dc4bb01d637a68105a3d5158039b418e6"
 dependencies = [
  "cc",
+ "libc",
+]
+
+[[package]]
+name = "mach2"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a1b95cd5421ec55b445b5ae102f5ea0e768de1f82bd3001e11f426c269c3aea"
+dependencies = [
  "libc",
 ]
 
@@ -3963,6 +3994,28 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "nusb"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1de8b6d15f559f50760dad6c1b56fde4041f99dc96a08e55c2b41f44c7417ad9"
+dependencies = [
+ "core-foundation 0.10.1",
+ "core-foundation-sys",
+ "futures-core",
+ "io-kit-sys",
+ "js-sys",
+ "linux-raw-sys 0.12.1",
+ "log",
+ "once_cell",
+ "rustix 1.1.5",
+ "slab",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5720,6 +5773,8 @@ name = "styx-uvc"
 version = "2.0.1-dev"
 dependencies = [
  "lemnos-linux",
+ "lemnos-linux-sys",
+ "lemnos-usb",
  "libc",
  "styx-graph",
  "styx-kernel",

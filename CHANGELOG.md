@@ -702,6 +702,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 - `StillRequest::settle` waits for AE to lock for half of the request's timeout at most, then
   takes the still at AE's exposure; a scene AE never locked on used to fail with "still: timed out".
+- `styx-uvc` runs on Lemnos's USB layer (`lemnos-usb`: claims, controls, `UrbRing`) instead of
+  `styx-kernel::usbfs`, which is gone. `UvcDevice::usb` returns a `lemnos_usb::UsbDevice`,
+  `UvcError::Kernel` is `UvcError::Usb`, and `Speed` is `styx_uvc::Speed`. Written, untested on
+  a camera.
 - With features `gpu-isp` and `daedalus`, the GPU ISP runs on the process's Daedalus device
   (`styx_gpuisp::GpuContext::shared`, on `daedalus_gpu::shared_context`) instead of opening a
   second one: one Vulkan device and queue with the process's engines. `STYX_GPUISP_DEVICE`

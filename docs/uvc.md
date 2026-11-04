@@ -2,7 +2,7 @@
 
 Styx normally reaches USB cameras through the kernel's `uvcvideo` driver and its own V4L2
 backend. `styx-uvc` is the alternative: it speaks the USB Video Class (UVC 1.0–1.5) itself,
-over Linux usbfs (`/dev/bus/usb/BBB/DDD`), with nothing but `libc` — no `uvcvideo`, no
+over Linux usbfs (`/dev/bus/usb/BBB/DDD`), through Lemnos's `lemnos-usb` — no `uvcvideo`, no
 libusb. In Styx it is the opt-in backend `BackendKind::Uvc` (cargo feature `uvc`, off by
 default).
 
@@ -34,7 +34,7 @@ descriptors                    VideoControl: camera terminal, processing unit, e
                                units, dwClockFrequency; VideoStreaming: formats (YUY2, NV12,
                                MJPEG, frame-based H.264, ...), frame sizes, intervals, colour,
                                alternate settings and their bandwidth
-usbfs (styx-kernel::usbfs)     claim the video interfaces (DISCONNECT_CLAIM to detach a
+usbfs (lemnos-usb)            claim the video interfaces (DISCONNECT_CLAIM to detach a
                                kernel driver from just those, when allowed), control
                                transfers, SET_INTERFACE, a ring of URBs (SUBMIT / REAP /
                                DISCARD) whose memory the ring owns until the kernel gave

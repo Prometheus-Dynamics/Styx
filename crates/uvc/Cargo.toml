@@ -11,6 +11,10 @@ rust-version.workspace = true
 [dependencies]
 # Kernel uevents (hotplug) from Lemnos.
 lemnos-linux.workspace = true
+# poll on the device's descriptor.
+lemnos-linux-sys.workspace = true
+# Claims, controls and URB rings.
+lemnos-usb.workspace = true
 libc.workspace = true
 styx-graph.workspace = true
 styx-kernel.workspace = true

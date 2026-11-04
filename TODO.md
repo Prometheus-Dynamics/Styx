@@ -367,30 +367,21 @@ Not on the freeze list. *Numbers:* none measured unless stated.
 HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: dependency layers",
 2026-11-02). Each item needs the user's go before it starts. No code moves before then.
 
-- [ ] **UVC onto Lemnos's one USB transport.** *What:* `styx-uvc` claims interfaces and streams
-      isochronous/bulk transfers through `styx-kernel`'s own usbfs (`usbfs.rs`, `usbfs/urb.rs`:
-      raw usbdevfs ioctls and URBs). It moves onto Lemnos's USB layer. *Why:* three USB stacks
-      (Lemnos rusb, Atlas nusb, Styx usbfs) become one. *Done when:* `styx-kernel` has no usbfs
-      module and UVC's no-drop and timestamp tests pass on Lemnos's transport. *Blocked by:*
-      Lemnos: `lemnos-usb` (a6a5cd1) has isochronous transfers, caller-driven reaping and mapped
-      buffers, but no `AsFd` on `UsbDevice`, and it allocates per URB (`Arc<Shared>`, a boxed
-      canceller, a pending-map entry), which would break UVC's 0 allocations. Asked of Lemnos
-      2026-11-03: `AsFd` and an allocation-free ring (`UrbRing` moved there).
-      *Numbers:* `usbfs` is used only by `styx-uvc` (`device.rs`, `stream.rs`, `sysfs.rs`,
-      `hotplug.rs`) and `styx`'s UVC backend tests.
+- [ ] **UVC onto Lemnos's one USB transport.** `styx-uvc` claims, controls and streams through
+      `lemnos-usb` (`UrbRing`, Lemnos d190650); `styx-kernel` has no usbfs module. Written, untested
+      on a camera. *Why:* three USB stacks (Lemnos rusb, Atlas nusb, Styx usbfs) become one.
+      *Done when:* UVC's no-drop and timestamp checks, a detach and reattach of `uvcvideo`, and the
+      steady-state allocation count pass on a real camera. *Blocked by:* a board slot (SystemCore
+      C270). *Numbers:* none yet.
 - [x] **Uevent hotplug on Lemnos's.** Already done: `styx::watch` (`watch/linux.rs`) and
       `styx-uvc`'s `Hotplug` both use `lemnos_linux::uevent`. Styx has no netlink code of its
       own; I²C, GPIO and embedded-hal are Lemnos's as well (`styx-kernel/src/bus.rs`). The
       HeliOS item "Styx's uevent watcher moves onto Lemnos's" has nothing left to do.
-- [ ] **dma-heap and dma-buf basics onto Lemnos.** *What:* `styx-kernel::dma_heap` (heap open
-      and allocate, `DMA_BUF_IOCTL_SYNC` CPU-access brackets, mmap, `dmabuf_id`, the dma-buf
-      length) moves onto Lemnos's DMA buffer basics. `BackingPool`, frame leases and pools stay
-      in Styx (`styx-core`). *Why:* two allocators (Styx, Daedalus) become one. *Done when:*
-      `styx-kernel` has no dma_heap module and the allocation-count tests still assert 0.
-      *Blocked by:* the user's go. *Numbers:* the dma-heap users are `styx`, `styx-pisp`,
-      `styx-native`, `styx-codec`, `styx-pipeline` and `tools/native-pipeline`. dma-buf fds also go
-      through `styx-core` (frame planes), `styx-gpuisp`, `styx-hal`, `gst-styx`, `pipewire-styx`
-      and `tools/compare`. Those only hand fds over and need no move.
+- [x] **dma-heap and dma-buf basics onto Lemnos.** The heap open and allocate, CPU-access syncs,
+      `dmabuf_id` and the dma-buf length are Lemnos's (`lemnos_linux::dma`, `lemnos_linux_sys::dma_buf`,
+      9b3e835). `styx_kernel::dma_heap` stays as a thin layer for what is Styx's: the allocation
+      padding (`TAIL_SLACK`), the sync counters (`sync_stats`) and the memfd stand-in. Owed: the
+      Raze run of the allocations and syncs was done on the software-ISP path only.
 - [ ] **One Vulkan device and queue per process.** Done on the host (aa95fb4): with `daedalus`,
       the GPU ISP takes the process's device (`GpuContext::shared`), and `GpuConvert` submits there
       too, so the GPU JPEG and H.264 encoders can run on it (their callers supply the context).

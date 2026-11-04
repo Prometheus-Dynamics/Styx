@@ -3,10 +3,46 @@
 //! holds each of the camera's interfaces.
 
 use std::path::{Path, PathBuf};
-
-use styx_kernel::usbfs::{Speed, UsbDevice};
+use std::time::Duration;
 
 use crate::descriptors::UvcFunction;
+
+/// The speed a device runs at.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Speed {
+    Unknown,
+    /// 1.5 Mbit/s.
+    Low,
+    /// 12 Mbit/s: 1 ms frames.
+    Full,
+    /// 480 Mbit/s: 125 µs microframes.
+    High,
+    /// 5 Gbit/s and faster: 125 µs bus intervals.
+    Super,
+    SuperPlus,
+}
+
+impl Speed {
+    /// From sysfs `speed` (Mbit/s): `1.5`, `12`, `480`, `5000`, `10000`, `20000`.
+    pub fn from_mbps(mbps: &str) -> Speed {
+        match mbps.trim() {
+            "1.5" => Speed::Low,
+            "12" => Speed::Full,
+            "480" => Speed::High,
+            "5000" => Speed::Super,
+            "10000" | "20000" => Speed::SuperPlus,
+            _ => Speed::Unknown,
+        }
+    }
+
+    /// The duration of one (micro)frame, the unit of isochronous scheduling.
+    pub fn bus_interval(self) -> Duration {
+        match self {
+            Speed::Low | Speed::Full => Duration::from_millis(1),
+            _ => Duration::from_micros(125),
+        }
+    }
+}
 
 /// The kernel driver bound to one of the camera's interfaces.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -45,7 +81,10 @@ impl UsbCameraInfo {
 
     /// The usbfs node.
     pub fn node(&self) -> PathBuf {
-        UsbDevice::node_path(self.busnum, self.devnum)
+        PathBuf::from(format!(
+            "/dev/bus/usb/{:03}/{:03}",
+            self.busnum, self.devnum
+        ))
     }
 
     /// The product string, or `UVC Camera (vvvv:pppp)` as `uvcvideo` names it.

@@ -1,15 +1,15 @@
 //! A running stream: URBs on the video endpoint, frames assembled from their payloads, and
 //! timestamps from the bus and the device clock. Driven by its owner (no thread): reap,
-//! assemble, resubmit, whenever the usbfs descriptor reports completed transfers.
+//! assemble, resubmit, whenever the device's descriptor reports completed transfers.
 
 use std::collections::VecDeque;
 use std::os::fd::{AsFd, BorrowedFd};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use lemnos_linux_sys::poll::{POLLERR, POLLHUP, POLLOUT, poll_one};
+use lemnos_usb::{TransferStatus, UrbRing, UrbRingConfig, UrbRingKind, UsbDevice};
 use styx_graph::rt::{AsyncFd, Ready};
-use styx_kernel::usbfs::{Speed, TransferKind, UrbRing, UrbRingConfig, UrbStatus, UsbDevice};
 
 use crate::clock::{BusClock, DeviceClock};
 use crate::descriptors::TransferType;
@@ -17,6 +17,7 @@ use crate::device::{UvcDevice, frame_capacity};
 use crate::payload::{AssembledFrame, Assembler, FrameFlags, Payload, PayloadHeader, Scr};
 use crate::pool::{BufferPool, PooledBuffer};
 use crate::probe::StreamingParams;
+use crate::sysfs::Speed;
 use crate::{Result, UvcError};
 
 /// Total URB memory kept under usbfs's default limit (16 MiB per system).
@@ -151,7 +152,7 @@ pub struct UvcStream {
     config: StreamConfig,
     format: StreamFormat,
     ring: Option<UrbRing>,
-    afd: Option<AsyncFd<Arc<UsbDevice>>>,
+    afd: Option<AsyncFd<UsbDevice>>,
     asm: Assembler,
     bus: BusClock,
     clock: DeviceClock,
@@ -194,9 +195,7 @@ impl UvcStream {
         // Streaming off while negotiating (a previous owner may have left it on).
         let transfer = vs.transfer();
         if transfer == TransferType::Isochronous {
-            dev.usb()
-                .set_interface(vs.number, 0)
-                .map_err(UvcError::from_kernel)?;
+            dev.set_alternate(vs.number, 0)?;
         }
         let params = dev.negotiate(
             vs.number,
@@ -209,7 +208,6 @@ impl UvcStream {
         let mut pool_capacity = capacity;
         let info = dev.info();
         let speed = info.speed;
-        let usb = dev.usb().clone();
         let (alt, bytes_per_interval, ring_config, interval_ns) = match transfer {
             TransferType::Isochronous => {
                 let payload = params.max_payload_transfer_size as usize;
@@ -226,7 +224,7 @@ impl UvcStream {
                     bpi,
                     UrbRingConfig {
                         endpoint: ep.address,
-                        kind: TransferKind::Iso {
+                        kind: UrbRingKind::Iso {
                             packets,
                             packet_size: bpi,
                         },
@@ -257,7 +255,7 @@ impl UvcStream {
                     size,
                     UrbRingConfig {
                         endpoint: vs.endpoint,
-                        kind: TransferKind::Bulk { size },
+                        kind: UrbRingKind::Bulk { size },
                         count,
                         mmap: config.mapped_urbs,
                     },
@@ -266,17 +264,16 @@ impl UvcStream {
             }
         };
         if transfer == TransferType::Isochronous {
-            usb.set_interface(vs.number, alt)
-                .map_err(UvcError::from_kernel)?;
+            dev.set_alternate(vs.number, alt)?;
         }
-        let mut ring = UrbRing::new(usb.clone(), ring_config).map_err(UvcError::from_kernel)?;
+        let mut ring = UrbRing::new(dev.usb(), ring_config).map_err(UvcError::from_usb)?;
         let started = Instant::now();
         if let Err(e) = ring.submit_all() {
             drop(ring);
             if transfer == TransferType::Isochronous {
-                let _ = usb.set_interface(vs.number, 0);
+                let _ = dev.set_alternate(vs.number, 0);
             }
-            return Err(UvcError::from_kernel(e));
+            return Err(UvcError::from_usb(e));
         }
         let clock_hz = if params.clock_frequency != 0 {
             params.clock_frequency
@@ -370,33 +367,33 @@ impl UvcStream {
                 Ok(None) => break,
                 Err(e) => {
                     self.ended = true;
-                    return Err(UvcError::from_kernel(e));
+                    return Err(UvcError::from_usb(e));
                 }
             };
             self.stats.urbs += 1;
-            let slot = c.slot;
+            let slot = c.slot();
             match c.status {
-                UrbStatus::Disconnected => {
+                TransferStatus::Disconnected => {
                     self.ended = true;
                     return Err(UvcError::Disconnected);
                 }
-                UrbStatus::Cancelled => continue,
-                UrbStatus::Ok | UrbStatus::Error(_) => {}
+                TransferStatus::Cancelled => continue,
+                TransferStatus::Ok | TransferStatus::Stalled | TransferStatus::Error(_) => {}
             }
-            let reaped_ns = mono_ns().saturating_sub(c.reaped.elapsed().as_nanos() as u64);
+            let reaped_ns = mono_ns().saturating_sub(c.reaped().elapsed().as_nanos() as u64);
             if self.format.transfer == TransferType::Isochronous {
                 let first = self.bus.urb(reaped_ns, c.packet_count() as u64);
                 for (k, pkt) in c.packets().enumerate() {
                     let p = first + k as u64;
-                    if pkt.status == 0
-                        && let Some(scr) = PayloadHeader::parse(pkt.data).and_then(|h| h.scr)
+                    let failed = !pkt.status.is_ok();
+                    if !failed && let Some(scr) = PayloadHeader::parse(pkt.data).and_then(|h| h.scr)
                     {
                         self.clock.scr(scr, p, &self.bus);
                     }
                     self.asm.push(
                         Payload {
                             data: pkt.data,
-                            failed: pkt.status != 0,
+                            failed,
                             packet: p,
                             time_ns: self.bus.packet_time(p),
                         },
@@ -405,8 +402,8 @@ impl UvcStream {
                 }
                 self.packets = first + c.packet_count() as u64;
             } else {
-                let failed = !matches!(c.status, UrbStatus::Ok);
-                let stalled = c.status == UrbStatus::Error(libc::EPIPE);
+                let failed = !c.status.is_ok();
+                let stalled = c.status == TransferStatus::Stalled;
                 let payload = Payload {
                     data: c.data(),
                     failed,
@@ -442,7 +439,7 @@ impl UvcStream {
             }
             if let Err(e) = ring.submit(slot) {
                 self.ended = true;
-                return Err(UvcError::from_kernel(e));
+                return Err(UvcError::from_usb(e));
             }
         }
         let frames = std::mem::take(&mut self.scratch);
@@ -504,12 +501,9 @@ impl UvcStream {
             if now >= deadline {
                 return Err(UvcError::Timeout);
             }
-            let ready = self
-                .dev
-                .usb()
-                .wait(Some(deadline - now))
-                .map_err(UvcError::from_kernel)?;
-            if ready.hangup || ready.error {
+            let ready = poll_one(self.dev.usb().as_fd(), POLLOUT, Some(deadline - now))
+                .map_err(|e| UvcError::Invalid(format!("poll: {e}")))?;
+            if ready & (POLLHUP | POLLERR) != 0 {
                 // Take what completed first; the reap then reports the disconnect.
                 self.pump()?;
                 if self.ready.is_empty() {
@@ -521,7 +515,7 @@ impl UvcStream {
     }
 
     /// The next frame, waiting on any executor (styx-graph's reactor wakes it when the
-    /// usbfs descriptor reports completed transfers).
+    /// device's descriptor reports completed transfers).
     pub async fn next(&mut self) -> Result<UvcFrame> {
         loop {
             if let Some(f) = self.try_next()? {
@@ -553,7 +547,7 @@ impl UvcStream {
         if let Some(ring) = self.ring.take() {
             drop(ring);
             if self.format.transfer == TransferType::Isochronous && !self.ended {
-                let _ = self.dev.usb().set_interface(self.config.interface, 0);
+                let _ = self.dev.set_alternate(self.config.interface, 0);
             }
         }
         self.ended = true;

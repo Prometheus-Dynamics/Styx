@@ -1,5 +1,5 @@
 use super::*;
-use styx_kernel::usbfs::Speed;
+use styx_uvc::Speed;
 use styx_uvc::sysfs::InterfaceBinding;
 
 /// The C270 as sysfs shows it on the CM5, `uvcvideo` bound.

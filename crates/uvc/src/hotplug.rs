@@ -173,7 +173,7 @@ mod tests {
             manufacturer: None,
             product: None,
             serial: None,
-            speed: styx_kernel::usbfs::Speed::High,
+            speed: crate::sysfs::Speed::High,
             bus_info: format!("usb-xhci-hcd.1-{port}"),
             function,
             interfaces: vec![
