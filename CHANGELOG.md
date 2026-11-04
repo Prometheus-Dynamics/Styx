@@ -700,6 +700,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `StillRequest::settle` waits for AE to lock for half of the request's timeout at most, then
+  takes the still at AE's exposure; a scene AE never locked on used to fail with "still: timed out".
 - With features `gpu-isp` and `daedalus`, the GPU ISP runs on the process's Daedalus device
   (`styx_gpuisp::GpuContext::shared`, on `daedalus_gpu::shared_context`) instead of opening a
   second one: one Vulkan device and queue with the process's engines. `STYX_GPUISP_DEVICE`

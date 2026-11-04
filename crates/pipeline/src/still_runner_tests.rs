@@ -87,6 +87,42 @@ fn order(exposure: ShotExposure) -> StillOrder {
     }
 }
 
+#[test]
+fn a_settling_still_stops_waiting_for_ae_halfway_to_its_timeout() {
+    let mut runner = StillRunner::new();
+    let mut host = FakeLoop::default();
+    let settling = StillOrder {
+        settle: true,
+        ..order(ShotExposure::Current)
+    };
+    runner.submit(7u32, settling);
+    let report = LoopReport {
+        lands: None,
+        request: None,
+        total_exposure: 0.02,
+        ae_locked: false,
+    };
+    let mut taken = None;
+    for f in 0..30u64 {
+        assert!(
+            runner
+                .before_frame(&mut host, Duration::from_millis(33 * f))
+                .is_none()
+        );
+        let s = values(f, Duration::from_millis(10), 2.0);
+        let raw = runner.wants(&s).then_some(f);
+        if let Some(o) = runner.after_frame(&mut host, &s, &report, raw) {
+            taken = Some((f, o));
+            break;
+        }
+    }
+    // 500 ms passes at frame 16: armed then, taken on the next.
+    let Some((17, StillOutcome::Taken { shots, .. })) = taken else {
+        panic!("not taken on frame 17");
+    };
+    assert_eq!(shots.len(), 1);
+}
+
 /// Runs `frames` frames: requests made at frame f land at f + 3, frames show what landed.
 /// Returns the outcome and the frame it came on.
 fn run(

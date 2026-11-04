@@ -115,7 +115,8 @@ pub enum ShotExposure {
 pub struct StillOrder {
     /// The exposure.
     pub exposure: ShotExposure,
-    /// A shot at AE's exposure waits for AE to lock.
+    /// A shot at AE's exposure waits for AE to lock, for half of `timeout` at most: a scene AE
+    /// never locks on (at its limits, or flickering) still gets its still.
     pub settle: bool,
     /// The request fails when it is not taken within this long of `requested`.
     pub timeout: Duration,
@@ -335,6 +336,11 @@ impl<J, H> StillRunner<J, H> {
             && let Some(done) = self.start(host, job, order)
         {
             return Some(done);
+        }
+        if let Some(a) = self.active.as_mut()
+            && now.saturating_sub(a.order.requested) > a.order.timeout / 2
+        {
+            a.order.settle = false;
         }
         let timed_out = self
             .active

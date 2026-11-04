@@ -145,7 +145,8 @@ impl StillRequest {
         self
     }
 
-    /// Wait for AE to lock first.
+    /// Wait for AE to lock first, for half of [`Self::timeout`] at most: on a scene AE does not
+    /// lock on, the still is then taken at the exposure AE has.
     pub fn settle(mut self, settle: bool) -> Self {
         self.settle = settle;
         self

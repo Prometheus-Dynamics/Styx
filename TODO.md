@@ -84,8 +84,9 @@ user lifts them.
       `regcheck` without `--description` wrote 0 registers, so nothing was checked. *Numbers:* 2 of 93 differ.
 - [ ] **Still JPEG encoding numbers.** *Why:* the default features fall back to the `image` crate. *Done when:*
       the ~45 ms still thread time is re-measured with turbojpeg. *Blocked by:* a still that lands: on the Raze 2026-11-02
-      `still_capture DIR 30 native` (turbojpeg) failed with "still: timed out", a finding to
-      look into before any timing. *Numbers:*
+      `still_capture DIR 30 native` (turbojpeg) failed with "still: timed out". Likely cause, fixed
+      and written, untested on board: `settle(true)` armed the shot only once AE locked, so a scene
+      AE never locks on waited out the 5 s; it now waits half the timeout, then takes AE's exposure. *Numbers:*
       ~45 ms, before turbojpeg.
 - [ ] **CM5 HEVC decode check** (`hevc_v4l2request` through FFmpeg). *Why:* HEVC recordings only; Styx
       records MJPEG and raw. *Done when:* a recording decodes through `rpi-hevc-dec`. *Blocked by:*
