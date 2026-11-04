@@ -216,7 +216,9 @@ fn passthrough(pixels: Pixels, size: (u16, u16), output: usize, out: (u16, u16))
 ///
 /// Exactness: the filter the coefficients describe, sampled at 1/16-pixel phases, so a
 /// reference at exact phases differs by the phase rounding (up to 1/32 pixel); the step is a
-/// 4.12 fraction. The sum's rounding to 8 bits is the hardware's (owed a CM5 measurement).
+/// 4.12 fraction. Horizontal then vertical, clamped to range between the passes, truncated at
+/// the end: that model is within 1 on the Raze, 2026-11-03, Lanczos 3 from 640x480 to half
+/// (2979 of 76800 differ).
 /// Scale factors under 16 either way.
 pub fn resample(
     pixels: Pixels,
@@ -352,16 +354,17 @@ fn fit(table: &[u8; 256], gamma: &BeGammaConfig) -> LutFit {
     out
 }
 
-/// One 5x5 int8 `kernel` of the sharpen block on luma, the other four off: the block adds
-/// the kernel's response to Y through its positive and negative response functions, set
-/// here to pass it (thresholds 0, unit strength, identity functions, limits open, the
-/// combine's Y factor at its 255/256 top). A high-pass kernel sums to 0; a smoothing filter
-/// is `blur - identity`.
+/// One 5x5 int8 `kernel` of the sharpen block on luma, the other four off: each sample gets
+/// the kernel's response added at unit gain, `clamp(y + sum(k * neighbourhood))`. A high-pass
+/// kernel sums to 0; a smoothing filter is `blur - identity`, in whole coefficients.
 ///
-/// Exactness: not claimed. The response arithmetic (threshold, strength and function scales)
-/// is documented by field name only; tolerance owed a CM5 measurement (a centre-24 high-pass
-/// saturated every sample read on the Raze; a zero kernel, which should pass the image, is
-/// not measured yet). Luma only: chroma passes unchanged.
+/// The gain is `func * strength * scale / 2^30` (`func` multiplies the response, it is not a
+/// transfer curve; a scale of 4096 reads as 0). `white` and `black` stay 0: set, they force
+/// samples to 255 and 0.
+///
+/// Exactness: exact on the Raze, 2026-11-03, GREY 640x480: a zero kernel passes all 307200
+/// samples, and two high-passes equal the clamped sum on all 302736 samples clear of the 2-pixel
+/// border (the border is not measured). Luma only: chroma passes unchanged.
 pub fn filter5x5(
     pixels: Pixels,
     size: (u16, u16),
@@ -372,24 +375,20 @@ pub fn filter5x5(
         return Err(OpError::NoLuma);
     }
     let mut op = passthrough(pixels, size, 0, size);
-    let identity: [u16; BE_SHARPEN_FUNC_NUM_POINTS] =
-        core::array::from_fn(|i| (i * 8192).min(65535) as u16);
+    let unit = [4096; BE_SHARPEN_FUNC_NUM_POINTS];
     let cfg = op.backend.config_mut();
     cfg.sharpen = BeSharpenConfig {
         kernel0: *kernel,
         thresholds: [[0, 0, 1024, 0]; 5],
         positive_strength: 1 << 8,
         positive_pre_limit: u16::MAX,
-        positive_func: identity,
+        positive_func: unit,
         positive_limit: u16::MAX,
         negative_strength: 1 << 8,
         negative_pre_limit: u16::MAX,
-        negative_func: identity,
+        negative_func: unit,
         negative_limit: u16::MAX,
         enables: 1,
-        white: 1,
-        black: 1,
-        grey: 1,
         ..Default::default()
     };
     cfg.sh_fc_combine.y_factor = u8::MAX;

@@ -141,6 +141,9 @@ fn filter5x5_sets_kernel_0_alone() {
         let mut op = filter5x5(p, (64, 64), &k).unwrap();
         assert_ne!(prepares(&mut op) & rgb_enable::SHARPEN, 0);
         let s = op.backend.config().sharpen;
+        // Set, these force samples to 255 and 0; the table multiplies the response.
+        assert_eq!((s.white, s.black), (0, 0));
+        assert_eq!(s.positive_func, [4096; BE_SHARPEN_FUNC_NUM_POINTS]);
         assert_eq!(s.kernel0, k);
         assert_eq!(s.enables, 1);
     }

@@ -1016,6 +1016,10 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- `be::ops::filter5x5` set the sharpen block's `white` and `black`, which force samples to 255
+  and 0, and used a rising table as a transfer curve when it multiplies the response: the output
+  was 1 or 255 whatever the image. Each sample now gets the kernel's response at unit gain,
+  exact on the Raze.
 - `styx_pisp::be::ops`: `Pixels::Grey8` jobs never finished and stopped the back end for every
   client until a reboot. Grey now goes in as an `NV12` luma plane, so its input buffer is
   `input_len`, 1.5x the image; `prepare` refuses 8-bit uncompressed Bayer input.

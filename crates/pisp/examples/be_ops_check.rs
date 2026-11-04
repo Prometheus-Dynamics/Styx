@@ -15,9 +15,11 @@
 //! - `downscale` (by 2, output 1), `box2` and `pyramid2` (both outputs, `run2`) against
 //!   `(a+b+c+d+2)>>2` and the 4x4 mean rounded half up: which codes differ and whether the
 //!   rounding truncates instead.
-//! - `resample` (Lanczos 3 to half size) against the 2x2 mean: a sanity bound, not exactness.
+//! - `resample` (Lanczos 3 to half size) against a CPU model of the 6-tap filter: edges clamped,
+//!   the corner-aligned step, 16 phases, horizontal then vertical, clamped between, truncated.
 //! - `lut` (a square-root curve) against the table and against [`LutFit`]'s prediction.
-//! - `filter5x5` (a zero-sum high-pass, centre 24) against the input: how much it moves.
+//! - `filter5x5`: a zero kernel against the input, then two zero-sum high-passes against the
+//!   input plus the kernel's response, clamped, away from the 2-pixel border.
 //! - `demosaic_ccm` on flat Bayer patches with the identity matrix: the RGB each patch comes
 //!   out as.
 //!
@@ -115,6 +117,49 @@ fn compare(name: &str, got: &[u8], want: &[u8]) {
         println!("    got  {:?}", &got[..got.len().min(24)]);
         println!("    want {:?}", &want[..want.len().min(24)]);
     }
+}
+
+/// One 6-tap pass of `coef` (16 phases, s.10) over `n` samples to `m`, `get` clamped at the edges.
+fn taps(coef: &[i16], n: usize, m: usize, get: impl Fn(usize) -> f64) -> Vec<f64> {
+    let step = ((n - 1) << 12) / (m - 1);
+    (0..m)
+        .map(|i| {
+            let pos = i * step;
+            let (at, phase) = (pos >> 12, (pos >> 8) & 15);
+            (0..6)
+                .map(|t| {
+                    let x = (at + t).saturating_sub(2).min(n - 1);
+                    f64::from(coef[phase * 6 + t]) * get(x) / 1024.0
+                })
+                .sum()
+        })
+        .collect()
+}
+
+/// The test image through `coef` to `ow`x`oh`: horizontal, clamped to range, vertical, truncated.
+fn resample_ref(coef: &[i16], (w, h): (usize, usize), (ow, oh): (usize, usize)) -> Vec<u8> {
+    let rows: Vec<Vec<f64>> = (0..h)
+        .map(|y| taps(coef, w, ow, |x| f64::from(sample(x, y))))
+        .collect();
+    let mut out = vec![0; ow * oh];
+    for x in 0..ow {
+        let column = taps(coef, h, oh, |y| rows[y][x].clamp(0.0, 255.0));
+        for (y, v) in column.into_iter().enumerate() {
+            out[y * ow + x] = v.floor().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// `k` over the test image at (`x`, `y`), edges clamped.
+fn response(k: &[i8; 25], w: usize, h: usize, x: usize, y: usize) -> f64 {
+    (0..25)
+        .map(|i| {
+            let sx = (x + i % 5).saturating_sub(2).min(w - 1);
+            let sy = (y + i / 5).saturating_sub(2).min(h - 1);
+            f64::from(k[i]) * f64::from(sample(sx, sy))
+        })
+        .sum()
 }
 
 struct Runner {
@@ -250,7 +295,8 @@ fn main() -> Result<()> {
     if want("resample")
         && let Some((got, _)) = report("resample Lanczos 3 to half", r.grey(lanczos))
     {
-        compare("vs the 2x2 mean (sanity only)", &got, &half);
+        let model = resample_ref(&defaults::LANCZOS3, (wu, hu), (wu / 2, hu / 2));
+        compare("vs the CPU filter model", &got, &model);
     }
     let table: [u8; 256] =
         core::array::from_fn(|v| ((v as f64 / 255.0).sqrt() * 255.0).round() as u8);
@@ -267,18 +313,40 @@ fn main() -> Result<()> {
         );
         compare("vs the table", &got, &want);
     }
-    let mut k = [-1i8; 25];
-    k[12] = 24;
-    if want("filter5x5")
-        && let Some((got, _)) = report(
-            "filter5x5 high-pass",
-            r.grey(ops::filter5x5(Pixels::Grey8, (w, h), &k)?),
-        )
-    {
+    if want("filter5x5") {
         let input: Vec<u8> = (0..hu)
             .flat_map(|y| (0..wu).map(move |x| sample(x, y)))
             .collect();
-        compare("vs the input", &got, &input);
+        if let Some((got, _)) = report(
+            "filter5x5 zero kernel",
+            r.grey(ops::filter5x5(Pixels::Grey8, (w, h), &[0; 25])?),
+        ) {
+            compare("vs the input", &got, &input);
+        }
+        let mut weak = [0i8; 25];
+        (weak[7], weak[11], weak[12], weak[13], weak[17]) = (-1, -1, 4, -1, -1);
+        let mut strong = [-1i8; 25];
+        strong[12] = 24;
+        for (name, k) in [("weak high-pass", weak), ("centre-24 high-pass", strong)] {
+            if let Some((got, _)) = report(
+                &format!("filter5x5 {name}"),
+                r.grey(ops::filter5x5(Pixels::Grey8, (w, h), &k)?),
+            ) {
+                let inner = |v: &[u8]| -> Vec<u8> {
+                    (2..hu - 2)
+                        .flat_map(|y| v[y * wu + 2..(y + 1) * wu - 2].to_vec())
+                        .collect()
+                };
+                let want: Vec<u8> = (0..hu * wu)
+                    .map(|i| {
+                        let (x, y) = (i % wu, i / wu);
+                        let v = f64::from(sample(x, y)) + response(&k, wu, hu, x, y);
+                        v.clamp(0.0, 255.0) as u8
+                    })
+                    .collect();
+                compare("vs input + response", &inner(&got), &inner(&want));
+            }
+        }
     }
     if !want("demosaic") {
         return Ok(());

@@ -36,13 +36,13 @@ user lifts them.
       GPU: 1.67 ms p50 and 0.38 ms CPU for 3 levels (42fb407).
 - [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`).
       *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs, 5x5 filters and demosaic + CCM
-      onto the BE memory to memory on its own dma-bufs. *Done when:* `filter5x5` has a measured
-      tolerance (a zero kernel should pass the image) and `resample` a CPU reference (max abs
-      error); `be_ops_check` compares it with the 2x2 mean only, a sanity bound. *Blocked by:* a
-      board slot. *Numbers:* Raze #2, 2026-11-03, GREY 640x480, buffers from `linux,cma`: `box2`,
+      onto the BE memory to memory on its own dma-bufs. *Done when:* the ops run for Eidos on the board, GREY on the
+      NV12 route beside live frames included. *Blocked by:* nothing. *Numbers:* Raze #2, 2026-11-03, GREY 640x480, buffers from `linux,cma`: `box2`,
       `downscale`, `pyramid2` 0.40-0.42 ms, truncated (59280 of 76800 one below rounding half up,
       none further; 10680 of 19200 on level 2); `lut` 0.72 ms, max 5 from the table against
-      `LutFit`'s predicted 4; `resample` 0.40 ms; `demosaic_ccm` 0.22 ms, four flat patches exact.
+      `LutFit`'s predicted 4; `resample` 0.40-0.85 ms over single runs, within 1 of the CPU model (2979 of 76800 differ);
+      `filter5x5` 0.36 ms, exact at unit gain clear of the 2-pixel border; `demosaic_ccm` 0.22 ms, four
+      flat patches exact.
       4232 runs on group 1 beside live frames on group 0: 0 failed, 0 drops.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.

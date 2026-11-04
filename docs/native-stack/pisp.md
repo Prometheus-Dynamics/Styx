@@ -237,6 +237,14 @@ to the end of the register window, so harmless).
   blue and grey bands comes out as `[208,0,0]`, `[0,208,0]`, `[0,0,208]`,
   `[208,208,208]`, with no step across the tile boundaries at columns 576 and 1152.
 
+CPU access to back end output buffers (`DMA_BUF_IOCTL_SYNC`, Raze, 2026-11-03, 1.5 MB, 400 runs;
+a null ioctl is 0.21 µs): the driver's uncached buffers take 0.24 µs for START and for END, so no
+cache work; a cached heap buffer with a device attached takes 20.7 µs for START, and for END 20.7
+µs with nothing read or 35 µs after a whole-buffer read (`system` and `linux,cma` alike). The same
+heap buffer with nothing attached takes 0.25 µs, so a timing without a device attached shows
+nothing. END stays on cached buffers: skipping it breaks the dma-buf contract for at most 2 ms a
+second at 60 fps.
+
 ## Open problems / next steps
 
 - Algorithms (phase 4): AE/AWB from these statistics, CCM/LSC/gamma from a tuning file.
