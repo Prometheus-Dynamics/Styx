@@ -1,4 +1,4 @@
-//! One Vulkan device per process: the ISP and a Daedalus engine run on the device
+//! One Vulkan device per process: the ISP, conversions and a Daedalus engine run on the device
 //! `GpuContext::shared` takes. A binary of its own, since `devices_created` counts every device
 //! the process made. Skipped without a hardware GPU.
 #![cfg(feature = "daedalus")]
@@ -10,7 +10,7 @@ use daedalus::{
     macros::{node, plugin},
     runtime::{ExecutionContext, NodeError, plugins::PluginRegistry},
 };
-use styx_gpuisp::{GpuContext, GpuError, GpuIsp};
+use styx_gpuisp::{GpuContext, GpuConvert, GpuError, GpuIsp, Image, ImageMut};
 use styx_softisp::*;
 
 #[node(id = "test.on_gpu", inputs("tick"), outputs("seen"))]
@@ -25,7 +25,7 @@ fn on_gpu(tick: i64, ctx: &ExecutionContext) -> Result<i64, NodeError> {
 struct OnGpuPlugin;
 
 #[test]
-fn an_engine_and_the_isp_share_one_device() {
+fn an_engine_the_isp_and_conversions_share_one_device() {
     let ctx = match GpuContext::shared() {
         Ok(c) => c,
         Err(GpuError::Unsupported(why)) => return eprintln!("skipped: {why}"),
@@ -68,5 +68,25 @@ fn an_engine_and_the_isp_share_one_device() {
     };
     isp.process(&raw, stride, Scale::Full, out).unwrap();
     assert!(got.iter().any(|&v| v != 0), "the ISP wrote the frame");
+
+    let mut convert = GpuConvert::new(&ctx).unwrap();
+    let src: Vec<u8> = (0..16 * 4 * 3).map(|i| i as u8).collect();
+    let mut swapped = vec![0u8; src.len()];
+    convert
+        .swap_rb24(
+            Image {
+                data: &src,
+                stride: 16 * 3,
+            },
+            ImageMut {
+                data: &mut swapped,
+                stride: 16 * 3,
+            },
+            (16, 4),
+        )
+        .unwrap();
+    for (a, b) in src.chunks(3).zip(swapped.chunks(3)) {
+        assert_eq!([a[2], a[1], a[0]], b);
+    }
     assert_eq!(devices_created(), 1, "one device in the process");
 }

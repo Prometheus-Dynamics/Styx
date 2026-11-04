@@ -706,6 +706,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   (`styx_gpuisp::GpuContext::shared`, on `daedalus_gpu::shared_context`) instead of opening a
   second one: one Vulkan device and queue with the process's engines. `STYX_GPUISP_DEVICE`
   keeps a device of the ISP's own, as does a process device it cannot use.
+- `styx_gpuisp::GpuConvert` runs on Daedalus's device (it was `Unsupported` there), so the GPU
+  JPEG and H.264 encoders can share it.
 - The GPU ISP (feature `gpu-isp`) is off by default on devices measured slower than the
   software ISP on the CPU: V3D (Raspberry Pi 5 / CM5), 28 fps against the CPU's 60 at 1280x800.
   `STYX_GPU_ISP=1` takes it there; `STYX_GPU_ISP=0` still keeps it off everywhere.

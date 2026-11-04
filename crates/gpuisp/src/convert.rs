@@ -11,7 +11,7 @@ use std::sync::Arc;
 use ash::vk;
 use styx_core::simd::{ColorLayout, Orientation, YuvMatrix};
 
-use crate::context::{GpuContext, Inner};
+use crate::context::{GpuContext, Inner, Submit};
 use crate::error::{GpuError, VkContext};
 use crate::kernels::spirv;
 use crate::memory::{Buffer, Place};
@@ -149,6 +149,9 @@ pub struct GpuConvert {
     pub(crate) input: Option<Buffer>,
     /// Output rows, read back (mapped).
     pub(crate) output: Option<Buffer>,
+    /// Submits on Daedalus's queue, for a context on its device (`RawSubmitter`).
+    #[cfg(feature = "daedalus")]
+    raw: Option<daedalus_gpu::raw_vulkan::RawSubmitter>,
 }
 
 impl Drop for GpuConvert {
@@ -170,14 +173,8 @@ impl Drop for GpuConvert {
 }
 
 impl GpuConvert {
-    /// Conversions on `ctx`'s device. `Unsupported` on a context that runs on Daedalus's
-    /// device (it has no queue of its own for this).
+    /// Conversions on `ctx`'s device.
     pub fn new(ctx: &GpuContext) -> Result<Self, GpuError> {
-        if ctx.inner.own_queue().is_none() {
-            return Err(GpuError::Unsupported(
-                "conversions on Daedalus's device".into(),
-            ));
-        }
         let mut c = Self {
             ctx: Arc::clone(&ctx.inner),
             set_layout: vk::DescriptorSetLayout::null(),
@@ -192,7 +189,17 @@ impl GpuConvert {
             fence: vk::Fence::null(),
             input: None,
             output: None,
+            #[cfg(feature = "daedalus")]
+            raw: None,
         };
+        #[cfg(feature = "daedalus")]
+        if let Submit::Daedalus(gpu) = &ctx.inner.submit {
+            // One slot: each dispatch waits for its own submission.
+            c.raw = Some(
+                daedalus_gpu::raw_vulkan::RawSubmitter::with_slots(gpu, 1)
+                    .map_err(|e| GpuError::Unsupported(format!("Daedalus submitter: {e}")))?,
+            );
+        }
         c.make()?;
         Ok(c)
     }
@@ -402,7 +409,8 @@ impl GpuConvert {
         Ok(())
     }
 
-    /// Records a dispatch of `pipeline` with `args` as push constants, submits it and waits.
+    /// Records a dispatch of `pipeline` with `args` as push constants, submits it and waits. On
+    /// Daedalus's device the commands go into its command buffer, on its queue (`RawSubmitter`).
     pub(crate) fn dispatch(
         &self,
         pipeline: vk::Pipeline,
@@ -410,21 +418,58 @@ impl GpuConvert {
         groups: (u32, u32),
     ) -> Result<(), GpuError> {
         let d = &self.ctx.device;
-        let Some(queue) = self.ctx.own_queue() else {
-            return Err(GpuError::Unsupported(
-                "conversions on Daedalus's device".into(),
-            ));
-        };
-        let cmd = self.cmd;
-        // SAFETY: the command buffer is idle (the last call waited on its fence); every
-        // object recorded is alive until the wait below returns.
+        match &self.ctx.submit {
+            Submit::Own(queue) => {
+                let cmd = self.cmd;
+                // SAFETY: the command buffer is idle (the last call waited on its fence); every
+                // object recorded is alive until the wait below returns.
+                unsafe {
+                    d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
+                        .ctx("vkResetCommandBuffer")?;
+                    let begin = vk::CommandBufferBeginInfo::default()
+                        .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+                    d.begin_command_buffer(cmd, &begin)
+                        .ctx("vkBeginCommandBuffer")?;
+                    self.record(d, cmd, pipeline, args, groups);
+                    d.end_command_buffer(cmd).ctx("vkEndCommandBuffer")?;
+                    let cmds = [cmd];
+                    let submit = [vk::SubmitInfo::default().command_buffers(&cmds)];
+                    {
+                        let queue = queue.lock().unwrap_or_else(|e| e.into_inner());
+                        d.queue_submit(*queue, &submit, self.fence)
+                            .ctx("vkQueueSubmit")?;
+                    }
+                    let waited = d.wait_for_fences(&[self.fence], true, u64::MAX);
+                    d.reset_fences(&[self.fence]).ctx("vkResetFences")?;
+                    waited.ctx("vkWaitForFences")?;
+                }
+            }
+            #[cfg(feature = "daedalus")]
+            Submit::Daedalus(_) => {
+                let raw = self.raw.as_ref().expect("made with the conversions");
+                // SAFETY: the commands use this device's objects, all alive until the ticket's
+                // wait below returns.
+                let ticket =
+                    unsafe { raw.submit(|d, cmd| self.record(d, cmd, pipeline, args, groups)) }
+                        .map_err(|e| GpuError::Unsupported(format!("Daedalus submit: {e}")))?;
+                ticket.wait();
+            }
+        }
+        Ok(())
+    }
+
+    /// The dispatch's commands, recorded into `cmd`.
+    fn record(
+        &self,
+        d: &ash::Device,
+        cmd: vk::CommandBuffer,
+        pipeline: vk::Pipeline,
+        args: &[u8],
+        groups: (u32, u32),
+    ) {
+        // SAFETY: `cmd` is recording on this device; every object is alive until the caller's
+        // wait returns.
         unsafe {
-            d.reset_command_buffer(cmd, vk::CommandBufferResetFlags::empty())
-                .ctx("vkResetCommandBuffer")?;
-            let begin = vk::CommandBufferBeginInfo::default()
-                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-            d.begin_command_buffer(cmd, &begin)
-                .ctx("vkBeginCommandBuffer")?;
             d.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::COMPUTE, pipeline);
             d.cmd_bind_descriptor_sets(
                 cmd,
@@ -448,19 +493,7 @@ impl GpuConvert {
                 &[],
                 &[],
             );
-            d.end_command_buffer(cmd).ctx("vkEndCommandBuffer")?;
-            let cmds = [cmd];
-            let submit = [vk::SubmitInfo::default().command_buffers(&cmds)];
-            {
-                let queue = queue.lock().unwrap_or_else(|e| e.into_inner());
-                d.queue_submit(*queue, &submit, self.fence)
-                    .ctx("vkQueueSubmit")?;
-            }
-            let waited = d.wait_for_fences(&[self.fence], true, u64::MAX);
-            d.reset_fences(&[self.fence]).ctx("vkResetFences")?;
-            waited.ctx("vkWaitForFences")?;
         }
-        Ok(())
     }
 
     /// BGR ↔ RGB (24-bit): bytes 0 and 2 of each pixel swapped.

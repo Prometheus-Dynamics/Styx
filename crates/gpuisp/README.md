@@ -67,7 +67,7 @@ toolchain or the Vulkan SDK.
   then integrated, then virtual GPU, never a software rasteriser unless named; tests run on
   every device found (llvmpipe included, useful in CI) and pass with a note without Vulkan.
   `GpuContext::shared` (feature `daedalus`) runs on the process's Daedalus device instead, the
-  one its engines take; `GpuConvert` needs a device of its own.
+  one its engines take.
 
 ## Quality
 

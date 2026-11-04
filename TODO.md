@@ -371,8 +371,11 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
       isochronous/bulk transfers through `styx-kernel`'s own usbfs (`usbfs.rs`, `usbfs/urb.rs`:
       raw usbdevfs ioctls and URBs). It moves onto Lemnos's USB layer. *Why:* three USB stacks
       (Lemnos rusb, Atlas nusb, Styx usbfs) become one. *Done when:* `styx-kernel` has no usbfs
-      module and UVC's no-drop and timestamp tests pass on Lemnos's transport. *Blocked by:* the
-      user's go, and Lemnos's transport supporting isochronous URBs with many packets in flight.
+      module and UVC's no-drop and timestamp tests pass on Lemnos's transport. *Blocked by:*
+      Lemnos: `lemnos-usb` (a6a5cd1) has isochronous transfers, caller-driven reaping and mapped
+      buffers, but no `AsFd` on `UsbDevice`, and it allocates per URB (`Arc<Shared>`, a boxed
+      canceller, a pending-map entry), which would break UVC's 0 allocations. Asked of Lemnos
+      2026-11-03: `AsFd` and an allocation-free ring (`UrbRing` moved there).
       *Numbers:* `usbfs` is used only by `styx-uvc` (`device.rs`, `stream.rs`, `sysfs.rs`,
       `hotplug.rs`) and `styx`'s UVC backend tests.
 - [x] **Uevent hotplug on Lemnos's.** Already done: `styx::watch` (`watch/linux.rs`) and
@@ -388,14 +391,14 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
       `styx-native`, `styx-codec`, `styx-pipeline` and `tools/native-pipeline`. dma-buf fds also go
       through `styx-core` (frame planes), `styx-gpuisp`, `styx-hal`, `gst-styx`, `pipewire-styx`
       and `tools/compare`. Those only hand fds over and need no move.
-- [ ] **One Vulkan device and queue per process.** Partly true today. With its `daedalus`
-      feature, `styx-gpuisp` runs on Daedalus's device (`GpuContext::from_daedalus`), submits
-      through Daedalus's `RawSubmitter` on Daedalus's queue, and serialises Vulkan instance and
-      device create/destroy under Daedalus's `driver_lock()`. Without the feature (or when a
-      program calls `GpuContext::new`), gpuisp makes its own instance, device and queue. *Done
-      when:* a process that has Daedalus never makes a second device, and the default
-      `GpuIsp::new` path either uses Daedalus's device when it exists or is documented as the
-      no-Daedalus build. *Blocked by:* the user's go.
+- [ ] **One Vulkan device and queue per process.** Done on the host (aa95fb4): with `daedalus`,
+      the GPU ISP takes the process's device (`GpuContext::shared`), and `GpuConvert` submits there
+      too, so the GPU JPEG and H.264 encoders can run on it (their callers supply the context).
+      `crates/gpuisp/tests/one_device.rs` runs an engine, the ISP and a conversion and asserts
+      `devices_created() == 1`. Without the feature gpuisp makes its own device, the no-Daedalus
+      build; `STYX_GPUISP_DEVICE` does too. fp16 pictures stay off on Daedalus's device. *Done
+      when:* the test and the validation layers pass on V3D. *Blocked by:* a board slot (Daedalus
+      runs it).
 - [x] **V4L2 M2M session onto Lemnos.** `styx_kernel::v4l2::M2mSession` keeps its API (copy,
       row-by-row and dma-buf import pushes, held frames, pull, drain) over Lemnos's
       `v4l2::m2m::M2mSession` (Lemnos c546b44): the source format is set first, then the
