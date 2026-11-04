@@ -216,8 +216,7 @@ pub struct NativeIspConfig {
     /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit.
     pub tdn_compressed: bool,
     /// Process each frame in two back end jobs, the first once the raw frame's first
-    /// `slice_line` rows are in (needs Styx's rp1-cfe module, `kernel-modules/rp1-cfe`; without
-    /// it frames run whole): the frame is ready sooner after its readout (1280x800@120 on the
+    /// `slice_line` rows are in (a frame whose rows are not in when checked runs whole): the frame is ready sooner after its readout (1280x800@120 on the
     /// OV9782: 7.80 → 6.85 ms at line 640). `None` (default): off. The algorithms' settings
     /// then apply one frame later.
     pub slice_line: Option<u16>,

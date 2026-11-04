@@ -8,6 +8,7 @@ use styx_kernel::media::{LinkFlags, MediaDevice, PadRef, Topology};
 use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
 use styx_kernel::v4l2::{BufType, Format, MetaFormat, PixFormat, SelectionTarget, VideoDevice};
 
+use super::line_timer::{LineTimer, LineTimerCounts};
 use super::{DeviceError, Queue, Result, bayer16_fourcc, find_media};
 use crate::fe::FrontEnd;
 use crate::stats::Statistics;
@@ -103,8 +104,7 @@ pub struct FeHeldRaw {
 }
 
 /// The front end path, set up and holding its buffers.
-/// The front end's line event (`STYX_CFE_EVENT_LINES`, Styx's rp1-cfe module): frame
-/// `sequence`'s raw output has `line` rows in memory.
+/// Frame `sequence`'s raw output has `line` rows in memory ([`FrontEndDevice::enable_line_events`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineEvent {
     /// The frame's sequence (its buffer's).
@@ -113,7 +113,8 @@ pub struct LineEvent {
     pub line: u32,
     /// When (`CLOCK_MONOTONIC`).
     pub at: Duration,
-    /// The frame's start: the timestamp its buffer will carry (`CLOCK_MONOTONIC`).
+    /// The frame's start, as the driver's `FRAME_SYNC` reports it: microseconds after the
+    /// timestamp its buffer will carry (`CLOCK_MONOTONIC`).
     pub frame_start: Duration,
 }
 
@@ -170,12 +171,10 @@ impl SensorWindow {
 
 pub struct FrontEndDevice {
     _media: MediaDevice,
-    /// The slice-timing debug probe (`STYX_PISP_FE_LINES_PROBE=1`).
-    lines_probe: Option<super::lines_probe::LinesProbe>,
     /// Raw buffers queued to the front end, oldest (being written or next) first.
     queued: std::cell::RefCell<std::collections::VecDeque<u32>>,
-    /// Subscribed to the line event (Styx's rp1-cfe module): [`Self::enable_line_events`].
-    line_events: bool,
+    /// When a frame's first rows are in: [`Self::enable_line_events`].
+    line_timer: Option<LineTimer>,
     sensor_window: Option<SensorWindow>,
     stats: Queue,
     config: Queue,
@@ -330,22 +329,9 @@ impl FrontEndDevice {
         } else {
             None
         };
-        let lines_probe = match (&image, &image_path) {
-            (Some(q), Some(path)) => super::lines_probe::LinesProbe::start(
-                path,
-                q.maps
-                    .iter()
-                    .filter_map(|m| m.first())
-                    .map(|m| (m.as_ptr(), m.len()))
-                    .collect(),
-                image_format.stride as usize,
-            ),
-            _ => None,
-        };
         Ok(Self {
-            lines_probe,
             queued: Default::default(),
-            line_events: false,
+            line_timer: None,
             stats: Queue::new(stats_dev, BufType::MetaCapture, setup.buffers, "fe_stats")?,
             config: Queue::new(cfg_dev, BufType::MetaOutput, setup.buffers, "fe_config")?,
             image,
@@ -392,6 +378,9 @@ impl FrontEndDevice {
         }
         if let Some(q) = &self.image {
             for i in 0..q.len() as u32 {
+                if let Some(t) = &self.line_timer {
+                    t.arm(i);
+                }
                 q.queue(i, &[])?;
                 self.queued.borrow_mut().push_back(i);
             }
@@ -421,6 +410,10 @@ impl FrontEndDevice {
                 let r = q.dequeue(timeout)?;
                 self.queued.borrow_mut().retain(|i| *i != r.index);
                 let data = q.maps[r.index as usize][0].as_slice()[..r.bytes_used()].to_vec();
+                if let Some(t) = &self.line_timer {
+                    t.frame_taken(r.sequence);
+                    t.arm(r.index);
+                }
                 q.queue(r.index, &[])?;
                 self.queued.borrow_mut().push_back(r.index);
                 Some((r.sequence, data))
@@ -515,15 +508,8 @@ impl FrontEndDevice {
             Some(q) => {
                 let r = q.dequeue(timeout)?;
                 self.queued.borrow_mut().retain(|i| *i != r.index);
-                if let (Some(p), Some(m)) =
-                    (&mut self.lines_probe, q.maps[r.index as usize].first())
-                {
-                    p.check(
-                        r.sequence,
-                        r.index,
-                        m.as_slice(),
-                        self.image_format.stride as usize,
-                    );
+                if let Some(t) = &self.line_timer {
+                    t.frame_taken(r.sequence);
                 }
                 Some(HeldImage {
                     index: r.index,
@@ -554,6 +540,9 @@ impl FrontEndDevice {
     pub fn release_image(&self, index: u32) -> Result<()> {
         match &self.image {
             Some(q) => {
+                if let Some(t) = &self.line_timer {
+                    t.arm(index);
+                }
                 q.queue(index, &[])?;
                 self.queued.borrow_mut().push_back(index);
                 Ok(())
@@ -568,49 +557,75 @@ impl FrontEndDevice {
         self.queued.borrow().front().copied()
     }
 
-    /// Subscribes to the front end's line event on the raw output (Styx's rp1-cfe module,
-    /// `STYX_CFE_EVENT_LINES`); fails with the stock driver. Poll [`Self::line_event_fd`] for
-    /// priority and read them with [`Self::take_line_event`].
-    pub fn enable_line_events(&mut self) -> Result<()> {
+    /// Line events at `line` rows, from the driver's `FRAME_SYNC` on the raw output and a timer
+    /// ([`Self::set_line_delay`], before streaming). Poll [`Self::line_event_fd`] for priority
+    /// and call [`Self::read_frame_starts`], wake by [`Self::line_event_due`], and read them
+    /// with [`Self::take_line_event`].
+    pub fn enable_line_events(&mut self, line: u32) -> Result<()> {
         use styx_kernel::event::{EventType, Events, SubscribeFlags};
         let q = self
             .image
             .as_ref()
             .ok_or_else(|| DeviceError::Setup("no raw output".into()))?;
-        q.dev.subscribe(
-            EventType::Private(super::LINES_EVENT_OFFSET),
-            0,
-            SubscribeFlags::empty(),
-        )?;
-        self.line_events = true;
+        let maps = (0..q.len() as u32)
+            .map(|i| q.dev.map_buffer_writable(q.buf_type, i))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let offset = line as usize * self.image_format.stride as usize;
+        let timer = LineTimer::new(line, maps, offset)
+            .ok_or_else(|| DeviceError::Setup(format!("no row {line} in the raw buffers")))?;
+        q.dev
+            .subscribe(EventType::FrameSync, 0, SubscribeFlags::empty())?;
+        self.line_timer = Some(timer);
         Ok(())
     }
 
-    /// The raw output node's descriptor: priority when a line event is pending.
-    pub fn line_event_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
-        use std::os::fd::AsFd;
-        self.line_events
-            .then(|| self.image.as_ref().map(|q| q.dev.as_fd()))
-            .flatten()
+    /// The time from a frame's start to its check for the rows.
+    pub fn set_line_delay(&mut self, delay: Duration) {
+        if let Some(t) = &mut self.line_timer {
+            t.set_delay(delay);
+        }
     }
 
-    /// The next pending line event. `None` when none is pending.
-    pub fn take_line_event(&self) -> Option<LineEvent> {
+    /// The raw output node's descriptor: priority when a frame start is pending.
+    pub fn line_event_fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        use std::os::fd::AsFd;
+        self.line_timer
+            .as_ref()
+            .and(self.image.as_ref())
+            .map(|q| q.dev.as_fd())
+    }
+
+    /// Reads the pending frame starts, after [`Self::line_event_fd`] woke.
+    pub fn read_frame_starts(&self) {
         use styx_kernel::event::{EventKind, Events};
-        let q = self.image.as_ref()?;
+        let (Some(t), Some(q)) = (&self.line_timer, &self.image) else {
+            return;
+        };
         while let Ok(Some(ev)) = q.dev.dequeue_event() {
-            if let EventKind::Private { data, .. } = ev.kind {
-                let u32_at = |o: usize| u32::from_ne_bytes(data[o..o + 4].try_into().unwrap());
-                let u64_at = |o: usize| u64::from_ne_bytes(data[o..o + 8].try_into().unwrap());
-                return Some(LineEvent {
-                    sequence: u32_at(0),
-                    line: u32_at(4),
-                    at: Duration::from_nanos(u64_at(8)),
-                    frame_start: Duration::from_nanos(u64_at(16)),
-                });
+            if let EventKind::FrameSync { frame_sequence } = ev.kind {
+                t.frame_start(frame_sequence, ev.timestamp);
             }
         }
-        None
+    }
+
+    /// When the next line event is due (`CLOCK_MONOTONIC`).
+    pub fn line_event_due(&self) -> Option<Duration> {
+        self.line_timer.as_ref()?.due()
+    }
+
+    /// The line event, once due and the rows are in. `None` otherwise: not yet, or the frame
+    /// runs whole ([`Self::line_timer_counts`] says which).
+    pub fn take_line_event(&self) -> Option<LineEvent> {
+        self.line_timer
+            .as_ref()?
+            .check(styx_kernel::monotonic_now(), self.image_in_flight())
+    }
+
+    /// What the line timer has done.
+    pub fn line_timer_counts(&self) -> LineTimerCounts {
+        self.line_timer
+            .as_ref()
+            .map_or_else(Default::default, LineTimer::counts)
     }
 
     /// Stops streaming and frees the buffers.

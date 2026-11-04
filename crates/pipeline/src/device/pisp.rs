@@ -129,21 +129,14 @@ impl Isp {
         let mut fe = FrontEnd::new(info.width as u16, info.height as u16, order);
         fe.default_stats(level16(info.black_level), 1.0, 1.0);
         fe.set_output_format(0, input);
-        // Slicing: the front end's line event (Styx's rp1-cfe module) at the slice line.
+        // Slicing: line events at the slice line.
         let slice = match want_slice {
-            Some(line) => match fe_dev.enable_line_events() {
-                Ok(()) => {
-                    fe.set_ilines(0, line);
-                    Ok(Some(line))
-                }
+            Some(line) => match fe_dev.enable_line_events(u32::from(line)) {
+                Ok(()) => Ok(Some(line)),
                 Err(e) => Err(format!("no line events from the front end: {e}")),
             },
             None => Ok(None),
         };
-        // Debug: the line the raw output's line interrupt fires at (Styx's rp1-cfe module).
-        if let Some(n) = debug_var::<u16>("STYX_PISP_FE_ILINES") {
-            fe.set_ilines(0, n);
-        }
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
         let initial = options.be_buffers_initial.unwrap_or(options.be_buffers);
@@ -353,9 +346,15 @@ impl PispPipeline {
     }
 
     /// Why frames are not split although [`PispOptions::slice_line`] asked for it (no line
-    /// events: the receiver is not Styx's rp1-cfe module). They are delivered whole.
+    /// events: the receiver has no `FRAME_SYNC`, or the mode no line time). They are delivered
+    /// whole.
     pub fn slice_error(&self) -> Option<&str> {
         self.slice_error.as_deref()
+    }
+
+    /// What slicing has done, when frames are split.
+    pub fn slice_counts(&self) -> Option<super::pisp_slices::SliceCounts> {
+        self.slicing.as_ref().map(|s| s.counts)
     }
 
     /// Where opening and the last start spent their time.
@@ -495,6 +494,10 @@ impl PispPipeline {
             .fe_dev
             .as_mut()
             .ok_or_else(|| PipelineError::Device("stopped".into()))?;
+        let line_time = self.controls.timing().map(|t| t.line_time());
+        if let Err(e) = super::pisp_slices::set_line_delay(&self.slicing, fe_dev, line_time) {
+            (self.slicing, self.slice_error) = (None, Some(e.into()));
+        }
         let sync = fe_dev
             .image_node_path()
             .map(|p| p.to_path_buf())

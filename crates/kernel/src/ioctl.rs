@@ -237,7 +237,7 @@ pub(crate) fn poll_fd(
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(libc::EINTR) {
             return Err(Error::Sys {
-                call: "poll",
+                call: "ppoll",
                 source: err,
             });
         }
@@ -323,11 +323,11 @@ pub fn poll_into(
         events: 0,
         revents: 0,
     };
-    let timeout_ms = match timeout {
-        None => -1,
-        // Round up: a 0.5 ms wait must not become a busy loop.
-        Some(t) => t.as_micros().div_ceil(1000).min(i32::MAX as u128) as i32,
-    };
+    let timeout = timeout.map(|t| libc::timespec {
+        tv_sec: t.as_secs().min(i32::MAX as u64) as _,
+        tv_nsec: t.subsec_nanos() as _,
+    });
+    let timeout_ptr = timeout.as_ref().map_or(std::ptr::null(), |t| t as *const _);
     let mut inline = [unset; INLINE];
     let mut spilled: Vec<libc::pollfd> = Vec::new();
     let pfds: &mut [libc::pollfd] = if fds.len() <= INLINE {
@@ -345,8 +345,15 @@ pub fn poll_into(
     }
     loop {
         // SAFETY: `pfds` is a valid array of `pfds.len()` pollfds for the duration of the call,
-        // and the descriptors are borrowed for it.
-        let ret = unsafe { libc::poll(pfds.as_mut_ptr(), pfds.len() as libc::nfds_t, timeout_ms) };
+        // the descriptors are borrowed for it, and the timeout outlives it.
+        let ret = unsafe {
+            libc::ppoll(
+                pfds.as_mut_ptr(),
+                pfds.len() as libc::nfds_t,
+                timeout_ptr,
+                std::ptr::null(),
+            )
+        };
         if ret >= 0 {
             for (r, p) in ready.iter_mut().zip(pfds.iter()) {
                 *r = Ready::from_revents(p.revents);
@@ -356,7 +363,7 @@ pub fn poll_into(
         let err = std::io::Error::last_os_error();
         if err.raw_os_error() != Some(libc::EINTR) {
             return Err(Error::Sys {
-                call: "poll",
+                call: "ppoll",
                 source: err,
             });
         }

@@ -1,9 +1,11 @@
-//! Processing the top of a frame while the bottom is still being read (`PispOptions::slice_line`,
-//! needs Styx's rp1-cfe module). The front end raises an event once its raw output has `line`
-//! rows in memory (they are final then: measured on the CM5, every row up to the line, in every
-//! frame). At that event the back end runs the tiles above the line as one job on the raw
+//! Processing the top of a frame while the bottom is still being read (`PispOptions::slice_line`).
+//! A line event says the raw output has `line` rows in memory, final: the front end device checks
+//! a marker below them at a time from the sensor's line time ([`line_delay`]). At that event the
+//! back end runs the tiles above the line as one job on the raw
 //! buffer still being written; at the end of the frame the rest of the tiles run as a second
-//! job into the same output buffers. The frame comes out the same, sooner after its readout.
+//! job into the same output buffers. The frame comes out as one job with the same stripes would
+//! make it, byte for byte, sooner after its readout; against one stripe, rows around the stripe's
+//! edge differ by a few codes (Raze, 2026-11-03: about 1% of the bytes, at most 14 codes).
 //!
 //! The two jobs share one config, prepared at the event from the settings the algorithms chose
 //! for the previous frame (this frame's statistics only exist at its end): a sliced stream
@@ -13,7 +15,9 @@ use std::time::{Duration, Instant};
 
 use styx_native::SensorStream;
 use styx_pisp::be::split_tiles_into;
-use styx_pisp::device::{BackEndStream, BeJob, FrontEndDevice, LineEvent, QueuedJob, profile};
+use styx_pisp::device::{
+    BackEndStream, BeJob, FrontEndDevice, LineEvent, LineTimerCounts, QueuedJob, profile,
+};
 use styx_pisp::uapi::BeTilesConfig;
 
 use super::sensor_values;
@@ -24,6 +28,31 @@ use crate::pisp_be::BeConfigBuilder;
 /// Rows of a stripe's context the tiler adds below its output: stripes are cut this far above
 /// the line so the first stripe's input ends by it.
 const STRIPE_MARGIN: u16 = 32;
+
+/// From a frame's start to its rows landing, beyond their readout: 0.23-0.27 ms through the
+/// receiver and the front end, and a margin for the rest. At 9.1 µs lines and line 600, on the
+/// Raze (2026-11-03): 0 of 1201 frames early here, 3 at 0.1 ms less, and a whole frame out no
+/// later up to 0.4 ms more.
+const LINE_EVENT_MARGIN: Duration = Duration::from_micros(400);
+
+/// When `line` rows of a mode reading a row every `line_time` are in memory.
+fn line_delay(line: u32, line_time: Duration) -> Duration {
+    line_time * line + LINE_EVENT_MARGIN
+}
+
+/// Tells the front end when to look for the rows, while slicing.
+pub(super) fn set_line_delay(
+    slicing: &Option<Slicing>,
+    fe: &mut FrontEndDevice,
+    line_time: Option<Duration>,
+) -> std::result::Result<(), &'static str> {
+    let Some(s) = slicing else {
+        return Ok(());
+    };
+    let t = line_time.ok_or("no line time from the sensor")?;
+    fe.set_line_delay(line_delay(s.line, t));
+    Ok(())
+}
 
 /// The tile stripe height for slicing at input row `line`.
 pub(super) fn stripe_height(line: u16) -> u16 {
@@ -90,6 +119,8 @@ pub struct SliceCounts {
     /// Line events skipped: below the slice line, a frame still pending, no settings yet, or
     /// no raw buffer in flight.
     pub skipped: [u64; 4],
+    /// What the line timer did: its early fires and late wake-ups.
+    pub timer: LineTimerCounts,
 }
 
 /// Slicing state of a running pipeline.
@@ -305,6 +336,11 @@ pub(super) fn wait_for_statistics(
     loop {
         sensor.service();
         let left = deadline.saturating_duration_since(Instant::now());
+        // A line event due sooner than the deadline ends the wait early.
+        let due = slice.as_ref().and(fe_dev.line_event_due());
+        let wait = due.map_or(left, |d| {
+            left.min(d.saturating_sub(styx_kernel::monotonic_now()))
+        });
         let (stats, lines, first, failed) = {
             let sync = sensor.frame_start_fd();
             let lines = slice.as_ref().and(fe_dev.line_event_fd());
@@ -340,7 +376,7 @@ pub(super) fn wait_for_statistics(
             }
             let mut ready = [styx_kernel::Ready::default(); 4];
             profile::time("loop", "wait", || {
-                styx_kernel::poll_into(&fds[..n], Some(left), &mut ready[..n])
+                styx_kernel::poll_into(&fds[..n], Some(wait), &mut ready[..n])
             })
             .map_err(|e| PipelineError::Device(format!("waiting for the front end: {e}")))?;
             (
@@ -352,11 +388,13 @@ pub(super) fn wait_for_statistics(
         };
         if let Some((s, be, builder)) = slice.as_mut() {
             if lines {
-                while let Some(ev) = fe_dev.take_line_event() {
-                    // A frame whose first job cannot start runs whole at its end.
-                    let _ = s.on_line_event(ev, fe_dev, be, builder, sensor);
-                }
+                fe_dev.read_frame_starts();
             }
+            if let Some(ev) = fe_dev.take_line_event() {
+                // A frame whose first job cannot start runs whole at its end.
+                let _ = s.on_line_event(ev, fe_dev, be, builder, sensor);
+            }
+            s.counts.timer = fe_dev.line_timer_counts();
             if first && let Some(done) = s.first_done(be, timeout)? {
                 return Ok(Waited::Slice(done));
             }

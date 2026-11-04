@@ -59,9 +59,9 @@ pub struct PispOptions {
     /// What extra passes ([`super::PispPipeline::set_pass`]) do with temporal denoise.
     pub pass_tdn: crate::pisp_passes::PassTdn,
     /// Process each frame in two back end jobs, the first once the raw frame's first `line`
-    /// rows are in (Styx's rp1-cfe module's line event), the rest at its end: the frame is
-    /// ready sooner after its readout. `None` (default): one job at the end. Without the
-    /// module the stream runs whole.
+    /// rows are in, the rest at its end: the frame is ready sooner after its readout. `None`
+    /// (default): one job at the end. A frame whose rows are not in when checked runs whole;
+    /// so does the stream on a receiver without `FRAME_SYNC`.
     pub slice_line: Option<u16>,
     /// Keep each frame's raw front end buffer dequeued after the back end read it, for a
     /// consumer of the raw frame (`PispFrame::raw_image`, [`super::PispPipeline::release_raw`]);

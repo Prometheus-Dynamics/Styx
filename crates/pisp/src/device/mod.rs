@@ -32,35 +32,11 @@ mod config_dump {
     }
 }
 mod fe;
-#[cfg(feature = "debug-hooks")]
-mod lines_probe;
-#[cfg(not(feature = "debug-hooks"))]
-mod lines_probe {
-    //! Debug hooks off (feature `debug-hooks`): no probe thread, no samples.
-    use std::path::Path;
-
-    pub(super) struct LinesProbe;
-
-    impl LinesProbe {
-        pub(super) fn start(
-            _node: &Path,
-            _bufs: Vec<(*const u8, usize)>,
-            _stride: usize,
-        ) -> Option<Self> {
-            None
-        }
-
-        pub(super) fn check(&mut self, _seq: u32, _index: u32, _data: &[u8], _stride: usize) {}
-    }
-}
+mod line_timer;
 pub mod profile;
 mod queue;
 
 use std::fmt;
-
-/// `STYX_CFE_EVENT_LINES - V4L2_EVENT_PRIVATE_START` (kernel-modules/rp1-cfe): the front end's
-/// line event, subscribed to for slicing (and by the lines probe).
-const LINES_EVENT_OFFSET: u32 = 0x5354;
 
 pub use be::{BackEndDevice, BeOutput};
 pub use be_image::BeImageDevice;
@@ -73,6 +49,7 @@ pub use config_buf::ConfigMemory;
 pub use fe::{
     FeFrame, FeHeld, FeHeldRaw, FrontEndDevice, FrontEndSetup, HeldImage, LineEvent, SensorWindow,
 };
+pub use line_timer::{LATE_BOUNDS_US, LineTimerCounts};
 pub use queue::Queue;
 
 /// A device error.

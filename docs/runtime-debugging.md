@@ -234,8 +234,6 @@ builds.
 | `STYX_PISP_BE_DUMP=DIR[:N,...]` | Writes the back-end configs of jobs N (default 30, 90) to `DIR/styx_be_N.bin` | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
 | `STYX_PISP_FE_DUMP=DIR[:N,...]` | Writes the front-end configs of jobs N to `DIR/styx_fe_N.bin` | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
 | `STYX_PISP_BE_PATCH=REF.bin:blocks` | Copies the named back-end blocks of a reference config into every job | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_PISP_FE_LINES_PROBE=1` | Samples raw rows around the front-end line event (needs the rp1-cfe module) | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_PISP_FE_ILINES=N` | Sets the line at which the front end's raw output interrupt fires | `pisp-debug-hooks` (styx-pipeline) |
 | `STYX_PISP_BE_STRIPE=N` | Splits back-end jobs into horizontal stripes of at most N rows (slicing cost) | `pisp-debug-hooks` (styx-pipeline) |
 | `STYX_PISP_SLICE_LOG=1` | Logs the slice line and counts when a slicing run ends | `pisp-debug-hooks` (styx-pipeline) |
 

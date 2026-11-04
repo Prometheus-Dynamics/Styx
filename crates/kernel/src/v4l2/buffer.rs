@@ -362,8 +362,16 @@ impl VideoDevice {
 
     /// Maps every plane of an MMAP buffer into memory (`VIDIOC_QUERYBUF` + `mmap`).
     pub fn map_buffer(&self, buf_type: BufType, index: u32) -> Result<Vec<Mapping>> {
+        self.map_buffer_as(buf_type, index, buf_type.is_output())
+    }
+
+    /// [`Self::map_buffer`], writable whatever the direction.
+    pub fn map_buffer_writable(&self, buf_type: BufType, index: u32) -> Result<Vec<Mapping>> {
+        self.map_buffer_as(buf_type, index, true)
+    }
+
+    fn map_buffer_as(&self, buf_type: BufType, index: u32, writable: bool) -> Result<Vec<Mapping>> {
         let info = self.query_buffer(buf_type, index)?;
-        let writable = buf_type.is_output();
         info.planes
             .iter()
             .map(|p| {
