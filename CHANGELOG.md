@@ -8,6 +8,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `pisp_be` module: `job_timeout_ms` (default 1000, 0 off). A job with no interrupt for that long
+  fails with error buffers, along with every job behind it on either node group, and jobs fail at
+  once until the hardware reads idle; before, it left an unkillable process and a silent stall.
+  Written, untested on board.
+- `be_ops_check [WIDTHxHEIGHT] [GROUP] [OP]` runs one op.
 - `metrics::Buffers::{system_heap_buffers, process_memory_buffers}` (OpenMetrics
   `styx_camera_output_buffers_{system_heap,process_memory}_total`): software-ISP and Rockchip
   output buffers that did not come from `linux,cma` (the `system` heap, or plain process memory

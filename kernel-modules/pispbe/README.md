@@ -76,6 +76,18 @@ the CM5 (Styx's PiSP path; in-kernel timestamps per phase over 200 jobs, `functi
    validates that copy, and copies only the validated number of tiles into the coherent buffer
    the hardware reads them from. The job uses the copy.
 
+4. **A job that never finishes fails instead of hanging.** Written, untested on board. The stock
+   driver has no timeout: a job the hardware takes and never finishes keeps its buffers, so
+   `stop_streaming` waits uninterruptibly (the process cannot be killed) and every later job, on
+   either node group, stays queued behind it. Raze, 2026-11-03: `be_ops_check` did this, with and
+   without a camera on the other group; only a reboot cleared it. Now a delayed work, armed while
+   the hardware holds a job and restarted by each interrupt, fires after `job_timeout_ms`
+   (default 1000, writable at runtime, 0 off): it logs the status registers, returns the job's
+   buffers and those of every job behind it with `VB2_BUF_STATE_ERROR`, and refuses jobs from then
+   on, each failing at once. No reset of the block is known, so this makes the failure visible
+   and killable; it does not revive the hardware. The refusal lifts at the next runtime resume
+   only if the registers read idle; otherwise a reboot is still needed.
+
 Not changed: the per-job `kzalloc` of the job descriptor (~0.2 µs) and the address readback.
 
 ### Output equality

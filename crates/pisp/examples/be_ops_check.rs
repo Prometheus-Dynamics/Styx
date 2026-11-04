@@ -3,9 +3,12 @@
 //! many output samples differ from the reference and by how much.
 //!
 //! ```text
-//! be_ops_check [WIDTHxHEIGHT] [GROUP]   default 640x480 on node group 0; 1 leaves group 0 to a
-//!                                       running camera
+//! be_ops_check [WIDTHxHEIGHT] [GROUP] [OP]   default 640x480 on node group 0, every op
 //! ```
+//!
+//! `OP` runs one of `downscale`, `box2`, `pyramid2`, `resample`, `lut`, `filter5x5` or `demosaic`.
+//! The back end is one engine whichever group a job comes through: a job that never finishes
+//! stops a camera on the other group too, until a reboot. Stop the camera first.
 //!
 //! - `downscale` (by 2, output 1), `box2` and `pyramid2` (both outputs, `run2`) against
 //!   `(a+b+c+d+2)>>2` and the 4x4 mean rounded half up: which codes differ and whether the
@@ -99,7 +102,7 @@ fn compare(name: &str, got: &[u8], want: &[u8]) {
         if g != w {
             differ += 1;
             max = max.max(g.abs_diff(w));
-            below += usize::from(g + 1 == w);
+            below += usize::from(w.checked_sub(1) == Some(g));
         }
     }
     println!(
@@ -165,6 +168,8 @@ fn main() -> Result<()> {
         .nth(2)
         .map_or(Ok(0), |g| g.parse())
         .map_err(|_| "group: 0 or 1")?;
+    let only = std::env::args().nth(3);
+    let want = |name: &str| only.as_deref().is_none_or(|o| o == name);
     let heap = DmaHeap::open("linux,cma").or_else(|_| DmaHeap::open("system"))?;
     let r = Runner {
         heap,
@@ -195,19 +200,25 @@ fn main() -> Result<()> {
         }
     };
 
-    if let Some((got, _)) = report(
-        "downscale x2 (output 1)",
-        r.grey(ops::downscale(Pixels::Grey8, (w, h), 2)?),
-    ) {
+    if want("downscale")
+        && let Some((got, _)) = report(
+            "downscale x2 (output 1)",
+            r.grey(ops::downscale(Pixels::Grey8, (w, h), 2)?),
+        )
+    {
         compare("vs (a+b+c+d+2)>>2", &got, &half);
     }
-    if let Some((got, _)) = report("box2 (output 0)", r.grey(ops::box2(Pixels::Grey8, (w, h))?)) {
+    if want("box2")
+        && let Some((got, _)) = report("box2 (output 0)", r.grey(ops::box2(Pixels::Grey8, (w, h))?))
+    {
         compare("vs (a+b+c+d+2)>>2", &got, &half);
     }
-    if let Some((got, got1)) = report(
-        "pyramid2 (run2)",
-        r.grey(ops::pyramid2(Pixels::Grey8, (w, h))?),
-    ) {
+    if want("pyramid2")
+        && let Some((got, got1)) = report(
+            "pyramid2 (run2)",
+            r.grey(ops::pyramid2(Pixels::Grey8, (w, h))?),
+        )
+    {
         compare("level 1 vs (a+b+c+d+2)>>2", &got, &half);
         match got1 {
             Some(g1) => compare("level 2 vs 4x4 mean", &g1, &mean_ref(wu, hu, 4)),
@@ -215,13 +226,17 @@ fn main() -> Result<()> {
         }
     }
     let lanczos = ops::resample(Pixels::Grey8, (w, h), (w / 2, h / 2), &defaults::LANCZOS3)?;
-    if let Some((got, _)) = report("resample Lanczos 3 to half", r.grey(lanczos)) {
+    if want("resample")
+        && let Some((got, _)) = report("resample Lanczos 3 to half", r.grey(lanczos))
+    {
         compare("vs the 2x2 mean (sanity only)", &got, &half);
     }
     let table: [u8; 256] =
         core::array::from_fn(|v| ((v as f64 / 255.0).sqrt() * 255.0).round() as u8);
     let (op, fit) = ops::lut(Pixels::Grey8, (w, h), &table)?;
-    if let Some((got, _)) = report("lut sqrt", r.grey(op)) {
+    if want("lut")
+        && let Some((got, _)) = report("lut sqrt", r.grey(op))
+    {
         let want: Vec<u8> = (0..hu)
             .flat_map(|y| (0..wu).map(move |x| table[usize::from(sample(x, y))]))
             .collect();
@@ -233,14 +248,19 @@ fn main() -> Result<()> {
     }
     let mut k = [-1i8; 25];
     k[12] = 24;
-    if let Some((got, _)) = report(
-        "filter5x5 high-pass",
-        r.grey(ops::filter5x5(Pixels::Grey8, (w, h), &k)?),
-    ) {
+    if want("filter5x5")
+        && let Some((got, _)) = report(
+            "filter5x5 high-pass",
+            r.grey(ops::filter5x5(Pixels::Grey8, (w, h), &k)?),
+        )
+    {
         let input: Vec<u8> = (0..hu)
             .flat_map(|y| (0..wu).map(move |x| sample(x, y)))
             .collect();
         compare("vs the input", &got, &input);
+    }
+    if !want("demosaic") {
+        return Ok(());
     }
     // Demosaic: four flat quadrants, each one 16-bit level for R, G and B, identity matrix.
     let patches: [[u16; 3]; 4] = [

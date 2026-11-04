@@ -43,9 +43,11 @@ user lifts them.
       against the CPU reference (max abs error), the LUT against `LutFit`, the 5x5 and demosaic
       as tolerances; GREY in through the greyscale Bayer path confirmed accepted by
       `pispbe-input`; `run2` writing both outputs from one job; whether output 0 has a
-      downscaler after all (libpisp says output 1 only). *Blocked by:* the GREY input: `be_ops_check` (crates/pisp/examples)
-      on the Raze 2026-11-02 fails every GREY op at `VIDIOC_REQBUFS` (EINVAL), so the greyscale
-      Bayer path or its buffer setup needs fixing first. *Numbers:* `demosaic_ccm` with the
+      downscaler after all (libpisp says output 1 only). *Blocked by:* a GREY job the hardware never finishes: since 2ea67b8
+      (REQBUFS fixed) the first GREY op, `downscale` on output 1, wedges the back end on Raze #2
+      (2026-11-03), one interrupt then none, with and without a camera on group 0, and stops that
+      camera until a reboot. Same device layer as `demosaic_ccm`, so the job's config is the lead.
+      Run one op per process (`be_ops_check WxH GROUP OP`), camera stopped. *Numbers:* `demosaic_ccm` with the
       identity matrix: 0.223 ms a 640x480 job, four flat RGGB patches come out exactly.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
@@ -209,6 +211,10 @@ memory when it runs.
       pipeline selection as RK3562). *Why:* the Flame board. *Done when:* rkisp, rkcif graph and
       rkvenc run the OV9782 within the RV1106G2's memory, with the CPU fallbacks. *Blocked by:* a
       Flame board and its BSP.
+- [ ] **pispbe: a job that never finishes** (`job_timeout_ms` watchdog in the module: written, untested
+      on board). *Why:* a stuck job left an unkillable process and stopped every client of the back
+      end silently. *Done when:* a stuck job returns error buffers on the board and `close` returns,
+      and BE ops run beside live frames with no drops. *Blocked by:* a board slot. *Numbers:* none yet.
 - [ ] **pispbe patch: carried** (user decision: we keep carrying it; the drafts in
       `kernel-modules/pispbe/README.md` stay unsent, nothing gets filed). *Why:* it takes the config
       write from 117 to 8 µs per job and makes queued jobs safe; the stock driver overwrites a held
@@ -371,8 +377,8 @@ HeliOS's plan (HeliOS architecture-overhaul `TODO.md`, "After the release: depen
       `lemnos-usb` (`UrbRing`, Lemnos d190650); `styx-kernel` has no usbfs module. Written, untested
       on a camera. *Why:* three USB stacks (Lemnos rusb, Atlas nusb, Styx usbfs) become one.
       *Done when:* UVC's no-drop and timestamp checks, a detach and reattach of `uvcvideo`, and the
-      steady-state allocation count pass on a real camera. *Blocked by:* a board slot (SystemCore
-      C270). *Numbers:* none yet.
+      steady-state allocation count pass on a real camera. *Blocked by:* a board slot (the webcam on
+      Raze #2). *Numbers:* none yet.
 - [x] **Uevent hotplug on Lemnos's.** Already done: `styx::watch` (`watch/linux.rs`) and
       `styx-uvc`'s `Hotplug` both use `lemnos_linux::uevent`. Styx has no netlink code of its
       own; I²C, GPIO and embedded-hal are Lemnos's as well (`styx-kernel/src/bus.rs`). The

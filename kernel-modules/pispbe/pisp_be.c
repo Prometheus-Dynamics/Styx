@@ -14,6 +14,7 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
+#include <linux/workqueue.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-dma-contig.h>
@@ -85,6 +86,17 @@ MODULE_PARM_DESC(skip_unchanged_config,
  * hardware still holds a queued one, so a client may queue several jobs at once
  * (the stock driver overwrites the held job). Clients look for it in sysfs.
  */
+/*
+ * A job the hardware takes and never finishes would otherwise hold its buffers
+ * for good: stop_streaming waits for them uninterruptibly, and nothing behind it
+ * runs, on either node group. Past this long without an interrupt the job's
+ * buffers are returned with an error, see pispbe_watchdog().
+ */
+static unsigned int job_timeout_ms = 1000;
+module_param(job_timeout_ms, uint, 0644);
+MODULE_PARM_DESC(job_timeout_ms,
+		 "Fail a job after this long without an interrupt, 0 never (default: 1000)");
+
 static bool queue_safe = true;
 module_param(queue_safe, bool, 0444);
 MODULE_PARM_DESC(queue_safe,
@@ -274,6 +286,10 @@ struct pispbe_dev {
 	/* jobs held back because the hardware still had one queued */
 	unsigned long queue_deferred;
 	struct list_head job_queue;
+	/* armed while the hardware holds a job, see pispbe_watchdog() */
+	struct delayed_work watchdog;
+	/* a job timed out and the hardware is not idle: jobs fail at once */
+	bool hw_stuck;
 	int irq;
 	u32 hw_version;
 	u8 done, started;
@@ -662,11 +678,46 @@ err_return_buffers:
 	return -ENODEV;
 }
 
+static void pispbe_arm_watchdog(struct pispbe_dev *pispbe)
+{
+	unsigned int ms = READ_ONCE(job_timeout_ms);
+
+	if (ms)
+		mod_delayed_work(system_wq, &pispbe->watchdog,
+				 msecs_to_jiffies(ms));
+}
+
+static void pispbe_fail_buffers(struct pispbe_buffer **buf)
+{
+	for (unsigned int i = 0; i < PISPBE_NUM_NODES; i++) {
+		if (buf[i])
+			vb2_buffer_done(&buf[i]->vb.vb2_buf,
+					VB2_BUF_STATE_ERROR);
+	}
+}
+
+/* Call with hw_lock held. */
+static void pispbe_fail_queued_jobs(struct pispbe_dev *pispbe)
+{
+	struct pispbe_job_descriptor *job, *temp;
+
+	list_for_each_entry_safe(job, temp, &pispbe->job_queue, queue) {
+		list_del(&job->queue);
+		pispbe_fail_buffers(job->buffers);
+		kfree(job);
+	}
+}
+
 static void pispbe_schedule(struct pispbe_dev *pispbe, bool clear_hw_busy)
 {
 	struct pispbe_job_descriptor *job;
 
 	scoped_guard(spinlock_irqsave, &pispbe->hw_lock) {
+		if (pispbe->hw_stuck) {
+			pispbe_fail_queued_jobs(pispbe);
+			return;
+		}
+
 		if (clear_hw_busy)
 			pispbe->hw_busy = false;
 
@@ -699,6 +750,7 @@ static void pispbe_schedule(struct pispbe_dev *pispbe, bool clear_hw_busy)
 		pispbe->queued_job.node_group = job->node_group;
 
 		pispbe->hw_busy = true;
+		pispbe_arm_watchdog(pispbe);
 	}
 
 	/*
@@ -778,10 +830,53 @@ static irqreturn_t pispbe_isr(int irq, void *dev)
 		pispbe->done = done;
 	}
 
+	/* An interrupt is progress: restart the clock on whatever is left. */
+	scoped_guard(spinlock_irqsave, &pispbe->hw_lock) {
+		if (pispbe->running_job.node_group ||
+		    pispbe->queued_job.node_group)
+			pispbe_arm_watchdog(pispbe);
+		else
+			cancel_delayed_work(&pispbe->watchdog);
+	}
+
 	/* check if there's more to do before going to sleep */
 	pispbe_schedule(pispbe, can_queue_another);
 
 	return IRQ_HANDLED;
+}
+
+/*
+ * The hardware has held a job for job_timeout_ms without an interrupt. It has no
+ * known reset, so fail the job and everything behind it, whichever node group
+ * they came from, and refuse jobs from then on: clients get an error buffer, and
+ * stop_streaming returns, instead of waiting for ever.
+ */
+static void pispbe_watchdog(struct work_struct *work)
+{
+	struct pispbe_dev *pispbe = container_of(to_delayed_work(work),
+						 struct pispbe_dev, watchdog);
+
+	/* The interrupt handler moves the jobs without hw_lock. */
+	disable_irq(pispbe->irq);
+	scoped_guard(spinlock_irqsave, &pispbe->hw_lock) {
+		if (pispbe->running_job.node_group ||
+		    pispbe->queued_job.node_group) {
+			dev_err(pispbe->dev,
+				"job timed out, failing it: status 0x%08x batch 0x%08x\n",
+				pispbe_rd(pispbe, PISP_BE_STATUS_REG),
+				pispbe_rd(pispbe, PISP_BE_BATCH_STATUS_REG));
+			pispbe_fail_buffers(pispbe->running_job.buf);
+			pispbe_fail_buffers(pispbe->queued_job.buf);
+			memset(&pispbe->running_job, 0,
+			       sizeof(pispbe->running_job));
+			memset(&pispbe->queued_job, 0,
+			       sizeof(pispbe->queued_job));
+			pispbe->hw_busy = false;
+			pispbe->hw_stuck = true;
+			pispbe_fail_queued_jobs(pispbe);
+		}
+	}
+	enable_irq(pispbe->irq);
 }
 
 static int pisp_be_validate_config(struct pispbe_node_group *node_group,
@@ -1799,6 +1894,23 @@ static int pispbe_runtime_resume(struct device *dev)
 	}
 	pispbe->config_shadow_valid = false;
 
+	/* Take jobs again only if the hardware says it is idle. */
+	if (pispbe->hw_stuck) {
+		u32 status = pispbe_rd(pispbe, PISP_BE_STATUS_REG);
+		u32 batch = pispbe_rd(pispbe, PISP_BE_BATCH_STATUS_REG);
+
+		if (status == 0 && (u8)batch == (u8)(batch >> 8)) {
+			pispbe->done = (u8)batch;
+			pispbe->started = (u8)(batch >> 8);
+			pispbe->hw_stuck = false;
+			dev_info(dev, "idle again after a timed-out job\n");
+		} else {
+			dev_err(dev,
+				"still stuck: status 0x%08x batch 0x%08x\n",
+				status, batch);
+		}
+	}
+
 	dev_dbg(dev, "%s: Enabled clock, rate=%lu\n",
 		__func__, clk_get_rate(pispbe->clk));
 
@@ -1859,6 +1971,7 @@ static int pispbe_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	INIT_LIST_HEAD(&pispbe->job_queue);
+	INIT_DELAYED_WORK(&pispbe->watchdog, pispbe_watchdog);
 
 	dev_set_drvdata(&pdev->dev, pispbe);
 	pispbe->dev = &pdev->dev;
@@ -1936,6 +2049,8 @@ pm_runtime_disable_err:
 static void pispbe_remove(struct platform_device *pdev)
 {
 	struct pispbe_dev *pispbe = platform_get_drvdata(pdev);
+
+	cancel_delayed_work_sync(&pispbe->watchdog);
 
 	for (int i = PISPBE_NUM_NODE_GROUPS - 1; i >= 0; i--)
 		pispbe_destroy_node_group(&pispbe->node_group[i]);
