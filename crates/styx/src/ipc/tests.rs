@@ -287,6 +287,7 @@ fn control_seeds() -> Vec<(&'static str, Vec<u8>)> {
         writable: true,
         effective_min: None,
         effective_max: None,
+        inactive: false,
     }];
     vec![
         (

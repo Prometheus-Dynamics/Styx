@@ -7,7 +7,7 @@ use parking_lot::Mutex;
 
 use super::CaptureError;
 #[cfg(feature = "v4l2")]
-use super::controls::{apply_v4l2_controls, read_v4l2_control};
+use super::controls::{apply_v4l2_controls, read_v4l2_control, read_v4l2_inactive};
 #[cfg(feature = "file-backend")]
 use super::file_backend;
 #[cfg(feature = "simulation-bevy")]
@@ -77,6 +77,20 @@ impl ControlPlane {
             #[cfg(feature = "native")]
             ControlPlane::Native { processed, .. } => processed.as_ref()?.effective_range(id),
             _ => None,
+        }
+    }
+
+    /// Whether the control takes no value now because another control holds it (a colour
+    /// temperature under auto white balance). V4L2 reports this; other backends never do.
+    #[cfg_attr(not(feature = "v4l2"), allow(clippy::only_used_in_recursion))]
+    pub fn inactive(&self, id: ControlId) -> bool {
+        match self {
+            ControlPlane::Supervised(shared) => shared
+                .current_control()
+                .is_ok_and(|inner| inner.inactive(id)),
+            #[cfg(feature = "v4l2")]
+            ControlPlane::V4l2 { path } => read_v4l2_inactive(path, id),
+            _ => false,
         }
     }
 

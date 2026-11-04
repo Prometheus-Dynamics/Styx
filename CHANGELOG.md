@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `ControlDescriptor::inactive` and `ControlRefusal::Inactive`, from V4L2's `INACTIVE`: a control
+  another control holds (a colour temperature under auto white balance) is listed as such, and
+  refusing it is no longer a generic failure. `ControlApplyKind::Inactive` underneath. Struct
+  literals of `ControlDescriptor` need the new field.
 - `DeviceIdentity::product`: a name for people (`Logitech C270`, `OV9782`), from the USB
   strings, a small table of vendor:product ids, or the sensor's model. `display` keeps its form
   for apps that key on it. Struct literals need the new field.

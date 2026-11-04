@@ -241,6 +241,7 @@ impl Camera {
                 writable: policy.check(caller, id, None).is_ok(),
                 effective_min: None,
                 effective_max: None,
+                inactive: false,
             }
         })
         .collect()

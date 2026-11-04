@@ -259,6 +259,7 @@ fn effective_ranges_follow_the_control_list_and_older_readers_stop_before_them()
         writable: true,
         effective_min: None,
         effective_max: None,
+        inactive: false,
     };
     let exposure = ControlDescriptor {
         meta: meta(2, "exposure_time_us", 476_066),
@@ -337,9 +338,66 @@ fn menus_cross_the_wire_as_typed_entries() {
         writable: true,
         effective_min: None,
         effective_max: None,
+        inactive: false,
     })
     .collect();
     let back = decode_control_list(&encode_control_list(&list)).unwrap();
     assert_eq!(back[0].meta.menu.as_ref(), Some(&named));
     assert_eq!(back[1].meta.menu.as_ref(), Some(&numbers));
+}
+
+#[test]
+fn a_control_list_carries_the_inactive_state_after_the_ranges() {
+    use super::controls::{decode_control_list, encode_control_list};
+    use crate::ipc::ControlDescriptor;
+
+    let meta = |id, name: &str| ControlMeta {
+        id: ControlId(id),
+        name: name.into(),
+        kind: ControlKind::Uint,
+        access: Access::ReadWrite,
+        min: ControlValue::Uint(0),
+        max: ControlValue::Uint(10),
+        default: ControlValue::Uint(1),
+        step: None,
+        menu: None,
+        metadata: ControlMetadata::default(),
+    };
+    let plain = ControlDescriptor {
+        meta: meta(1, "plain"),
+        current: None,
+        standard: None,
+        writable: true,
+        effective_min: None,
+        effective_max: None,
+        inactive: false,
+    };
+    let held = ControlDescriptor {
+        meta: meta(2, "colour_temperature"),
+        inactive: true,
+        ..plain.clone()
+    };
+    let ranged = ControlDescriptor {
+        meta: meta(3, "ranged"),
+        effective_min: Some(ControlValue::Uint(2)),
+        effective_max: Some(ControlValue::Uint(3)),
+        ..held.clone()
+    };
+    let back = decode_control_list(&encode_control_list(&[plain, held, ranged])).unwrap();
+    let states: Vec<bool> = back.iter().map(|d| d.inactive).collect();
+    assert_eq!(states, [false, true, true]);
+    assert_eq!(back[2].effective_min, Some(ControlValue::Uint(2)));
+}
+
+#[test]
+fn an_inactive_refusal_stays_typed_over_the_wire() {
+    use super::controls::{ControlReply, encode_control_reply};
+    use crate::ipc::ControlRefusal;
+
+    let refusal = ControlRefusal::Inactive("colour_temperature".into());
+    let bytes = encode_control_reply(7, &ControlReply::Refused(refusal.clone()));
+    assert!(matches!(
+        decode_server(&bytes),
+        Ok(ServerMessage::ControlReply(7, ControlReply::Refused(r))) if r == refusal
+    ));
 }

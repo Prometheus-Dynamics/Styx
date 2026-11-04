@@ -1,6 +1,8 @@
 //! Backend-agnostic control helpers.
 
 #[cfg(feature = "v4l2")]
+use crate::capture_api::ControlApplyKind;
+#[cfg(feature = "v4l2")]
 use crate::prelude::CaptureError;
 #[cfg(feature = "v4l2")]
 use styx_capture::prelude::*;
@@ -15,10 +17,34 @@ pub(crate) fn apply_v4l2_controls(
     let dev = VideoDevice::open(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
     for (id, value) in controls {
         let v = to_v4l_value(value)?;
-        dev.set_control(id.0, v)
-            .map_err(|e| CaptureError::control_apply(e.to_string()))?;
+        dev.set_control(id.0, v).map_err(|e| {
+            let inactive = || v4l2_inactive(&dev, *id);
+            set_error(e.is_access_denied(), inactive, e.to_string())
+        })?;
     }
     Ok(())
+}
+
+/// What a refused control write is: `EACCES` on a control the device reports inactive is that
+/// state, any other refusal (`EACCES` also means read only) a failure.
+#[cfg(feature = "v4l2")]
+fn set_error(denied: bool, inactive: impl FnOnce() -> bool, message: String) -> CaptureError {
+    if denied && inactive() {
+        return CaptureError::classified_control_apply(ControlApplyKind::Inactive, message);
+    }
+    CaptureError::control_apply(message)
+}
+
+#[cfg(feature = "v4l2")]
+fn v4l2_inactive(dev: &VideoDevice, id: ControlId) -> bool {
+    dev.query_control(id.0)
+        .is_ok_and(|info| info.flags.contains(kv4l2::ControlFlags::INACTIVE))
+}
+
+/// Whether the control takes no value now because another control holds it.
+#[cfg(feature = "v4l2")]
+pub(crate) fn read_v4l2_inactive(path: &str, id: ControlId) -> bool {
+    VideoDevice::open(path).is_ok_and(|dev| v4l2_inactive(&dev, id))
 }
 
 /// The value to write for a Styx control value.
@@ -63,6 +89,18 @@ pub(crate) fn read_v4l2_control(path: &str, id: ControlId) -> Result<ControlValu
 
 #[cfg(all(test, feature = "v4l2"))]
 mod tests {
+    #[test]
+    fn only_eacces_on_an_inactive_control_is_that_state() {
+        use super::*;
+        let kind = |denied, inactive: bool| match set_error(denied, || inactive, "no".into()) {
+            CaptureError::ControlApply { kind, .. } => kind,
+            other => panic!("{other}"),
+        };
+        assert_eq!(kind(true, true), ControlApplyKind::Inactive);
+        assert_eq!(kind(true, false), ControlApplyKind::Other);
+        assert_eq!(kind(false, true), ControlApplyKind::Other);
+    }
+
     use super::*;
 
     #[test]

@@ -15,7 +15,7 @@ use crate::capture_api::standard_controls::{
     Scale, find_standard, fit, from_backend, number, reads_back, standard_meta, to_backend,
     to_backend_for,
 };
-use crate::capture_api::{CaptureError, CaptureHandle};
+use crate::capture_api::{CaptureError, CaptureHandle, ControlApplyKind};
 use crate::ipc::controls::{
     AppliedControl, ControlCaller, ControlDescriptor, ControlEvent, ControlPolicy, ControlRefusal,
     ControlTarget, SERVICE_FRAME_RATE, StandardControl,
@@ -88,6 +88,10 @@ fn refusal(err: CaptureError) -> ControlRefusal {
         CaptureError::ControlUnsupported => {
             ControlRefusal::Unsupported("the camera does not support it".into())
         }
+        CaptureError::ControlApply {
+            kind: ControlApplyKind::Inactive,
+            message,
+        } => ControlRefusal::Inactive(message),
         err => ControlRefusal::Failed(err.to_string()),
     }
 }
@@ -381,6 +385,9 @@ impl Camera {
                         && policy.check(caller, meta.id, standard).is_ok(),
                     effective_min: effective.as_ref().map(|r| r.0.clone()),
                     effective_max: effective.map(|r| r.1),
+                    inactive: state
+                        .capture()
+                        .is_some_and(|c| c.control_plane().inactive(meta.id)),
                 }
             })
             .collect();
@@ -433,6 +440,7 @@ impl Camera {
             writable: policy.check(caller, SERVICE_FRAME_RATE, standard).is_ok(),
             effective_min: None,
             effective_max: None,
+            inactive: false,
         }
     }
 

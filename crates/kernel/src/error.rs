@@ -60,6 +60,11 @@ impl Error {
         self.errno() == Some(libc::EINVAL)
     }
 
+    /// True when the call failed with `EACCES` (a read-only or, for now, inactive control).
+    pub fn is_access_denied(&self) -> bool {
+        self.errno() == Some(libc::EACCES)
+    }
+
     /// True when the call failed with `ENOTTY` (the ioctl is not implemented by the driver).
     pub fn is_not_supported(&self) -> bool {
         self.errno() == Some(libc::ENOTTY)

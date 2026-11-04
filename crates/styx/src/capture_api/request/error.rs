@@ -71,6 +71,9 @@ pub enum ControlApplyKind {
     SetControlsRejected,
     InvalidArgument,
     PermissionDenied,
+    /// The control takes no value while another control holds it (V4L2's `INACTIVE`: a colour
+    /// temperature under auto white balance). Not a failure: set the other control first.
+    Inactive,
 }
 
 impl CaptureError {

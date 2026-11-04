@@ -160,6 +160,10 @@ pub enum ControlRefusal {
     /// The service's [`ControlPolicy`] does not let this client change it.
     #[error("not permitted: {0}")]
     NotPermitted(String),
+    /// Another control holds it for now (a colour temperature under auto white balance): the
+    /// camera refused the value but nothing failed. [`ControlDescriptor::inactive`] lists this.
+    #[error("inactive: {0}")]
+    Inactive(String),
     /// The camera refused it, or applying it failed.
     #[error("failed: {0}")]
     Failed(String),
@@ -184,6 +188,10 @@ pub struct ControlDescriptor {
     /// outside it are clamped (`AppliedControl::clamped`). `None`: `meta`'s range applies.
     pub effective_min: Option<ControlValue>,
     pub effective_max: Option<ControlValue>,
+    /// Another control holds it for now, so a write is refused
+    /// ([`ControlRefusal::Inactive`]). Known while the camera runs: `false` when it is stopped,
+    /// and always on backends that do not report it.
+    pub inactive: bool,
 }
 
 /// A control a client of the camera changed, sent to every client that subscribed

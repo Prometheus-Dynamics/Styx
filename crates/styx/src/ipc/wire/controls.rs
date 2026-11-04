@@ -204,6 +204,7 @@ fn refusal_code(refusal: &ControlRefusal) -> (u8, &str) {
         ControlRefusal::Invalid(t) => (2, t),
         ControlRefusal::NotPermitted(t) => (3, t),
         ControlRefusal::Failed(t) => (4, t),
+        ControlRefusal::Inactive(t) => (5, t),
     }
 }
 
@@ -272,6 +273,7 @@ pub(super) fn read_control_reply(r: &mut Reader<'_>) -> Result<(u32, ControlRepl
                 2 => ControlRefusal::Invalid(text),
                 3 => ControlRefusal::NotPermitted(text),
                 4 => ControlRefusal::Failed(text),
+                5 => ControlRefusal::Inactive(text),
                 _ => return Err(IpcError::Malformed("unknown control refusal")),
             })
         }
@@ -382,6 +384,19 @@ pub(in crate::ipc) fn encode_control_list(controls: &[ControlDescriptor]) -> Vec
             write_value(&mut w, hi);
         }
     }
+    // Then the inactive controls, as tag 2, a count and each one's index in the list.
+    let inactive: Vec<usize> = controls
+        .iter()
+        .enumerate()
+        .filter_map(|(i, c)| c.inactive.then_some(i))
+        .collect();
+    if !inactive.is_empty() {
+        w.u8(2);
+        w.u16(inactive.len() as u16);
+        for i in inactive {
+            w.u16(i as u16);
+        }
+    }
     w.0
 }
 
@@ -448,6 +463,7 @@ pub(in crate::ipc) fn decode_control_list(
             writable: r.bool()?,
             effective_min: None,
             effective_max: None,
+            inactive: false,
         });
     }
     if r.0.first() == Some(&1) {
@@ -459,6 +475,14 @@ pub(in crate::ipc) fn decode_control_list(
                 .get_mut(i)
                 .ok_or(IpcError::Malformed("effective range of no control"))?;
             (d.effective_min, d.effective_max) = (Some(lo), Some(hi));
+        }
+    }
+    if r.0.first() == Some(&2) {
+        r.u8()?;
+        for _ in 0..r.u16()? {
+            out.get_mut(usize::from(r.u16()?))
+                .ok_or(IpcError::Malformed("inactive state of no control"))?
+                .inactive = true;
         }
     }
     Ok(out)
