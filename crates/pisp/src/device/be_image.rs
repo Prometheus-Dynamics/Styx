@@ -41,10 +41,16 @@ fn negotiate(
     name: &str,
 ) -> Result<(ImageFormatConfig, u32)> {
     let fourcc = FourCc::new(&fourcc);
-    let got = dev.set_format(
-        buf_type,
-        &mplane(u32::from(f.width), u32::from(f.height), fourcc, 0),
-    )?;
+    let mut want = mplane(u32::from(f.width), u32::from(f.height), fourcc, 0);
+    // The driver's GREY entry has no plane factor, so it sizes the plane 0 (and REQBUFS then
+    // fails with EINVAL) unless the caller names a size, which it keeps if larger: one byte a
+    // pixel at its 32-byte row alignment.
+    if &fourcc.to_bytes() == b"GREY"
+        && let Format::Multi(m) = &mut want
+    {
+        m.planes[0].size_image = u32::from(f.width).next_multiple_of(32) * u32::from(f.height);
+    }
+    let got = dev.set_format(buf_type, &want)?;
     let Format::Multi(g) = got else {
         return Err(DeviceError::Setup(format!("{name} is not multi-planar")));
     };

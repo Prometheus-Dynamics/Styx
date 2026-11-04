@@ -3,7 +3,8 @@
 //! many output samples differ from the reference and by how much.
 //!
 //! ```text
-//! be_ops_check [WIDTHxHEIGHT]      default 640x480; needs the `pispbe` node group 0 free
+//! be_ops_check [WIDTHxHEIGHT] [GROUP]   default 640x480 on node group 0; 1 leaves group 0 to a
+//!                                       running camera
 //! ```
 //!
 //! - `downscale` (by 2, output 1), `box2` and `pyramid2` (both outputs, `run2`) against
@@ -109,6 +110,7 @@ fn compare(name: &str, got: &[u8], want: &[u8]) {
 
 struct Runner {
     heap: DmaHeap,
+    group: usize,
     size: (u16, u16),
 }
 
@@ -116,7 +118,7 @@ impl Runner {
     /// Opens `op`, fills a grey input when `grey`, runs it once (both outputs if it has two)
     /// and returns the job time, the outputs (read at their strides) and the op as opened.
     fn run(&self, mut op: BeOp, input: impl FnOnce(&mut Buf, &BeOp) -> Result<()>) -> Result<Ran> {
-        let mut dev = BeImageDevice::open(0, &mut op)?;
+        let mut dev = BeImageDevice::open(self.group, &mut op)?;
         let mut inb = alloc(&self.heap, dev.input_len())?;
         input(&mut inb, &op)?;
         let out = alloc(&self.heap, dev.output_len())?;
@@ -159,8 +161,16 @@ fn main() -> Result<()> {
         .split_once('x')
         .and_then(|(a, b)| Some((a.parse::<u16>().ok()?, b.parse::<u16>().ok()?)))
         .ok_or("size: WIDTHxHEIGHT")?;
+    let group = std::env::args()
+        .nth(2)
+        .map_or(Ok(0), |g| g.parse())
+        .map_err(|_| "group: 0 or 1")?;
     let heap = DmaHeap::open("linux,cma").or_else(|_| DmaHeap::open("system"))?;
-    let r = Runner { heap, size: (w, h) };
+    let r = Runner {
+        heap,
+        group,
+        size: (w, h),
+    };
     let (wu, hu) = (usize::from(w), usize::from(h));
     println!(
         "PiSP back end ops, GREY {w}x{h}, buffers from the {} heap",
