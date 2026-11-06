@@ -169,7 +169,9 @@ fn import_part(
             }
             meta.residency = Some(FrameResidency::Dmabuf);
             // Planes on one buffer (the usual case) read through the cached mappings.
-            match CachedDmabuf::new(maps, own, spans) {
+            // `Released` reports the sender's access; the cached flag matches it.
+            let cached = frame.cpu_access == CpuAccess::Cached;
+            match CachedDmabuf::new(maps, own, spans, cached) {
                 Ok(cached) => Inner::Cached(cached),
                 Err(own) => {
                     let planes = own

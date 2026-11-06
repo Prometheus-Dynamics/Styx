@@ -1092,6 +1092,13 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- Frame sockets (`styx-frame-lease-v1`): a dma-buf the sender maps cached (e.g. the PiSP back
+  end's outputs, from the cached dma-heap) arrived `CpuAccess::Uncached`; the message now says so
+  (`"cached": true`, `LeaseMessage::cached`, left out when false so older peers read the same
+  bytes) and the frame arrives `Cached`. Reads were synced either way. New
+  `FrameLease::from_dmabuf_import_cached`. The `FrameClient` path already carried the sender's
+  access (checked two-process on Raze #1: a PiSP frame and its L1 companion arrive `Cached`).
+
 - A Styx frame sent into a graph shared (`shared_frame_payload`, `frame_payload`) is no longer
   recorded with a `Weak` (025f346): the `Weak` stopped a producer reusing its pooled carrier
   (`Arc::get_mut` failed, so every frame allocated a new one), and a carrier sent again and again

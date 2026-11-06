@@ -164,6 +164,8 @@ pub(super) struct CachedDmabuf {
     /// A memfd (one descriptor, every plane at its layout offset in it; no cache maintenance)
     /// rather than dma-buf planes.
     memfd: bool,
+    /// The sender's dma-buf memory is CPU-cached (it said so); a memfd always is.
+    cached: bool,
     fds: Fds,
     planes: SmallVec<[(usize, usize); 3]>,
     map: OnceLock<Option<Arc<Map>>>,
@@ -183,6 +185,7 @@ impl CachedDmabuf {
         cache: &Arc<MapCache>,
         fds: Fds,
         spans: &[(usize, usize)],
+        cached: bool,
     ) -> Result<Self, Fds> {
         let mut id = None;
         for fd in &fds {
@@ -200,6 +203,7 @@ impl CachedDmabuf {
             cache: cache.clone(),
             id,
             memfd: false,
+            cached,
             fds,
             planes: spans.iter().copied().collect(),
             map: OnceLock::new(),
@@ -222,7 +226,7 @@ impl CachedDmabuf {
         let mut fds = Fds::new();
         fds.push(fd);
         let spans: SmallVec<[(usize, usize); 3]> = (0..planes.max(1)).map(|_| (0, len)).collect();
-        match Self::new(cache, fds, &spans) {
+        match Self::new(cache, fds, &spans, true) {
             Ok(mut cached) => {
                 cached.memfd = true;
                 Ok(cached)
@@ -328,8 +332,9 @@ impl ExternalBacking for CachedDmabuf {
     }
 
     fn cpu_access(&self) -> CpuAccess {
-        // Mapped here; the sender says whether its memory is cached (see `Released`).
-        if self.memfd {
+        // Mapped here and synced around reads (`window`); the sender says whether its memory is
+        // cached.
+        if self.memfd || self.cached {
             CpuAccess::Cached
         } else {
             CpuAccess::Uncached
@@ -444,10 +449,14 @@ mod tests {
                 .collect()
         };
         let spans = [(0, 4096), (4096, 4096)];
-        let a = CachedDmabuf::new(&cache, planes(&fd), &spans).ok().unwrap();
+        let a = CachedDmabuf::new(&cache, planes(&fd), &spans, false)
+            .ok()
+            .unwrap();
         assert!(a.plane_data(0).unwrap().iter().all(|&v| v == 1));
         assert!(a.plane_data(1).unwrap().iter().all(|&v| v == 2));
-        let b = CachedDmabuf::new(&cache, planes(&fd), &spans).ok().unwrap();
+        let b = CachedDmabuf::new(&cache, planes(&fd), &spans, false)
+            .ok()
+            .unwrap();
         assert_eq!(b.plane_data(1).unwrap()[0], 2);
         // One mapping, used by both frames.
         assert_eq!(cache.inner.lock().1.len(), 1);
@@ -456,7 +465,7 @@ mod tests {
         let other = memfd(&bytes);
         let mut mixed = planes(&fd);
         mixed[1] = other.try_clone().unwrap();
-        assert!(CachedDmabuf::new(&cache, mixed, &spans).is_err());
+        assert!(CachedDmabuf::new(&cache, mixed, &spans, false).is_err());
         // Exports keep the plane offsets.
         let Some(FrameBackingExport::DmabufPlanes { planes: out }) = a.export_backing().unwrap()
         else {

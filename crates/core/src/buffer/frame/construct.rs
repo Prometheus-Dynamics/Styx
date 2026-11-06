@@ -165,9 +165,20 @@ impl FrameLease {
 
     #[cfg(all(feature = "std", unix))]
     pub fn from_dmabuf(
+        meta: FrameMeta,
+        layouts: SmallVec<[PlaneLayout; 3]>,
+        planes: Vec<FrameFdPlane>,
+    ) -> Result<Self, FrameExportError> {
+        Self::dmabuf_backed(meta, layouts, planes, false)
+    }
+
+    /// [`Self::from_dmabuf`], cached or not (see [`Self::from_dmabuf_import_cached`]).
+    #[cfg(all(feature = "std", unix))]
+    fn dmabuf_backed(
         mut meta: FrameMeta,
         layouts: SmallVec<[PlaneLayout; 3]>,
         planes: Vec<FrameFdPlane>,
+        cached: bool,
     ) -> Result<Self, FrameExportError> {
         if planes.len() != layouts.len() {
             return Err(FrameExportError::PlaneCountMismatch {
@@ -176,7 +187,7 @@ impl FrameLease {
             });
         }
         meta.residency = Some(FrameResidency::Dmabuf);
-        let backing = SharedFdBacking::dmabuf(planes);
+        let backing = SharedFdBacking::dmabuf(planes, cached);
         Ok(Self::from_external(meta, layouts, Arc::new(backing)))
     }
 
@@ -205,6 +216,18 @@ impl FrameLease {
         descriptor: FrameLeaseDescriptor,
         planes: Vec<FrameFdPlane>,
     ) -> Result<Self, FrameExportError> {
+        Self::from_dmabuf_import_cached(descriptor, planes, false)
+    }
+
+    /// [`Self::from_dmabuf_import`] for a sender that says whether its dma-buf memory is
+    /// CPU-cached: `cached` makes the frame [`CpuAccess::Cached`](crate::buffer::CpuAccess)
+    /// rather than `Uncached`. Reads are bracketed with `DMA_BUF_IOCTL_SYNC` either way.
+    #[cfg(all(feature = "std", unix))]
+    pub fn from_dmabuf_import_cached(
+        descriptor: FrameLeaseDescriptor,
+        planes: Vec<FrameFdPlane>,
+        cached: bool,
+    ) -> Result<Self, FrameExportError> {
         let meta = descriptor
             .to_meta()
             .ok_or(FrameExportError::InvalidDescriptor)?;
@@ -215,7 +238,7 @@ impl FrameLease {
                 return Err(FrameExportError::InvalidDescriptor);
             }
         }
-        Self::from_dmabuf(meta, layouts, planes)?.checked_import()
+        Self::dmabuf_backed(meta, layouts, planes, cached)?.checked_import()
     }
 
     /// An imported frame whose layouts do not hold its format is refused (formats whose

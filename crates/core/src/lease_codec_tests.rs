@@ -325,3 +325,42 @@ fn inline_messages_parse_and_check_as_decode_does() {
     memfd_message.check(&fds).unwrap();
     assert!(LeaseMessageInline::parse(br#"{"descriptor":1}"#).is_err());
 }
+
+/// A cached dma-buf frame stays cached across the socket (`"cached": true`); an uncached one,
+/// or one from a peer that predates the member, arrives `Uncached`.
+#[test]
+fn the_senders_cached_dmabuf_arrives_cached() {
+    let uncached = dmabuf_frame();
+    assert_eq!(uncached.cpu_access(), CpuAccess::Uncached);
+    let (payload, fds) = encode(&uncached).unwrap();
+    assert!(!std::str::from_utf8(&payload).unwrap().contains("cached"));
+    let cached = decode(
+        format!(
+            r#"{{"descriptor":{DESCRIPTOR_DMABUF},"backing":{{"kind":"dmabuf_planes","planes":[{{"offset":0,"len":2048}},{{"offset":0,"len":1024}}]}},"cached":true}}"#
+        )
+        .as_bytes(),
+        fds,
+    )
+    .unwrap();
+    assert_eq!(cached.cpu_access(), CpuAccess::Cached);
+    assert!(cached.planes()[0].data().iter().all(|&b| b == 3));
+
+    // Sent on: the member comes back, after the backing, and the frame is cached again.
+    let (payload, fds) = encode(&cached).unwrap();
+    let text = std::str::from_utf8(&payload).unwrap();
+    assert!(text.ends_with(r#"]},"cached":true}"#), "{text}");
+    let inline = LeaseMessageInline::parse(&payload).unwrap();
+    assert!(inline.cached);
+    assert_eq!(
+        decode(&payload, fds).unwrap().cpu_access(),
+        CpuAccess::Cached
+    );
+
+    // A memfd is cached without the member.
+    let (payload, fds) = encode(&memfd_frame()).unwrap();
+    assert!(!LeaseMessageInline::parse(&payload).unwrap().cached);
+    assert_eq!(
+        decode(&payload, fds).unwrap().cpu_access(),
+        CpuAccess::Cached
+    );
+}

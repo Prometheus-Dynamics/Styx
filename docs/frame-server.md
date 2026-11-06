@@ -435,6 +435,10 @@ re-exported as `styx::ipc::lease_codec`), so a consumer needs no more of Styx:
 - `LeaseMessage { descriptor: FrameLeaseDescriptor, backing: LeaseBacking }`, `LeaseBacking`
   `Memfd { len }` (JSON `{"kind": "memfd", "len": ...}`) or `DmabufPlanes { planes: [LeasePlane
   { offset, len }] }` (`{"kind": "dmabuf_planes", ...}`).
+- `cached` (JSON `"cached": true` after `"backing"`, left out when false): the sender's dma-buf
+  memory is CPU-cached (e.g. from a cached dma-heap, as the PiSP back end's outputs are), so the
+  received frame is `CpuAccess::Cached` rather than `Uncached`. The receiver brackets its reads
+  with `DMA_BUF_IOCTL_SYNC` either way; a peer that does not know the member reads `Uncached`.
 - Descriptor order: `Memfd` one descriptor holding every plane at its descriptor offset;
   `DmabufPlanes` one descriptor per plane, in plane order.
 - Limits: `MAX_FDS` 4 descriptors, `MAX_PAYLOAD` 64 KiB of JSON; `TRANSPORT` is

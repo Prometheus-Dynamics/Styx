@@ -6,6 +6,8 @@ use super::{ExternalBacking, FrameBackingExport, FrameExportError, FrameFdPlane,
 pub(super) struct SharedFdBacking {
     kind: SharedFdBackingKind,
     planes: Vec<SharedFdPlane>,
+    /// The sender's dma-buf memory is CPU-cached (it said so); a memfd always is.
+    cached: bool,
     mapped: std::sync::OnceLock<Mapped>,
     /// CPU access to the mapped dma-bufs (`DMA_BUF_IOCTL_SYNC`), held or bracketed.
     window: crate::buffer::CpuReadWindow,
@@ -56,12 +58,13 @@ impl SharedFdBacking {
                 };
                 plane_count
             ],
+            cached: true,
             mapped: std::sync::OnceLock::new(),
             window: crate::buffer::CpuReadWindow::new(),
         }
     }
 
-    pub(super) fn dmabuf(planes: Vec<FrameFdPlane>) -> Self {
+    pub(super) fn dmabuf(planes: Vec<FrameFdPlane>, cached: bool) -> Self {
         let mut fds = Vec::with_capacity(planes.len());
         let planes = planes
             .into_iter()
@@ -78,6 +81,7 @@ impl SharedFdBacking {
         Self {
             kind: SharedFdBackingKind::Dmabuf(fds),
             planes,
+            cached,
             mapped: std::sync::OnceLock::new(),
             window: crate::buffer::CpuReadWindow::new(),
         }
@@ -324,11 +328,12 @@ impl ExternalBacking for SharedFdBacking {
 
     fn cpu_access(&self) -> super::super::cpu_access::CpuAccess {
         use super::super::cpu_access::CpuAccess;
-        match self.kind {
-            SharedFdBackingKind::Memfd(_) => CpuAccess::Cached,
-            // Mapped (and synced) on first read; whether the exporter's memory is cached is not
-            // known here.
-            SharedFdBackingKind::Dmabuf(_) => CpuAccess::Uncached,
+        // Mapped on first read and synced around reads either way (`window`); a dma-buf is
+        // cached only when its sender said so, as nothing here can tell.
+        if self.cached {
+            CpuAccess::Cached
+        } else {
+            CpuAccess::Uncached
         }
     }
 

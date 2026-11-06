@@ -37,6 +37,13 @@
 //! skips unknown members). [`decode`] puts it in the frame's [`FrameMeta::hops`](crate::buffer::FrameMeta::hops),
 //! the sequence number included ([`FrameMeta::sequence`](crate::buffer::FrameMeta::sequence)).
 //!
+//! **Cached.** `"cached": true` (after `"backing"`) says the sender's dma-buf memory is
+//! CPU-cached (its frame's `CpuAccess::Cached`, e.g. a buffer from a cached dma-heap): the
+//! receiver's frame is then `Cached` rather than `Uncached`. The receiver brackets its reads
+//! with `DMA_BUF_IOCTL_SYNC` either way, which is the contract a cached exporter needs. It is
+//! left out when false (a memfd is always cached), so the bytes are those of a peer that
+//! predates it, and a peer that does not know it reads the frame as `Uncached`.
+//!
 //! An endpoint record names a frame socket as `styx-frame-lease+unix://<absolute path>`
 //! ([`endpoint_uri`], [`parse_endpoint_uri`]): scheme [`ENDPOINT_SCHEME`], the socket path as
 //! its payload.
@@ -67,10 +74,17 @@ pub const ENDPOINT_SCHEME: &str = "styx-frame-lease+unix";
 pub struct LeaseMessage {
     pub descriptor: FrameLeaseDescriptor,
     pub backing: LeaseBacking,
+    /// The sender's dma-buf memory is CPU-cached (see the module documentation).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cached: bool,
     /// The frame's hops up to the send (see the module documentation); `None` for a frame
     /// without hops, or from a peer that does not send them.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hops: Option<HopRecord>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// How the descriptors sent with a [`LeaseMessage`] hold the frame (JSON: `"kind"` is
@@ -170,6 +184,7 @@ pub fn encode_message(frame: &FrameLease) -> Result<(LeaseMessage, Vec<OwnedFd>)
                 planes: std::mem::take(&mut encoded.planes),
             },
         },
+        cached: encoded.cached,
         hops: encoded.hops,
     };
     Ok((message, std::mem::take(&mut encoded.fds)))
@@ -190,6 +205,8 @@ pub struct EncodedFrame {
     pub hops: Option<HopRecord>,
     /// The frame was copied into a memfd (it was not in shareable memory).
     pub copied: bool,
+    /// The frame's dma-bufs are CPU-cached ([`LeaseMessage::cached`]).
+    pub cached: bool,
     /// What the frame's backing exported, before it is split into `planes` and `fds`.
     exported: Vec<FrameFdPlane>,
 }
@@ -210,6 +227,7 @@ impl Default for EncodedFrame {
             fds: Vec::new(),
             hops: None,
             copied: false,
+            cached: false,
             exported: Vec::new(),
         }
     }
@@ -244,6 +262,8 @@ impl EncodedFrame {
             return Err(LeaseCodecError::TooManyFds(n));
         }
         self.copied = copied;
+        self.cached =
+            self.memfd_len.is_none() && frame.cpu_access() == crate::buffer::CpuAccess::Cached;
         let mut hops = frame.meta().hops;
         if self.copied {
             hops.copied(frame.layout_slice().iter().map(|l| l.len).sum());
@@ -258,6 +278,7 @@ impl EncodedFrame {
         self.fds.clear();
         self.planes.clear();
         self.hops = None;
+        self.cached = false;
     }
 
     /// The message, with `hops` (e.g. [`EncodedFrame::hops`] with the send time added).
@@ -270,6 +291,7 @@ impl EncodedFrame {
                     planes: &self.planes,
                 },
             },
+            cached: self.cached,
             hops,
         }
     }
@@ -313,6 +335,8 @@ pub fn decode(payload: &[u8], fds: Vec<OwnedFd>) -> Result<FrameLease, LeaseCode
 pub struct LeaseMessageInline {
     pub descriptor: FrameLeaseDescriptor,
     pub backing: LeaseBackingInline,
+    #[serde(default)]
+    pub cached: bool,
     #[serde(default)]
     pub hops: Option<HopRecord>,
 }
@@ -478,6 +502,8 @@ impl LeaseMessageInline {
 pub struct LeaseMessageRef<'a> {
     pub descriptor: &'a FrameLeaseDescriptor,
     pub backing: LeaseBackingRef<'a>,
+    #[serde(skip_serializing_if = "is_false")]
+    pub cached: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hops: Option<&'a HopRecord>,
 }
@@ -499,6 +525,7 @@ impl LeaseMessage {
                 LeaseBacking::Memfd { len } => LeaseBackingRef::Memfd { len: *len },
                 LeaseBacking::DmabufPlanes { planes } => LeaseBackingRef::DmabufPlanes { planes },
             },
+            cached: self.cached,
             hops: self.hops.as_ref(),
         }
     }
@@ -558,7 +585,7 @@ pub fn decode_message(
     if expected > MAX_FDS {
         return Err(LeaseCodecError::TooManyFds(expected));
     }
-    let hops = message.hops;
+    let (hops, cached) = (message.hops, message.cached);
     let mut frame = match message.backing {
         LeaseBacking::Memfd { len } => {
             let fd = fds.pop().expect("one descriptor");
@@ -583,7 +610,7 @@ pub fn decode_message(
                     len: p.len,
                 })
                 .collect();
-            FrameLease::from_dmabuf_import(message.descriptor, planes)?
+            FrameLease::from_dmabuf_import_cached(message.descriptor, planes, cached)?
         }
     };
     if let Some(record) = hops {

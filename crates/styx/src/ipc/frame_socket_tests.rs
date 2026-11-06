@@ -494,6 +494,7 @@ fn write_fuzz_seeds() {
                 &Message {
                     descriptor: descriptor.clone(),
                     backing: backing.clone(),
+                    cached: false,
                     hops,
                 },
             )
@@ -679,4 +680,36 @@ fn fetch_next_falls_back_to_the_frame_socket() {
     let fetched = fetcher.stats();
     assert_eq!(fetched.polled, 2);
     assert!(fetched.repeated > 0, "{fetched:?}");
+}
+
+/// A dma-buf the sender maps cached (e.g. from a cached dma-heap) arrives `Cached`; one it
+/// does not, `Uncached`.
+#[test]
+fn the_senders_cpu_access_travels_with_a_dmabuf() {
+    let path = socket_path("cached");
+    let socket = Arc::new(FrameSocket::bind(&path).unwrap());
+    let mut fetcher = super::FrameFetcher::new(&path);
+    for cached in [true, false] {
+        // A one-plane grey frame over a descriptor the server exports as a dma-buf plane.
+        let fd = Camera::new(1).buffers[0].try_clone().unwrap();
+        File::from(fd.try_clone().unwrap())
+            .write_all_at(&[9; LEN], 0)
+            .unwrap();
+        let json = format!(
+            r#"{{"descriptor":{{"width":64,"height":64,"fourcc":"GREY","timestamp":{t},"color":"Unknown","planes":[{{"offset":0,"len":{LEN},"stride":64}}]}},"backing":{{"kind":"dmabuf_planes","planes":[{{"offset":0,"len":{LEN}}}]}},"cached":{cached}}}"#,
+            t = 1 + cached as u64,
+        );
+        let frame = styx_core::lease_codec::decode(json.as_bytes(), vec![fd]).unwrap();
+        let access = if cached {
+            CpuAccess::Cached
+        } else {
+            CpuAccess::Uncached
+        };
+        assert_eq!(frame.cpu_access(), access);
+        socket.publish(&frame).unwrap();
+        let got = fetcher.fetch(Duration::from_secs(2)).unwrap();
+        assert_eq!(got.cpu_access(), access, "cached {cached}");
+        assert_eq!(got.residency(), FrameResidency::Dmabuf);
+        assert!(bytes(&got).iter().all(|&b| b == 9));
+    }
 }

@@ -222,7 +222,7 @@ impl FrameFetcher {
                 let spans: SmallVec<[(usize, usize); 4]> =
                     planes.iter().map(|p| (p.offset, p.len)).collect();
                 meta.residency = Some(FrameResidency::Dmabuf);
-                match CachedDmabuf::new(&self.maps, fds, &spans) {
+                match CachedDmabuf::new(&self.maps, fds, &spans, message.cached) {
                     Ok(cached) => Inner::Cached(cached),
                     Err(fds) => {
                         let planes = fds
@@ -234,9 +234,10 @@ impl FrameFetcher {
                                 len: p.len,
                             })
                             .collect();
-                        Inner::Other(external(FrameLease::from_dmabuf_import(
+                        Inner::Other(external(FrameLease::from_dmabuf_import_cached(
                             message.descriptor.clone(),
                             planes,
+                            message.cached,
                         )?)?)
                     }
                 }
