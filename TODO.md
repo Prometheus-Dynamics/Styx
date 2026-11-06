@@ -88,7 +88,10 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
       (`padded_len`) and memfd stand-in on `lemnos_linux::dma`; `sync_stats` is Lemnos's.
       The styx-named bridge module in `kernel-modules/styx-sensor-bridge` is no longer found by
       `find_bridges` (Lemnos's matches `lemnos-sensor-bridge`); images ship neither.
-      Raze #1 board run: see the commit.
+      Raze #1, 2026-11-06, 120 fps sliced (line 600), A/B against 9d5a3bf on the stock modules:
+      frame-out p50 7.975 / 7.975 ms, p99 9.294 / 9.298 ms; 1199/1200 sliced, 0 early fires;
+      149/149 verified stripes byte-identical; 0 steady-state allocations in the pipeline (the
+      tool's own record Vecs grow 15 times in 960 frames, the same on both).
 4. [ ] **Move onto the Lemnos kernel module and Rust userspace drivers.** An own receiver replaces
       the stock `rp1-cfe`, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
       the OV9782 patches retire. The stock V4L2 path stays as the fallback. *Why:* one small module
