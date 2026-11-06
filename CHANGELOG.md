@@ -1123,6 +1123,11 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- Planned CPU pyramid levels on colour frames (NV12 and other formats with a Y plane): the
+  planner listed the box-filter step, but the frame stage returned non-luma frames before
+  attaching the levels, so `pyramid_level(1)` was `None` with `PyramidSource::Software` (and
+  with `PreferHardware` wherever no ISP made the level). The levels now come from the Y plane.
+
 - The native sensor driver's control schedule rejects impossible read-back values: a frame
   length outside the mode's range, or an exposure longer than its longest frame allows (a misread
   of embedded data, e.g. VTS 4 on an 800-line mode). They are counted

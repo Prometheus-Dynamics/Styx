@@ -595,7 +595,13 @@ impl Codec for FramePreparer {
             _ => input,
         };
         if !self.luma {
-            return self.with_view_overview(frame);
+            // NV12 and the like get the planned CPU levels from their Y plane too.
+            let frame = self.with_view_overview(frame)?;
+            return if frame.has_luma_plane() {
+                self.attach_pyramid(frame)
+            } else {
+                Ok(frame)
+            };
         }
         self.finish_view(frame, roi)
     }

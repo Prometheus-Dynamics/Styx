@@ -66,3 +66,19 @@ fn rgb_is_decoded_at_the_requested_size() {
     assert_eq!((res.width.get(), res.height.get()), (640, 360));
     assert_eq!(frame.planes()[0].data().len(), 640 * 360 * 3);
 }
+
+/// A colour frame with a planned CPU pyramid gets it from its Y plane (the planner's step ran).
+#[test]
+fn nv12_gets_its_planned_cpu_pyramid() {
+    let (frame, _) = first_frame(
+        &Frames::nv12()
+            .pyramid(2)
+            .pyramid_source(PyramidSource::Software),
+        "scaled-nv12-pyramid",
+    );
+    assert_eq!(frame.meta().format.code, FourCc::NV12);
+    let width = frame.meta().format.resolution.width.get();
+    let level = frame.pyramid_level(1).expect("level 1 from the Y plane");
+    assert_eq!(level.meta().format.resolution.width.get(), width / 2);
+    assert!(frame.pyramid_level(2).is_some());
+}
