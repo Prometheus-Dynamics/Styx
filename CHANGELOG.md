@@ -37,6 +37,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- PiSP extra passes at exactly 1/2, 1/4 or 1/8 of their crop (pyramid levels 2 and 3 from the
+  back end) average a box, as the CPU's levels do, with the main output 1's `half_filter`:
+  1/2 as that filter says, 1/4 and 1/8 from the downscaler alone (a k x k area average).
+  `HalfFilter::Lanczos3` keeps the smart resize. Written, untested on board.
+
 - dma-buf CPU access sync (styx-core) and the libcamera backend's dma-heap buffers go through
   lemnos-linux-sys / lemnos-linux instead of Styx's own ioctls. Heap allocations now get Lemnos's
   capacity check, which refuses a request larger than the heap before the kernel sees it.

@@ -99,6 +99,11 @@ impl BeConfigBuilder {
         })
     }
 
+    /// How output 1 (and extra passes at 1/2, 1/4 or 1/8 of their crop) average down.
+    pub fn half_filter(&self) -> crate::pisp_half::HalfFilter {
+        self.half
+    }
+
     /// Output 1, when exactly half of `crop` (`None`: the whole input), made with `filter`;
     /// kept across [`Self::set_output_crop`] (another size uses the smart resize). Fails,
     /// changing nothing, if the back end cannot make it.

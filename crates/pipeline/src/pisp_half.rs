@@ -54,50 +54,74 @@ const ONE: i16 = 1 << 10;
 pub fn set_half_filter(be: &mut BackEnd, filter: HalfFilter, input: (u16, u16)) -> bool {
     let image = be.config().output_format[1].image;
     let (w, h) = (image.width, image.height);
-    be.set_resample_step(1, None);
-    if filter == HalfFilter::Lanczos3
-        || w == 0
-        || (u32::from(w) * 2, u32::from(h) * 2) != (u32::from(input.0), u32::from(input.1))
-    {
+    if (u32::from(w) * 2, u32::from(h) * 2) != (u32::from(input.0), u32::from(input.1)) {
+        be.set_resample_step(1, None);
         be.set_smart_resize(1, w, h);
         return false;
     }
-    be.set_smart_resize(1, 0, 0);
+    set_box(be, 1, filter, input, (w, h)).is_some()
+}
+
+/// Output `o` making `size` from `input` (its crop) as a box average when `size` is exactly
+/// `input` / k for k = 2, 4 or 8 and `filter` is a box: k = 2 as `filter` says, k = 4 and 8 from
+/// the downscaler alone (an area average of k x k, which the 6-tap resampler cannot do; the
+/// CPU's repeated 2x2 box gives the same mean). Only output 1 has a downscaler, so output 0
+/// takes only [`HalfFilter::Box`] at 2x. Anything else gets the smart resize. Returns k when
+/// the box was set.
+pub fn set_box(
+    be: &mut BackEnd,
+    o: usize,
+    filter: HalfFilter,
+    input: (u16, u16),
+    size: (u16, u16),
+) -> Option<u32> {
+    let (w, h) = size;
+    be.set_resample_step(o, None);
+    let k = if w == 0 {
+        0
+    } else {
+        u32::from(input.0) / u32::from(w)
+    };
+    let exact =
+        k > 0 && (u32::from(w) * k, u32::from(h) * k) == (u32::from(input.0), u32::from(input.1));
+    let downscaler = k >= 4 || filter == HalfFilter::BoxDownscaler;
+    if filter == HalfFilter::Lanczos3 || !exact || !matches!(k, 2 | 4 | 8) || (downscaler && o != 1)
+    {
+        be.set_smart_resize(o, w, h);
+        return None;
+    }
+    be.set_smart_resize(o, 0, 0);
     let mut rgb =
-        be.config().global.rgb_enables & !(rgb_enable::downscale(1) | rgb_enable::resample(1));
-    match filter {
-        HalfFilter::BoxDownscaler => {
-            be.set_downscale(
-                1,
-                BeDownscaleExtra {
-                    scaled_width: w,
-                    scaled_height: h,
-                },
-            );
-            rgb |= rgb_enable::downscale(1);
+        be.config().global.rgb_enables & !(rgb_enable::downscale(o) | rgb_enable::resample(o));
+    if downscaler {
+        be.set_downscale(
+            o,
+            BeDownscaleExtra {
+                scaled_width: w,
+                scaled_height: h,
+            },
+        );
+        rgb |= rgb_enable::downscale(o);
+    } else {
+        be.set_resample(
+            o,
+            BeResampleExtra {
+                scaled_width: w,
+                scaled_height: h,
+                ..Default::default()
+            },
+        );
+        be.set_resample_step(o, Some((2 << 12, 2 << 12)));
+        let mut coef = [0i16; 96];
+        for phase in coef.as_chunks_mut::<TAPS>().0 {
+            phase[CENTRE] = ONE / 2;
+            phase[CENTRE + 1] = ONE / 2;
         }
-        HalfFilter::Box => {
-            be.set_resample(
-                1,
-                BeResampleExtra {
-                    scaled_width: w,
-                    scaled_height: h,
-                    ..Default::default()
-                },
-            );
-            be.set_resample_step(1, Some((2 << 12, 2 << 12)));
-            let mut coef = [0i16; 96];
-            for phase in coef.as_chunks_mut::<TAPS>().0 {
-                phase[CENTRE] = ONE / 2;
-                phase[CENTRE + 1] = ONE / 2;
-            }
-            be.config_mut().resample[1].coef = coef;
-            rgb |= rgb_enable::resample(1);
-        }
-        HalfFilter::Lanczos3 => unreachable!(),
+        be.config_mut().resample[o].coef = coef;
+        rgb |= rgb_enable::resample(o);
     }
     be.config_mut().global.rgb_enables = rgb;
-    true
+    Some(k)
 }
 
 #[cfg(test)]
@@ -203,5 +227,53 @@ mod tests {
         assert!(set_half_filter(&mut be, HalfFilter::Box, (1280, 800)));
         let c = be.prepare().unwrap().config;
         assert_eq!(c.resample[1].scale_factor_h, 2 << 12);
+    }
+
+    #[test]
+    fn quarter_and_eighth_boxes_come_from_the_downscaler_alone() {
+        for (k, out) in [(4u16, (320, 200)), (8, (160, 100))] {
+            for filter in [HalfFilter::Box, HalfFilter::BoxDownscaler] {
+                let mut be = template(out);
+                assert_eq!(
+                    set_box(&mut be, 1, filter, (1280, 800), out),
+                    Some(u32::from(k))
+                );
+                let c = be.prepare().unwrap().config;
+                assert_eq!(c.global.rgb_enables & BOTH, rgb_enable::downscale(1));
+                let d = c.downscale[1];
+                let step = u32::from(k) << 12;
+                assert_eq!(
+                    (u32::from(d.scale_factor_h), u32::from(d.scale_factor_v)),
+                    (step, step)
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn output_0_has_no_downscaler_and_lanczos_never_boxes() {
+        let mut be = template((640, 400));
+        assert_eq!(
+            set_box(&mut be, 0, HalfFilter::Box, (1280, 800), (320, 200)),
+            None
+        );
+        assert_eq!(
+            set_box(
+                &mut be,
+                0,
+                HalfFilter::BoxDownscaler,
+                (1280, 800),
+                (640, 400)
+            ),
+            None
+        );
+        assert_eq!(
+            set_box(&mut be, 1, HalfFilter::Lanczos3, (1280, 800), (320, 200)),
+            None
+        );
+        assert_eq!(
+            set_box(&mut be, 1, HalfFilter::Box, (1280, 800), (400, 250)),
+            None
+        );
     }
 }

@@ -223,7 +223,7 @@ impl PassConfigs {
                 spec.output, buffer.format
             )));
         }
-        let mut be = pass_geometry(main.work(), spec, buffer);
+        let mut be = pass_geometry(main.work(), spec, buffer, main.half_filter());
         let mut cfg = be
             .prepare()
             .map_err(|e| PipelineError::Config(format!("extra pass: {}", e.0)))?;
@@ -314,7 +314,12 @@ fn pass_blocks(main: &BeConfig, pass: &BeConfig, tdn: PassTdn) -> BeConfig {
 }
 
 /// `main` with `spec`'s geometry: only its output enabled, cropped, sized and in its format.
-fn pass_geometry(main: &BackEnd, spec: &PassSpec, buffer: ImageFormatConfig) -> BackEnd {
+fn pass_geometry(
+    main: &BackEnd,
+    spec: &PassSpec,
+    buffer: ImageFormatConfig,
+    filter: crate::pisp_half::HalfFilter,
+) -> BackEnd {
     let mut be = main.clone();
     let (o, other) = (spec.output, 1 - spec.output);
     let g = be.config().global;
@@ -351,11 +356,12 @@ fn pass_geometry(main: &BackEnd, spec: &PassSpec, buffer: ImageFormatConfig) -> 
     }
     be.set_output_format(o, out);
     be.set_crop(o, spec.crop);
-    let (w, h) = spec.size.unwrap_or((spec.crop.width, spec.crop.height));
-    be.set_smart_resize(o, w, h);
-    // The main output 1's half-size box steps by exactly 2; a pass has its own size.
-    be.set_resample_step(o, None);
     be.set_global(g.bayer_enables, rgb, bayer_order(g.bayer_order));
+    // Its own size: a box at exactly 1/2, 1/4 or 1/8 of its crop (as the CPU's pyramid
+    // levels), else the smart resize.
+    let size = spec.size.unwrap_or((spec.crop.width, spec.crop.height));
+    let crop = (spec.crop.width, spec.crop.height);
+    crate::pisp_half::set_box(&mut be, o, filter, crop, size);
     be
 }
 
