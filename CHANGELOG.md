@@ -37,9 +37,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
-- Daedalus is pinned at rev 81ec527 (it was `branch = "dev"`), which pins Lemnos 952e1c7 too:
+- Daedalus is pinned at rev 872de95 (it was `branch = "dev"`), which pins Lemnos cf3a4ac too:
   one Lemnos in the lock.
-- Lemnos is pinned at 952e1c7. Heap dma-bufs get their Vulkan import pad from Lemnos's
+- Lemnos is pinned at cf3a4ac. A CMA dma-heap is now capped by the whole pool (`CmaTotal`), not
+  its idle pages (`CmaFree`), so allocations the kernel serves by migrating movable pages are no
+  longer refused up front; Raze #1 reports `CmaFree` 0 of 64 MiB and still hands out eight
+  1.28 MB buffers. Since 952e1c7, heap dma-bufs get their Vulkan import pad from Lemnos's
   `DmaHeap::allocate_importable` (256 bytes, rounded up to the system's page size rather than
   4 KiB); `styx_native::dma::padded_len` is gone and `TAIL_SLACK` is Lemnos's `IMPORT_SLACK`.
   The PiSP back end outputs and their spares are padded again (lemnos-drivers-pisp).
