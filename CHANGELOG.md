@@ -37,6 +37,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- dma-buf CPU access sync (styx-core) and the libcamera backend's dma-heap buffers go through
+  lemnos-linux-sys / lemnos-linux instead of Styx's own ioctls. Heap allocations now get Lemnos's
+  capacity check, which refuses a request larger than the heap before the kernel sees it.
+
 - `check-perf-smoke.sh` scales its limits on a loaded machine: by twice the one-minute load over
   the usable CPUs when that is above 1, at most 10x. `PERF_SMOKE_STRICT=1` (CI) keeps the
   baseline's limits.

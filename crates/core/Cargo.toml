@@ -28,6 +28,7 @@ std = [
     "path-metrics",
     "dep:parking_lot",
     "dep:libc",
+    "dep:lemnos-linux-sys",
     "thiserror/std",
     "serde?/std",
 ]
@@ -75,6 +76,10 @@ critical-section = { workspace = true, optional = true }
 [target.'cfg(target_has_atomic = "ptr")'.dependencies]
 crossbeam-queue = { workspace = true }
 spin = { workspace = true }
+
+# dma-buf CPU access sync (`DMA_BUF_IOCTL_SYNC`), with `std`.
+[target.'cfg(target_os = "linux")'.dependencies]
+lemnos-linux-sys = { workspace = true, optional = true }
 
 # `Arc` where `alloc::sync` does not exist (no compare-and-swap).
 [target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]

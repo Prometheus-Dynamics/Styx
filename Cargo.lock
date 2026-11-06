@@ -5533,6 +5533,7 @@ dependencies = [
  "critical-section",
  "crossbeam-queue",
  "daedalus-rs",
+ "lemnos-linux-sys",
  "libc",
  "parking_lot",
  "portable-atomic",

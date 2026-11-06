@@ -222,16 +222,13 @@ fn allocate_heap_buffers(
     if template.planes.is_empty() {
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "no planes"));
     }
-    let heap = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(heap_path)?;
+    let heap = lemnos_linux::dma::DmaHeap::open_path(heap_path)?;
     let mut buffers = Vec::with_capacity(count);
     for _ in 0..count {
         let allocations = template
             .allocation_sizes
             .iter()
-            .map(|size| heap_alloc(heap.as_raw_fd(), *size))
+            .map(|size| heap.allocate(*size).map(lemnos_linux::dma::DmaBuf::into_fd))
             .collect::<io::Result<SmallVec<[OwnedFd; 3]>>>()?;
         let mut planes = Vec::with_capacity(template.planes.len());
         for (index, offset, length) in &template.planes {
@@ -261,46 +258,9 @@ fn allocate_heap_buffers(
     Ok(buffers)
 }
 
-#[repr(C)]
-struct DmaHeapAllocationData {
-    len: u64,
-    fd: u32,
-    fd_flags: u32,
-    heap_flags: u64,
-}
-
-// _IOWR('H', 0x0, struct dma_heap_allocation_data)
-const DMA_HEAP_IOCTL_ALLOC: libc::c_ulong = 0xc018_4800;
-
-fn heap_alloc(heap: RawFd, len: usize) -> io::Result<OwnedFd> {
-    let page = 4096usize;
-    let mut data = DmaHeapAllocationData {
-        len: len.div_ceil(page).max(1).saturating_mul(page) as u64,
-        fd: 0,
-        fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
-        heap_flags: 0,
-    };
-    // SAFETY: `data` is a valid, writable `struct dma_heap_allocation_data`; the kernel fills in
-    // `fd` on success.
-    let ret = unsafe { libc::ioctl(heap, DMA_HEAP_IOCTL_ALLOC as _, &mut data) };
-    if ret != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: on success the kernel returned a fresh dma-buf fd that we now own.
-    Ok(unsafe { OwnedFd::from_raw_fd(data.fd as RawFd) })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn dma_heap_ioctl_number_matches_linux_uapi() {
-        // _IOC(_IOC_READ|_IOC_WRITE=3, 'H'=0x48, nr=0, size=24)
-        let expected: libc::c_ulong = (3 << 30) | (24 << 16) | (0x48 << 8);
-        assert_eq!(DMA_HEAP_IOCTL_ALLOC, expected);
-        assert_eq!(std::mem::size_of::<DmaHeapAllocationData>(), 24);
-    }
 
     #[test]
     fn allocator_is_kept_when_configured() {

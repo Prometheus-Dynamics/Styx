@@ -168,7 +168,7 @@ facade = [
 tracing = ["dep:tracing", "styx-v4l2?/tracing", "styx-uvc?/tracing"]
 hooks = ["facade"]
 image = ["facade", "dep:image", "styx-codec/dynamic-image"]
-libcamera = ["facade", "styx-libcamera", "dep:libcamera", "dep:libcamera-sys", "raw-decoders"]
+libcamera = ["facade", "styx-libcamera", "dep:libcamera", "dep:libcamera-sys", "raw-decoders", "dep:lemnos-linux", "lemnos-linux/dma"]
 libcamera-vendor-rpi = ["libcamera", "styx-libcamera/vendor_rpi", "dep:libcamera"]
 v4l2 = ["facade", "styx-v4l2", "lemnos-v4l2"]
 # Sensors driven by Styx through the Styx sensor bridge (the native stack).
