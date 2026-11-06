@@ -87,7 +87,7 @@ pub fn set_half_filter(be: &mut BackEnd, filter: HalfFilter, input: (u16, u16)) 
             );
             be.set_resample_step(1, Some((2 << 12, 2 << 12)));
             let mut coef = [0i16; 96];
-            for phase in coef.chunks_exact_mut(TAPS) {
+            for phase in coef.as_chunks_mut::<TAPS>().0 {
                 phase[CENTRE] = ONE / 2;
                 phase[CENTRE + 1] = ONE / 2;
             }
@@ -143,8 +143,8 @@ mod tests {
         assert_eq!(c.global.rgb_enables & BOTH, rgb_enable::resample(1));
         let r = c.resample[1];
         assert_eq!((r.scale_factor_h, r.scale_factor_v), (2 << 12, 2 << 12));
-        for phase in r.coef.chunks_exact(TAPS) {
-            assert_eq!(phase, [0, 0, 512, 512, 0, 0]);
+        for phase in r.coef.as_chunks::<TAPS>().0 {
+            assert_eq!(*phase, [0, 0, 512, 512, 0, 0]);
         }
         assert!(t.num_tiles >= 1);
     }
