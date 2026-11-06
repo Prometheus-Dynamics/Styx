@@ -41,6 +41,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `SharedBufferPool` keeps each free memfd's mapping, so a lease costs no `mmap`, page faults
+  or `munmap` (decoded frames and served pyramid levels lease one per frame).
+
 - CPU pyramid levels of an exportable plan (a camera service's clients) are written straight
   into memfd buffers, so the service shares them by fd instead of copying each level into a
   memfd at export. New `styx_core::buffer::level_meta` for producers writing levels into

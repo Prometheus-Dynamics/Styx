@@ -52,16 +52,17 @@ impl SharedBufferPool {
             metrics: Arc::new(Metrics::default()),
         });
         for _ in 0..capacity {
-            inner.recycle(create_sized_memfd(chunk_size)?);
+            let mapped = inner.new_mapped()?;
+            inner.free.lock().push_back(mapped);
         }
         Ok(Self { inner })
     }
 
     pub fn lease(&self) -> Result<SharedBufferLease, FrameExportError> {
-        let fd = self.inner.free.lock().pop_front();
-        let fd = if let Some(fd) = fd {
+        let free = self.inner.free.lock().pop_front();
+        let mapped = if let Some(mapped) = free {
             self.inner.metrics.hit();
-            fd
+            mapped
         } else {
             // Every buffer is out (not the pool's first lease): another one is made.
             if self.inner.metrics.leases_out() > 0 {
@@ -69,10 +70,10 @@ impl SharedBufferPool {
             }
             self.inner.metrics.miss();
             self.inner.metrics.alloc();
-            create_sized_memfd(self.inner.chunk_size)?
+            self.inner.new_mapped()?
         };
         self.inner.metrics.lease_acquired();
-        SharedBufferLease::new(self.inner.clone(), fd, self.inner.chunk_size)
+        Ok(SharedBufferLease::new(self.inner.clone(), mapped))
     }
 
     pub fn stats(&self) -> SharedBufferPoolStats {
@@ -110,21 +111,55 @@ struct SharedPoolInner {
     /// process keeps its mapping of each (`styx::ipc`'s map cache drops one no frame used for a
     /// while); handing out the latest returned first would leave the others unused for as long
     /// as frames go back quickly, for them to be dropped and mapped again (an `mmap` and an
-    /// allocation in the consumer) whenever a slow frame makes the pool reach one.
-    free: Mutex<VecDeque<OwnedFd>>,
+    /// allocation in the consumer) whenever a slow frame makes the pool reach one. Each keeps
+    /// this process's mapping too, so a lease costs no `mmap`, page faults or `munmap`.
+    free: Mutex<VecDeque<Mapped>>,
     chunk_size: usize,
     max_free: usize,
     metrics: Arc<Metrics>,
 }
 
 impl SharedPoolInner {
-    fn recycle(&self, fd: OwnedFd) {
+    /// Keeps `fd` and its mapping (`chunk_size` bytes) for the next lease, or lets both go
+    /// when the pool holds `max_free` already.
+    fn recycle(&self, fd: OwnedFd, ptr: NonNull<u8>) {
+        let mapped = Mapped {
+            fd,
+            ptr,
+            len: self.chunk_size,
+        };
         let mut free = self.free.lock();
         if free.len() < self.max_free {
-            free.push_back(fd);
+            free.push_back(mapped);
         }
     }
+
+    fn new_mapped(&self) -> Result<Mapped, FrameExportError> {
+        let fd = create_sized_memfd(self.chunk_size)?;
+        let ptr = map_fd(&fd, self.chunk_size, libc::PROT_READ | libc::PROT_WRITE)?;
+        Ok(Mapped {
+            fd,
+            ptr,
+            len: self.chunk_size,
+        })
+    }
 }
+
+/// A free buffer: its memfd and this process's read-write mapping of it.
+struct Mapped {
+    fd: OwnedFd,
+    ptr: NonNull<u8>,
+    len: usize,
+}
+
+impl Drop for Mapped {
+    fn drop(&mut self) {
+        unmap_ptr(self.ptr, self.len);
+    }
+}
+
+// SAFETY: a free buffer's mapping is referenced by nothing else (its lease and backing are gone).
+unsafe impl Send for Mapped {}
 
 pub struct SharedBufferLease {
     pool: Arc<SharedPoolInner>,
@@ -135,19 +170,17 @@ pub struct SharedBufferLease {
 }
 
 impl SharedBufferLease {
-    fn new(
-        pool: Arc<SharedPoolInner>,
-        fd: OwnedFd,
-        capacity: usize,
-    ) -> Result<Self, FrameExportError> {
-        let ptr = map_fd(&fd, capacity, libc::PROT_READ | libc::PROT_WRITE)?;
-        Ok(Self {
+    fn new(pool: Arc<SharedPoolInner>, mapped: Mapped) -> Self {
+        let mapped = std::mem::ManuallyDrop::new(mapped);
+        // SAFETY: `mapped` is not dropped; its fd moves out once, here.
+        let fd = unsafe { std::ptr::read(&mapped.fd) };
+        Self {
             pool,
             fd: Some(fd),
-            ptr: Some(ptr),
+            ptr: Some(mapped.ptr),
             len: 0,
-            capacity,
-        })
+            capacity: mapped.len,
+        }
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -215,13 +248,12 @@ impl SharedBufferLease {
 impl Drop for SharedBufferLease {
     fn drop(&mut self) {
         let release = self.ptr.is_some() || self.fd.is_some();
-        if let Some(ptr) = self.ptr.take() {
-            unmap_ptr(ptr, self.capacity);
-        }
-        if let Some(fd) = self.fd.take()
-            && self.capacity == self.pool.chunk_size
-        {
-            self.pool.recycle(fd);
+        match (self.fd.take(), self.ptr.take()) {
+            (Some(fd), Some(ptr)) if self.capacity == self.pool.chunk_size => {
+                self.pool.recycle(fd, ptr);
+            }
+            (_, Some(ptr)) => unmap_ptr(ptr, self.capacity),
+            _ => {}
         }
         if release {
             self.pool.metrics.lease_released();
@@ -230,7 +262,8 @@ impl Drop for SharedBufferLease {
 }
 
 // SAFETY: the lease has unique ownership of the writable mmap and fd while it is live. Moving it
-// to another thread does not create aliases, and `Drop` unmaps before recycling the fd.
+// to another thread does not create aliases, and `Drop` hands the mapping back to the pool (or
+// unmaps it) only once the lease is gone.
 unsafe impl Send for SharedBufferLease {}
 
 struct SharedBufferBacking {
@@ -285,11 +318,9 @@ impl ExternalBacking for SharedBufferBacking {
 
 impl Drop for SharedBufferBacking {
     fn drop(&mut self) {
-        unmap_ptr(self.ptr, self.capacity);
-        if let Some(fd) = self.fd.take()
-            && self.capacity == self.pool.chunk_size
-        {
-            self.pool.recycle(fd);
+        match self.fd.take() {
+            Some(fd) if self.capacity == self.pool.chunk_size => self.pool.recycle(fd, self.ptr),
+            _ => unmap_ptr(self.ptr, self.capacity),
         }
         self.pool.metrics.lease_released();
     }
@@ -390,5 +421,32 @@ mod tests {
         assert_eq!(a.may_alias(&owned), Ok(false));
         assert_eq!(owned.may_alias(&a), Ok(false));
         assert_eq!(a.may_alias(&b), Ok(false));
+    }
+}
+
+#[cfg(test)]
+mod mapping_tests {
+    use super::*;
+
+    /// A buffer handed back keeps its mapping: the next lease of it maps nothing new.
+    #[test]
+    fn a_recycled_buffer_keeps_its_mapping() {
+        let pool = SharedBufferPool::with_limits(1, 4096, 1).unwrap();
+        let first = pool.lease().unwrap();
+        let ptr = first.as_slice().as_ptr();
+        drop(first);
+        let again = pool.lease().unwrap();
+        assert_eq!(again.as_slice().as_ptr(), ptr);
+        assert_eq!(pool.stats().allocations, 0);
+    }
+
+    /// A buffer grown past the pool's size is not kept (its mapping is the larger one).
+    #[test]
+    fn a_grown_buffer_is_not_recycled() {
+        let pool = SharedBufferPool::with_limits(1, 4096, 1).unwrap();
+        let mut lease = pool.lease().unwrap();
+        lease.try_resize(8192).unwrap();
+        drop(lease);
+        assert_eq!(pool.stats().free, 0);
     }
 }
