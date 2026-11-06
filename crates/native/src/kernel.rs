@@ -209,10 +209,14 @@ fn firmware_node(subdev: &Path) -> Option<String> {
         .map(|p| format!("/{}", p.display()).replace("//", "/"))
 }
 
-/// Whether a sensor entity is (or has) a Styx sensor bridge.
+/// Node-name prefixes of a sensor bridge's entity (`<sensor> <node>`): Lemnos's bridge, and
+/// for one release the Styx bridge it was before.
+const BRIDGE_NODES: [&str; 2] = ["lemnos-sensor-bridge", "styx-sensor-bridge"];
+
+/// Whether a sensor entity is (or has) a sensor bridge.
 fn bridged(entity: &str, subdev: &Path, bridges: &[BridgeLocation]) -> bool {
     let i2c = i2c_of(entity);
-    entity.contains("styx-sensor-bridge")
+    BRIDGE_NODES.iter().any(|n| entity.contains(n))
         || bridges.iter().any(|b| {
             b.subdev == subdev
                 || (i2c.0.is_some() && i2c.1.is_some() && (b.i2c_bus, b.i2c_address) == i2c)
@@ -537,6 +541,7 @@ mod tests {
         let p = Path::new("/dev/v4l-subdev5");
         assert!(bridged("ov9782 10-0060", p, std::slice::from_ref(&bridge)));
         assert!(bridged("ov9782 styx-sensor-bridge-cam0", p, &[]));
+        assert!(bridged("ov9782 lemnos-sensor-bridge-cam0", p, &[]));
         assert!(!bridged("imx219 11-0010", p, std::slice::from_ref(&bridge)));
         assert!(!bridged("ov9782 10-0060", p, &[]));
     }
