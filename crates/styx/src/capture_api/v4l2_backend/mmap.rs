@@ -182,6 +182,11 @@ impl V4l2MmapManager {
         Ok(())
     }
 
+    /// Buffers the driver gave (or the imported ones).
+    pub(super) fn buffer_count(&self) -> usize {
+        self.state.lock().queued.len()
+    }
+
     pub(super) fn mapped_plane(&self, index: usize) -> Option<&[u8]> {
         if let Some(imported) = self.imported() {
             return imported.bytes(index);

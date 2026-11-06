@@ -11,10 +11,56 @@
 //!
 //! The userspace backend needs the camera's video interfaces free: unbind `uvcvideo`, or set
 //! `STYX_UVC_DETACH=1` to let Styx detach it for the capture (it is rebound afterwards).
+//!
+//! `capture` also prints the heap allocations per measured frame (whole process, every
+//! thread); `STYX_ALLOC_TRACE=1` prints their call stacks after the run (`hop_breakdown`'s
+//! trace, `STYX_ALLOC_TRACE_FRAMES` defaults to 60; `scripts/symbolize-alloc-trace.sh` names
+//! the call sites).
 
+#![allow(unsafe_code)]
+
+use std::alloc::{GlobalAlloc, Layout, System};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use styx::prelude::*;
+
+#[path = "hop_breakdown/alloc_trace.rs"]
+mod alloc_trace;
+
+/// Counts the process's heap allocations.
+struct Counting;
+
+static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+
+// SAFETY: forwards to the system allocator unchanged; counting is one relaxed atomic add.
+unsafe impl GlobalAlloc for Counting {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        alloc_trace::record();
+        // SAFETY: forwarded unchanged.
+        unsafe { System.alloc(layout) }
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        alloc_trace::record();
+        // SAFETY: forwarded unchanged.
+        unsafe { System.alloc_zeroed(layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
+        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        alloc_trace::record();
+        // SAFETY: forwarded unchanged.
+        unsafe { System.realloc(ptr, layout, new_size) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: forwarded unchanged.
+        unsafe { System.dealloc(ptr, layout) }
+    }
+}
+
+#[global_allocator]
+static ALLOC: Counting = Counting;
 
 /// This process's (user, system) CPU seconds.
 fn cpu_seconds() -> (f64, f64) {
@@ -219,15 +265,23 @@ fn capture(kind: BackendKind, code: FourCc, w: u32, h: u32, fps: u32, frames: us
     let (cpu0, sys0, w0) = (cpu_seconds(), system_busy_seconds(), Instant::now());
     let faults0 = minor_faults();
     let (run0, all0) = (runtime_ms(Some(std::process::id())), runtime_ms(None));
-    let (mut ts, mut arrival, mut latency, mut arrival_latency, mut end_latency) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    // Sized for the run, so the measured loop's own allocations are none.
+    let (mut ts, mut arrival) = (Vec::with_capacity(frames), Vec::with_capacity(frames));
+    let (mut latency, mut arrival_latency, mut end_latency) = (
+        Vec::with_capacity(frames),
+        Vec::with_capacity(frames),
+        Vec::with_capacity(frames),
+    );
     let (mut seq_first, mut seq_last, mut damaged, mut from_pts) = (None, 0u32, 0, 0);
     let mut bytes = 0usize;
-    for _ in 0..frames {
+    alloc_trace::arm(0);
+    let allocs0 = ALLOCATIONS.load(Ordering::Relaxed);
+    for i in 0..frames {
         let RecvOutcome::Data(f) = handle.recv_blocking(Duration::from_secs(2)) else {
             println!("frame missing: {:?}", handle.last_error());
             break;
         };
+        alloc_trace::frames(i as u64 + 1);
         let now = mono_ns();
         let m = f.meta();
         latency.push((now.saturating_sub(m.timestamp)) as f64 / 1e6);
@@ -246,6 +300,7 @@ fn capture(kind: BackendKind, code: FourCc, w: u32, h: u32, fps: u32, frames: us
             damaged += usize::from(v.flags & 0x40 != 0);
         }
     }
+    let allocs = ALLOCATIONS.load(Ordering::Relaxed) - allocs0;
     let wall = w0.elapsed().as_secs_f64();
     let cpu1 = cpu_seconds();
     let (user, kernel) = (
@@ -273,6 +328,12 @@ fn capture(kind: BackendKind, code: FourCc, w: u32, h: u32, fps: u32, frames: us
         bytes as f64 / n.max(1) as f64 / 1024.0,
         (minor_faults() - faults0) as f64 / n.max(1) as f64,
     );
+    println!(
+        "allocations per frame: {:.3} ({allocs} in {} frames, whole process)",
+        allocs as f64 / ts.len().max(1) as f64,
+        ts.len()
+    );
+    alloc_trace::report(ts.len() as u64);
     if std::env::var_os("UVC_THREADS").is_some() {
         for t in std::fs::read_dir("/proc/self/task")
             .into_iter()
@@ -454,6 +515,7 @@ fn replug(kind: BackendKind) {
 }
 
 fn main() {
+    alloc_trace::init();
     let args: Vec<String> = std::env::args().collect();
     let kind = |i: usize| {
         args.get(i)

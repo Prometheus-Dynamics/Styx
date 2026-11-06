@@ -190,7 +190,7 @@ pub(super) fn start_virtual(
 /// writes nothing, so a frame is a buffer taken until the frame is dropped.
 #[cfg(target_os = "linux")]
 mod imported {
-    use std::sync::mpsc::{Receiver, Sender, channel};
+    use std::sync::mpsc::{Receiver, SyncSender, sync_channel};
 
     use styx_core::prelude::*;
 
@@ -201,7 +201,8 @@ mod imported {
     pub(super) struct Slots {
         claim: Claim,
         free: Vec<usize>,
-        returned: (Sender<usize>, Receiver<usize>),
+        /// Bounded, a slot per buffer: returning one never allocates.
+        returned: (SyncSender<usize>, Receiver<usize>),
     }
 
     impl Slots {
@@ -216,7 +217,7 @@ mod imported {
             Some(Self {
                 free: (0..buffers.len()).rev().collect(),
                 claim,
-                returned: channel(),
+                returned: sync_channel(buffers.len().max(1)),
             })
         }
 

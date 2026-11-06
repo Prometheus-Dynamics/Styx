@@ -1054,6 +1054,11 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 - Userspace UVC allocated once a frame: the stream's frame list lost its capacity. Now 0 in
   steady state.
+- V4L2 capture allocated about once a second (0.033 a frame): the buffer-recycle channel was
+  unbounded (a block every 31 frames; the virtual backend's imported buffers likewise) and a
+  stage's timing window (`StageMetrics`) grew by doubling. Now 0 in steady state, MJPG and YUYV
+  on the Raze; `uvc_capture capture` prints the count and, with `STYX_ALLOC_TRACE=1`, the call
+  sites.
 - `be::ops::filter5x5` set the sharpen block's `white` and `black`, which force samples to 255
   and 0, and used a rising table as a transfer curve when it multiplies the response: the output
   was 1 or 255 whatever the image. Each sample now gets the kernel's response at unit gain,

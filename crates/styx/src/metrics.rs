@@ -422,10 +422,16 @@ impl StageMetrics {
             if win.max == 0 {
                 win.max = DEFAULT_WINDOW;
             }
-            win.samples.push_back((Instant::now(), nanos));
-            while win.samples.len() > win.max {
+            // The whole window at once, and never past it: no allocation once it is full.
+            let max = win.max;
+            if win.samples.capacity() < max {
+                let more = max - win.samples.len();
+                win.samples.reserve_exact(more);
+            }
+            while win.samples.len() >= max {
                 win.samples.pop_front();
             }
+            win.samples.push_back((Instant::now(), nanos));
         }
     }
 

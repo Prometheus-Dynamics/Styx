@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender};
+use std::sync::mpsc::{Receiver, SyncSender};
 use std::thread;
 use std::time::Duration;
 
@@ -25,7 +25,7 @@ use crate::{BackendHandle, BackendKind, ProbedBackend};
 
 struct V4l2MmapBacking {
     manager: Arc<V4l2MmapManager>,
-    recycle_tx: Sender<usize>,
+    recycle_tx: SyncSender<usize>,
     index: Mutex<Option<usize>>,
     tracker: Arc<ExternalBackingTracker>,
     bytes: usize,
@@ -34,7 +34,7 @@ struct V4l2MmapBacking {
 impl V4l2MmapBacking {
     fn new(
         manager: Arc<V4l2MmapManager>,
-        recycle_tx: Sender<usize>,
+        recycle_tx: SyncSender<usize>,
         index: usize,
         tracker: Arc<ExternalBackingTracker>,
         bytes: usize,
@@ -264,7 +264,11 @@ pub(super) fn start_v4l2(
         styx_core::queue::bounded_with(queue_depth, capture_tunables.queue_overflow)
     });
     let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
-    let (recycle_tx, recycle_rx) = std::sync::mpsc::channel::<usize>();
+    // Room for every buffer's index: each is sent once per dequeue, so a send never waits, and
+    // a bounded channel's slots are allocated here (an unbounded one allocates a block every
+    // 31 sends).
+    let (recycle_tx, recycle_rx) =
+        std::sync::mpsc::sync_channel::<usize>(manager.buffer_count().max(1));
     let mode_clone = mode.clone();
     let backing_tracker = Arc::new(ExternalBackingTracker::new("v4l2_mmap"));
     let manager_for_worker = Arc::clone(&manager);

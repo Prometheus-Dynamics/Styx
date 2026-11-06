@@ -164,8 +164,9 @@ user lifts them.
       2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
       box and the reactor's timer map node). Whole process
       on the Raze, 2026-11-03, frames 60-300 at 30 fps: UVC MJPG and YUYV 0.000 (was 1.007: the
-      stream's frame list lost its capacity every frame). V4L2 MJPG 0.033, about one a second:
-      **not 0, cause not found.** **Not counted:** libcamera, and the kernel's side of the queue
+      stream's frame list lost its capacity every frame). V4L2 MJPG and YUYV 0.000 (2026-11-05,
+      `uvc_capture` counts and traces them now; were 0.033: the buffer-recycle channel was an
+      unbounded `mpsc`, a block every 31 frames, and a stage's timing window grew by doubling). **Not counted:** libcamera, and the kernel's side of the queue
       on a board. Also asserted 0: the PiSP raw lease, whole and at a sliced frame's
       first slice (`a_raw_lease_allocates_nothing`), and the sliced frame's states, reused once
       their leases return (`slice_states_are_reused_once_free`; were 4 `Arc`s per frame). GPU ISP (`crates/gpuisp/tests/it/

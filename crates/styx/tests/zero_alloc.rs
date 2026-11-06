@@ -638,6 +638,21 @@ fn camera_service_without_a_thread() {
 #[path = "zero_alloc/trace.rs"]
 mod trace;
 
+/// A stage's timing window (`StageMetrics`, recorded per frame, e.g. by `recv`) is made whole
+/// on its first sample and never grows past it (it grew by doubling to 128 samples: an
+/// allocation now and then in the first seconds).
+fn stage_window() {
+    let stage = styx::metrics::StageMetrics::default();
+    stage.record(Duration::from_millis(1));
+    let c = counted(|| {
+        for i in 0..1000 {
+            stage.record(Duration::from_micros(i));
+        }
+    });
+    assert_eq!(c.kinds.iter().sum::<u64>(), 0, "the stage window allocates");
+    assert_eq!(stage.samples(), 120);
+}
+
 #[cfg(feature = "daedalus")]
 #[path = "zero_alloc/daedalus.rs"]
 mod daedalus;
@@ -647,6 +662,7 @@ mod daedalus;
 fn steady_state_ipc_paths_do_not_allocate_or_copy() {
     let _flush = trace::Flush;
     presize_parking_table();
+    stage_window();
     frame_socket();
     camera_service();
     camera_service_without_a_thread();
