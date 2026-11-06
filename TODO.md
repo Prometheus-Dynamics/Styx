@@ -79,7 +79,15 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
       leases sit on Lemnos's buffers with no copy added and 0 allocations in steady state.
 3. [ ] **Port onto Lemnos.** The generic parts of `crates/kernel` move there; Styx keeps the camera
       pipeline and tuning. *Why:* hardware blocks live in one place. *Done when:* `crates/kernel`
-      holds nothing generic, and the V4L2 path behaves as before.
+      holds nothing generic, and the V4L2 path behaves as before. *Landed in Lemnos (dev 50808ee,
+      2026-11-06, waiting for HeliOS's go):* `lemnos-v4l2` (our v4l2/subdev/media/event),
+      `lemnos-drivers-pisp` (`crates/pisp` at bb34279; `LEMNOS_PISP_*` dump variables,
+      `lemnos.pisp.*` capabilities), `lemnos-drivers-rga` (replaces `daedalus-rga`, same names);
+      `bus` and `dma_heap` stay here. Checked: every `styx_kernel` name Styx uses maps onto them
+      (`dmabuf_id` → `identity()`, `dmabuf_size` → `DmaBufRef::len`). At the switch:
+      `dma_heap::sync` drops its own counters and `sync_stats` returns
+      `lemnos_linux::dma::sync_stats()` (Lemnos 449f8ac counts every `dma::sync`), so the PiSP
+      code's syncs are counted once, with ours.
 4. [ ] **Move onto the Lemnos kernel module and Rust userspace drivers.** An own receiver replaces
       the stock `rp1-cfe`, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
       the OV9782 patches retire. The stock V4L2 path stays as the fallback. *Why:* one small module
