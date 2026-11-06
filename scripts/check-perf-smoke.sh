@@ -64,6 +64,19 @@ run_and_record "shared capture and frame server perf smoke (C270 fixture)" "$bin
 run_and_record "file replay perf smoke" "$bin_dir/file_replay_perf"
 run_and_record "mozjpeg encode perf smoke" "$bin_dir/encode_perf"
 
+# A loaded machine stretches every p95: with more runnable tasks than CPUs (the one-minute load
+# over the CPUs this process may use), limits scale by twice that ratio, at most 10x, so a busy
+# build host still catches a gross regression without failing on contention.
+# PERF_SMOKE_STRICT=1 keeps the baseline's limits.
+cpus="$(nproc)"
+load="$(cut -d' ' -f1 /proc/loadavg)"
+scale="$(awk -v l="$load" -v c="$cpus" 'BEGIN { r = l / c; s = r > 1 ? 2 * r : 1; if (s > 10) s = 10; printf "%.2f", s }')"
+if [[ "${PERF_SMOKE_STRICT:-0}" == 1 ]]; then
+    scale=1
+elif [[ "$scale" != 1.00 ]]; then
+    printf 'perf smoke: load %s on %s CPUs, limits scaled %sx\n' "$load" "$cpus" "$scale"
+fi
+
 failures=0
 for metric in "${!limit_by_metric[@]}"; do
     if [[ -z "${p95_by_metric[$metric]:-}" ]]; then
@@ -71,7 +84,7 @@ for metric in "${!limit_by_metric[@]}"; do
         failures=$((failures + 1))
         continue
     fi
-    limit="${limit_by_metric[$metric]}"
+    limit="$(awk -v l="${limit_by_metric[$metric]}" -v s="$scale" 'BEGIN { printf "%.2f", l * s }')"
     p95="${p95_by_metric[$metric]}"
     if ! awk -v p95="$p95" -v limit="$limit" 'BEGIN { exit !(p95 <= limit) }'; then
         printf 'perf regression: %s p95_ms=%s limit=%s\n' "$metric" "$p95" "$limit" >&2

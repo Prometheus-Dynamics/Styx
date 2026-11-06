@@ -61,7 +61,7 @@ The Docker suite uses [`testing/docker/styx-facade.Dockerfile`](../testing/docke
 - Backend-specific validation should stay feature-gated and close to the example surface
 - File-size linting fails for new non-baselined files above the release limit, supports `FILE_SIZE_EXCLUDE_DIRS=path1:path2`, and tracks current exceptions through `testing/ci/file-size-baseline.txt`
 - Performance microbenchmarks live outside the default test surface; run `cargo bench -p styx --bench v4l2_capture_paths` when working on V4L2 capture-path performance
-- CI now runs `./scripts/check-perf-smoke.sh`, which compares decode, transform, file replay, and mozjpeg encode p95 timings against `testing/perf/baseline.txt`
+- CI now runs `./scripts/check-perf-smoke.sh`, which compares decode, transform, file replay, and mozjpeg encode p95 timings against `testing/perf/baseline.txt`. On a loaded machine (one-minute load above the usable CPUs) the limits scale by twice the load ratio, at most 10x; `PERF_SMOKE_STRICT=1` (set in CI) keeps the baseline's limits
 - CI runs `./scripts/check-mem-smoke.sh`, which checks heap and resident memory of capture and decode scenarios against `testing/perf/memory-baseline.txt` and fails on leaks (see [performance.md](performance.md#memory-smoke-surface))
 - Damaged input: `crates/styx/src/replay/corruption_tests.rs` (truncated and corrupted MCAP/`.styxrec` recordings, with an allocation bound), `crates/codec/src/corruption_tests.rs` (damaged MJPEG through every decoder) and the netcam multipart parser tests run in CI; the cargo-fuzz targets ([fuzzing.md](fuzzing.md)) cover these and every other parser of untrusted bytes for longer runs
 

@@ -72,6 +72,8 @@ jobs:
           cargo check -p styx-examples --no-default-features --features native,v4l2,async,hotplug,replay-mcap --all-targets
 
       - name: Run perf smoke surface
+        env:
+          PERF_SMOKE_STRICT: "1"
         run: ./scripts/check-perf-smoke.sh
 
       - name: Run memory smoke

@@ -37,6 +37,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `check-perf-smoke.sh` scales its limits on a loaded machine: by twice the one-minute load over
+  the usable CPUs when that is above 1, at most 10x. `PERF_SMOKE_STRICT=1` (CI) keeps the
+  baseline's limits.
+
 - PiSP with the raw lease (`sensor_raw`): the front end's raw buffers are exported once and
   shared by the back end and the raw lease, instead of exported twice. Each export made another
   dma-buf of the same memory, so tools counting dma-bufs saw every raw buffer twice. The memory
