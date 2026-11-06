@@ -88,3 +88,52 @@ fn a_new_frame_costs_its_arc_and_a_known_one_nothing() {
         drop((lease, again));
     }
 }
+
+/// A pooled Styx frame sent again and again (a producer's carrier reused every frame): each send
+/// comes back through a node's `SharedFrame` as the frame's own `Arc`, nothing is kept once the
+/// payload drops, so the carrier is unique again (`Arc::get_mut`), and the Styx side of a warm
+/// send costs no allocation beyond the payload Daedalus makes.
+#[test]
+fn a_reused_styx_frame_is_sent_without_keeping_it() {
+    use daedalus::transport::{Payload, Residency};
+    use styx_core::daedalus::{FRAME_TYPE_KEY, share_frame, shared_frame_payload};
+    use styx_core::prelude::*;
+
+    let res = Resolution::new(16, 8).unwrap();
+    let meta = FrameMeta::new(MediaFormat::new(FourCc::GREY, res, ColorSpace::Bt709), 1);
+    let mut buf = BufferPool::with_limits(1, 128, 1).lease();
+    buf.resize(128);
+    let mut carrier = Arc::new(FrameLease::single_plane(meta, buf, 128, 16));
+    let send = |carrier: &Arc<FrameLease>| {
+        let payload = shared_frame_payload(Arc::clone(carrier));
+        let frame = share_frame(payload.get_arc::<FrameLease>().unwrap());
+        let back = from_shared_frame(&frame).unwrap();
+        assert!(Arc::ptr_eq(&back, carrier), "the frame's own Arc");
+    };
+    for _ in 0..3 {
+        send(&carrier);
+    }
+    // What Daedalus itself spends per payload and handle, to subtract.
+    let (_, daedalus) = counted(|| {
+        let payload = Payload::shared_with(
+            FRAME_TYPE_KEY,
+            Arc::clone(&carrier),
+            Residency::Cpu,
+            None,
+            Some(128),
+        );
+        drop(share_frame(payload.get_arc::<FrameLease>().unwrap()));
+    });
+    for i in 0..1000 {
+        let (_, n) = counted(|| send(&carrier));
+        assert!(
+            n <= daedalus,
+            "send {i}: {n} allocations, Daedalus's own {daedalus}"
+        );
+        assert!(
+            Arc::get_mut(&mut carrier).is_some(),
+            "send {i}: the carrier is unique again"
+        );
+    }
+    assert_eq!(Arc::weak_count(&carrier), 0);
+}

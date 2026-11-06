@@ -1092,6 +1092,12 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- A Styx frame sent into a graph shared (`shared_frame_payload`, `frame_payload`) is no longer
+  recorded with a `Weak` (025f346): the `Weak` stopped a producer reusing its pooled carrier
+  (`Arc::get_mut` failed, so every frame allocated a new one), and a carrier sent again and again
+  added an entry each time without bound. `from_shared_frame` now knows a Styx frame's handle by
+  its owner (the release of an `Arc<FrameLease>`) and gives the frame's own `Arc` back without
+  holding anything; `share_frame` makes such a handle from any crate.
 - Userspace UVC allocated once a frame: the stream's frame list lost its capacity. Now 0 in
   steady state.
 - V4L2 capture allocated about once a second (0.033 a frame): the buffer-recycle channel was

@@ -278,7 +278,7 @@ mod frame_view;
 pub use frame_view::{colorimetry, format_kind, metadata_u64, plane_mapping, view_residency};
 
 mod shared_frame;
-pub use shared_frame::{MAX_PLANES, SharedFrameError, color_space, from_shared_frame};
+pub use shared_frame::{MAX_PLANES, SharedFrameError, color_space, from_shared_frame, share_frame};
 
 mod group;
 pub use group::{FrameGroupInfo, GROUP_INFO_TYPE_KEY, GroupPorts, group_payloads, push_group};

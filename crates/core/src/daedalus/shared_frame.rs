@@ -16,8 +16,8 @@
 //!   meanwhile: a plugin's frames keep its library loaded).
 
 use ::daedalus::transport::{
-    FrameColorimetry, FrameFormatKind, FrameResidency as ViewResidency, FrameSource, PlaneMapping,
-    SharedFrame,
+    ForeignOwner, FrameColorimetry, FrameFormatKind, FrameResidency as ViewResidency, FrameSource,
+    PlaneMapping, SharedFrame,
 };
 use smallvec::SmallVec;
 
@@ -66,9 +66,11 @@ impl core::fmt::Display for SharedFrameError {
 
 impl std::error::Error for SharedFrameError {}
 
-/// Leases handed out, by the frame's data pointer: the same frame finds its lease while it lives.
-/// A live entry's pointer cannot be reused (the lease keeps the frame), and dead ones are dropped
-/// before each new entry, so the list holds the frames alive and keeps its allocation.
+/// Leases made here over foreign frames, by the frame's data pointer: the same frame finds its
+/// lease while it lives. A live entry's pointer cannot be reused (the lease keeps the frame), and
+/// dead ones are dropped before each new entry, so the list holds the frames alive and keeps its
+/// allocation. Frames Styx sent are never here ([`sent_lease`] finds them without a reference),
+/// so a sender's pooled frames stay unique (`Arc::get_mut`) once the graph lets go of them.
 static LEASES: Mutex<Vec<(usize, Weak<FrameLease>)>> = Mutex::new(Vec::new());
 
 fn remember(key: usize, lease: &Arc<FrameLease>) {
@@ -85,20 +87,75 @@ fn find(key: usize) -> Option<Arc<FrameLease>> {
         .find_map(|(_, w)| w.upgrade())
 }
 
-/// A Styx frame sent into a graph shared: a `SharedFrame` over it (a handle on the same
-/// `FrameLease`, whose address is its data pointer) gives this `Arc` back.
-pub(super) fn remember_sent(frame: &Arc<FrameLease>) {
-    remember(Arc::as_ptr(frame) as usize, frame);
+/// Entries for `key` in the list of leases over foreign frames, live or not yet swept (tests).
+#[cfg(test)]
+pub(super) fn entries_for(key: usize) -> usize {
+    LEASES.lock().iter().filter(|(k, _)| *k == key).count()
 }
 
-/// `frame` as a [`FrameLease`] (see the [module documentation](self)): the lease already made
-/// for it if one lives, else a new one over a retain of it. No pixels are copied or mapped here.
+/// The release function of a handle that owns an `Arc<FrameLease>` (`ForeignOwner::from_arc`
+/// for `FrameLease`, which every Styx frame shared through Daedalus goes through), as an
+/// address, once a lease has been seen. Its code drops a `FrameLease`, so no other type's owner
+/// has it; a second copy of it elsewhere in the build would only make [`sent_lease`] miss.
+static LEASE_RELEASE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+fn note_release(sample: &Arc<FrameLease>) {
+    LEASE_RELEASE.get_or_init(|| {
+        let owner = ForeignOwner::from_arc(Arc::clone(sample));
+        let release = owner.release as usize;
+        // SAFETY: `owner` took over the clone made above; this gives that reference back.
+        unsafe { (owner.release)(owner.ptr) };
+        release
+    });
+}
+
+/// A Styx frame sent into a graph shared ([`super::shared_frame_payload`]). Nothing is recorded
+/// per frame: [`from_shared_frame`] knows the frame's handle by its owner.
+pub(super) fn remember_sent(frame: &Arc<FrameLease>) {
+    note_release(frame);
+}
+
+/// The `Arc<FrameLease>` a handle owns, when it owns one and its data is that lease.
+fn sent_lease(frame: &SharedFrame) -> Option<Arc<FrameLease>> {
+    let owner = frame.handle().owner();
+    if !frame.is_local() || owner.ptr != frame.handle().data() {
+        return None;
+    }
+    if owner.release as usize != *LEASE_RELEASE.get()? {
+        return None;
+    }
+    let ptr = owner.ptr.cast::<FrameLease>();
+    // SAFETY: the owner's release is `ForeignOwner::from_arc::<FrameLease>`'s, so `owner.ptr`
+    // came from `Arc::into_raw` of an `Arc<FrameLease>`, and `frame` holds one strong reference
+    // of it while it lives: adding one is a clone of a live `Arc`.
+    unsafe {
+        Arc::increment_strong_count(ptr);
+        Some(Arc::from_raw(ptr))
+    }
+}
+
+/// `frame` as a [`SharedFrame`], made here so that [`from_shared_frame`] gives this `Arc` back
+/// (`SharedFrame::new` called from another crate works too, but its handle's owner code is that
+/// crate's copy, so in an optimised build the frame comes back as a new lease over it). Nothing
+/// is copied or kept.
+pub fn share_frame(frame: Arc<FrameLease>) -> SharedFrame {
+    note_release(&frame);
+    SharedFrame::new(frame)
+}
+
+/// `frame` as a [`FrameLease`] (see the [module documentation](self)): the frame's own `Arc`
+/// when it is a Styx frame, the lease already made for it if one lives, else a new one over a
+/// retain of it. No pixels are copied or mapped here.
 pub fn from_shared_frame(frame: &SharedFrame) -> Result<Arc<FrameLease>, SharedFrameError> {
+    if let Some(lease) = sent_lease(frame) {
+        return Ok(lease);
+    }
     let key = frame.handle().data() as usize;
     if let Some(lease) = find(key) {
         return Ok(lease);
     }
     let lease = Arc::new(lease_over(frame.clone())?);
+    note_release(&lease);
     remember(key, &lease);
     Ok(lease)
 }

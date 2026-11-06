@@ -238,3 +238,28 @@ fn unknown_formats_and_plane_counts_are_errors() {
         Err(SharedFrameError::UnknownFormat { .. })
     ));
 }
+
+/// One foreign frame received 1000 times: while its lease lives every receipt finds it (no new
+/// entry), and once the lease drops the next receipt sweeps the dead entry before adding one, so
+/// the frame never has more than one entry and its lease no reference.
+#[test]
+fn a_foreign_frame_received_again_and_again_has_one_entry() {
+    let (released, reads) = counters();
+    let frame = received(Foreign::new(&released, &reads));
+    let key = frame.handle().data() as usize;
+    let kept = from_shared_frame(&frame).unwrap();
+    for _ in 0..1000 {
+        let again = from_shared_frame(&frame).unwrap();
+        assert!(Arc::ptr_eq(&again, &kept));
+        assert_eq!(super::shared_frame::entries_for(key), 1);
+    }
+    drop(kept);
+    for i in 0..1000 {
+        let lease = from_shared_frame(&frame).unwrap();
+        assert_eq!(super::shared_frame::entries_for(key), 1, "receipt {i}");
+        assert_eq!(Arc::weak_count(&lease), 1, "only the list's own Weak");
+        drop(lease);
+    }
+    drop(frame);
+    assert_eq!(released.load(Ordering::SeqCst), 1);
+}
