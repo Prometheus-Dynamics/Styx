@@ -130,7 +130,9 @@ fn speed_paces_and_rebased_timestamps_are_delivery_times() {
         ReplaySourceConfig::new(&path).timestamps(ReplayTimestamps::Rebased),
     )
     .unwrap()
-    .open()
+    // Paced replay drops the oldest frame when its queue is full; at 4x a frame comes every
+    // 5 ms, so a reader descheduled for 10 ms lost frames from the default 2. Room for all 10.
+    .open_with_config(crate::capture_api::StyxConfig::default().capture_queue_depth(16))
     .unwrap();
     handle
         .set_control(ids::REPLAY_SPEED, ControlValue::Float(4.0))
