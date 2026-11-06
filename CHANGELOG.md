@@ -28,6 +28,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx_core::daedalus::from_shared_frame`: a Daedalus `SharedFrame` (`daedalus:frame` v3) as an
+  `Arc<FrameLease>` in place, the same `Arc` for the same frame while it lives, released once
+  with the last clone. A Styx frame sent in through `shared_frame_payload` comes back as itself.
+  `SharedFrameError`, `color_space` and `MAX_PLANES` with it.
 - `VideoDevice::map_buffer_writable`.
 - `metrics::Drops::unread` (OpenMetrics cause `unread`): consumer queue overflow with no consumer
   at all, from a service's capture running on after its last client left, until it pauses. It

@@ -22,6 +22,9 @@
 //!   ([`FrameLease::begin_cpu_read`]: mapped on first use, dma-bufs synced while read), never
 //!   a host pointer the CPU cannot read; v3's colorimetry ([`colorimetry`]) and capture
 //!   metadata ([`metadata_u64`]). [`frame_view`] views a lease directly.
+//! - The other way, [`from_shared_frame`]: a `daedalus:frame` handle (`SharedFrame`) as a
+//!   `FrameLease` in place, the same `Arc` for the same frame while it lives, and a Styx frame
+//!   sent in shared comes back as itself.
 //!
 //! ```ignore
 //! let mut registry = daedalus::runtime::plugins::PluginRegistry::new();
@@ -217,6 +220,7 @@ pub fn frame_payload(frame: FrameLease) -> Payload {
 /// see them.
 pub fn shared_frame_payload(frame: Arc<FrameLease>) -> Payload {
     frame.finish_cpu_write();
+    shared_frame::remember_sent(&frame);
     let residency = payload_residency(&frame);
     let bytes = frame.payload_bytes() as u64;
     Payload::shared_with(FRAME_TYPE_KEY, frame, residency, None, Some(bytes))
@@ -273,10 +277,15 @@ pub fn frame_view(frame: &FrameLease) -> FrameView<'_> {
 mod frame_view;
 pub use frame_view::{colorimetry, format_kind, metadata_u64, plane_mapping, view_residency};
 
+mod shared_frame;
+pub use shared_frame::{MAX_PLANES, SharedFrameError, color_space, from_shared_frame};
+
 mod group;
 pub use group::{FrameGroupInfo, GROUP_INFO_TYPE_KEY, GroupPorts, group_payloads, push_group};
 
 #[cfg(test)]
 mod group_tests;
+#[cfg(test)]
+mod shared_frame_tests;
 #[cfg(test)]
 mod tests;

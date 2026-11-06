@@ -96,19 +96,21 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
 6. [ ] **Shared and static build forms.** Static and shared modes, core, surface and wrapper per
       dependency. Gaia's LTO test informs how shared gets built. *Why:* the same code ships either
       way. *Done when:* both forms build and run on the Raze with their cost measured.
-7. [ ] **A `FrameLease` from Daedalus's stable frame handle** (`styx::core::daedalus`). A
-      `daedalus:frame` handle (`SharedFrame` / `FrameView`) becomes a `FrameLease` over an
-      `ExternalBacking` holding the `SharedFrame`, e.g. `FrameLease::from_shared_frame(&SharedFrame)
-      -> Result<Arc<FrameLease>>`: planes through `plane_data` with no copy, dma-buf fds borrowed and
-      dup'd only if the lease outlives the call, residency, mutability and colorimetry from
-      `frame_meta`. The same `SharedFrame` gives the same `Arc<FrameLease>` while it lives (a small
-      cache keyed by owner pointer, holding a `Weak`), since Eidos's `SHARED_LEVELS` pyramid cache
-      keys on `Weak<FrameLease>`. Released exactly once on drop, whether the node drops it, keeps
-      it in state, or the plugin reloads. Daedalus offered a per-type-key foreign-to-native
-      converter hook instead; which one is decided with Daedalus when this starts. *Why:* frames
-      from Daedalus's stable path reach Styx consumers without a copy. *Done when:* a lease from a
-      `SharedFrame` reads its planes in place, the same frame gives the same `Arc`, and a test
-      counts one release for each of the three drop paths. *Numbers:* none yet.
+7. [x] **A `FrameLease` from Daedalus's stable frame handle** (`styx_core::daedalus::from_shared_frame`,
+      user's go 2026-11-05: Styx plus Daedalus's existing types). A `SharedFrame` becomes an
+      `Arc<FrameLease>` over a pooled backing holding one retain of it: planes through the
+      frame's `plane_data` in place, bracketed reads passed through, dma-bufs borrowed (the lease
+      keeps the frame, so its fds, alive: no dup), residency, CPU access, colour, timestamp and
+      sequence from the frame, read-only. The same frame gives the same `Arc` while it lives
+      (`Weak`s keyed by the frame's data pointer); a Styx frame sent in with
+      `shared_frame_payload` comes back as the very `Arc` it went in as, with no pointer casts.
+      Chosen over Daedalus's converter hook: nothing needed on Daedalus's side, and a hook can
+      call this if one comes. Not carried: capture metadata (exposure, gains), which a lease
+      keeps per backend. Host tests only (`daedalus/shared_frame_tests.rs`: in place, same
+      `Arc`, one release on each of the three drop paths, no CPU access left open); Eidos has
+      not run it. *Numbers:* one allocation per new frame, the `Arc<FrameLease>` (a live `Weak`
+      keeps its allocation, so it cannot be pooled), 0 for a frame already a lease
+      (`tests/shared_frame_allocations.rs`).
 
 ## Alpha (Raze)
 

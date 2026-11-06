@@ -6,7 +6,7 @@ use ::daedalus::transport::Residency;
 use super::*;
 use crate::prelude::*;
 
-fn grey(width: u32, height: u32, timestamp: u64) -> FrameLease {
+pub(super) fn grey(width: u32, height: u32, timestamp: u64) -> FrameLease {
     let len = (width * height) as usize;
     let mut buf = BufferPool::with_limits(1, len, 1).lease();
     buf.resize(len);

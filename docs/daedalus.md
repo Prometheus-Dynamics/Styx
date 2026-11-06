@@ -24,6 +24,7 @@ it Styx frames as below.
 | `payload_residency(&frame)` | Maps the frame's memory to a Daedalus `Residency`: host-owned memory and compressed packets → `Cpu`; dma-bufs and driver or memfd buffers → `External`; GPU textures → `Gpu`. |
 | `cpu_readable(&frame)` | Whether a node can read the planes in place (`CpuAccess` is not `None`). |
 | `FrameLease: FrameSource` | Daedalus's generic frame view, `daedalus:frame` v3: nodes take `FrameView<'_>` of a Styx frame without knowing Styx (see [Generic frame view](#generic-frame-view)). The plugin registers it as a provider (`daedalus.foreign:styx:framelease->daedalus:frame`, a `View` adapter). |
+| `from_shared_frame(&shared)` | A `daedalus:frame` handle as an `Arc<FrameLease>`, in place; the same frame, the same `Arc` (see [Generic frame view](#generic-frame-view)). |
 | `frame_view(&frame)`, `view_residency(&frame)`, `plane_mapping(&frame)`, `format_kind(code)` | A lease as a `FrameView` directly (borrowed, nothing allocated), and the residency, plane mapping and format kind it reports. `FrameView`, `FrameInterface`, `FrameFormatKind` and `PlaneMapping` are re-exported. |
 
 ## Enabling it
@@ -188,6 +189,16 @@ reads only metadata and fds makes Styx map nothing, begin no CPU access and sync
 (`styx_core::metrics::path_counters()`: `frame_maps`, `cpu_reads`, `syncs`), and a CPU
 consumer reading both planes at once makes one START and one END per frame and maps each buffer
 once.
+
+**Frames from a graph.** `from_shared_frame(&SharedFrame)` turns a `daedalus:frame` handle,
+from a Styx frame or any other build's, into an `Arc<FrameLease>` without a copy: the planes are
+the frame's own bytes, its dma-bufs borrowed (valid while the lease lives), its residency, CPU
+access, colour (`color_space`, by primaries and transfer), timestamp and sequence mapped back,
+read-only. The same frame gives the same `Arc` while that lease lives, so caches keyed on
+`Weak<FrameLease>` see one frame once, and a Styx frame sent with `shared_frame_payload` comes
+back as the `Arc` it went in as. The lease holds one retain of the frame, released when its
+last clone drops, wherever that is. A new frame costs one allocation (the `Arc`), a known one
+none. Capture metadata is not carried.
 
 **FourCC mapping.** `styx_core::format::drm` (`to_drm`, `from_drm`, the `MAPPINGS` /
 `ALIASES` / `UNMAPPED` tables, `no_std`) maps every Styx pixel format by memory layout, byte
