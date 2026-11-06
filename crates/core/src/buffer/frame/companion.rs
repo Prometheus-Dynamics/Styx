@@ -256,11 +256,7 @@ pub fn luma_level_in(
         fill(y, &mut out[..width]);
     }
 
-    let format = MediaFormat::new(FourCc::GREY, resolution, source.meta.format.color);
-    let mut meta = FrameMeta::new(format, source.meta.timestamp);
-    meta.backend = source.meta.backend.clone();
-    meta.capture_instant = source.meta.capture_instant;
-    meta.crop = source.meta.crop.map(|crop| crop.scaled_down(level));
+    let meta = level_meta(source, level, resolution);
     Ok(FrameLease::multi_plane(
         meta,
         smallvec![buf],
@@ -270,6 +266,18 @@ pub fn luma_level_in(
             stride,
         }],
     ))
+}
+
+/// The metadata of `source`'s pyramid level `level` at `resolution`: GREY, the source's
+/// timestamp, backend and capture instant, its crop scaled down. For producers that write a
+/// level into memory of their own (e.g. a memfd to serve it).
+pub fn level_meta(source: &FrameLease, level: u8, resolution: Resolution) -> FrameMeta {
+    let format = MediaFormat::new(FourCc::GREY, resolution, source.meta.format.color);
+    let mut meta = FrameMeta::new(format, source.meta.timestamp);
+    meta.backend = source.meta.backend.clone();
+    meta.capture_instant = source.meta.capture_instant;
+    meta.crop = source.meta.crop.map(|crop| crop.scaled_down(level));
+    meta
 }
 
 #[cfg(test)]

@@ -35,7 +35,9 @@ use super::layout::*;
 use super::plane::{FrameAllocation, FrameLeaseDescriptor, FrameValidationError, PlaneLayout};
 use super::views::{FramePlaneShape, Plane, PlaneMut, VisibleRows, VisibleRowsMut};
 
-pub use companion::{CompanionKind, box_downscale_luma, box_downscale_luma_in, luma_level_in};
+pub use companion::{
+    CompanionKind, box_downscale_luma, box_downscale_luma_in, level_meta, luma_level_in,
+};
 #[cfg(feature = "std")]
 pub use recycle::BackingPool;
 pub use region::{MemoryRegion, RegionHooks};

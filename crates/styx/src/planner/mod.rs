@@ -44,6 +44,8 @@ mod sensor_raw;
 mod session;
 pub(crate) use session::{SharedSession, same_plan};
 mod shared;
+#[cfg(target_os = "linux")]
+mod shared_levels;
 pub(crate) mod stalled;
 mod start;
 

@@ -41,6 +41,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- CPU pyramid levels of an exportable plan (a camera service's clients) are written straight
+  into memfd buffers, so the service shares them by fd instead of copying each level into a
+  memfd at export. New `styx_core::buffer::level_meta` for producers writing levels into
+  memory of their own.
+
 - PiSP extra passes at exactly 1/2, 1/4 or 1/8 of their crop (pyramid levels 2 and 3 from the
   back end) average a box, as the CPU's levels do, with the main output 1's `half_filter`:
   1/2 as that filter says, 1/4 and 1/8 from the downscaler alone (a k x k area average).

@@ -127,6 +127,9 @@ pub(crate) struct FramePreparer {
     /// For exportable plans: memfd buffers for the frames this stage makes, created on first use.
     #[cfg(target_os = "linux")]
     shared_pool: Option<std::sync::OnceLock<Option<SharedBufferPool>>>,
+    /// For exportable plans with CPU pyramid levels: memfd buffers for the levels.
+    #[cfg(target_os = "linux")]
+    level_pool: Option<std::sync::OnceLock<Option<SharedBufferPool>>>,
     /// Bytes of one output frame, to size `shared_pool`'s buffers.
     #[cfg(target_os = "linux")]
     output_bytes: usize,
@@ -223,6 +226,8 @@ impl FramePreparer {
             #[cfg(target_os = "linux")]
             shared_pool: plan.exportable.then(std::sync::OnceLock::new),
             #[cfg(target_os = "linux")]
+            level_pool: plan.exportable.then(std::sync::OnceLock::new),
+            #[cfg(target_os = "linux")]
             output_bytes: output_bytes(plan, output),
             #[cfg(feature = "codec-turbojpeg")]
             jpeg: Mutex::new(None),
@@ -243,6 +248,22 @@ impl FramePreparer {
                 // Buffers of exactly this size are recycled; a few cover the queues.
                 SharedBufferPool::with_limits(0, self.output_bytes, 8)
                     .inspect_err(|err| crate::trace::warn!(error = %err, "no memfd frame pool; frames stay on the heap"))
+                    .ok()
+            })
+            .as_ref()
+    }
+
+    /// The memfd pool of an exportable plan's CPU pyramid levels. Each buffer holds level 1
+    /// (at most a quarter of the frame; half its bytes leave room for row alignment, and a
+    /// memfd's pages exist only once written).
+    #[cfg(target_os = "linux")]
+    fn level_pool(&self) -> Option<&SharedBufferPool> {
+        self.level_pool
+            .as_ref()?
+            .get_or_init(|| {
+                let levels = usize::from(self.pyramid_levels);
+                SharedBufferPool::with_limits(0, self.output_bytes / 2, 8 * levels)
+                    .inspect_err(|err| crate::trace::warn!(error = %err, "no memfd level pool; levels stay on the heap"))
                     .ok()
             })
             .as_ref()
@@ -426,6 +447,16 @@ impl FramePreparer {
             }
             None => frame,
         };
+        // Served: into memfds, which a camera service shares instead of copying.
+        #[cfg(target_os = "linux")]
+        if let Some(pool) = self.level_pool() {
+            return super::shared_levels::with_shared_box_pyramid(
+                frame,
+                self.pyramid_levels,
+                self.alignment.unwrap_or(64),
+                pool,
+            );
+        }
         frame
             .with_box_pyramid_in(
                 self.pyramid_levels,

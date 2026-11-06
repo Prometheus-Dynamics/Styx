@@ -49,7 +49,7 @@ pub mod prelude {
         buffer::{
             BufferLease, BufferPool, BufferPoolMetrics, BufferPoolStats, CompanionKind,
             ExternalBacking, FrameLease, MemoryRegion, RegionHooks, box_downscale_luma,
-            box_downscale_luma_in, luma_level_in,
+            box_downscale_luma_in, level_meta, luma_level_in,
         },
         metrics::Metrics,
         transform::{

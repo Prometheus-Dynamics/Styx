@@ -413,3 +413,51 @@ fn the_fewest_buffers_stream() {
     }
     assert!(got >= 20, "{got} frames");
 }
+
+/// CPU pyramid levels a camera service serves are written into memfds: the client gets each
+/// level by fd, the CPU's box filter of its frame, with no memfd export copy per frame.
+#[test]
+fn served_cpu_levels_are_shared_not_copied() {
+    use styx_core::metrics::{CopySite, path_counters};
+    let device = styx::sim::device(spec()).unwrap();
+    let path = std::env::temp_dir().join(format!("styx-sim-levels-{}.sock", std::process::id()));
+    let _service = CameraService::new(device).serve(&path).unwrap();
+    let req = Frames::gray()
+        .size(1280, 800)
+        .fps(30)
+        .pyramid(2)
+        .pyramid_source(PyramidSource::Software);
+    let client = FrameClient::request(&path, &req).unwrap();
+    let mut checked = 0;
+    let mut exports = None;
+    for _ in 0..40 {
+        let RecvOutcome::Data(f) = client.recv(Duration::from_secs(15)) else {
+            continue;
+        };
+        let l1 = f.pyramid_level(1).expect("level 1");
+        let want = box_downscale_luma(&f, 1).unwrap();
+        let (g, w) = (l1.luma_rows().unwrap(), want.luma_rows().unwrap());
+        assert_eq!((g.row_bytes(), g.len()), (640, 400));
+        for y in 0..g.len() {
+            assert_eq!(
+                g.row(y).unwrap().data(),
+                w.row(y).unwrap().data(),
+                "row {y}"
+            );
+        }
+        assert!(f.pyramid_level(2).is_some());
+        checked += 1;
+        // Warm-up frames done: count export copies over the rest.
+        if checked == 3 {
+            exports = Some(path_counters().copies(CopySite::MemfdExport));
+        }
+        if checked == 10 {
+            break;
+        }
+    }
+    assert_eq!(checked, 10);
+    let copies = path_counters().copies(CopySite::MemfdExport) - exports.unwrap();
+    println!("memfd export copies over 7 frames: {copies}");
+    assert_eq!(copies, 0);
+    let _ = std::fs::remove_file(path);
+}
