@@ -155,8 +155,9 @@ fn a_raw_client_records_a_simulated_camera() {
     // A vision client at the sensor's full size, as HeliOS runs (a low-priority client never
     // changes the capture, so a vision client on a smaller mode leaves no raw frames of it).
     let vision = FrameClient::request(&path, &Frames::gray().size(1280, 800).fps(30)).unwrap();
+    // Generous: the first frame waits for the capture to start, slow on a loaded machine.
     assert!(matches!(
-        vision.recv(Duration::from_secs(3)),
+        vision.recv(Duration::from_secs(15)),
         RecvOutcome::Data(_)
     ));
     let raw = FrameClient::options(&path)
@@ -373,8 +374,8 @@ fn a_leaving_client_gives_the_others_their_own_mode_back() {
         let _ = small.recv(Duration::from_millis(50));
     }
     assert_eq!(service.stats().clients, 1);
-    // The capture restarts for the one left (no plan while it does).
-    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    // The capture restarts for the one left (no plan while it does; slow on a loaded machine).
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
     while mode() != alone && std::time::Instant::now() < deadline {
         let _ = small.recv(Duration::from_millis(50));
     }

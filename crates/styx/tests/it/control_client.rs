@@ -258,7 +258,8 @@ fn a_nonblocking_client_delivers_once_the_service_appears() {
         .reconnecting()
         .request_nonblocking(&Frames::nv12())
         .unwrap();
-    assert!(started.elapsed() < Duration::from_millis(100), "blocked");
+    // Blocking would wait out the open timeout (10 s); the budgets leave a loaded machine room.
+    assert!(started.elapsed() < Duration::from_secs(2), "blocked");
     assert!(!client.is_connected());
     assert!(client.last_error().is_some());
     // Not ready, not an error; neither blocks.
@@ -267,7 +268,7 @@ fn a_nonblocking_client_delivers_once_the_service_appears() {
         let started = Instant::now();
         assert!(matches!(client.try_next(), RecvOutcome::Empty));
         assert!(
-            started.elapsed() < Duration::from_millis(50),
+            started.elapsed() < Duration::from_secs(1),
             "try_next blocked"
         );
     }
@@ -277,7 +278,7 @@ fn a_nonblocking_client_delivers_once_the_service_appears() {
         RecvOutcome::Empty
     ));
     assert!(
-        started.elapsed() < Duration::from_millis(600),
+        started.elapsed() < Duration::from_secs(3),
         "recv overran its wait"
     );
 

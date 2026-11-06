@@ -103,8 +103,16 @@ fn consumers_with_the_same_needs_share_one_decode() {
     let _rgb = consumers.pop().unwrap();
     let mut whole = consumers.pop().unwrap();
 
-    let a = frame(&mut whole);
-    let b = frame(&mut cropped);
+    // One decode's two views. A reader descheduled on a loaded machine can find the other's
+    // queue a frame on, so the two are paired by timestamp.
+    let (mut a, mut b) = (frame(&mut whole), frame(&mut cropped));
+    for _ in 0..50 {
+        match a.meta().timestamp.cmp(&b.meta().timestamp) {
+            std::cmp::Ordering::Equal => break,
+            std::cmp::Ordering::Less => a = frame(&mut whole),
+            std::cmp::Ordering::Greater => b = frame(&mut cropped),
+        }
+    }
     assert_eq!(a.meta().timestamp, b.meta().timestamp);
     assert_eq!(a.meta().format.resolution.width.get(), 320);
     // The region is a view of the same decoded pixels (a 1/4 decode of 1280x720).

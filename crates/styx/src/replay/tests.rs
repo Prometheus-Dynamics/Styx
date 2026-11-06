@@ -264,14 +264,16 @@ fn realtime_replay_follows_recorded_timing() {
     // least 100 ms after this however loaded the machine is (a late consumer that takes the
     // frames in a burst cannot make it shorter, as it could the span between receipts).
     let start = Instant::now();
+    // Room for all 6 (paced replay drops the oldest when its queue is full, and a reader
+    // descheduled on a loaded machine falls behind), and a wait a starved reader survives.
     let handle = CaptureRequest::replay_source(ReplaySourceConfig::new(&path))
         .unwrap()
-        .open()
+        .open_with_config(crate::capture_api::StyxConfig::default().capture_queue_depth(16))
         .unwrap();
     let mut received = 0;
     let mut last = start;
     loop {
-        match handle.recv_blocking(Duration::from_secs(2)) {
+        match handle.recv_blocking(Duration::from_secs(10)) {
             RecvOutcome::Data(_) => {
                 received += 1;
                 last = Instant::now();

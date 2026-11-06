@@ -138,9 +138,16 @@ fn speed_paces_and_rebased_timestamps_are_delivery_times() {
         .set_control(ids::REPLAY_SPEED, ControlValue::Float(4.0))
         .unwrap();
     let mut stamps = Vec::new();
-    while let RecvOutcome::Data(f) = handle.recv_blocking(Duration::from_secs(2)) {
-        assert_eq!(f.meta().clock, Some(TimestampClock::Monotonic));
-        stamps.push(f.meta().timestamp);
+    // Until the end (a starved reader on a loaded machine can wait seconds for its thread).
+    loop {
+        match handle.recv_blocking(Duration::from_secs(10)) {
+            RecvOutcome::Data(f) => {
+                assert_eq!(f.meta().clock, Some(TimestampClock::Monotonic));
+                stamps.push(f.meta().timestamp);
+            }
+            RecvOutcome::Closed => break,
+            RecvOutcome::Empty => panic!("replay stalled after {} frames", stamps.len()),
+        }
     }
     assert_eq!(stamps.len(), 10);
     // The pace, from the delivery times rather than a wall-clock window: frames are due at

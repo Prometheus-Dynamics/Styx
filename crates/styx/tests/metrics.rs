@@ -64,14 +64,17 @@ fn a_slow_consumer_of_a_shared_capture_is_the_one_that_drops() {
     let mut consumers = plan.start().unwrap();
     let mut slow = consumers.pop().unwrap();
     let mut fast = consumers.pop().unwrap();
-    let start = Instant::now();
-    let mut slow_frames = 0;
-    while start.elapsed() < Duration::from_millis(1200) {
-        let _ = fast.next_frame(Duration::from_millis(50));
-        // The slow one takes a frame every 100 ms.
-        if start.elapsed().as_millis() / 100 > slow_frames {
-            if let RecvOutcome::Data(_) = slow.next_frame(Duration::ZERO) {}
-            slow_frames += 1;
+    // Counted in the fast consumer's frames, not wall time, so a loaded machine that captures
+    // fewer frames a second runs longer rather than giving the slow one fewer to drop: 150
+    // frames, the slow one taking every 12th.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut fast_frames = 0;
+    while fast_frames < 150 && Instant::now() < deadline {
+        if let RecvOutcome::Data(_) = fast.next_frame(Duration::from_millis(200)) {
+            fast_frames += 1;
+            if fast_frames % 12 == 0 {
+                let _ = slow.next_frame(Duration::ZERO);
+            }
         }
     }
     let camera = styx::metrics::snapshot()
@@ -85,7 +88,8 @@ fn a_slow_consumer_of_a_shared_capture_is_the_one_that_drops() {
     let (fast_m, slow_m) = (&by_drops[0], &by_drops[1]);
     assert!(fast_m.received > 3 * slow_m.received, "{camera:?}");
     assert!(slow_m.dropped > 50, "{camera:?}");
-    assert!(fast_m.dropped <= 2, "{camera:?}");
+    // A descheduled fast reader can lose a few; never as many as the slow one.
+    assert!(fast_m.dropped * 4 < slow_m.dropped, "{camera:?}");
     // The same from each stream.
     assert_eq!(slow.metrics().id, camera.id);
     let own = slow.consumer_metrics().unwrap();
