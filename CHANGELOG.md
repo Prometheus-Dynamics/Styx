@@ -19,8 +19,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Changed
 
 - The native backend also takes a sensor entity whose node is a `lemnos-sensor-bridge` as
-  bridged (Lemnos's bridge module, the `styx-sensor-bridge` renamed); the old name stays for
-  one release.
+  bridged, and `find_bridges` a subdevice bound to the `lemnos-sensor-bridge` driver
+  (`DRIVER_NAMES`; Lemnos's bridge module, the `styx-sensor-bridge` renamed, same protocol);
+  the old names stay for one release.
 - GPU ISP: the full-size shaders' tile fill has a fixed trip count, so it unrolls and the
   samples' loads overlap: 28.9 to 27.7 ms of GPU for a 1280x800 frame on the Pi 5's V3D, bit
   for bit the same output. The V3D profile is in `crates/gpuisp/README.md`.

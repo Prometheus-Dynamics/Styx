@@ -94,6 +94,12 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
       `RegisterAccess`, `Raw`/`read_raw`/`HIST_BINS`, the device layer). Here stay rkisp's
       params/stats (both generations), `AnyParams`, `Generation` and `Isp::params`/`statistics` as
       functions of ours, and the K230 builder and statistics conversion.
+      The sensor bridge too (Lemnos 2676ccd): `kernel-modules/lemnos-sensor-bridge` (overlays
+      `lemnos-sensor-bridge-bcm2712*`, node `lemnos-sensor-bridge-cam0`, `lemnos,*` properties)
+      and the `lemnos-sensor-bridge` crate (our `bus`). Styx already matches both names (entity
+      and driver). Lemnos reports the module fails to build against 7.2.9 headers
+      (`MEDIA_BUS_FMT_SENSOR_DATA`), as ours does: the Raze runs 7.2.9, though it does not use the
+      bridge.
 4. [ ] **Move onto the Lemnos kernel module and Rust userspace drivers.** An own receiver replaces
       the stock `rp1-cfe`, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
       the OV9782 patches retire. The stock V4L2 path stays as the fallback. *Why:* one small module

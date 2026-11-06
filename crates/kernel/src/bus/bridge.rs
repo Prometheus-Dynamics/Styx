@@ -29,6 +29,10 @@ const STREAM_EVENT: EventType = EventType::Private(EVENT_STREAM - V4L2_EVENT_PRI
 /// Driver name the bridge module registers.
 pub const DRIVER_NAME: &str = "styx-sensor-bridge";
 
+/// Driver names a bridge may be bound to: [`DRIVER_NAME`], and Lemnos's module, the same
+/// protocol under its new name (`lemnos-sensor-bridge`).
+pub const DRIVER_NAMES: [&str; 2] = [DRIVER_NAME, "lemnos-sensor-bridge"];
+
 /// What the receiver asks for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamAction {
@@ -257,7 +261,7 @@ pub fn find_bridges() -> io::Result<Vec<BridgeLocation>> {
         let dev = entry.path().join("device");
         let is_bridge = std::fs::read_link(dev.join("driver"))
             .ok()
-            .and_then(|p| p.file_name().map(|n| n == DRIVER_NAME))
+            .and_then(|p| p.file_name().map(|n| DRIVER_NAMES.iter().any(|d| n == *d)))
             .unwrap_or(false);
         if !is_bridge {
             continue;
