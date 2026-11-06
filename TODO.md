@@ -88,6 +88,12 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
       `dma_heap::sync` drops its own counters and `sync_stats` returns
       `lemnos_linux::dma::sync_stats()` (Lemnos 449f8ac counts every `dma::sync`), so the PiSP
       code's syncs are counted once, with ours.
+      Also landed (Lemnos 395f8f8): `lemnos-rkisp-sys` (the uAPI layouts and headers),
+      `lemnos-drivers-rkisp` (`Isp` without `params`/`statistics`, `ParamBuffer`,
+      `isp32::{Variant, nodes}`, `uapi`, the device layer) and `lemnos-drivers-k230isp` (`regs`,
+      `RegisterAccess`, `Raw`/`read_raw`/`HIST_BINS`, the device layer). Here stay rkisp's
+      params/stats (both generations), `AnyParams`, `Generation` and `Isp::params`/`statistics` as
+      functions of ours, and the K230 builder and statistics conversion.
 4. [ ] **Move onto the Lemnos kernel module and Rust userspace drivers.** An own receiver replaces
       the stock `rp1-cfe`, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
       the OV9782 patches retire. The stock V4L2 path stays as the fallback. *Why:* one small module
