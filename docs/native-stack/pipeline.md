@@ -689,7 +689,10 @@ named with `STYX_GPUISP_DEVICE` stays the ISP's own.
   capture dma-bufs and exports its output, bit-exact against the CPU with no validation
   messages (eeefd6d; README, "Raspberry Pi 5"). It is slow there: 28.3 fps live at
   1280x800, about 35 ms of GPU a frame (estimated 4-8 ms), latency 133 ms, against the CPU
-  software ISP's 60 fps at 12.3 ms latency and 9.5 ms of CPU (2026-11-02, README). The CM5 has
+  software ISP's 60 fps at 12.3 ms latency and 9.5 ms of CPU (2026-11-02, README). Profiled
+  (2026-11-06, README): 28.9 ms of GPU for a 1280x800 RGB24 frame from a recording, 27.7 ms
+  with the tile fill unrolled, bound by the memory units' latency across the tile fill, tone,
+  demosaic and the shared-memory tile alike. The CM5 has
   the PiSP; the GPU ISP is for boards with a GPU and no ISP. On V3D the software path stays on
   the CPU by default (`gpu_isp.rs`, `SLOWER_THAN_CPU`); `STYX_GPU_ISP=1` takes the GPU.
 

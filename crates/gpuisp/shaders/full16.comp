@@ -61,10 +61,14 @@ void main() {
     // Frame coordinates of the tile's first sample: the window origin, the workgroup's block,
     // and a 2-sample border (reflected at the frame's edges, not the window's).
     ivec2 origin = ivec2(P.win_x, P.win_y) + ivec2(gl_WorkGroupID.xy) * ivec2(32, 16) - 2;
-    for (uint i = gl_LocalInvocationIndex; i < uint(TW * TH); i += 128u) {
-        int tx = int(i) % TW;
-        int ty = int(i) / TW;
-        tile[i] = float(front16(reflect_into(origin.x + tx, P.width), reflect_into(origin.y + ty, P.height)));
+    // A fixed trip count, so the loop unrolls and the samples' loads overlap (`full.comp`).
+    for (uint j = 0u; j < uint(TW * TH + 127) / 128u; j++) {
+        uint i = gl_LocalInvocationIndex + 128u * j;
+        if (i < uint(TW * TH)) {
+            int tx = int(i) % TW;
+            int ty = int(i) / TW;
+            tile[i] = float(front16(reflect_into(origin.x + tx, P.width), reflect_into(origin.y + ty, P.height)));
+        }
     }
     barrier();
     uint x0 = gl_GlobalInvocationID.x * 2u;

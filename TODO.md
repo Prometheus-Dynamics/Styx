@@ -126,19 +126,16 @@ The next release is an alpha for the Raze (CM5, OV9782, PiSP) only; the other bo
 right after it. These items come first. Paused and held items stay paused or held until the
 user lifts them.
 
-- [ ] **GPU ISP on the Pi 5: timing measured, too slow** (import and output verified on the Raze's v3dv at eeefd6d:
-      dma-buf import and export pass, Daedalus buffer path and equivalence bit-exact, 0 validation
-      messages; again at d9fd78a on HeliOS dev.844, VVL 1.4.309 with sync validation). The replay
-      source's software ISP does not use it: only live native captures do (`native_isp_bench single
-      FPS FRAMES --soft-isp`). *Why:* an estimate is all we have (`crates/gpuisp/README.md` and
-      docs/native-stack/pipeline.md say so). *Done when:* ms per 1280x800 frame and CPU measured
-      there and written into both. *Blocked by:* nothing: measured, now
-      the shader's 35 ms needs profiling, after the other alpha items; the GPU ISP is off by
-      default on V3D meanwhile (`STYX_GPU_ISP=1` takes it). *Numbers:*
-      2026-11-02, live 1280x800 at 60 asked: 28.3 fps (~35 ms GPU), latency 133 ms, CPU 1.97 ms
-      a frame; CPU software ISP 59.98 fps, 12.3 ms, 9.5 ms CPU. Estimated 4-8 ms GPU against
-      2.6-3.0 ms fp16 NEON. `styx-wgpu`'s pyramid on the same
-      GPU: 1.67 ms p50 and 0.38 ms CPU for 3 levels (42fb407).
+- [x] **GPU ISP on the Pi 5: timing measured and profiled** (crates/gpuisp/README.md, "Raspberry
+      Pi 5", and docs/native-stack/pipeline.md). 2026-11-06, Raze, `native-pipeline gpu-bench` on a
+      RAW10 recording, 1280x800 RGB24: 28.9 ms of GPU a frame (27.7 with the tile fill unrolled,
+      kept), 2.65 ms on one A76 core in fp16. By cutting parts out: other passes 2.7, skeleton 5.5,
+      tile fill 10.5, tone and colour 5.7, demosaic 3.2, stores 0. Bound by memory latency:
+      specialising (4 threads), the parameters as a uniform block and RAW10 unpacked from words
+      gave 27.4, 27.7 and 31.0. Off by default on V3D stays (`STYX_GPU_ISP=1` takes it); a faster
+      V3D frame needs a different shader shape, not tuning. Live 2026-11-02 numbers: 28.3 fps,
+      latency 133 ms, CPU 1.97 ms a frame, against the CPU software ISP's 59.98 fps, 12.3 ms, 9.5
+      ms CPU.
 - [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`).
       *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs, 5x5 filters and demosaic + CCM
       onto the BE memory to memory on its own dma-bufs. *Done when:* the ops run for Eidos on the board, GREY on the

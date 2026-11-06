@@ -18,6 +18,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- GPU ISP: the full-size shaders' tile fill has a fixed trip count, so it unrolls and the
+  samples' loads overlap: 28.9 to 27.7 ms of GPU for a 1280x800 frame on the Pi 5's V3D, bit
+  for bit the same output. The V3D profile is in `crates/gpuisp/README.md`.
 - Sliced frames no longer need a patched receiver: the stock `FRAME_SYNC`, a delay from the
   sensor's line time, and a marker below the slice line in each raw buffer say when the rows are
   in; a frame whose marker is still there runs whole. `FrontEndDevice::enable_line_events` takes

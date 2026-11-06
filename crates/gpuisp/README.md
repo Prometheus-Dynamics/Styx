@@ -138,9 +138,33 @@ dma-buf import only at the dma-buf's whole size and rounds a buffer's memory req
 `vc4-kms-v3d` overlay or the v3d node enabled) and access to `/dev/dri/renderD128` for the
 camera service's user. About 10-15 MB of image.
 
-The time per frame there is not measured yet (TODO.md, "GPU ISP on the Pi 5: timing"). On
-the same GPU `styx-wgpu`'s pyramid takes 1.67 ms p50 and 0.38 ms of CPU for 3 levels of
+On the same GPU `styx-wgpu`'s pyramid takes 1.67 ms p50 and 0.38 ms of CPU for 3 levels of
 1280x800 (42fb407).
+
+Profiled 2026-11-06 on the Raze (Mesa 26.1.8 v3dv; `native-pipeline gpu-bench` on a
+150-frame OV9782 RAW10 recording, 1280x800 RGB24, integer arithmetic, bilinear, lens
+shading on; GPU time from timestamp queries): **28.9 ms of GPU a frame**, against 2.65 ms for
+the fp16 NEON software ISP on one A76 core. Variants of the shader with one part cut out
+place it:
+
+| Part | GPU ms a frame |
+|---|---|
+| everything but the full-size shader (statistics pass, input copy) | 2.7 |
+| full-size shader skeleton: tile in shared memory, barrier, invocations | 5.5 |
+| tile fill: raw unpack (~5), lens shading (~3.5), black level and edges (~2) | 10.5 |
+| colour matrix and tone table | 5.7 |
+| demosaic (bilinear) | 3.2 |
+| output stores | 0 |
+
+`V3D_DEBUG=shaderdb`: the full-size shader is 1852 instructions at 2 threads (64 temporaries),
+no spills. It is bound by the memory units' latency, not by instructions or threads: a
+variant specialised to bilinear and RGB24 (755 instructions, 4 threads) takes 27.4 ms, and
+the parameters as a uniform block instead of a storage buffer (`scalarBlockLayout`) 27.7 ms.
+Unpacking RAW10 four samples at a time from words (7 loads per four samples instead of 20)
+is slower, 31.0 ms: the per-lane loads it saves were not the cost. A tile-fill loop with a
+fixed trip count, which the compiler unrolls so the samples' loads overlap, takes 27.7 ms,
+and is what the shaders do (`full.comp`, `full16.comp`). A frame well below 20 ms would need a
+different shape (fewer dependent loads per sample, no shared-memory round trip), not tuning.
 
 Measured 2026-11-02 on the Raze (HeliOS dev.844, live OV9782 1280x800 NV12 asked at 60 fps,
 `native_isp_bench single 60 300 --soft-isp`): 28.3 fps, so about 35 ms of GPU per frame,
@@ -149,7 +173,7 @@ ISP thread). The CPU software ISP on the same capture (`STYX_GPU_ISP=0`): 59.98 
 median 12.34 ms, 9.5 ms of CPU per frame over two threads. Both handed out dma-heap frames.
 
 The estimate below was 4-8 ms; the measured frame is about 4-8 times that, so the shader
-is far off V3D's peak (not yet profiled). Estimate: V3D 7.1 has 12 QPUs (3 slices) of 16-lane SIMD at
+is far off V3D's peak (profiled above: memory latency). Estimate: V3D 7.1 has 12 QPUs (3 slices) of 16-lane SIMD at
 about 1 GHz, issuing roughly 4 lane-operations per cycle each (~50 G lane-ops/s), with texture
 and memory units (TMUs) shared per slice. The integer full-size shader costs about 150-250
 operations and 10-14 memory accesses (byte loads of the packed raw, table lookups, byte
