@@ -34,6 +34,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Lemnos is pinned at 952e1c7. Heap dma-bufs get their Vulkan import pad from Lemnos's
+  `DmaHeap::allocate_importable` (256 bytes, rounded up to the system's page size rather than
+  4 KiB); `styx_native::dma::padded_len` is gone and `TAIL_SLACK` is Lemnos's `IMPORT_SLACK`.
+  The PiSP back end outputs and their spares are padded again (lemnos-drivers-pisp).
 - The native backend also takes a sensor entity whose node is a `lemnos-sensor-bridge` as
   bridged (Lemnos's bridge module, the `styx-sensor-bridge` renamed, same protocol); the old
   entity name stays for one release.

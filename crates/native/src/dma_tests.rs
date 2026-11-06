@@ -14,10 +14,11 @@ fn a_memfd_maps_like_a_dma_buf_and_outlives_its_descriptor() {
 
 #[test]
 fn heap_buffers_have_tail_slack_in_whole_pages() {
-    assert_eq!(padded_len(1_228_800), 1_232_896); // 1280x800 GREY: v3dv wants 1_229_056
-    assert!(padded_len(1_228_800) >= 1_228_800 + TAIL_SLACK);
-    assert_eq!(padded_len(4096 - TAIL_SLACK), 4096);
-    assert_eq!(padded_len(4096), 8192);
+    let padded = |len| lemnos_linux::dma::importable_len(len, 4096).unwrap();
+    assert_eq!(padded(1_228_800), 1_232_896); // 1280x800 GREY: v3dv wants 1_229_056
+    assert!(padded(1_228_800) >= 1_228_800 + TAIL_SLACK);
+    assert_eq!(padded(4096 - TAIL_SLACK), 4096);
+    assert_eq!(padded(4096), 8192);
 }
 
 #[test]

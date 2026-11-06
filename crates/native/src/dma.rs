@@ -1,5 +1,5 @@
 //! Styx's dma-bufs on Lemnos's (`lemnos_linux::dma`): every heap allocation carries
-//! [`TAIL_SLACK`] for Vulkan import, a memfd stands in for a dma-buf in tests and software
+//! [`TAIL_SLACK`] for Vulkan import (Lemnos's `allocate_importable`), a memfd stands in for a dma-buf in tests and software
 //! producers, and errors are [`lemnos_v4l2::Error`]s like the rest of the device code.
 //!
 //! ```no_run
@@ -76,16 +76,17 @@ impl DmaHeap {
     }
 
     /// Allocates a dma-buf of at least `len` bytes (`DMA_HEAP_IOCTL_ALLOC`), read-write and
-    /// close-on-exec: [`padded_len`] (its [`DmaBuf::len`]).
+    /// close-on-exec, with [`TAIL_SLACK`] more rounded up to whole pages of this system
+    /// (`lemnos_linux::dma::DmaHeap::allocate_importable`; its [`DmaBuf::len`]).
     pub fn allocate(&self, len: usize) -> Result<DmaBuf> {
         if len == 0 {
             return Err(Error::Invalid("cannot allocate an empty dma-buf".into()));
         }
-        let len = padded_len(len);
         let buf = self
             .0
-            .allocate(len)
+            .allocate_importable(len)
             .map_err(sys_err("DMA_HEAP_IOCTL_ALLOC"))?;
+        let len = buf.len();
         Ok(DmaBuf {
             fd: buf.into_fd(),
             len,
@@ -101,14 +102,8 @@ impl AsFd for DmaHeap {
 
 /// Bytes every dma-buf Styx allocates has beyond its contents: Vulkan drivers (Mesa's v3dv)
 /// import a linear dma-buf as a storage buffer only if it is at least this much larger than
-/// the frame.
-pub const TAIL_SLACK: usize = 256;
-
-/// The size Styx allocates for `len` bytes: [`TAIL_SLACK`] more, rounded up to 4 KiB pages
-/// (what the heaps allocate anyway, so the slack costs nothing for most sizes).
-pub const fn padded_len(len: usize) -> usize {
-    (len + TAIL_SLACK).next_multiple_of(4096)
-}
+/// the frame. Lemnos's `IMPORT_SLACK`.
+pub use lemnos::IMPORT_SLACK as TAIL_SLACK;
 
 /// Lists the heaps in `/dev/dma_heap`, sorted by name.
 pub fn list_heaps() -> Vec<String> {

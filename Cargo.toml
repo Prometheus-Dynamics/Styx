@@ -75,31 +75,31 @@ embedded-hal-async = "1.0"
 #   [patch."https://github.com/Prometheus-Dynamics/Lemnos.git"]
 #   lemnos-hal = { path = "../lemnos/crates/lemnos-hal" }   (same for the other two)
 # lemnos-hal: no_std, no alloc (register maps, regulators, clocks, ErrorKind).
-lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7", default-features = false }
 # lemnos-linux: i2c-dev, GPIO v2 and uevents in pure Rust (Linux only).
-lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7", default-features = false }
 # lemnos-linux-sys: the uAPI layer under lemnos-linux (dma-buf sync, identity, size).
-lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7", default-features = false }
 # lemnos-usb: USB devices, controls and URB rings (UVC).
-lemnos-usb = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+lemnos-usb = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7" }
 # lemnos-drivers-vcm: no_std focus lens (VCM) drivers.
-lemnos-drivers-vcm = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+lemnos-drivers-vcm = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7" }
 # lemnos-v4l2: V4L2 devices and buffers, the media controller, subdevices, events (Linux).
-lemnos-v4l2 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+lemnos-v4l2 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7" }
 # lemnos-drivers-pisp: the Raspberry Pi PiSP (front and back end configs, tiling, statistics;
 # its device nodes with `device`).
-lemnos-drivers-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+lemnos-drivers-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7", default-features = false }
 # lemnos-drivers-rkisp: Rockchip rkisp detection, buffer trait, ISP32 nodes, device layer;
 # lemnos-rkisp-sys: its parameter and statistics layouts (no_std).
-lemnos-drivers-rkisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
-lemnos-rkisp-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+lemnos-drivers-rkisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7", default-features = false }
+lemnos-rkisp-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7" }
 # lemnos-drivers-k230isp: the K230's ISP registers, register access and statistics readout.
-lemnos-drivers-k230isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+lemnos-drivers-k230isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7", default-features = false }
 # lemnos-sensor-bridge: userspace side of the sensor bridge kernel module.
-lemnos-sensor-bridge = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+lemnos-sensor-bridge = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7" }
 # lemnos-drivers-rga: the Rockchip RGA 2D engine (V4L2 mem2mem and /dev/rga), for
 # `styx-codec`'s optional `codec-rga` feature (Linux).
-lemnos-drivers-rga = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+lemnos-drivers-rga = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "952e1c7" }
 # Compact binary sensor descriptions for targets without a TOML parser (styx-sensor `build`).
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 styx-graph = { path = "crates/graph", version = "2.0.1-dev" }
