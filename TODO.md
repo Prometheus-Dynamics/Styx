@@ -378,15 +378,6 @@ memory when it runs.
 
 Not on the freeze list. *Numbers:* none measured unless stated.
 
-- [ ] **Row-sliced box2 (Eidos, low priority).** *What:* a `box_downscale_luma_in` variant that
-      hands the consumer each finished run of half-level rows (a callback, or a row-range
-      iterator over the output) so it can threshold them while they are in cache, instead of
-      writing all 256 KB and reading it back. *Why:* Eidos's CPU-level path reads the level
-      once, straight after it is made. *Done when:* the API exists with rows identical to
-      `box_downscale_luma_in`, zero steady-state allocations, and a Raze number against
-      make-then-read (18.7 µs hot read today). *Blocked by:* nothing. *Numbers:* ceiling about
-      0.01-0.02 ms per frame (Eidos); CPU-level path only (the PiSP level is a 2x2 box too,
-      c8ffb21).
 - [ ] **MCU flash: watch config C on the Cortex-M7.** *What:* C is 131,704 bytes against its
       134,000 limit (1.7% headroom; the others have 4-11%, D 5%). *Why:* the limits are guards,
       and lean is the default: the next growth in the code C links (sensor driver, algorithms,
@@ -477,6 +468,14 @@ Not on the freeze list. *Numbers:* none measured unless stated.
 Numbers are as of the commit named.
 
 ### Since the last audit
+
+- [x] **Row-sliced box2 (Eidos): measured, no gain, not added.** A banded
+      `box_downscale_luma_in` that hands over each run of half-level rows (callback after 8, 16 or
+      32 rows) to be thresholded in cache, against making the level then thresholding it. Raze #1,
+      2026-11-06, A76, 1280x800 GREY sources 8 in turn (cold), 2336 interleaved runs: p50 137.4-137.8
+      µs made then read, 137.4-139.6 µs banded, LLC read misses 14 300-14 450 either way. The 256 KB
+      level stays in the A76's 512 KB L2 between being made and read, and the time is the cold 1 MB
+      source. Prototype not kept (no API without a gain).
 - [x] **UVC onto Lemnos's one USB transport.** `styx-uvc` claims, controls and streams through
       `lemnos-usb` (`UrbRing`, Lemnos d190650); `styx-kernel` has no usbfs module. Three USB stacks
       (Lemnos rusb, Atlas nusb, Styx usbfs) become one. Raze #1, 2026-11-03, webcam 1bcf:0050
