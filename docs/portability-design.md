@@ -1127,7 +1127,7 @@ bit for bit, the virtual-sensor closed loop), fuzz smoke (`scripts/fuzz.sh` shor
 
 | check | tool | pass |
 |---|---|---|
-| bring-up registers | `native-pipeline regcheck` | all 93 registers read back identical |
+| bring-up registers | `native-pipeline regcheck` | the same 91 of 93 registers read back as the baseline (OV9782: `0x0101` and `0x1000`, from the driver's init table and in no datasheet, read 0 after any write, bursts or one transfer each, baseline included; the sensor streams normally) |
 | start-up | `native-pipeline pisp` (startup table) | open → first frame ≤ 35 ms; AE lock ≤ frame 6 cold, ≤ 2 warm |
 | landing | a landing run at 30/60/120 fps (not in this repository) | exposure/gain land on the predicted frame, verified by embedded data |
 | PiSP CPU and latency | `native-pipeline pisp --no-read --profile`, 300 frames, 30 and 120 fps | ≤ 0.27 / 0.23 ms per frame; latency median ≤ 8.40 ms |

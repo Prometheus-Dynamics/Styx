@@ -143,8 +143,7 @@ user lifts them.
       4232 runs on group 1 beside live frames on group 0: 0 failed, 0 drops.
 - [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
       every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
-      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* nothing for the PiSP path and
-      V4L2's cause; a device for libcamera. Raze 2026-11-02, `hop_breakdown inproc` (PiSP NV12
+      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device for libcamera. Raze 2026-11-02, `hop_breakdown inproc` (PiSP NV12
       1280x800 30 fps, whole process, every thread): 0.00 heap allocations per frame in steady
       state (median of 9 one-second windows), 0.04 over the whole run. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
       without a companion, UVC frame lease, GPU ISP frame from memory, PiSP processed path on a host
@@ -175,10 +174,11 @@ user lifts them.
       `IspStats` and new tables per frame. `Input::Buffer` on Daedalus's device: 0, submitted
       through Daedalus's `RawSubmitter` (Daedalus fd18808); was 17 per frame in `submit_raw`
       and wgpu-core's submission.
-- [ ] **`native-pipeline regcheck`: `0x0101` and `0x1000` read back 0.** *Why:* docs/portability-design.md
-      still says all 93 identical. *Done when:* they are excluded as write-only or self-clearing, or the
-      description is fixed. *Blocked by:* a Raze run with the OV9782's description: on 2026-11-02
-      `regcheck` without `--description` wrote 0 registers, so nothing was checked. *Numbers:* 2 of 93 differ.
+- [x] **`native-pipeline regcheck`: `0x0101` and `0x1000` read back 0.** Description fixed
+      (docs/portability-design.md, Gate B): 91 of 93 as in the baseline. Both registers come from
+      the driver's init table, are in no OV9281/OV9282 datasheet, and read 0 after any write on the
+      CM5 (bursts and one transfer each, the baseline too) while the sensor streams normally, so
+      they are not called write-only without a source.
 - [ ] **Still JPEG encoding numbers.** *Why:* the default features fall back to the `image` crate. *Done when:*
       the ~45 ms still thread time is re-measured with turbojpeg. *Blocked by:* a still that lands: on the Raze 2026-11-02
       `still_capture DIR 30 native` (turbojpeg) failed with "still: timed out". Likely cause, fixed
