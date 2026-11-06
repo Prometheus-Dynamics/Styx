@@ -401,3 +401,57 @@ fn pending_until_the_frame_start_that_issues_it() {
     s.frame_start(11);
     assert!(!s.has_pending());
 }
+
+fn bounded() -> ControlScheduler {
+    ControlScheduler::new(delays(2, 1, 2), initial())
+        .with_exposure_limit(ExposureLimit {
+            min: 1,
+            margin: 8,
+            fraction_bits: 0,
+        })
+        .with_frame_lengths(1822, 4000)
+}
+
+#[test]
+fn impossible_frame_lengths_are_rejected_not_reported() {
+    let mut s = bounded();
+    s.frame_start(0);
+    run(&mut s, 1, 4);
+    // A misread of 4 lines on an 1822-line mode: neither a mismatch nor a new prediction.
+    let m = s.report(3, &ControlSet::new().with(FrameLength, 4));
+    assert!(m.is_empty());
+    assert_eq!(s.rejected_reports(), 1);
+    assert_eq!(s.predicted(4).get(FrameLength), Some(1822));
+    // A possible value still counts.
+    let m = s.report(4, &ControlSet::new().with(FrameLength, 2000));
+    assert_eq!(m.len(), 1);
+    assert_eq!(s.rejected_reports(), 1);
+}
+
+#[test]
+fn exposures_longer_than_the_longest_frame_are_rejected() {
+    let mut s = bounded();
+    s.frame_start(0);
+    run(&mut s, 1, 4);
+    let m = s.report(
+        3,
+        &ControlSet::new().with(Exposure, 3993).with(AnalogGain, 16),
+    );
+    assert!(m.is_empty());
+    assert_eq!(s.rejected_reports(), 1);
+    assert_eq!(
+        s.report(3, &ControlSet::new().with(Exposure, 3992)).len(),
+        1
+    );
+}
+
+#[test]
+fn without_frame_lengths_every_report_is_kept() {
+    let mut s = scheduler();
+    s.frame_start(0);
+    assert_eq!(
+        s.report(1, &ControlSet::new().with(FrameLength, 4)).len(),
+        1
+    );
+    assert_eq!(s.rejected_reports(), 0);
+}

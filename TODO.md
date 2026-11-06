@@ -459,9 +459,10 @@ Not on the freeze list. *Numbers:* none measured unless stated.
       its description); 30 fps with short exposures leaves ~2%; with deflicker off, a clipped lamp makes AE
       chase the beat at 120 fps (simulated). *Done when:* verified on a sensor, or accepted by the user.
       *Blocked by:* the bench pause. *Numbers:* as stated.
-- [ ] **Reject impossible frame-length reports.** *Why:* a value from embedded data is trusted even when
-      impossible (VTS 4 on an 800-line mode). *Done when:* the control schedule rejects such reports.
-      *Blocked by:* nothing.
+- [x] **Reject impossible frame-length reports.** *Why:* a value from embedded data is trusted even when
+      impossible (VTS 4 on an 800-line mode). *Done:* `ControlScheduler::with_frame_lengths` (set from
+      the mode's timing) drops frame lengths outside the mode and exposures past the longest frame,
+      counted in `rejected_reports()`.
 
 ## Done
 

@@ -38,13 +38,19 @@ pub(crate) struct DriverCore<B, P> {
     pub(crate) scheduler: Option<ControlScheduler>,
 }
 
-fn new_scheduler(desc: &SensorDescription, initial: ControlSet) -> ControlScheduler {
+fn new_scheduler(
+    desc: &SensorDescription,
+    initial: ControlSet,
+    timing: &Timing,
+) -> ControlScheduler {
     let ctl = &desc.controls;
-    ControlScheduler::new(ctl.delays, initial).with_exposure_limit(ExposureLimit {
-        min: ctl.exposure.min,
-        margin: ctl.exposure.margin,
-        fraction_bits: ctl.exposure.fraction_bits,
-    })
+    ControlScheduler::new(ctl.delays, initial)
+        .with_exposure_limit(ExposureLimit {
+            min: ctl.exposure.min,
+            margin: ctl.exposure.margin,
+            fraction_bits: ctl.exposure.fraction_bits,
+        })
+        .with_frame_lengths(timing.frame_length_min(), timing.frame_length_max())
 }
 
 fn require(ok: bool, msg: &'static str) -> Result<()> {
@@ -392,7 +398,7 @@ impl<B: AsyncDriverBus, P: AsyncSensorPins> DriverCore<B, P> {
             .await?;
         let (h, v) = self.flips;
         self.write_flips(h, v).await?;
-        self.scheduler = Some(new_scheduler(&desc, initial));
+        self.scheduler = Some(new_scheduler(&desc, initial, &timing));
         self.mode = Some(ActiveMode {
             mode: m.name.clone(),
             format: format.to_owned(),
@@ -632,9 +638,9 @@ impl<B: AsyncDriverBus, P: AsyncSensorPins> DriverCore<B, P> {
         self.state = DriverState::Powered;
         // The old schedule's last values (not the ~9 KiB schedule) are kept across the write.
         let latest = self.scheduler.take().map(|old| old.predicted(u64::MAX));
-        if let Some(latest) = latest {
+        if let (Some(latest), Some(timing)) = (latest, self.mode.as_ref().map(|m| m.timing)) {
             self.write_controls(&latest, false).await?;
-            self.scheduler = Some(new_scheduler(&desc, latest));
+            self.scheduler = Some(new_scheduler(&desc, latest, &timing));
         }
         Ok(())
     }

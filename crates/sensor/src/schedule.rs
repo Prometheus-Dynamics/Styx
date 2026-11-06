@@ -211,6 +211,10 @@ const AHEAD_SLOTS: usize = 16;
 pub struct ControlScheduler {
     delays: [u32; 4],
     limit: Option<ExposureLimit>,
+    /// The mode's frame lengths (codes), for rejecting impossible reports.
+    frame_lengths: Option<(u32, u32)>,
+    /// Reported values rejected as impossible ([`Self::rejected_reports`]).
+    rejected: u64,
     started: Option<u64>,
     /// Per control: requested frame -> value, not yet issued.
     pending: [FrameMap<u32, PENDING_REQUESTS>; 4],
@@ -230,6 +234,8 @@ impl ControlScheduler {
                 delays.digital_gain,
             ],
             limit: None,
+            frame_lengths: None,
+            rejected: 0,
             started: None,
             pending: Default::default(),
             committed: Default::default(),
@@ -245,6 +251,35 @@ impl ControlScheduler {
     pub fn with_exposure_limit(mut self, limit: ExposureLimit) -> Self {
         self.limit = Some(limit);
         self
+    }
+
+    /// The mode's frame lengths, `min..=max` (codes): a reported frame length outside them, or
+    /// an exposure longer than the longest frame allows ([`ExposureLimit::margin`]), is
+    /// impossible (a misread of embedded data, e.g. 4 lines on an 800-line mode) and is
+    /// rejected by [`Self::report`].
+    pub fn with_frame_lengths(mut self, min: u32, max: u32) -> Self {
+        self.frame_lengths = Some((min, max));
+        self
+    }
+
+    /// Reported values [`Self::report`] rejected as impossible, so far.
+    pub fn rejected_reports(&self) -> u64 {
+        self.rejected
+    }
+
+    /// Whether a reported `value` of `c` is possible on this mode.
+    fn possible(&self, c: Control, value: u32) -> bool {
+        let Some((min, max)) = self.frame_lengths else {
+            return true;
+        };
+        match c {
+            Control::FrameLength => (min..=max).contains(&value),
+            Control::Exposure => self.limit.is_none_or(|l| {
+                let lines = value >> l.fraction_bits;
+                lines <= max.saturating_sub(l.margin)
+            }),
+            _ => true,
+        }
     }
 
     /// Delay of a control in frames.
@@ -430,9 +465,19 @@ impl ControlScheduler {
 
     /// Record values read back for a frame (e.g. from embedded data). Returns the values that
     /// differ from the prediction. A reported value also predicts later frames until a value
-    /// issued to land after the reported frame takes over.
+    /// issued to land after the reported frame takes over. Impossible values
+    /// ([`Self::with_frame_lengths`]) are left out and counted ([`Self::rejected_reports`]).
     pub fn report(&mut self, frame: u64, values: &ControlSet) -> Mismatches {
         let mut mismatches = Mismatches::new();
+        let mut kept = ControlSet::new();
+        for (c, v) in values.iter() {
+            if self.possible(c, v) {
+                kept.set(c, v);
+            } else {
+                self.rejected += 1;
+            }
+        }
+        let values = &kept;
         for (c, v) in values.iter() {
             let predicted = self.predicted_value(c, frame);
             if predicted != Some(v) {

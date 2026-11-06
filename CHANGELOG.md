@@ -1114,6 +1114,11 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- The native sensor driver's control schedule rejects impossible read-back values: a frame
+  length outside the mode's range, or an exposure longer than its longest frame allows (a misread
+  of embedded data, e.g. VTS 4 on an 800-line mode). They are counted
+  (`ControlScheduler::rejected_reports`) instead of overriding the prediction.
+
 - `BackingPool` (raw native frames, software ISP outputs, frames shared into Daedalus): its
   records are made with the pool, so a frame in flight beyond those the warm-up saw no longer
   allocates one (`worker_alloc` counted 1 per 120 raw frames under load, 5 of 48 runs at a load
