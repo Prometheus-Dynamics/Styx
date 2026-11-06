@@ -37,6 +37,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Locked to Daedalus ce45a6a (stable ABI 6: a plugin counts its live `Local` objects, no
+  keepalive per payload); Lemnos stays at cf3a4ac.
+
 - The PiSP back end makes an output of exactly half its input (pyramid level 1, a half-size
   second output) as a 2x2 box, the CPU's `box_downscale_luma_in` filter, instead of
   libcamera's corner-aligned Lanczos 3: the resampler steps by exactly 2 with two equal taps.
