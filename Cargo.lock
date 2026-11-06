@@ -2016,7 +2016,7 @@ dependencies = [
  "daedalus-kernels",
  "daedalus-transport",
  "daedalus-wgsl-infer",
- "lemnos-linux",
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
  "libc",
  "parking_lot",
  "pollster 1.0.1",
@@ -2092,15 +2092,6 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "daedalus-rga"
-version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?branch=dev#77b1ede3a3d60f0a966c534f3830bf0b426e46f9"
-dependencies = [
- "lemnos-linux",
- "libc",
 ]
 
 [[package]]
@@ -2439,7 +2430,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3355,8 +3346,19 @@ version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "embedded-hal 1.0.0",
- "lemnos-core",
- "lemnos-hal",
+ "lemnos-core 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lemnos-bus"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "lemnos-core 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
  "thiserror 2.0.21",
 ]
 
@@ -3365,8 +3367,20 @@ name = "lemnos-core"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
- "lemnos-device",
- "lemnos-hal",
+ "lemnos-device 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "ordered-float",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lemnos-core"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-device 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
  "ordered-float",
  "serde",
  "thiserror 2.0.21",
@@ -3379,7 +3393,17 @@ source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "lemnos-hal",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+]
+
+[[package]]
+name = "lemnos-device"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
 ]
 
 [[package]]
@@ -3387,19 +3411,65 @@ name = "lemnos-discovery"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
- "lemnos-core",
+ "lemnos-core 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lemnos-discovery"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-core 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "lemnos-drivers-k230isp"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+]
+
+[[package]]
+name = "lemnos-drivers-pisp"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "bytemuck",
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-v4l2",
+]
+
+[[package]]
+name = "lemnos-drivers-rga"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-v4l2",
+]
+
+[[package]]
+name = "lemnos-drivers-rkisp"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-rkisp-sys",
+ "lemnos-v4l2",
 ]
 
 [[package]]
 name = "lemnos-drivers-vcm"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "lemnos-device",
- "lemnos-hal",
+ "lemnos-device 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
  "serde",
 ]
 
@@ -3413,18 +3483,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemnos-hal"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+]
+
+[[package]]
 name = "lemnos-linux"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "lemnos-bus",
- "lemnos-core",
- "lemnos-discovery",
- "lemnos-hal",
- "lemnos-linux-sys",
- "lemnos-uevent",
+ "lemnos-bus 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "lemnos-core 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "lemnos-discovery 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+ "lemnos-uevent 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+]
+
+[[package]]
+name = "lemnos-linux"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "embedded-hal 1.0.0",
+ "embedded-hal-async",
+ "lemnos-bus 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-core 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-discovery 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-uevent 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-v4l2",
 ]
 
 [[package]]
@@ -3436,23 +3531,65 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemnos-linux-sys"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "lemnos-rkisp-sys"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
+name = "lemnos-sensor-bridge"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-v4l2",
+ "libc",
+]
+
+[[package]]
 name = "lemnos-uevent"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
 dependencies = [
- "lemnos-linux-sys",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev)",
+]
+
+[[package]]
+name = "lemnos-uevent"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
 ]
 
 [[package]]
 name = "lemnos-usb"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?branch=dev#d1906500f486608f1237735580fac7ba1aefc439"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
 dependencies = [
  "futures-core",
- "lemnos-linux-sys",
- "lemnos-uevent",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-uevent 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
  "libc",
  "nusb",
+]
+
+[[package]]
+name = "lemnos-v4l2"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2#4dceae22fb8ae702e6dec0d512a08148d0aa6d07"
+dependencies = [
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "libc",
 ]
 
 [[package]]
@@ -3829,13 +3966,13 @@ name = "native-pipeline"
 version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
+ "lemnos-drivers-pisp",
  "libc",
  "signal-hook",
  "styx-algo",
  "styx-core-rs",
  "styx-native",
  "styx-pipeline",
- "styx-pisp",
  "styx-softisp",
 ]
 
@@ -3843,10 +3980,11 @@ dependencies = [
 name = "native-spike"
 version = "2.0.1-dev"
 dependencies = [
- "lemnos-linux",
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-sensor-bridge",
+ "lemnos-v4l2",
  "libc",
  "signal-hook",
- "styx-kernel",
  "styx-native",
  "styx-sensor",
 ]
@@ -4447,8 +4585,8 @@ dependencies = [
 name = "pisp-spike"
 version = "2.0.1-dev"
 dependencies = [
- "styx-kernel",
- "styx-pisp",
+ "lemnos-drivers-pisp",
+ "lemnos-v4l2",
 ]
 
 [[package]]
@@ -4670,7 +4808,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4945,7 +5083,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5002,7 +5140,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5363,7 +5501,9 @@ dependencies = [
  "gltf",
  "image",
  "jpeg-decoder",
- "lemnos-linux",
+ "lemnos-drivers-pisp",
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-v4l2",
  "libc",
  "libcamera",
  "libcamera-sys",
@@ -5381,11 +5521,9 @@ dependencies = [
  "styx-core-rs",
  "styx-dng",
  "styx-graph",
- "styx-kernel",
  "styx-libcamera",
  "styx-native",
  "styx-pipeline",
- "styx-pisp",
  "styx-sensor",
  "styx-softisp",
  "styx-uvc",
@@ -5434,10 +5572,13 @@ name = "styx-codec"
 version = "2.0.1-dev"
 dependencies = [
  "criterion",
- "daedalus-rga",
  "ffmpeg-sys-next",
  "image",
  "jpeg-decoder",
+ "lemnos-drivers-rga",
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-v4l2",
  "libc",
  "mozjpeg",
  "parking_lot",
@@ -5446,7 +5587,7 @@ dependencies = [
  "styx-capture",
  "styx-core-rs",
  "styx-gpuisp",
- "styx-kernel",
+ "styx-native",
  "styx-softisp",
  "thiserror 2.0.21",
  "turbojpeg",
@@ -5523,7 +5664,7 @@ dependencies = [
  "daedalus-rs",
  "libc",
  "styx-core-rs",
- "styx-kernel",
+ "styx-native",
  "styx-softisp",
  "thiserror 2.0.21",
 ]
@@ -5545,7 +5686,7 @@ version = "2.0.1-dev"
 dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
- "lemnos-hal",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
  "styx-hal",
 ]
 
@@ -5557,18 +5698,9 @@ version = "2.0.1-dev"
 name = "styx-k230isp"
 version = "2.0.1-dev"
 dependencies = [
- "libc",
+ "lemnos-drivers-k230isp",
  "styx-algo",
  "styx-math",
-]
-
-[[package]]
-name = "styx-kernel"
-version = "2.0.1-dev"
-dependencies = [
- "lemnos-linux",
- "lemnos-linux-sys",
- "libc",
 ]
 
 [[package]]
@@ -5616,11 +5748,13 @@ version = "2.0.1-dev"
 dependencies = [
  "futures-core",
  "lemnos-drivers-vcm",
- "lemnos-linux",
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-sensor-bridge",
+ "lemnos-v4l2",
  "libc",
  "styx-graph",
  "styx-hal",
- "styx-kernel",
  "styx-runtime",
  "styx-sensor",
  "thiserror 2.0.21",
@@ -5646,10 +5780,10 @@ dependencies = [
 name = "styx-nostd-smoke"
 version = "2.0.1-dev"
 dependencies = [
+ "lemnos-drivers-pisp",
  "styx-algo",
  "styx-core-rs",
  "styx-dng",
- "styx-pisp",
  "styx-sensor",
  "styx-softisp",
 ]
@@ -5659,29 +5793,20 @@ name = "styx-pipeline"
 version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
+ "lemnos-drivers-pisp",
+ "lemnos-v4l2",
  "serde",
  "serde_json",
  "styx-algo",
  "styx-core-rs",
  "styx-dng",
  "styx-gpuisp",
- "styx-kernel",
  "styx-native",
- "styx-pisp",
  "styx-rkisp",
  "styx-runtime",
  "styx-sensor",
  "styx-softisp",
  "thiserror 2.0.21",
-]
-
-[[package]]
-name = "styx-pisp"
-version = "2.0.1-dev"
-dependencies = [
- "bytemuck",
- "styx-kernel",
- "styx-math",
 ]
 
 [[package]]
@@ -5697,8 +5822,8 @@ name = "styx-rkisp"
 version = "2.0.1-dev"
 dependencies = [
  "bytemuck",
+ "lemnos-drivers-rkisp",
  "styx-algo",
- "styx-kernel",
  "styx-math",
 ]
 
@@ -5721,7 +5846,7 @@ dependencies = [
  "embedded-hal 1.0.0",
  "embedded-hal-async",
  "lemnos-drivers-vcm",
- "lemnos-hal",
+ "lemnos-hal 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
  "portable-atomic-util",
  "postcard",
  "serde",
@@ -5772,12 +5897,12 @@ dependencies = [
 name = "styx-uvc"
 version = "2.0.1-dev"
 dependencies = [
- "lemnos-linux",
- "lemnos-linux-sys",
+ "lemnos-linux 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
+ "lemnos-linux-sys 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=4dceae2)",
  "lemnos-usb",
+ "lemnos-v4l2",
  "libc",
  "styx-graph",
- "styx-kernel",
  "thiserror 2.0.21",
  "tokio",
  "tracing",
@@ -5787,11 +5912,11 @@ dependencies = [
 name = "styx-v4l2"
 version = "2.0.1-dev"
 dependencies = [
+ "lemnos-v4l2",
  "libc",
  "smallvec",
  "styx-capture",
  "styx-core-rs",
- "styx-kernel",
  "tracing",
 ]
 
@@ -5868,7 +5993,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6941,7 +7066,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

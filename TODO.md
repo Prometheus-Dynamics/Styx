@@ -77,29 +77,18 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
       duplicate statics are the risk in shared mode.
 2. [ ] **Frames on Lemnos buffers.** *Why:* one buffer type under the stack. *Done when:* capture
       leases sit on Lemnos's buffers with no copy added and 0 allocations in steady state.
-3. [ ] **Port onto Lemnos.** The generic parts of `crates/kernel` move there; Styx keeps the camera
-      pipeline and tuning. *Why:* hardware blocks live in one place. *Done when:* `crates/kernel`
-      holds nothing generic, and the V4L2 path behaves as before. *Landed in Lemnos (dev 50808ee,
-      2026-11-06, waiting for HeliOS's go):* `lemnos-v4l2` (our v4l2/subdev/media/event),
-      `lemnos-drivers-pisp` (`crates/pisp` at bb34279; `LEMNOS_PISP_*` dump variables,
-      `lemnos.pisp.*` capabilities), `lemnos-drivers-rga` (replaces `daedalus-rga`, same names);
-      `bus` and `dma_heap` stay here. Checked: every `styx_kernel` name Styx uses maps onto them
-      (`dmabuf_id` → `identity()`, `dmabuf_size` → `DmaBufRef::len`). At the switch:
-      `dma_heap::sync` drops its own counters and `sync_stats` returns
-      `lemnos_linux::dma::sync_stats()` (Lemnos 449f8ac counts every `dma::sync`), so the PiSP
-      code's syncs are counted once, with ours.
-      Also landed (Lemnos 395f8f8): `lemnos-rkisp-sys` (the uAPI layouts and headers),
-      `lemnos-drivers-rkisp` (`Isp` without `params`/`statistics`, `ParamBuffer`,
-      `isp32::{Variant, nodes}`, `uapi`, the device layer) and `lemnos-drivers-k230isp` (`regs`,
-      `RegisterAccess`, `Raw`/`read_raw`/`HIST_BINS`, the device layer). Here stay rkisp's
-      params/stats (both generations), `AnyParams`, `Generation` and `Isp::params`/`statistics` as
-      functions of ours, and the K230 builder and statistics conversion.
-      The sensor bridge too (Lemnos 2676ccd): `kernel-modules/lemnos-sensor-bridge` (overlays
-      `lemnos-sensor-bridge-bcm2712*`, node `lemnos-sensor-bridge-cam0`, `lemnos,*` properties)
-      and the `lemnos-sensor-bridge` crate (our `bus`). Styx already matches both names (entity
-      and driver). It builds against the Raspberry Pi 7.2 tree (the Raze's
-      7.2.9-v8-16k, no warnings at W=1); `MEDIA_BUS_FMT_SENSOR_DATA` is the Pi tree's own code,
-      so only stock kernel headers lack it. Not loaded anywhere yet.
+3. [x] **Port onto Lemnos.** The generic parts of `crates/kernel` move there; Styx keeps the camera
+      pipeline and tuning. *Why:* hardware blocks live in one place. *Done:* Styx on Lemnos rev
+      4dceae2; `crates/kernel` and `crates/pisp` deleted. `lemnos-v4l2` (v4l2/subdev/media/event),
+      `lemnos-linux` `v4l2-m2m` under `styx_codec::m2m` (the session wrapper Styx's codecs use),
+      `lemnos-drivers-pisp`, `lemnos-drivers-rkisp` + `lemnos-rkisp-sys` and
+      `lemnos-drivers-k230isp` under `styx-rkisp`/`styx-k230isp` (params, stats, `AnyParams`,
+      `IspBuffers` and the K230 builder stay here), `lemnos-sensor-bridge` for `bus`,
+      `lemnos-drivers-rga` for `daedalus-rga`. `styx_native::dma` keeps Styx's tail pad
+      (`padded_len`) and memfd stand-in on `lemnos_linux::dma`; `sync_stats` is Lemnos's.
+      The styx-named bridge module in `kernel-modules/styx-sensor-bridge` is no longer found by
+      `find_bridges` (Lemnos's matches `lemnos-sensor-bridge`); images ship neither.
+      Raze #1 board run: see the commit.
 4. [ ] **Move onto the Lemnos kernel module and Rust userspace drivers.** An own receiver replaces
       the stock `rp1-cfe`, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
       the OV9782 patches retire. The stock V4L2 path stays as the fallback. *Why:* one small module

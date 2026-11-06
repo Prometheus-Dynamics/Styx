@@ -6,7 +6,7 @@ use std::os::fd::AsFd;
 
 use crate::common::{contexts, mosaic, pack};
 use styx_gpuisp::{GpuIsp, Input, OutputKind};
-use styx_kernel::dma_heap::{Access, DmaBuf, DmaHeap};
+use styx_native::dma::{Access, DmaBuf, DmaHeap};
 use styx_softisp::*;
 
 fn params() -> IspParams {

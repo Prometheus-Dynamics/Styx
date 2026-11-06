@@ -7,7 +7,7 @@
 
 use std::path::{Path, PathBuf};
 
-use styx_kernel::media::{EntityFunction, LinkFlags, PadRef, Topology};
+use lemnos_v4l2::media::{EntityFunction, LinkFlags, PadRef, Topology};
 
 use crate::error::{NativeError, Result};
 
@@ -208,8 +208,8 @@ pub fn describe(topo: &Topology, c: &LinkChange) -> String {
 
 #[cfg(test)]
 pub(crate) mod testing {
-    use styx_kernel::media::Topology;
-    use styx_kernel::media::{Entity, EntityFlags, EntityFunction, Link, LinkFlags, Pad, PadFlags};
+    use lemnos_v4l2::media::Topology;
+    use lemnos_v4l2::media::{Entity, EntityFlags, EntityFunction, Link, LinkFlags, Pad, PadFlags};
 
     /// The CM5 `rp1-cfe` graph as the device reports it, with `sensor` as the bridge entity
     /// (entity 16).

@@ -13,12 +13,12 @@
 
 use std::time::{Duration, Instant};
 
-use styx_native::SensorStream;
-use styx_pisp::be::split_tiles_into;
-use styx_pisp::device::{
+use lemnos_drivers_pisp::be::split_tiles_into;
+use lemnos_drivers_pisp::device::{
     BackEndStream, BeJob, FrontEndDevice, LineEvent, LineTimerCounts, QueuedJob, profile,
 };
-use styx_pisp::uapi::BeTilesConfig;
+use lemnos_drivers_pisp::uapi::BeTilesConfig;
+use styx_native::SensorStream;
 
 use super::sensor_values;
 use crate::error::{PipelineError, Result};
@@ -331,7 +331,7 @@ pub(super) fn wait_for_statistics(
     mut slice: Option<SliceBe<'_>>,
     slices: bool,
 ) -> Result<Waited> {
-    use styx_kernel::Wait;
+    use lemnos_v4l2::Wait;
     let deadline = Instant::now() + timeout;
     loop {
         sensor.service();
@@ -339,7 +339,7 @@ pub(super) fn wait_for_statistics(
         // A line event due sooner than the deadline ends the wait early.
         let due = slice.as_ref().and(fe_dev.line_event_due());
         let wait = due.map_or(left, |d| {
-            left.min(d.saturating_sub(styx_kernel::monotonic_now()))
+            left.min(d.saturating_sub(lemnos_v4l2::monotonic_now()))
         });
         let (stats, lines, first, failed) = {
             let sync = sensor.frame_start_fd();
@@ -374,9 +374,9 @@ pub(super) fn wait_for_statistics(
                     n += 1;
                 }
             }
-            let mut ready = [styx_kernel::Ready::default(); 4];
+            let mut ready = [lemnos_v4l2::Ready::default(); 4];
             profile::time("loop", "wait", || {
-                styx_kernel::poll_into(&fds[..n], Some(wait), &mut ready[..n])
+                lemnos_v4l2::poll_into(&fds[..n], Some(wait), &mut ready[..n])
             })
             .map_err(|e| PipelineError::Device(format!("waiting for the front end: {e}")))?;
             (

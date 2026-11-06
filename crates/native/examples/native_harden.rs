@@ -66,7 +66,7 @@ fn first_camera() -> Result<CameraInfo, NativeError> {
 }
 
 fn bridge_state(info: &CameraInfo) -> String {
-    match styx_kernel::bus::SensorBridge::open(&info.location.subdev) {
+    match lemnos_sensor_bridge::SensorBridge::open(&info.location.subdev) {
         Ok(b) => format!(
             "bridge {}: state {:?}, power {:?}",
             info.location.subdev.display(),

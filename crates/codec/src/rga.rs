@@ -1,4 +1,4 @@
-//! Scalers, crops and format converters on the Rockchip RGA, through Daedalus's `daedalus-rga`
+//! Scalers, crops and format converters on the Rockchip RGA, through Lemnos's `lemnos-drivers-rga`
 //! (the stack's one RGA binding: mainline `rockchip-rga` over V4L2 mem2mem, or any mem2mem
 //! device). [`RgaConverter`] is a [`Codec`] over that engine; Styx has no RGA code of its own.
 //!
@@ -11,11 +11,11 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use daedalus_rga::{Layout, PixelFormat, Rect, Rga};
+use lemnos_drivers_rga::{Layout, PixelFormat, Rect, Rga};
 use parking_lot::Mutex;
 use smallvec::{SmallVec, smallvec};
 use styx_core::prelude::*;
-use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
+use styx_native::dma::{self, Access, DmaBuf, DmaHeap};
 
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 
@@ -278,7 +278,8 @@ impl RgaConverter {
         static PRESENT: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         pixel_format(input).is_some()
             && pixel_format(output).is_some()
-            && *PRESENT.get_or_init(|| daedalus_rga::find_m2m_device("rockchip-rga").is_some())
+            && *PRESENT
+                .get_or_init(|| lemnos_drivers_rga::find_m2m_device("rockchip-rga").is_some())
     }
 
     /// The formats the registry offers conversions between (every pair of two different ones).
@@ -307,11 +308,11 @@ impl RgaConverter {
         if views.len() != geometry.len() {
             return None;
         }
-        let id = dma_heap::dmabuf_id(first.fd);
+        let id = dma::dmabuf_id(first.fd);
         for (i, (view, g)) in views.iter().zip(&geometry).enumerate() {
             let at = input.dmabuf_plane(i)?;
             let same = at.fd.as_raw_fd() == first.fd.as_raw_fd()
-                || (id.is_some() && dma_heap::dmabuf_id(at.fd) == id);
+                || (id.is_some() && dma::dmabuf_id(at.fd) == id);
             if !same
                 || at.offset != g.offset
                 || view.stride() != g.stride
@@ -321,7 +322,7 @@ impl RgaConverter {
                 return None;
             }
         }
-        let size = dma_heap::dmabuf_size(first.fd).ok()?;
+        let size = dma::dmabuf_size(first.fd).ok()?;
         (size >= src.frame_len() as u64).then_some(first.fd)
     }
 }
@@ -483,7 +484,7 @@ mod tests {
     }
 
     fn vim2m() -> Option<PathBuf> {
-        let path = daedalus_rga::find_m2m_device("vim2m");
+        let path = lemnos_drivers_rga::find_m2m_device("vim2m");
         if path.is_none() {
             eprintln!("skipped: no vim2m (modprobe vim2m)");
         }

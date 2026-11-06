@@ -24,10 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use styx_kernel::bus::{BridgeLocation, find_bridges};
-use styx_kernel::media::{self, EntityFunction, MediaDevice, Topology};
-use styx_kernel::subdev::{Subdev, Which};
-use styx_kernel::v4l2::{ControlFlags, ControlWhich, Controls, MenuValue, SelectionTarget};
+use lemnos_sensor_bridge::{BridgeLocation, find_bridges};
+use lemnos_v4l2::media::{self, EntityFunction, MediaDevice, Topology};
+use lemnos_v4l2::subdev::{Subdev, Which};
+use lemnos_v4l2::v4l2::{ControlFlags, ControlWhich, Controls, MenuValue, SelectionTarget};
 use styx_sensor::{
     ControlRange, EmbeddedFormat, EmbeddedPacking, KernelControl, KernelSensorData, MbusCode,
     NoPins, Rect, SensorDescription, SensorDriver, Size, SubdevFormat, SubdevReport,
@@ -459,7 +459,7 @@ impl NativeCamera {
         let mut f = sd.format(pad, Which::Active).step("sensor format")?;
         f.width = chosen.width;
         f.height = chosen.height;
-        f.code = styx_kernel::subdev::MbusCode(code);
+        f.code = lemnos_v4l2::subdev::MbusCode(code);
         let got = sd
             .set_format(pad, Which::Active, &f)
             .step("set the sensor format")?;

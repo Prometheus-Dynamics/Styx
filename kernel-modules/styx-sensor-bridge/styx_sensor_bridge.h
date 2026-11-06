@@ -6,7 +6,7 @@
  * Userspace drives the sensor over I2C and uses this ABI to keep the CSI-2
  * receiver's start/stop order. See PROTOCOL.md next to this file.
  *
- * Mirrored in Rust by styx-kernel::bus::bridge; keep both in sync.
+ * Mirrored in Rust by lemnos-sensor-bridge (Lemnos); keep both in sync.
  */
 #ifndef _UAPI_STYX_SENSOR_BRIDGE_H
 #define _UAPI_STYX_SENSOR_BRIDGE_H

@@ -36,9 +36,13 @@ utoipa = { workspace = true, optional = true }
 
 # V4L2 memory-to-memory codecs driven directly (Linux only).
 [target.'cfg(target_os = "linux")'.dependencies]
-styx-kernel = { workspace = true, optional = true }
+lemnos-v4l2 = { workspace = true, optional = true }
+lemnos-linux = { workspace = true, optional = true, features = ["v4l2-m2m"] }
+lemnos-linux-sys = { workspace = true, optional = true }
+lemnos-drivers-rga = { workspace = true, optional = true }
+# Styx's dma-bufs (heap allocations with the Vulkan tail pad) for the RGA and MPP paths.
+styx-native = { workspace = true, optional = true }
 styx-gpuisp = { workspace = true, optional = true }
-daedalus-rga = { workspace = true, optional = true }
 
 # libjpeg-turbo with its SIMD required where it has it; elsewhere (RISC-V) it builds without.
 [target.'cfg(any(target_arch = "x86_64", target_arch = "aarch64"))'.dependencies]
@@ -47,6 +51,9 @@ turbojpeg = { workspace = true, optional = true, features = ["require-simd"] }
 [dev-dependencies]
 criterion.workspace = true
 jpeg-decoder.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+styx-native.workspace = true
 
 [[bench]]
 name = "mjpeg_luma"
@@ -66,11 +73,11 @@ codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]
 codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc"]
 # Hardware encoders, scalers and converters on V4L2 memory-to-memory devices, without FFmpeg.
-codec-v4l2m2m = ["dep:styx-kernel"]
+codec-v4l2m2m = ["dep:lemnos-v4l2", "dep:lemnos-linux", "dep:lemnos-linux-sys"]
 # Hardware encoders on Rockchip VPUs through MPP (librockchip_mpp, opened at run time).
-codec-rkmpp = ["dep:styx-kernel", "dep:libc"]
-# Scalers and converters on the Rockchip RGA through Daedalus's `daedalus-rga` (Linux only).
-codec-rga = ["dep:styx-kernel", "dep:daedalus-rga"]
+codec-rkmpp = ["dep:lemnos-v4l2", "dep:styx-native", "dep:libc"]
+# Scalers and converters on the Rockchip RGA through Lemnos's `lemnos-drivers-rga` (Linux only).
+codec-rga = ["dep:lemnos-v4l2", "dep:lemnos-drivers-rga", "dep:styx-native"]
 # `styx_jpeg::GpuStyxJpeg` (Linux): Styx's JPEG encoder with colour and DCT on a Vulkan device
 # (`styx-gpuisp`), Huffman coding on the CPU.
 gpu-jpeg = ["dep:styx-gpuisp"]

@@ -5,8 +5,8 @@
 use std::path::Path;
 use std::time::Duration;
 
-use styx_pisp::device::{BackEndDevice, BeOutput};
-use styx_pisp::uapi::{BayerOrder, BeTilesConfig};
+use lemnos_drivers_pisp::device::{BackEndDevice, BeOutput};
+use lemnos_drivers_pisp::uapi::{BayerOrder, BeTilesConfig};
 
 use crate::Args;
 

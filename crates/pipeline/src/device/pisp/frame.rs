@@ -2,7 +2,7 @@
 
 use std::time::{Duration, Instant};
 
-use styx_pisp::device::BeJob;
+use lemnos_drivers_pisp::device::BeJob;
 
 use crate::controller::SensorValues;
 

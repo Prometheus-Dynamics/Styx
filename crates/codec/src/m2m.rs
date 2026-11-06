@@ -2,7 +2,8 @@
 //! Rockchip RGA, the K230's 2D unit) or a stateful encoder (vicodec, the K230's VPU). Frames
 //! are copied into the device's source (`OUTPUT`) buffers, or handed to it by dma-buf
 //! ([`M2mSession::open_importing`]), and come back in its destination (`CAPTURE`) buffers,
-//! which the caller reads in place and gives back.
+//! which the caller reads in place and gives back. Built on Lemnos's session
+//! (`lemnos_linux::v4l2::m2m`), which owns the queues and ioctls.
 
 use std::collections::VecDeque;
 use std::os::fd::{AsFd, BorrowedFd};
@@ -11,8 +12,8 @@ use std::time::Duration;
 use lemnos_linux::v4l2 as lm;
 use lemnos_linux::v4l2::m2m as lmm;
 
-use super::{BufferFlags, DequeuedBuffer, Format, VideoDevice};
-use crate::{Error, Result};
+use lemnos_v4l2::v4l2::{BufferFlags, DequeuedBuffer, Format, VideoDevice};
+use lemnos_v4l2::{Error, Result};
 
 /// A destination buffer the device filled: read it with [`M2mSession::data`], then give it
 /// back with [`M2mSession::release`].
@@ -170,71 +171,22 @@ fn lm_err(call: &'static str) -> impl FnOnce(std::io::Error) -> Error {
     move |source| Error::Sys { call, source }
 }
 
-/// Styx's format as Lemnos's (`Meta` has no m2m queue).
-fn to_lemnos(f: &Format) -> Result<lm::Format> {
-    Ok(match f {
-        Format::Single(p) => lm::Format::Single(lm::PixFormat {
-            width: p.width,
-            height: p.height,
-            pixelformat: p.fourcc.to_u32(),
-            field: p.field,
-            bytes_per_line: p.bytes_per_line,
-            size_image: p.size_image,
-            colorspace: p.colorspace,
-        }),
-        Format::Multi(m) => {
-            if m.planes.is_empty() || m.planes.len() > lm::MAX_PLANES {
-                return Err(Error::Invalid(format!(
-                    "m2m: {} format planes",
-                    m.planes.len()
-                )));
-            }
-            let mut planes = [lm::PlaneFormat::default(); lm::MAX_PLANES];
-            for (d, s) in planes.iter_mut().zip(&m.planes) {
-                (d.bytes_per_line, d.size_image) = (s.bytes_per_line, s.size_image);
-            }
-            lm::Format::Multi(lm::PixFormatMplane {
-                width: m.width,
-                height: m.height,
-                pixelformat: m.fourcc.to_u32(),
-                field: m.field,
-                colorspace: m.colorspace,
-                planes,
-                num_planes: m.planes.len() as u32,
-            })
-        }
-        Format::Meta(_) => return Err(Error::Invalid("m2m: a metadata format".into())),
-    })
+/// `f` checked for an m2m queue (`Meta` has none; at most [`lm::MAX_PLANES`] planes).
+fn to_lemnos(f: &Format) -> Result<Format> {
+    match f {
+        Format::Multi(m) if m.planes.is_empty() || m.planes.len() > lm::MAX_PLANES => Err(
+            Error::Invalid(format!("m2m: {} format planes", m.planes.len())),
+        ),
+        Format::Meta(_) => Err(Error::Invalid("m2m: a metadata format".into())),
+        _ => Ok(f.clone()),
+    }
 }
 
-/// Lemnos's format as Styx's.
-fn from_lemnos(f: &lm::Format) -> Format {
+/// The memory planes a buffer of `f` has.
+fn num_planes(f: &Format) -> usize {
     match f {
-        lm::Format::Single(p) => Format::Single(super::PixFormat {
-            width: p.width,
-            height: p.height,
-            fourcc: p.pixelformat.into(),
-            field: p.field,
-            bytes_per_line: p.bytes_per_line,
-            size_image: p.size_image,
-            colorspace: p.colorspace,
-            ..Default::default()
-        }),
-        lm::Format::Multi(m) => Format::Multi(super::PixFormatMplane {
-            width: m.width,
-            height: m.height,
-            fourcc: m.pixelformat.into(),
-            field: m.field,
-            colorspace: m.colorspace,
-            planes: m.planes[..m.num_planes as usize]
-                .iter()
-                .map(|p| super::PlaneFormat {
-                    bytes_per_line: p.bytes_per_line,
-                    size_image: p.size_image,
-                })
-                .collect(),
-            ..Default::default()
-        }),
+        Format::Multi(m) => m.planes.len(),
+        _ => 1,
     }
 }
 
@@ -278,7 +230,7 @@ impl<H> M2mSession<H> {
             crop: None,
         };
         let source_memory = if import {
-            lm::Memory::Dmabuf
+            lm::Memory::DmaBuf
         } else {
             lm::Memory::Mmap
         };
@@ -290,7 +242,7 @@ impl<H> M2mSession<H> {
         )
         .map_err(lm_err("m2m open"))?;
         let mmap = [mmap_plane(0); lm::MAX_PLANES];
-        let planes = session.capture_format().num_planes();
+        let planes = num_planes(session.capture_format());
         for index in 0..session.capture_buffers() {
             session
                 .queue_capture(index, &mmap[..planes])
@@ -299,8 +251,8 @@ impl<H> M2mSession<H> {
         session.stream_on().map_err(lm_err("VIDIOC_STREAMON"))?;
         let slots = session.output_buffers();
         Ok(Self {
-            source_format: from_lemnos(session.output_format()),
-            dest_format: from_lemnos(session.capture_format()),
+            source_format: session.output_format().clone(),
+            dest_format: session.capture_format().clone(),
             session,
             dev,
             import,
@@ -341,8 +293,11 @@ impl<H> M2mSession<H> {
                 "m2m source: push_dmabuf on a session opened without importing".into(),
             ));
         }
-        let multi = self.session.output_format().is_multiplanar();
-        if planes.is_empty() || planes.len() > super::MAX_PLANES || (!multi && planes.len() != 1) {
+        let multi = matches!(self.session.output_format(), Format::Multi(_));
+        if planes.is_empty()
+            || planes.len() > lemnos_v4l2::v4l2::MAX_PLANES
+            || (!multi && planes.len() != 1)
+        {
             return Err(Error::Invalid(format!(
                 "m2m source: {} dma-buf planes",
                 planes.len()
@@ -354,7 +309,7 @@ impl<H> M2mSession<H> {
             ));
         }
         self.reap()?;
-        let key = crate::dma_heap::dmabuf_id(planes[0].fd);
+        let key = lemnos_linux_sys::dma_buf::identity(planes[0].fd).ok();
         let at = self
             .free
             .iter()
@@ -419,7 +374,7 @@ impl<H> M2mSession<H> {
         let Some(index) = self.free.pop_front() else {
             return Ok(false);
         };
-        let count = self.session.output_format().num_planes();
+        let count = num_planes(self.session.output_format());
         if planes.len() != count {
             self.free.push_front(index);
             return Err(Error::Invalid(format!(
@@ -455,15 +410,15 @@ impl<H> M2mSession<H> {
         let Some(index) = self.free.pop_front() else {
             return Ok(false);
         };
-        let mut shape = [(0usize, 0usize); super::MAX_PLANES];
+        let mut shape = [(0usize, 0usize); lemnos_v4l2::v4l2::MAX_PLANES];
         for (s, p) in shape.iter_mut().zip(planes) {
             *s = (p.row_bytes, p.rows);
         }
         let layout = spans(
             &self.source_format,
-            &shape[..planes.len().min(super::MAX_PLANES)],
+            &shape[..planes.len().min(lemnos_v4l2::v4l2::MAX_PLANES)],
         );
-        let memory = self.session.output_format().num_planes();
+        let memory = num_planes(self.session.output_format());
         let mut q = [mmap_plane(0); lm::MAX_PLANES];
         for (p, (plane, span)) in planes.iter().zip(&layout).enumerate() {
             let Some(dst) = self.session.output_plane_mut(index, span.buffer) else {
@@ -579,7 +534,7 @@ impl<H> M2mSession<H> {
     /// Gives `frame`'s buffer back to the device.
     pub fn release(&mut self, frame: M2mFrame) -> Result<()> {
         let mmap = [mmap_plane(0); lm::MAX_PLANES];
-        let planes = self.session.capture_format().num_planes();
+        let planes = num_planes(self.session.capture_format());
         self.session
             .queue_capture(frame.buffer.index, &mmap[..planes])
             .map_err(lm_err("VIDIOC_QBUF"))
@@ -628,4 +583,5 @@ impl<H> M2mSession<H> {
 }
 
 #[cfg(test)]
+#[allow(clippy::print_stderr)]
 mod tests;

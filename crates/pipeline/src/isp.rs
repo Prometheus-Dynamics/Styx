@@ -5,18 +5,18 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use styx_core::math::Float as _;
 
+use lemnos_drivers_pisp::be::BackEnd;
+use lemnos_drivers_pisp::fe::FrontEnd;
+use lemnos_drivers_pisp::uapi::{
+    BayerOrder, BeCdnConfig, BeGeqConfig, BeLscConfig, BeLscExtra, BeOutputFormatConfig,
+    BeSdnConfig, BeTdnConfig, BlaConfig, FeAgcStatsConfig, FeRgbyConfig, ImageFormatConfig,
+    image_format, rgb_enable,
+};
 use serde::{Deserialize, Serialize};
 #[cfg(feature = "all-algorithms")]
 use styx_algo::FocusArea;
 use styx_algo::{
     DenoiseParams, IDENTITY, LensShading, Matrix3, Params, Pwl, SharpenParams, ZoneGrid,
-};
-use styx_pisp::be::BackEnd;
-use styx_pisp::fe::FrontEnd;
-use styx_pisp::uapi::{
-    BayerOrder, BeCdnConfig, BeGeqConfig, BeLscConfig, BeLscExtra, BeOutputFormatConfig,
-    BeSdnConfig, BeTdnConfig, BlaConfig, FeAgcStatsConfig, FeRgbyConfig, ImageFormatConfig,
-    image_format, rgb_enable,
 };
 use styx_softisp as soft;
 
@@ -268,7 +268,7 @@ impl IspSettings {
             Some(s) => be.set_sharpen_scaled(s.threshold, s.strength, s.limit),
             None => {
                 let c = be.config_mut();
-                (c.sharpen, c.sh_fc_combine) = styx_pisp::be::defaults::sharpen();
+                (c.sharpen, c.sh_fc_combine) = lemnos_drivers_pisp::be::defaults::sharpen();
             }
         }
     }
@@ -368,7 +368,7 @@ fn histogram_weights(
     let Some(g) = weights.filter(|g| g.is_valid() && !g.is_empty()) else {
         return agc;
     };
-    let n = styx_pisp::uapi::AGC_STATS_SIZE as u32;
+    let n = lemnos_drivers_pisp::uapi::AGC_STATS_SIZE as u32;
     let (gw, gh) = (g.width.min(n), g.height.min(n));
     let cell_w = (u32::from(width) / gw) & !1;
     let cell_h = (u32::from(height) / gh) & !1;
@@ -376,7 +376,7 @@ fn histogram_weights(
     agc.offset_y = (((u32::from(height) - gh * cell_h) / 2) & !1) as u16;
     agc.size_x = cell_w as u16;
     agc.size_y = cell_h as u16;
-    agc.weights = [0; styx_pisp::uapi::AGC_STATS_NUM_ZONES / 2];
+    agc.weights = [0; lemnos_drivers_pisp::uapi::AGC_STATS_NUM_ZONES / 2];
     for row in 0..gh {
         for col in 0..gw {
             // Larger grids are sampled at the cell centres.
@@ -411,7 +411,7 @@ pub fn be_template(
         out0.format,
     );
     let yuv = |f: u32| f & (image_format::SAMPLING_MASK | image_format::PLANARITY_MASK) != 0;
-    let jpeg = styx_pisp::be::defaults::encoding("jpeg").expect("jpeg encoding");
+    let jpeg = lemnos_drivers_pisp::be::defaults::encoding("jpeg").expect("jpeg encoding");
     for (i, o) in outputs.iter().enumerate() {
         let Some(o) = o else { continue };
         be.set_output_format(
@@ -511,14 +511,15 @@ pub(crate) fn be_lens_shading(ls: &LensShading) -> Option<BeLscConfig> {
     if w == 0 || h == 0 || [&ls.r, &ls.g, &ls.b].iter().any(|t| t.len() != w * h) {
         return None;
     }
-    let table = [&ls.r, &ls.g, &ls.b].map(|t| styx_pisp::be::lsc::resample_table(t, w, h));
-    Some(styx_pisp::be::lsc::pack_lut(&table))
+    let table =
+        [&ls.r, &ls.g, &ls.b].map(|t| lemnos_drivers_pisp::be::lsc::resample_table(t, w, h));
+    Some(lemnos_drivers_pisp::be::lsc::pack_lut(&table))
 }
 
 #[cfg(test)]
 mod tests {
+    use lemnos_drivers_pisp::uapi::BayerOrder;
     use styx_algo::BlackLevels;
-    use styx_pisp::uapi::BayerOrder;
 
     use super::*;
 
@@ -606,7 +607,7 @@ mod tests {
 
     #[test]
     fn back_end_template_with_two_outputs_prepares() {
-        use styx_pisp::format::{compute_stride_align, formats};
+        use lemnos_drivers_pisp::format::{compute_stride_align, formats};
         let mut input = ImageFormatConfig {
             width: 1280,
             height: 800,
@@ -644,7 +645,7 @@ mod tests {
         });
         IspSettings::from_params(&p, 0, 1.0).apply_be(&mut be);
         let g = be.config().global;
-        assert!(g.bayer_enables & styx_pisp::uapi::bayer_enable::LSC != 0);
+        assert!(g.bayer_enables & lemnos_drivers_pisp::uapi::bayer_enable::LSC != 0);
         for bit in [
             rgb_enable::output(0),
             rgb_enable::output(1),

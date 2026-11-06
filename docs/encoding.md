@@ -27,14 +27,14 @@ let encoder = FfmpegH264Encoder::with_options_for_input(
 Feature `codec-v4l2m2m` drives V4L2 memory-to-memory devices directly, with no FFmpeg:
 `V4l2M2mEncoder` for stateful hardware encoders (H.264, HEVC, JPEG, VP8 VPUs, vicodec's FWHT) and
 `V4l2M2mConverter` for scalers and format converters (the K230's 2D unit, vim2m; the Rockchip RGA
-is driven by Daedalus's `daedalus-rga`, the stack's one RGA binding). Each opens its device on the first frame (the first node that converts between its two
+is driven by Lemnos's `lemnos-drivers-rga`, the stack's one RGA binding). Each opens its device on the first frame (the first node that converts between its two
 formats, or `V4l2M2mOptions::device`) and reopens it when the frame size changes. Frames are
 copied into the device's buffers at its strides and results are copied out into host frames.
 With the feature on, the registry offers the encoders for NV12, YU12 and YUYV input whenever a
 device here produces H.264, HEVC or JPEG.
 
 Feature `codec-rga` (Linux) converts, scales and crops on the Rockchip RGA through Daedalus's
-`daedalus-rga`, the stack's one RGA binding: `styx_codec::RgaConverter` takes RGB, BGR, BGRA,
+`lemnos-drivers-rga` (Lemnos), the stack's one RGA binding: `styx_codec::RgaConverter` takes RGB, BGR, BGRA,
 grey, NV12, NV21 and I420 frames and reads dma-buf frames at the engine's layout in place. Other
 frames are copied into dma-heap buffers made once per layout; the result is copied out into a
 host frame. No rotation yet. Written, untested on board; the vim2m tests pass where vim2m is

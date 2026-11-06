@@ -47,11 +47,11 @@ libcamera, V4L2 and GStreamer, with measurements.
 - `crates/core`: pooled buffers, formats, queues, controls, and low-level media primitives.
 - `crates/capture`: capture descriptors, validation, `CaptureSource`, and virtual capture helpers.
 - `crates/codec`: codec traits, registry, MJPEG/raw decoding, and optional FFmpeg/JPEG integrations.
-- `crates/v4l2`, `crates/kernel`: the V4L2 backend (UVC and other V4L2 cameras) on Styx's own
-  kernel interfaces (`libc` only).
-- `crates/native`, `crates/sensor`, `crates/pipeline`, `crates/pisp`, `crates/softisp`,
-  `crates/algo`, `crates/graph`: the native stack: sensors driven from Rust through the Styx
-  sensor bridge, the Raspberry Pi PiSP or a software ISP, 3A in Rust
+- `crates/v4l2`: the V4L2 backend (UVC and other V4L2 cameras) on Lemnos's kernel interfaces
+  (`lemnos-v4l2`).
+- `crates/native`, `crates/sensor`, `crates/pipeline`, `crates/softisp`, `crates/algo`,
+  `crates/graph`: the native stack: sensors driven from Rust through the sensor bridge, the
+  Raspberry Pi PiSP (Lemnos's `lemnos-drivers-pisp`) or a software ISP, 3A in Rust
   (`docs/native-stack/README.md`). No libcamera.
 - `crates/libcamera`: optional compat backend for cameras the native stack does not cover; never
   needed by the other crates.
@@ -131,7 +131,7 @@ blocking task/thread, then use async receive/control APIs for coordination.
   and WebSocket serving helpers, metrics; JPEG from `codec-turbojpeg` ([docs/preview.md](docs/preview.md)).
 - `raw-decoders`: CPU raw/YUV/Bayer conversion stack; this enables `yuvutils-rs` and `styx-softisp` (no Rayon).
 - `codec-jpeg-decoder`: pure-Rust MJPEG/JPEG decode via `jpeg-decoder`.
-- `codec-v4l2m2m`: hardware encoders, scalers and format converters on V4L2 memory-to-memory devices (vendor VPUs, the K230 2D unit; the Rockchip RGA is Daedalus's `daedalus-rga`), driven directly with no FFmpeg (Linux).
+- `codec-v4l2m2m`: hardware encoders, scalers and format converters on V4L2 memory-to-memory devices (vendor VPUs, the K230 2D unit; the Rockchip RGA is `codec-rga`, on Lemnos's `lemnos-drivers-rga`), driven directly with no FFmpeg (Linux).
 - `codec-ffmpeg`, `codec-mozjpeg`, `codec-turbojpeg`, `codec-zune`: alternate codec integrations; FFmpeg and native JPEG backends add their respective system/library dependency surface.
 - `netcam-video`: FFmpeg-backed network video stream fallback; use only when multipart MJPEG is not enough.
 - `simulation-bevy`: Bevy/wgpu-based synthetic capture; useful for simulation, but intentionally kept out of default builds.

@@ -8,8 +8,8 @@ use std::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
 use styx_algo::{CameraConfig, FrameMetadata, Pipeline, Tuning};
-use styx_pisp::stats::Statistics;
-use styx_pisp::uapi::RawStatistics;
+use lemnos_drivers_pisp::stats::Statistics;
+use lemnos_drivers_pisp::uapi::RawStatistics;
 
 fn pipeline() -> &'static Mutex<Pipeline> {
     static P: OnceLock<Mutex<Pipeline>> = OnceLock::new();

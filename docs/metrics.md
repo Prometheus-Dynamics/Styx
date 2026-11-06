@@ -210,8 +210,8 @@ Every place that copies pixels calls one helper (`styx_core::metrics::copied_fra
 bytes)`, or `copied(site, bytes)` where no output frame is at hand): a process-wide counter per
 site and, with `copied_frame`, the frame's own hop record, so the consumer of a copied frame (and
 the per-capture, per-socket and per-client `HopMetrics`) count it as copied. Every
-`DMA_BUF_IOCTL_SYNC` is counted with its time (styx-core's `dmabuf_*_cpu_*` and styx-kernel's
-`dma_heap::sync`, which every Styx sync goes through). `ProcessMetrics::path` (`PathMetrics`):
+`DMA_BUF_IOCTL_SYNC` is counted with its time (styx-core's `dmabuf_*_cpu_*` and Lemnos's
+`lemnos_linux::dma::sync_stats`, which every dma-buf sync of the process goes through). `ProcessMetrics::path` (`PathMetrics`):
 
 | field | what | counted at |
 |---|---|---|

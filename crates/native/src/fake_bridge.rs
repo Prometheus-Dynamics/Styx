@@ -10,8 +10,8 @@ use std::os::fd::{AsFd, BorrowedFd};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use styx_kernel::Wait;
-use styx_kernel::bus::{StreamAction, StreamRequest, StreamState};
+use lemnos_sensor_bridge::{StreamAction, StreamRequest, StreamState};
+use lemnos_v4l2::Wait;
 
 use crate::device::BridgeDevice;
 use crate::fake::{Signal, errno, lock};

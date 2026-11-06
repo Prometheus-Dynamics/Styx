@@ -9,8 +9,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use styx_kernel::FourCc;
-use styx_kernel::bus::StreamState;
+use lemnos_sensor_bridge::StreamState;
+use lemnos_v4l2::FourCc;
 use styx_runtime::styx_hal::{BufferSource as HalBufferSource, Bus, ReceiverConfig};
 use styx_runtime::{Camera, CameraOptions as RuntimeOptions};
 

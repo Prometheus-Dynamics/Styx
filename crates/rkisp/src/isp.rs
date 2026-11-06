@@ -1,60 +1,25 @@
-//! Which Rockchip ISP a system has ([`Isp`], from the SoC), and its parameter buffer
+//! A Rockchip ISP's ([`Isp`], Lemnos's) parameter buffer
 //! ([`AnyParams`]) and statistics whatever the generation: ISP21 (RK3566 / RK3568), ISP30
 //! (RK3588 / RK3588S), ISP32 (RV1106 / RV1103) and ISP32-lite (RK3562). Written, untested on
 //! board: none of these has run on its chip yet.
 
 use styx_algo::Statistics;
 
-use crate::{Generation, Params, isp32};
+use crate::{Generation, Isp, ParamBuffer, Params, isp32};
 
-/// A Rockchip ISP generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Isp {
-    /// RK3566 / RK3568.
-    Isp21,
-    /// RK3588 / RK3588S.
-    Isp30,
-    /// RV1106 / RV1103 (the driver's `ISP_V32`).
-    Isp32,
-    /// RK3562 (the driver's `ISP_V32_L`).
-    Isp32Lite,
+/// What Styx builds and reads for an [`Isp`]: its parameter buffer and its statistics, whatever
+/// the generation. [`Isp`] itself (the generation, from the SoC) is Lemnos's.
+pub trait IspBuffers {
+    /// A parameter buffer for this ISP, every module off.
+    fn params(self) -> AnyParams;
+
+    /// This ISP's statistics buffer `buf` as [`Statistics`] (see [`crate::statistics`] and
+    /// [`isp32::statistics`]), written into `out`; `None` when `buf` is short.
+    fn statistics(self, buf: &[u8], pixels_per_zone: u32, out: &mut Statistics) -> Option<()>;
 }
 
-impl Isp {
-    /// The ISP of the SoC named by one devicetree compatible string (`rockchip,rk3566`);
-    /// `None` for anything else, the RV1103B (ISP33) and RK3576 (generation unconfirmed)
-    /// included.
-    pub fn from_soc(compatible: &str) -> Option<Self> {
-        let soc = compatible.strip_prefix("rockchip,")?;
-        Some(match soc {
-            "rk3566" | "rk3568" => Self::Isp21,
-            "rk3588" | "rk3588s" => Self::Isp30,
-            "rv1106" | "rv1103" => Self::Isp32,
-            "rk3562" => Self::Isp32Lite,
-            _ => return None,
-        })
-    }
-
-    /// The ISP of the first SoC among a machine's compatible strings (the root node's list:
-    /// the board's first, then the SoC's).
-    pub fn from_compatibles<'a>(list: impl IntoIterator<Item = &'a str>) -> Option<Self> {
-        list.into_iter().find_map(Self::from_soc)
-    }
-
-    /// This machine's ISP, from `/proc/device-tree/compatible`; `None` off a Rockchip SoC this
-    /// crate knows.
-    #[cfg(feature = "std")]
-    pub fn detect() -> Option<Self> {
-        let bytes = std::fs::read("/proc/device-tree/compatible").ok()?;
-        Self::from_compatibles(
-            bytes
-                .split(|&b| b == 0)
-                .filter_map(|s| core::str::from_utf8(s).ok()),
-        )
-    }
-
-    /// A parameter buffer for this ISP, every module off.
-    pub fn params(self) -> AnyParams {
+impl IspBuffers for Isp {
+    fn params(self) -> AnyParams {
         match self {
             Self::Isp21 => AnyParams::Rk(Params::new(Generation::Isp21)),
             Self::Isp30 => AnyParams::Rk(Params::new(Generation::Isp30)),
@@ -63,9 +28,7 @@ impl Isp {
         }
     }
 
-    /// This ISP's statistics buffer `buf` as [`Statistics`] (see [`crate::statistics`] and
-    /// [`isp32::statistics`]), written into `out`; `None` when `buf` is short.
-    pub fn statistics(self, buf: &[u8], pixels_per_zone: u32, out: &mut Statistics) -> Option<()> {
+    fn statistics(self, buf: &[u8], pixels_per_zone: u32, out: &mut Statistics) -> Option<()> {
         match self {
             Self::Isp21 => crate::statistics(Generation::Isp21, buf, pixels_per_zone, out),
             Self::Isp30 => crate::statistics(Generation::Isp30, buf, pixels_per_zone, out),
@@ -77,7 +40,7 @@ impl Isp {
     }
 }
 
-/// A parameter buffer of any generation ([`Isp::params`]), built the same way.
+/// A parameter buffer of any generation ([`IspBuffers::params`]), built the same way.
 pub enum AnyParams {
     /// ISP21 or ISP30.
     Rk(Params),
@@ -160,13 +123,6 @@ impl AnyParams {
     }
 }
 
-/// A parameter buffer the driver takes as it is ([`crate::device`]'s queue): [`Params`],
-/// [`isp32::Params`] or [`AnyParams`].
-pub trait ParamBuffer {
-    /// The bytes of the driver's parameter structure.
-    fn param_bytes(&self) -> &[u8];
-}
-
 impl ParamBuffer for Params {
     fn param_bytes(&self) -> &[u8] {
         self.as_bytes()
@@ -188,31 +144,6 @@ impl ParamBuffer for AnyParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_soc_names_its_isp() {
-        let root = |s: &[&'static str]| Isp::from_compatibles(s.iter().copied());
-        assert_eq!(root(&["radxa,zero3", "rockchip,rk3566"]), Some(Isp::Isp21));
-        assert_eq!(
-            root(&["rockchip,rk3568-evb", "rockchip,rk3568"]),
-            Some(Isp::Isp21)
-        );
-        assert_eq!(
-            root(&["radxa,rock-5a", "rockchip,rk3588s"]),
-            Some(Isp::Isp30)
-        );
-        assert_eq!(root(&["luckfox,pico", "rockchip,rv1106"]), Some(Isp::Isp32));
-        assert_eq!(
-            root(&["rockchip,rk3562-evb", "rockchip,rk3562"]),
-            Some(Isp::Isp32Lite)
-        );
-        assert_eq!(root(&["rockchip,rv1103b"]), None);
-        assert_eq!(root(&["rockchip,rk3576"]), None);
-        assert_eq!(
-            root(&["raspberrypi,5-compute-module", "brcm,bcm2712"]),
-            None
-        );
-    }
 
     #[test]
     fn each_isp_builds_its_own_buffer() {

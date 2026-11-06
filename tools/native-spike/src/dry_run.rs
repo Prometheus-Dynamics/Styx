@@ -3,11 +3,11 @@
 
 use std::path::Path;
 
-use styx_kernel::FourCc;
-use styx_kernel::bus::find_bridges;
-use styx_kernel::media::{self, MediaDevice};
-use styx_kernel::subdev::{Subdev, Which};
-use styx_kernel::v4l2::{BufType, Format, PixFormat, VideoDevice};
+use lemnos_sensor_bridge::find_bridges;
+use lemnos_v4l2::FourCc;
+use lemnos_v4l2::media::{self, MediaDevice};
+use lemnos_v4l2::subdev::{Subdev, Which};
+use lemnos_v4l2::v4l2::{BufType, Format, PixFormat, VideoDevice};
 use styx_sensor::SensorDescription;
 
 use crate::args::Args;

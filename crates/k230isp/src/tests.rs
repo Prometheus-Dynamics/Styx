@@ -256,18 +256,3 @@ fn statistics_with_no_white_pixels_count_nothing() {
     let c = out.colour.zones[0];
     assert_eq!((c.counted, c.r, c.g, c.b), (0, 0.0, 0.0, 0.0));
 }
-
-#[cfg(feature = "device")]
-#[test]
-fn ioctl_numbers_are_the_iocs_of_the_header() {
-    use crate::device::*;
-    // _IOC(dir, type, nr, size): write 1, read 2, read-write 3.
-    const fn ioc(dir: u32, nr: u32, size: u32) -> u32 {
-        (dir << 30) | (size << 16) | ((b'v' as u32) << 8) | nr
-    }
-    assert_eq!(VVCAM_ISP_RESET, ioc(1, 0x01, 4));
-    assert_eq!(VVCAM_ISP_READ_REG, ioc(3, 0x02, 8));
-    assert_eq!(VVCAM_ISP_WRITE_REG, ioc(1, 0x03, 8));
-    assert_eq!(VVCAM_ISP_CLOSE_IRQ, ioc(1, 0x07, 4));
-    assert_eq!(VVCAM_ISP_FE_START, ioc(1, 0x08, 16));
-}

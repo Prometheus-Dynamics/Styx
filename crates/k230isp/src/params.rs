@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 #[allow(unused_imports)]
 use styx_math::Float as _;
 
+use crate::RegisterAccess;
 use crate::regs::{self as r, CC_COEFF_MASK, CT_OFFSET_MASK};
 
 /// White balance gain 1.0 (`mrv_all_bits.h`: "gain value ... 100h = 1").
@@ -68,19 +69,6 @@ pub struct RegWrite {
     pub addr: u32,
     /// Value written.
     pub value: u32,
-}
-
-/// Register access for [`Params::apply`]: the device's ioctls, or a fake register file in
-/// the tests.
-pub trait RegisterAccess {
-    /// What an access can fail with.
-    type Error;
-
-    /// The register at `addr`.
-    fn read(&mut self, addr: u32) -> Result<u32, Self::Error>;
-
-    /// Writes `value` to the register at `addr`.
-    fn write(&mut self, addr: u32, value: u32) -> Result<(), Self::Error>;
 }
 
 /// The register writes for one frame's 3A settings.

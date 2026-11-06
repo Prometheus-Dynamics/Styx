@@ -54,7 +54,7 @@ nocas_targets=(thumbv6m-none-eabi riscv32imc-unknown-none-elf)
 # The lint groups: "crate:features" without default features (the examples have none). Every
 # crate:features pair is linted for every target above and the host.
 groups=(
-    "styx-core-rs: styx-sensor:postcard styx-algo: styx-dng: styx-pisp:"
+    "styx-core-rs: styx-sensor:postcard styx-algo: styx-dng:"
     "styx-core-rs:neon,x86 styx-sensor: styx-softisp:neon,x86 styx-pipeline:"
     "styx-core-rs:neon,x86,critical-section styx-sensor:postcard,toml,short-history"
     "styx-hal: styx-algo:all-algorithms,toml styx-softisp:neon,x86,fp16,poly-tone"

@@ -22,7 +22,7 @@ std = [
     "styx-core/std",
     "styx-core/rvv",
     "styx-dng/std",
-    "styx-pisp/std",
+    "lemnos-drivers-pisp/std",
     "styx-rkisp/std",
     "styx-runtime/std",
     "styx-sensor/std",
@@ -39,23 +39,23 @@ all-algorithms = ["styx-algo/all-algorithms"]
 # curve turns the recorded gains into the colour temperature the CCM and lens shading follow).
 alsc = ["styx-algo/alsc"]
 awb-bayes = ["styx-algo/awb-bayes"]
-# Run on the device: native cameras (styx-native), the PiSP nodes (styx-pisp/device) and the
+# Run on the device: native cameras (styx-native), the PiSP nodes (lemnos-drivers-pisp/device) and the
 # Rockchip ISP's (styx-rkisp/device).
 device = [
     "std",
     "all-algorithms",
     "dep:styx-native",
-    "dep:styx-kernel",
-    "styx-pisp/device",
+    "dep:lemnos-v4l2",
+    "lemnos-drivers-pisp/device",
     "styx-rkisp/device",
 ]
 # The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
 gpu = ["std", "dep:styx-gpuisp"]
 # With `gpu`: `GpuContext::shared`, the ISP on the process's Daedalus device.
 gpu-daedalus = ["styx-gpuisp?/daedalus"]
-# The PiSP debug hooks: styx-pisp's `debug-hooks` (config dumps, block patch), and
+# The PiSP debug hooks: lemnos-drivers-pisp's `debug-hooks` (config dumps, block patch), and
 # the slicing and timing probes (`STYX_PISP_BE_STRIPE`, `STYX_PISP_SLICE_LOG`).
-pisp-debug-hooks = ["device", "styx-pisp/debug-hooks"]
+pisp-debug-hooks = ["device", "lemnos-drivers-pisp/debug-hooks"]
 
 # Path dependencies without default features (the workspace entries keep theirs for the std
 # crates), as examples/nostd-smoke does.
@@ -66,14 +66,14 @@ serde_json = { version = "1.0.151", optional = true }
 styx-algo = { path = "../algo", version = "2.0.1-dev", default-features = false }
 styx-core = { workspace = true, features = ["neon", "x86"] }
 styx-dng = { path = "../dng", version = "2.0.1-dev", default-features = false }
-styx-pisp = { path = "../pisp", version = "2.0.1-dev", default-features = false }
+lemnos-drivers-pisp.workspace = true
 styx-rkisp = { path = "../rkisp", version = "2.0.1-dev", default-features = false }
 styx-runtime = { path = "../runtime", version = "2.0.1-dev", default-features = false }
 styx-sensor = { path = "../sensor", version = "2.0.1-dev", default-features = false }
 styx-softisp = { path = "../softisp", version = "2.0.1-dev", default-features = false, features = ["neon", "x86"] }
 thiserror.workspace = true
 styx-native = { workspace = true, optional = true }
-styx-kernel = { workspace = true, optional = true }
+lemnos-v4l2 = { workspace = true, optional = true }
 styx-gpuisp = { workspace = true, optional = true }
 
 [lints]

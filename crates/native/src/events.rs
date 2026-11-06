@@ -27,9 +27,9 @@ use std::task::Waker;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use styx_kernel::bus::{StreamAction, StreamRequest};
-use styx_kernel::event::EventKind;
-use styx_kernel::{Ready, Wait, poll_into};
+use lemnos_sensor_bridge::{StreamAction, StreamRequest};
+use lemnos_v4l2::event::EventKind;
+use lemnos_v4l2::{Ready, Wait, poll_into};
 use styx_runtime::styx_hal::{Instant as HalInstant, SyncEvent};
 use styx_runtime::{SensorSide, SyncSource, serve_sync};
 

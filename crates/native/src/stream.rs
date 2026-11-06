@@ -11,8 +11,8 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_core::Stream;
+use lemnos_v4l2::FourCc;
 use styx_graph::rt;
-use styx_kernel::FourCc;
 
 pub(crate) use styx_runtime::SensorSide;
 pub use styx_runtime::StreamStats;

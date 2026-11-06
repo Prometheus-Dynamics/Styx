@@ -2,9 +2,11 @@
 
 use std::os::fd::AsRawFd;
 
+use lemnos_v4l2::v4l2::MAX_PLANES;
 use smallvec::SmallVec;
 use styx_core::prelude::*;
-use styx_kernel::v4l2::{DmabufSource, M2mSession, MAX_PLANES};
+
+use crate::m2m::{DmabufSource, M2mSession};
 
 /// `input`'s memory planes as the device reads them, written to `out` (their count returned),
 /// if it lies in dma-bufs at the session's source layout: the colour planes the device keeps
@@ -14,7 +16,8 @@ pub(super) fn dmabuf_planes<'a>(
     input: &'a FrameLease,
     out: &mut [Option<DmabufSource<'a>>; MAX_PLANES],
 ) -> Option<usize> {
-    use styx_kernel::dma_heap::dmabuf_id;
+    use lemnos_linux_sys::dma_buf::identity;
+    let dmabuf_id = |fd| identity(fd).ok();
     let planes = input.planes_visible().ok()?;
     let shape: SmallVec<[(usize, usize); 3]> =
         planes.iter().map(|p| (p.row_bytes(), p.len())).collect();
@@ -56,7 +59,7 @@ pub(super) fn dmabuf_planes<'a>(
 #[allow(clippy::print_stderr)]
 mod tests {
     use smallvec::smallvec;
-    use styx_kernel::dma_heap::{Access, DmaHeap};
+    use styx_native::dma::{Access, DmaHeap};
 
     use super::super::{V4l2M2mConverter, V4l2M2mOptions};
     use crate::Codec;

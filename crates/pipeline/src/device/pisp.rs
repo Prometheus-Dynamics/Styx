@@ -28,14 +28,14 @@ mod passes;
 pub use frame::{PassOutput, PispFrame, PispStartup, PispTimes};
 use std::time::{Duration, Instant};
 
+use lemnos_drivers_pisp::device::{BackEndStream, FrontEndDevice, FrontEndSetup, profile};
+use lemnos_drivers_pisp::fe::FrontEnd;
+use lemnos_drivers_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
+use lemnos_v4l2::subdev::MbusCode;
 use styx_algo::{Statistics, Tuning, WarmStart};
-use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
-use styx_pisp::device::{BackEndStream, FrontEndDevice, FrontEndSetup, profile};
-use styx_pisp::fe::FrontEnd;
-use styx_pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, fe_enable};
 use styx_softisp::CfaPattern;
 
 use super::pisp_isp::{BackEnd, FeStats};
@@ -207,7 +207,7 @@ pub struct PispPipeline {
     /// Why slicing is off although asked for.
     slice_error: Option<String>,
     /// The window of the sensor's field the mode reads, if it reads one.
-    sensor_window: Option<styx_pisp::device::SensorWindow>,
+    sensor_window: Option<lemnos_drivers_pisp::device::SensorWindow>,
     be_dev: Option<BackEndStream>,
     be: BeConfigBuilder,
     sensor: Option<SensorStream>,
@@ -370,7 +370,7 @@ impl PispPipeline {
     /// The window of the sensor's field the mode reads (a mode of fewer lines at full pitch),
     /// `None` when it reads the whole field. Frames report their `FrameMeta::crop` in the full
     /// field's coordinates from it.
-    pub fn sensor_window(&self) -> Option<styx_pisp::device::SensorWindow> {
+    pub fn sensor_window(&self) -> Option<lemnos_drivers_pisp::device::SensorWindow> {
         self.sensor_window
     }
 
@@ -419,7 +419,7 @@ impl PispPipeline {
     }
 
     /// The back end config (and tiles) of the last job [`Self::next`] returned.
-    pub fn back_end_config(&self) -> &styx_pisp::uapi::BeTilesConfig {
+    pub fn back_end_config(&self) -> &lemnos_drivers_pisp::uapi::BeTilesConfig {
         self.be.config()
     }
 

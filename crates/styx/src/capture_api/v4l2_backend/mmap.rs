@@ -1,4 +1,4 @@
-//! The MMAP buffer queue of a V4L2 capture node, on `styx-kernel`.
+//! The MMAP buffer queue of a V4L2 capture node, on `lemnos-v4l2`.
 //!
 //! Buffers are mapped once and handed out by index; a buffer checked out to a frame is
 //! requeued only when it is recycled. Streaming starts lazily on the first dequeue with every
@@ -8,9 +8,9 @@
 use std::os::fd::OwnedFd;
 use std::time::Duration;
 
+use lemnos_v4l2::Mapping;
+use lemnos_v4l2::v4l2::{BufType, DequeuedBuffer, DmaBufAccess, Memory, QueueBuffer, VideoDevice};
 use parking_lot::Mutex;
-use styx_kernel::Mapping;
-use styx_kernel::v4l2::{BufType, DequeuedBuffer, DmaBufAccess, Memory, QueueBuffer, VideoDevice};
 
 use crate::capture_api::import::{CaptureBuffers, Claim};
 
@@ -37,7 +37,7 @@ impl V4l2MmapManager {
         buf_type: BufType,
         count: u32,
         timeout: Duration,
-    ) -> styx_kernel::Result<Self> {
+    ) -> lemnos_v4l2::Result<Self> {
         let granted = device.request_buffers(buf_type, Memory::Mmap, count)?.count;
         let mut buffers = Vec::with_capacity(granted as usize);
         for index in 0..granted {
@@ -45,7 +45,7 @@ impl V4l2MmapManager {
                 .map_buffer(buf_type, index)?
                 .into_iter()
                 .next()
-                .ok_or_else(|| styx_kernel::Error::Invalid("v4l2 buffer has no plane".into()))?;
+                .ok_or_else(|| lemnos_v4l2::Error::Invalid("v4l2 buffer has no plane".into()))?;
             buffers.push(plane);
         }
         Ok(Self::with_buffers(
@@ -129,7 +129,7 @@ impl V4l2MmapManager {
 
     /// Queues every buffer and starts streaming now, so a refused start (the bus has no
     /// bandwidth left: ENOSPC) fails the caller rather than the capture thread.
-    pub(super) fn start_stream(&self) -> styx_kernel::Result<()> {
+    pub(super) fn start_stream(&self) -> lemnos_v4l2::Result<()> {
         let mut state = self.state.lock();
         for index in 0..state.queued.len() {
             if !state.queued[index] && !state.checked_out[index] {
@@ -141,7 +141,7 @@ impl V4l2MmapManager {
 
     /// Waits up to the poll timeout for a filled buffer and dequeues it; `Ok(None)` when none
     /// arrived. Starts streaming first when needed.
-    pub(super) fn dequeue(&self) -> styx_kernel::Result<Option<(usize, DequeuedBuffer)>> {
+    pub(super) fn dequeue(&self) -> lemnos_v4l2::Result<Option<(usize, DequeuedBuffer)>> {
         let timeout = {
             let mut state = self.state.lock();
             if !state.active {
@@ -170,7 +170,7 @@ impl V4l2MmapManager {
         Ok(Some((index, buf)))
     }
 
-    pub(super) fn recycle(&self, index: usize) -> styx_kernel::Result<()> {
+    pub(super) fn recycle(&self, index: usize) -> lemnos_v4l2::Result<()> {
         let mut state = self.state.lock();
         if index >= state.checked_out.len() {
             return Ok(());
@@ -211,12 +211,12 @@ impl V4l2MmapManager {
             .map_err(to_io)
     }
 
-    pub(super) fn stop_stream(&self) -> styx_kernel::Result<()> {
+    pub(super) fn stop_stream(&self) -> lemnos_v4l2::Result<()> {
         let mut state = self.state.lock();
         self.stop_stream_locked(&mut state)
     }
 
-    fn stream_on_locked(&self, state: &mut V4l2MmapState) -> styx_kernel::Result<()> {
+    fn stream_on_locked(&self, state: &mut V4l2MmapState) -> lemnos_v4l2::Result<()> {
         if state.active {
             return Ok(());
         }
@@ -225,7 +225,7 @@ impl V4l2MmapManager {
         Ok(())
     }
 
-    fn stop_stream_locked(&self, state: &mut V4l2MmapState) -> styx_kernel::Result<()> {
+    fn stop_stream_locked(&self, state: &mut V4l2MmapState) -> lemnos_v4l2::Result<()> {
         if !state.active {
             return Ok(());
         }
@@ -235,7 +235,7 @@ impl V4l2MmapManager {
         Ok(())
     }
 
-    fn queue_locked(&self, index: usize, state: &mut V4l2MmapState) -> styx_kernel::Result<()> {
+    fn queue_locked(&self, index: usize, state: &mut V4l2MmapState) -> lemnos_v4l2::Result<()> {
         if state.queued[index] {
             return Ok(());
         }
@@ -265,7 +265,7 @@ impl Drop for V4l2MmapManager {
 }
 
 /// Converts a kernel error to the `io::Error` of the failed call's errno.
-pub(super) fn to_io(err: styx_kernel::Error) -> std::io::Error {
+pub(super) fn to_io(err: lemnos_v4l2::Error) -> std::io::Error {
     match err.errno() {
         Some(errno) => std::io::Error::from_raw_os_error(errno),
         None => std::io::Error::other(err),

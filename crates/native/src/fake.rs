@@ -21,11 +21,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use crate::dma::DmaBuf;
+use lemnos_v4l2::event::{Event, EventKind};
+use lemnos_v4l2::v4l2::{BufferFlags, DequeuedBuffer, Memory, Planes, QueueBuffer};
+use lemnos_v4l2::{Mapping, Wait};
 use styx_graph::rt;
-use styx_kernel::dma_heap::DmaBuf;
-use styx_kernel::event::{Event, EventKind};
-use styx_kernel::v4l2::{BufferFlags, DequeuedBuffer, Memory, Planes, QueueBuffer};
-use styx_kernel::{Mapping, Wait};
 
 use crate::device::CaptureDevice;
 #[cfg(test)]
@@ -234,7 +234,7 @@ impl FakeQueue {
         q.sequence += 1;
         let timestamp = match at {
             Some(t) => t,
-            None if q.real_time => styx_kernel::monotonic_now(),
+            None if q.real_time => lemnos_v4l2::monotonic_now(),
             None => Duration::from_millis(u64::from(seq) * 10),
         };
         if q.frame_sync {

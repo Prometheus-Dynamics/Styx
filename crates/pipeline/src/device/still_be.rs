@@ -5,9 +5,9 @@
 
 use std::time::Duration;
 
-use styx_pisp::device::{BackEndDevice, BeOutput};
-use styx_pisp::format::formats;
-use styx_pisp::uapi::{BayerOrder, ImageFormatConfig};
+use lemnos_drivers_pisp::device::{BackEndDevice, BeOutput};
+use lemnos_drivers_pisp::format::formats;
+use lemnos_drivers_pisp::uapi::{BayerOrder, ImageFormatConfig};
 use styx_softisp::{CfaPattern, RawPacking};
 
 use crate::error::{PipelineError, Result};

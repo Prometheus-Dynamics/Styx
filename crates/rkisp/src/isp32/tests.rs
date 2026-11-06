@@ -1,6 +1,6 @@
 use alloc::vec;
 
-use super::{Params, Variant, nodes, statistics};
+use super::{Params, Variant, statistics};
 use crate::uapi::isp32::{rkisp32_isp_stat_buffer, rkisp32_lite_stat_buffer};
 use crate::uapi::module;
 use crate::{CCM_ONE, GAIN_ONE, LSC_ONE};
@@ -24,24 +24,6 @@ fn put_u32(buf: &mut [u8], at: usize, v: u32) {
 
 fn put_u16(buf: &mut [u8], at: usize, v: u16) {
     buf[at..at + 2].copy_from_slice(&v.to_le_bytes());
-}
-
-#[test]
-fn the_variants_name_their_outputs() {
-    let full = Variant::Isp32.output_nodes();
-    let lite = Variant::Isp32Lite.output_nodes();
-    assert!(full.contains(&nodes::SELFPATH) && lite.contains(&nodes::SELFPATH));
-    assert!(full.contains(&nodes::MAINPATH_4X4) && full.contains(&nodes::BYPASSPATH_4X4));
-    assert!(
-        !lite.contains(&nodes::MAINPATH_4X4),
-        "the lite has no 4x4 sampling"
-    );
-    assert!(
-        !lite.contains(&nodes::BYPASSPATH),
-        "the lite has no bypass path"
-    );
-    assert_eq!(full.len(), 7);
-    assert_eq!(lite.len(), 3);
 }
 
 #[test]

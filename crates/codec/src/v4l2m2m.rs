@@ -1,7 +1,7 @@
-//! Codecs on V4L2 memory-to-memory devices, driven directly through `styx-kernel` (no FFmpeg):
+//! Codecs on V4L2 memory-to-memory devices, driven directly through Lemnos (no FFmpeg):
 //! stateful encoders ([`V4l2M2mEncoder`]: H.264, HEVC, JPEG and VP8 hardware encoders, the
 //! K230's VPU, vicodec) and scalers or converters ([`V4l2M2mConverter`]: the K230's 2D unit, vim2m). The
-//! Rockchip RGA is Daedalus's (`daedalus-rga`, its one binding), not this converter's.
+//! Rockchip RGA is Lemnos's (`lemnos-drivers-rga`, the `rga` module), not this converter's.
 //!
 //! Each codec opens its device on the first frame and reopens it when the frame size changes.
 //! A frame over dma-bufs at a layout the device reads (a capture buffer, a dma-heap frame) is
@@ -15,14 +15,15 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use lemnos_v4l2::v4l2::{
+    BufType, CapabilityFlags, ControlValue, Controls, Format, MAX_PLANES, PixFormat,
+    PixFormatMplane, PlaneFormat, VideoDevice,
+};
 use parking_lot::Mutex;
 use smallvec::SmallVec;
 use styx_core::prelude::*;
-use styx_kernel::v4l2::{
-    BufType, CapabilityFlags, ControlValue, Controls, DmabufSource, Format, ImageRows, M2mFrame,
-    M2mSession, MAX_PLANES, PixFormat, PixFormatMplane, PlaneFormat, VideoDevice,
-};
 
+use crate::m2m::{DmabufSource, ImageRows, M2mFrame, M2mSession};
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 
 mod import;
@@ -117,7 +118,7 @@ fn device_codes(dev: &VideoDevice, source: FourCc, dest: FourCc) -> Option<(u32,
 /// The first memory-to-memory device turning `source` frames into `dest` frames, with the
 /// V4L2 codes it uses for them.
 pub fn find_device(source: FourCc, dest: FourCc) -> Option<(PathBuf, u32, u32)> {
-    styx_kernel::v4l2::list_video_nodes()
+    lemnos_v4l2::v4l2::list_video_nodes()
         .into_iter()
         .find_map(|path| {
             let dev = VideoDevice::open(&path).ok()?;
@@ -138,7 +139,7 @@ fn format_for(
     stride: u32,
     size_hint: u32,
 ) -> Format {
-    let fourcc = styx_kernel::FourCc(code);
+    let fourcc = lemnos_v4l2::FourCc(code);
     if mplane {
         Format::Multi(PixFormatMplane {
             width,

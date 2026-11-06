@@ -11,7 +11,7 @@ use crate::capture_api::{CaptureDescriptor, CaptureError, ControlApplyKind};
 use crate::capture_api::{LIBCAMERA_FRAME_DURATION_LIMITS, LibcameraProcessedStreamRole};
 
 #[cfg(feature = "v4l2")]
-use styx_kernel::v4l2::{Controls as _, cid::VBLANK as V4L2_CID_VBLANK};
+use lemnos_v4l2::v4l2::{Controls as _, cid::VBLANK as V4L2_CID_VBLANK};
 const CONTROL_PERMISSION_DENIED_TOKENS: &[&str] = &["permission denied"];
 const CONTROL_INVALID_ARGUMENT_TOKENS: &[&str] = &["invalid argument"];
 const CONTROL_SET_REJECTED_TOKENS: &[&str] = &[
@@ -296,7 +296,7 @@ pub(super) fn try_set_sensor_vblank_min_for_high_fps(id: &str) {
     let Some(path) = find_sensor_subdev_for_libcamera_id(id) else {
         return;
     };
-    let Ok(dev) = styx_kernel::subdev::Subdev::open(&path) else {
+    let Ok(dev) = lemnos_v4l2::subdev::Subdev::open(&path) else {
         return;
     };
     let Ok(vblank) = dev.query_control(V4L2_CID_VBLANK) else {
@@ -305,6 +305,6 @@ pub(super) fn try_set_sensor_vblank_min_for_high_fps(id: &str) {
     let min = vblank.minimum;
     let _ = dev.set_control(
         V4L2_CID_VBLANK,
-        styx_kernel::v4l2::ControlValue::Integer64(min),
+        lemnos_v4l2::v4l2::ControlValue::Integer64(min),
     );
 }

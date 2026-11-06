@@ -10,7 +10,7 @@ styx-native  NativeCamera ── raw frames + FrameControls (exposure, gain, fra
      │                       read back from embedded data) ──────────────────────────┐
      │  configure_external / start_external: sensor side only, the PiSP owns the nodes │
      ▼                                                                                 │
-styx-pisp    FrontEndDevice (fe_stats every frame, fe_image0 held, FE config queue)    │
+lemnos-pisp  FrontEndDevice (fe_stats every frame, fe_image0 held, FE config queue)    │
      │       BackEndStream  (fe_image0 buffers imported as dma-bufs, output0 + output1) │
      │                                                                                 │
 styx-softisp SoftIsp (raw → NV12/RGB/luma + statistics in one pass)                    │

@@ -1,7 +1,7 @@
 //! The back end's outputs: how their buffers read on the CPU, and their crops.
 
-use styx_pisp::device::{BackEndStream, BeJob};
-use styx_pisp::uapi::BeCropConfig;
+use lemnos_drivers_pisp::device::{BackEndStream, BeJob};
+use lemnos_drivers_pisp::uapi::BeCropConfig;
 
 use super::PispPipeline;
 use crate::error::{PipelineError, Result};

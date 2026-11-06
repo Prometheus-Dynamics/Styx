@@ -30,7 +30,7 @@ an error, never a panic, a read outside a buffer, a hang, or an allocation sized
 
 Hooks the targets need inside crates are `#[doc(hidden)] pub fn fuzz_*` functions
 (`styx::ipc::fuzz_messages`, `fuzz_service_request`, `frame_socket::fuzz_import`,
-`styx_kernel::media::fuzz_topology`, `event::fuzz_event`, `v4l2::Format::fuzz_from_bytes`).
+`lemnos_v4l2::media::fuzz_topology`, `event::fuzz_event`, `v4l2::Format::fuzz_from_bytes`).
 
 ## Running
 

@@ -3,10 +3,10 @@
 
 use std::time::{Duration, Instant};
 
+use lemnos_drivers_pisp::device::{BackEndStream, BeJob, QueuedJob, profile};
+use lemnos_drivers_pisp::fe::FrontEnd;
+use lemnos_drivers_pisp::uapi::RawStatistics;
 use styx_algo::Statistics;
-use styx_pisp::device::{BackEndStream, BeJob, QueuedJob, profile};
-use styx_pisp::fe::FrontEnd;
-use styx_pisp::uapi::RawStatistics;
 
 use crate::controller::SensorValues;
 use crate::error::Result;

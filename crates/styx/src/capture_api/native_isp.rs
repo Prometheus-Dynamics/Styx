@@ -33,6 +33,7 @@ use std::sync::{Arc, mpsc};
 use std::thread;
 use std::time::Duration;
 
+use lemnos_drivers_pisp::device::OutputMemory;
 use parking_lot::Mutex;
 use smallvec::{SmallVec, smallvec};
 use styx_capture::prelude::*;
@@ -43,7 +44,6 @@ use styx_pipeline::device::{
     IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning_with, isp_kind,
     soft_capture_memory,
 };
-use styx_pisp::device::OutputMemory;
 use styx_softisp::Scale;
 
 use self::output_buffers::{MAX_OUTPUT_BUFFERS, cma_free, pisp_output_buffers};

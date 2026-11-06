@@ -32,7 +32,7 @@ Session runtime       buffers, fences, per-frame control timing
 Algorithms            AE / AWB / lens shading / colour in Rust, data tuning
 Device graph          nodes, ports, capabilities, providers                    styx-graph
 Sensor drivers        descriptions, timing, register sequences                 styx-sensor
-Kernel interfaces     V4L2, media controller, subdevs, dma-heaps, bridge       styx-kernel
+Kernel interfaces     V4L2, media controller, subdevs, dma-bufs, bridge, ISPs  Lemnos 2.0
 Generic hardware      register maps, i2c-dev, GPIO, uevents, VCM drivers      Lemnos 2.0
 ─────────────────────────────────────── kernel ───────────────────────────────────────
 Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo or usbfs)
@@ -42,12 +42,10 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 
 | Path | Crate | What | Owner |
 |---|---|---|---|
-| `crates/kernel` | `styx-kernel` | Safe Rust kernel interfaces for cameras, `libc` only: V4L2, media controller, subdevices, events, dma-heaps, the sensor bridge (`bus`), usbfs. Generic buses and uevents are Lemnos's | kernel agent (`v4l2`, `media`, `subdev`, `dma_heap`, `event`), bridge agent (`bus`) |
 | `crates/sensor` | `styx-sensor` | Sensor descriptions, timing model, exposure/gain models, register sequences (over Lemnos's register maps: `RegisterBus` is `lemnos_hal::RegisterBus`; `DriverBus` adds a kernel driver's V4L2 controls), OV9782 description; descriptions of kernel-driven sensors from their subdevice plus a small data file (`sensors/kernel/*.toml`), driven through V4L2 controls; focus lenses (VCMs) as data and their frame-exact schedule (the chips are `lemnos-drivers-vcm`'s), PDAF decoding | sensor agent |
 | `crates/hal` | `styx-hal` | Camera hardware traits without `std` or `alloc` (power sequencing by role over embedded-hal pins and delays and a Lemnos clock output, DMA memory, the receiver, lens actuators, a mock platform); see [portability.md](../portability.md) | hal agent |
-| Lemnos (git, branch `dev`) | `lemnos-hal`, `lemnos-linux`, `lemnos-drivers-vcm` | Lemnos 2.0, the hardware foundation Styx depends on: the register-bus trait and register maps over I²C/SPI, regulators, clocks, error kinds (`no_std`); i2c-dev, GPIO uAPI v2, uevents (Linux); VCM lens drivers (`no_std`); see `docs/portability-design.md` "Moved to Lemnos" | Lemnos |
+| Lemnos (git, a `dev` revision) | `lemnos-hal`, `lemnos-linux`, `lemnos-v4l2`, `lemnos-drivers-vcm`, `lemnos-drivers-pisp`, `lemnos-drivers-rkisp`, `lemnos-drivers-k230isp`, `lemnos-drivers-rga`, `lemnos-sensor-bridge` | Lemnos 2.0, the hardware foundation Styx depends on: the register-bus trait and register maps over I²C/SPI, regulators, clocks, error kinds (`no_std`); i2c-dev, GPIO uAPI v2, uevents, dma-bufs and V4L2 m2m sessions (Linux); V4L2, the media controller, subdevices and events (`lemnos-v4l2`); the PiSP, Rockchip ISP and K230 ISP device layers and the PiSP config builders; the RGA; the sensor bridge's userspace side; VCM lens drivers (`no_std`); see `docs/portability-design.md` "Moved to Lemnos" | Lemnos |
 | `crates/graph` | `styx-graph` | Device graph, `Provider` trait, async reactor, mock provider | graph agent |
-| `crates/pisp` | `styx-pisp` | PiSP uAPI layouts, front/back end config builders, BE tiling, statistics, device layer (feature `device`); see `pisp.md` | pisp agent |
 | `crates/algo` | `styx-algo` | 3A algorithms (AE, AWB, lens shading, CCM, tone, autofocus), tuning (TOML, Raspberry Pi JSON), simulator, replay; see [algorithms.md](algorithms.md) | algo agent |
 | `crates/native` | `styx-native` | The runtime for bridged sensors and sensors with an upstream kernel driver (`kernel.rs`, see [adding-a-camera.md](adding-a-camera.md)): description search path, discovery, `NativeCamera` (power, mode, receiver path, buffers, async frames, embedded data), frame-accurate typed controls, the `native` `Provider`; `styx` backend `BackendKind::Native` (feature `native`) | provider agent |
 | `crates/softisp` | `styx-softisp` | Software ISP: unpack, black level, gains, lens shading, demosaic, CCM, tone, RGB/YUV/luma, 3A statistics; SIMD row kernels. Backs `styx-codec`'s Bayer decoders | softisp agent |
@@ -57,13 +55,13 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `crates/uvc` | `styx-uvc` | USB Video Class cameras from userspace over usbfs (`lemnos-usb`; hotplug through `lemnos_linux::uevent`): descriptors, PROBE/COMMIT, isochronous/bulk streaming, frame assembly, PTS/SCR timestamps, controls, hotplug; `styx` backend `BackendKind::Uvc` (feature `uvc`); see [uvc.md](../uvc.md) | usb-uvc agent |
 | `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 
-`styx-core-rs`, `styx-sensor`, `styx-pisp` (without `device`), `styx-algo`, `styx-softisp` and
+`styx-core-rs`, `styx-sensor`, `styx-algo`, `styx-softisp` and
 `styx-dng` build as `no_std` + `alloc` without their default `std` feature, for targets with no
 Linux underneath: see [portability.md](../portability.md).
 
-Crates must not depend on each other except: `styx-sensor` may use `styx-kernel` types behind
+Crates must not depend on each other except: `styx-sensor` may use `lemnos-v4l2` types behind
 its `bus` trait implementation feature, and `styx-graph` and `styx-algo` depend on nothing new. `styx-pipeline`
-is where the pieces meet (`styx-algo`, `styx-pisp`, `styx-softisp`, `styx-sensor`; `styx-native`
+is where the pieces meet (`styx-algo`, `lemnos-drivers-pisp`, `styx-softisp`, `styx-sensor`; `styx-native`
 with its `device` feature), and `styx`'s `native` feature uses it for processed native modes.
 
 ## Key contracts
@@ -83,7 +81,7 @@ It has no sensor knowledge:
 - Power, clocks, reset and all register access are userspace's.
 
 The exact event ids, the acknowledgement mechanism and timeouts are defined in
-`kernel-modules/styx-sensor-bridge/PROTOCOL.md` by the bridge agent; `styx-kernel::bus`
+`kernel-modules/styx-sensor-bridge/PROTOCOL.md` by the bridge agent; `lemnos-sensor-bridge` (Lemnos)
 implements the userspace side.
 
 ### Sensors with a kernel driver
@@ -112,7 +110,7 @@ limits at that fps.
 
 ## Rules for work on this branch
 
-- Rust crates: no C dependencies, `libc` allowed. Unsafe only in `styx-kernel` and in the
+- Rust crates: no C dependencies, `libc` allowed. Unsafe only in Lemnos and in the
   reactor's syscalls (`styx-graph`, `rt/sys.rs`), each block with a `// SAFETY:` comment
   (workspace lint `unsafe_op_in_unsafe_fn` is deny).
 - Tests: logic is unit-tested on the host; kernel wrappers get tests that run where the device

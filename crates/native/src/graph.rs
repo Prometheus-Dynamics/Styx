@@ -6,12 +6,12 @@
 //! index, every data link a link with its state. The sensor's port lists each mode with its
 //! exact frame interval range; the raw sink lists the pixel formats the receiver writes.
 
+use lemnos_v4l2::media::{EntityFunction, LinkFlags as MediaLinkFlags, PadFlags, Topology};
 use styx_graph::{
     BusCode, Capabilities, DeviceGraph, FormatCaps, FourCc, IntervalRange, LinkFlags,
     MemoryDomains, Node, NodeId, NodeKind, Port, PortPurpose, ReceiverKind, SizeRange,
 };
 use styx_graph::{Fraction, GraphPath};
-use styx_kernel::media::{EntityFunction, LinkFlags as MediaLinkFlags, PadFlags, Topology};
 
 use crate::formats;
 use crate::modes::SensorMode;
@@ -28,7 +28,7 @@ pub struct GraphSpec<'a> {
     pub modes: &'a [SensorMode],
     /// Pixel formats the raw node offers per bus code (as `VIDIOC_ENUM_FMT` with an mbus code
     /// reports them); codes missing here use [`formats::memory_formats`].
-    pub raw_formats: &'a [(u32, Vec<styx_kernel::FourCc>)],
+    pub raw_formats: &'a [(u32, Vec<lemnos_v4l2::FourCc>)],
     /// Extra properties for the sensor node.
     pub sensor_properties: Vec<(String, String)>,
 }
@@ -163,7 +163,7 @@ fn bus_caps(modes: &[SensorMode]) -> Capabilities {
 }
 
 /// The pixel formats the raw node writes for `code`.
-pub fn raw_formats_for(code: u32, offered: &[(u32, Vec<styx_kernel::FourCc>)]) -> Vec<FourCc> {
+pub fn raw_formats_for(code: u32, offered: &[(u32, Vec<lemnos_v4l2::FourCc>)]) -> Vec<FourCc> {
     match offered.iter().find(|(c, f)| *c == code && !f.is_empty()) {
         Some((_, f)) => f.iter().map(|f| FourCc(f.0)).collect(),
         None => formats::memory_formats(code)
@@ -175,7 +175,7 @@ pub fn raw_formats_for(code: u32, offered: &[(u32, Vec<styx_kernel::FourCc>)]) -
 
 fn raw_sink_caps(
     modes: &[SensorMode],
-    offered: &[(u32, Vec<styx_kernel::FourCc>)],
+    offered: &[(u32, Vec<lemnos_v4l2::FourCc>)],
 ) -> Capabilities {
     let mut caps = Capabilities::new().memory(MemoryDomains::CPU | MemoryDomains::DMABUF);
     for code in codes(modes) {
@@ -315,7 +315,7 @@ mod tests {
             topology: &topo,
             route: &route,
             modes: &modes,
-            raw_formats: &[(0x3007, vec![styx_kernel::FourCc::new(b"pBAA")])],
+            raw_formats: &[(0x3007, vec![lemnos_v4l2::FourCc::new(b"pBAA")])],
             sensor_properties: vec![("bridge".into(), "/dev/v4l-subdev2".into())],
         })
     }

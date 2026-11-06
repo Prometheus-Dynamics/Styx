@@ -14,15 +14,15 @@ use styx_capture::prelude::*;
 use styx_core::buffer::{CpuReadWindow, FrameProgressRef};
 
 use super::pisp_sliced::SliceState;
+use lemnos_drivers_pisp::device::{BeFormat, BeOutputSetup};
+use lemnos_drivers_pisp::uapi::BeCropConfig;
+use lemnos_v4l2::Mapping;
 use styx_core::prelude::{
     BackendFrameMeta, CaptureInstant, ClockConversion, ExportedKind, ExternalBacking,
     FrameBackingExport, FrameExportError, FrameFdPlane, FrameRect, FrameResidency, Hop,
 };
-use styx_kernel::Mapping;
-use styx_kernel::dma_heap::{self, Access, DmaBuf};
+use styx_native::dma::{self, Access, DmaBuf};
 use styx_pipeline::device::{PispFrame, PispPipeline, RawLayout};
-use styx_pisp::device::{BeFormat, BeOutputSetup};
-use styx_pisp::uapi::BeCropConfig;
 
 use super::super::native_backend::stamp_clock;
 use super::super::request::CaptureError;
@@ -301,7 +301,7 @@ impl BeBacking {
 
     /// Starts (`true`) or ends CPU reads of the buffer.
     fn sync(&self, start: bool) {
-        let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, start);
+        let _ = dma::sync(self.buffer.fd.as_fd(), Access::Read, start);
     }
 }
 
@@ -389,7 +389,7 @@ pub(super) struct Leaser<'a> {
     pub(super) prep: CpuPrep,
     /// The window of the sensor's field the mode reads, if it reads one: frame crops are
     /// reported in the field's coordinates.
-    pub(super) window: Option<styx_pisp::device::SensorWindow>,
+    pub(super) window: Option<lemnos_drivers_pisp::device::SensorWindow>,
     /// A sliced frame's progress, for leases handed out before the frame completes.
     pub(super) progress: Option<Arc<SliceState>>,
 }
@@ -583,7 +583,10 @@ pub(super) fn raw_lease_of(
 
 /// `crop` (of the frame the sensor's window `w` reads; `None`: all of it) in the coordinates of
 /// the sensor's full field.
-pub(super) fn in_field(w: styx_pisp::device::SensorWindow, crop: Option<FrameRect>) -> FrameRect {
+pub(super) fn in_field(
+    w: lemnos_drivers_pisp::device::SensorWindow,
+    crop: Option<FrameRect>,
+) -> FrameRect {
     match crop {
         Some(c) => FrameRect::new(w.x + c.x, w.y + c.y, c.width, c.height),
         None => FrameRect::new(w.x, w.y, w.width, w.height),

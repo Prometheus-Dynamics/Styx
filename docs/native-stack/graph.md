@@ -181,7 +181,7 @@ The existing backends live in `crates/styx/src/capture_api/` and are selected by
 Per backend:
 
 - **V4L2** (`v4l2_backend.rs`, `styx-v4l2` probing): becomes the native provider on
-  `styx-kernel`. With a media device, the graph comes from `MEDIA_IOC_G_TOPOLOGY` (entities →
+  `lemnos-v4l2`. With a media device, the graph comes from `MEDIA_IOC_G_TOPOLOGY` (entities →
   nodes by function: sensor, CSI-2 receiver, ISP, video I/O → `Sink`; pads → ports; links as
   reported). Without one, a three-node graph `Sensor → Receiver → Sink` is synthesised from
   `VIDIOC_ENUM_FMT`/`ENUM_FRAMESIZES`/`ENUM_FRAMEINTERVALS`. The mmap/dma-buf queue and
@@ -241,8 +241,8 @@ Nothing in `crates/styx` changes until the providers land; this crate only fixes
   need buffer pools per memory link.
 - **Formats across bus → memory boundaries** are not checked (e.g. `SGRBG10_1X10` → `BA10` or
   `PC1R`); a mapping table from bus codes to pixel formats would let `validate` check them.
-- **Unsafe outside `styx-kernel`.** The reactor's syscalls (`epoll`, `eventfd`, `timerfd`,
+- **Unsafe outside Lemnos.** The reactor's syscalls (`epoll`, `eventfd`, `timerfd`,
   `fcntl`) live in `rt/sys.rs` with `// SAFETY:` comments. If the rule is strict, they move
-  into `styx-kernel` (or use `rustix`) once crates may depend on each other.
+  into Lemnos (or use `rustix`) once crates may depend on each other.
 - **One Frame type per registry.** Providers with different native frame types need adapters;
   whether `Provider` should instead be generic over a frame factory is open.

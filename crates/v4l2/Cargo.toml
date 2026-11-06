@@ -19,7 +19,7 @@ path = "src/lib.rs"
 styx-core = { workspace = true, features = ["std", "neon", "x86", "rvv"] }
 styx-capture.workspace = true
 smallvec.workspace = true
-styx-kernel.workspace = true
+lemnos-v4l2.workspace = true
 libc.workspace = true
 tracing = { workspace = true, optional = true }
 

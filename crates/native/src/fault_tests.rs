@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use styx_kernel::FourCc;
-use styx_kernel::bus::{StreamAction, StreamRequest};
+use lemnos_sensor_bridge::{StreamAction, StreamRequest};
+use lemnos_v4l2::FourCc;
 use styx_sensor::lemnos_hal::register::{RegisterError, RegisterResult};
 use styx_sensor::{
     BusError, BusErrorKind, DriverBus, DriverState, MockBus, RegisterBus, SensorDescription,

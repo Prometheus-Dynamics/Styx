@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use styx_kernel::media::{LinkFlags, PadRef, Topology};
+use lemnos_v4l2::media::{LinkFlags, PadRef, Topology};
 
 /// The entity names this spike expects.
 pub const RECEIVER: &str = "csi2";
@@ -144,7 +144,7 @@ pub fn describe(topo: &Topology, c: &LinkChange) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use styx_kernel::media::{Entity, EntityFlags, EntityFunction, Link, Pad, PadFlags};
+    use lemnos_v4l2::media::{Entity, EntityFlags, EntityFunction, Link, Pad, PadFlags};
 
     use super::*;
 

@@ -382,6 +382,8 @@ pub mod jpeg_encoder;
 pub mod jpeg_planar;
 #[cfg(feature = "codec-turbojpeg")]
 mod jpeg_slices;
+#[cfg(all(feature = "codec-v4l2m2m", target_os = "linux"))]
+pub mod m2m;
 #[cfg(feature = "codec-jpeg-decoder")]
 pub mod mjpeg;
 #[cfg(feature = "codec-turbojpeg")]

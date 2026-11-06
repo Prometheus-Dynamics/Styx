@@ -25,11 +25,11 @@ styx-native = { workspace = true, optional = true }
 styx-uvc = { workspace = true, optional = true }
 styx-pipeline = { path = "../pipeline", version = "2.0.1-dev", optional = true, default-features = false, features = ["std"] }
 styx-sensor = { workspace = true, optional = true }
-styx-pisp = { workspace = true, optional = true, features = ["device"] }
+lemnos-drivers-pisp = { workspace = true, optional = true, features = ["device"] }
 styx-softisp = { workspace = true, optional = true }
 styx-dng = { workspace = true, optional = true }
 smallvec = { workspace = true, optional = true }
-styx-kernel = { workspace = true, optional = true }
+lemnos-v4l2 = { workspace = true, optional = true }
 thiserror = { workspace = true, features = ["std"], optional = true }
 libcamera = { workspace = true, optional = true }
 libcamera-sys = { workspace = true, optional = true }
@@ -170,7 +170,7 @@ hooks = ["facade"]
 image = ["facade", "dep:image", "styx-codec/dynamic-image"]
 libcamera = ["facade", "styx-libcamera", "dep:libcamera", "dep:libcamera-sys", "raw-decoders"]
 libcamera-vendor-rpi = ["libcamera", "styx-libcamera/vendor_rpi", "dep:libcamera"]
-v4l2 = ["facade", "styx-v4l2", "styx-kernel"]
+v4l2 = ["facade", "styx-v4l2", "lemnos-v4l2"]
 # Sensors driven by Styx through the Styx sensor bridge (the native stack).
 native = [
     "facade",
@@ -178,10 +178,10 @@ native = [
     "dep:styx-native",
     "dep:styx-pipeline",
     "styx-pipeline/device",
-    "dep:styx-pisp",
+    "dep:lemnos-drivers-pisp",
     "dep:styx-softisp",
     "dep:styx-dng",
-    "styx-kernel",
+    "lemnos-v4l2",
     "frame-socket",
 ]
 # Native cameras without a PiSP process on a Vulkan GPU when one exists (styx-gpuisp: Vulkan
@@ -191,13 +191,13 @@ gpu-isp = ["native", "styx-pipeline/gpu"]
 # `PyramidSource::Gpu` makes pyramid levels in a compute pass, bit for bit the CPU's box filter.
 # The CPU and the ISP stay the default; without a GPU the levels fall back to the CPU.
 gpu-wgpu = ["dep:styx-wgpu"]
-# The PiSP debug hooks: styx-pisp's and styx-pipeline's `debug-hooks` (`STYX_PISP_BE_DUMP`,
-# `STYX_PISP_BE_PATCH`, `STYX_PISP_FE_LINES_PROBE`, ...). Off by default: the variables are then
+# The PiSP debug hooks: lemnos-drivers-pisp's and styx-pipeline's `debug-hooks`
+# (`LEMNOS_PISP_BE_DUMP`, `LEMNOS_PISP_BE_PATCH`, `STYX_PISP_BE_STRIPE`, ...). Off by default: the variables are then
 # ignored. Not for production builds. docs/runtime-debugging.md lists them.
 pisp-debug-hooks = ["native", "styx-pipeline/pisp-debug-hooks"]
 # UVC cameras driven from userspace over usbfs (`styx-uvc`), without `uvcvideo`. Opt-in:
 # where `uvcvideo` also has the camera, it stays the default backend (docs/uvc.md).
-uvc = ["facade", "dep:styx-uvc", "styx-kernel"]
+uvc = ["facade", "dep:styx-uvc", "lemnos-v4l2"]
 async = [
     "styx-core/async",
     "tokio",

@@ -5,9 +5,9 @@ use crate::capture_api::ControlApplyKind;
 #[cfg(feature = "v4l2")]
 use crate::prelude::CaptureError;
 #[cfg(feature = "v4l2")]
-use styx_capture::prelude::*;
+use lemnos_v4l2::v4l2::{self as kv4l2, Controls as _, VideoDevice};
 #[cfg(feature = "v4l2")]
-use styx_kernel::v4l2::{self as kv4l2, Controls as _, VideoDevice};
+use styx_capture::prelude::*;
 
 #[cfg(feature = "v4l2")]
 pub(crate) fn apply_v4l2_controls(
@@ -71,7 +71,7 @@ pub(crate) fn to_v4l_value(value: &ControlValue) -> Result<kv4l2::ControlValue, 
 #[cfg(feature = "v4l2")]
 pub(crate) fn read_v4l2_control(path: &str, id: ControlId) -> Result<ControlValue, CaptureError> {
     let dev = VideoDevice::open(path).map_err(|e| CaptureError::Backend(e.to_string()))?;
-    let apply_err = |e: styx_kernel::Error| CaptureError::control_apply(e.to_string());
+    let apply_err = |e: lemnos_v4l2::Error| CaptureError::control_apply(e.to_string());
     let info = dev.query_control(id.0).map_err(apply_err)?;
     let value = || {
         dev.get_controls_for(kv4l2::ControlWhich::Current, std::slice::from_ref(&info))

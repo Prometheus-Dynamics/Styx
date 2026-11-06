@@ -13,7 +13,7 @@
 //!   TOML, and its frame length for a rate; [`compiled_sensor_timing`] the same from the
 //!   description compiled at build time (`build.rs`, no TOML parsing on the target).
 //! * [`dng_round_trip`]: a DNG (`styx-dng`) written and read back in memory.
-//! * [`pisp_stats`]: PiSP front end statistics decoded (`styx-pisp`).
+//! * [`pisp_stats`]: PiSP front end statistics decoded (`lemnos-drivers-pisp`).
 //!
 //! An application on a microcontroller provides a global allocator and a panic handler; this
 //! library needs nothing else.
@@ -221,8 +221,8 @@ pub fn dng_round_trip(width: u32, height: u32, samples: Vec<u16>) -> Vec<u16> {
 
 /// PiSP front end statistics from an all-zero buffer: the histogram's sample count.
 pub fn pisp_stats() -> u64 {
-    let bytes = vec![0u8; core::mem::size_of::<styx_pisp::uapi::RawStatistics>()];
-    styx_pisp::stats::Statistics::parse(&bytes)
+    let bytes = vec![0u8; core::mem::size_of::<lemnos_drivers_pisp::uapi::RawStatistics>()];
+    lemnos_drivers_pisp::stats::Statistics::parse(&bytes)
         .expect("statistics buffer")
         .histogram_count()
 }

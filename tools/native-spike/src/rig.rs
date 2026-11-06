@@ -7,12 +7,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use lemnos_linux::hal::I2cBus;
-use styx_kernel::bus::{BridgeLocation, PadFormat, SensorBridge, StreamAction, StreamRequest};
-use styx_kernel::event::{EventKind, EventType, Events, SubscribeFlags};
-use styx_kernel::media::{self, LinkFlags, MediaDevice};
-use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
-use styx_kernel::v4l2::{BufType, Format, Memory, PixFormat, QueueBuffer, VideoDevice};
-use styx_kernel::{FourCc, Mapping};
+use lemnos_sensor_bridge::{BridgeLocation, PadFormat, SensorBridge, StreamAction, StreamRequest};
+use lemnos_v4l2::event::{EventKind, EventType, Events, SubscribeFlags};
+use lemnos_v4l2::media::{self, LinkFlags, MediaDevice};
+use lemnos_v4l2::subdev::{MbusCode, MbusFormat, Subdev, Which};
+use lemnos_v4l2::v4l2::{BufType, Format, Memory, PixFormat, QueueBuffer, VideoDevice};
+use lemnos_v4l2::{FourCc, Mapping};
 use styx_native::sensor_bus::BridgePins;
 use styx_sensor::{DriverState, SensorDescription, SensorDriver, Step, Timing};
 
@@ -325,7 +325,7 @@ impl Rig {
         };
         let vblank = t.frame_length_default() - t.height;
         self.bridge
-            .set_timing(styx_kernel::bus::Timing {
+            .set_timing(lemnos_sensor_bridge::Timing {
                 link_freq_index: index as u32,
                 pixel_rate: t.pixel_rate as i64,
                 hblank: t.hblank as i32,
@@ -551,7 +551,7 @@ impl Rig {
                     sequence: buf.sequence,
                     timestamp: buf.timestamp,
                     mean,
-                    error: buf.flags.contains(styx_kernel::v4l2::BufferFlags::ERROR),
+                    error: buf.flags.contains(lemnos_v4l2::v4l2::BufferFlags::ERROR),
                 };
                 video
                     .queue(&QueueBuffer::mmap(CAPTURE, buf.index))

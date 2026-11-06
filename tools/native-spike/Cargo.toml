@@ -13,7 +13,8 @@ publish = false
 lemnos-linux = { workspace = true, features = ["i2c"] }
 libc.workspace = true
 signal-hook = { version = "0.4.5", default-features = false }
-styx-kernel.workspace = true
+lemnos-v4l2.workspace = true
+lemnos-sensor-bridge.workspace = true
 # The bridge's power control as sensor pins (`styx_native::sensor_bus::BridgePins`).
 styx-native.workspace = true
 styx-sensor.workspace = true

@@ -26,9 +26,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use styx_kernel::FourCc;
-use styx_kernel::bus::BridgeLocation;
-use styx_kernel::media::{
+use lemnos_sensor_bridge::BridgeLocation;
+use lemnos_v4l2::FourCc;
+use lemnos_v4l2::media::{
     Entity, EntityFlags, EntityFunction, Link, LinkFlags, Pad, PadFlags, Topology,
 };
 

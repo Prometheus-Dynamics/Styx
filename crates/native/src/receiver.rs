@@ -25,9 +25,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use styx_kernel::bus::StreamState;
-use styx_kernel::dma_heap::DmaHeap;
-use styx_kernel::v4l2::{BufferFlags, Memory};
+use crate::dma::DmaHeap;
+use lemnos_sensor_bridge::StreamState;
+use lemnos_v4l2::v4l2::{BufferFlags, Memory};
 use styx_runtime::styx_hal::{
     Configured, FrameDone, Instant as HalInstant, Receiver, ReceiverCaps, ReceiverConfig,
     SensorStart, StartOrder, SyncEvent, TimestampPoint,

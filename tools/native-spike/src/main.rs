@@ -135,7 +135,7 @@ fn main() -> ExitCode {
 }
 
 fn run(args: &args::Args, desc: Arc<SensorDescription>) -> Result<()> {
-    let bridges = styx_kernel::bus::find_bridges().ctx("find bridges")?;
+    let bridges = lemnos_sensor_bridge::find_bridges().ctx("find bridges")?;
     let loc = bridges
         .iter()
         .find(|b| b.sensor_name == desc.sensor.name)

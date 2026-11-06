@@ -1,7 +1,7 @@
 //! The PiSP front end's focus (CDAF) grid over AF's windows, and the area a grid covers.
 
+use lemnos_drivers_pisp::uapi::{CDAF_STATS_SIZE, FeCdafStatsConfig};
 use styx_algo::FocusArea;
-use styx_pisp::uapi::{CDAF_STATS_SIZE, FeCdafStatsConfig};
 
 /// The front end's 8x8 CDAF grid over `area` of the `w x h` statistics frame (the whole frame
 /// for `None`): zones of even sizes, at least 2, inside the frame.

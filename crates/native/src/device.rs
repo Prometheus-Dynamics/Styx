@@ -6,10 +6,10 @@
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use styx_kernel::bus::{SensorBridge, StreamRequest, StreamState};
-use styx_kernel::event::{Event, Events};
-use styx_kernel::v4l2::{BufType, DequeuedBuffer, Memory, QueueBuffer, VideoDevice};
-use styx_kernel::{Mapping, Wait};
+use lemnos_sensor_bridge::{SensorBridge, StreamRequest, StreamState};
+use lemnos_v4l2::event::{Event, Events};
+use lemnos_v4l2::v4l2::{BufType, DequeuedBuffer, Memory, QueueBuffer, VideoDevice};
+use lemnos_v4l2::{Mapping, Wait};
 
 /// The sensor bridge as a running stream uses it.
 pub(crate) trait BridgeDevice: AsFd + Send + Sync {

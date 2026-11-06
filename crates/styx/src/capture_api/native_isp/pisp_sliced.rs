@@ -7,11 +7,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use lemnos_drivers_pisp::device::BeJob;
 use smallvec::SmallVec;
 use styx_core::buffer::FrameProgress;
-use styx_kernel::dma_heap::{self, Access};
+use styx_native::dma::{self, Access};
 use styx_pipeline::device::{PassOutput, PispFrame, PispPipeline, PispSlice};
-use styx_pisp::device::BeJob;
 
 use super::pisp_lease::{Buffers, RAW_OUTPUT, Returns};
 use super::pisp_worker::{Worker, frame_leases};
@@ -140,7 +140,7 @@ impl SlicedOut {
                 if raw.read.load(Ordering::Acquire)
                     && let Some((fd, _)) = buffers.fd(RAW_OUTPUT, index)
                 {
-                    let _ = dma_heap::sync(fd, Access::Read, true);
+                    let _ = dma::sync(fd, Access::Read, true);
                 }
                 raw.progress.complete([height, 0]);
                 if release_now {
@@ -178,7 +178,7 @@ fn resync(buffers: &Buffers, state: &SliceState, outputs: impl Iterator<Item = (
     if state.read.load(Ordering::Acquire) {
         for (i, index) in outputs {
             if let Some((fd, true)) = buffers.fd(i, index) {
-                let _ = dma_heap::sync(fd, Access::Read, true);
+                let _ = dma::sync(fd, Access::Read, true);
             }
         }
     }

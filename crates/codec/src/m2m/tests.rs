@@ -1,10 +1,10 @@
 use super::*;
-use crate::FourCc;
-use crate::v4l2::{CapabilityFlags, PixFormat};
+use lemnos_v4l2::FourCc;
+use lemnos_v4l2::v4l2::{CapabilityFlags, PixFormat};
 
 /// The first node whose driver is `driver` (a test driver loaded with `modprobe`).
 fn node(driver: &str) -> Option<VideoDevice> {
-    crate::v4l2::list_video_nodes()
+    lemnos_v4l2::v4l2::list_video_nodes()
         .into_iter()
         .filter_map(|p| VideoDevice::open(p).ok())
         .find(|d| {
@@ -71,15 +71,15 @@ fn colour_planes_follow_each_other_in_one_buffer() {
 
 #[test]
 fn colour_planes_take_a_buffer_each_when_there_are_enough() {
-    let multi = Format::Multi(crate::v4l2::PixFormatMplane {
+    let multi = Format::Multi(lemnos_v4l2::v4l2::PixFormatMplane {
         width: 100,
         height: 10,
         planes: vec![
-            crate::v4l2::PlaneFormat {
+            lemnos_v4l2::v4l2::PlaneFormat {
                 bytes_per_line: 112,
                 size_image: 1120,
             },
-            crate::v4l2::PlaneFormat {
+            lemnos_v4l2::v4l2::PlaneFormat {
                 bytes_per_line: 0,
                 size_image: 560,
             },
@@ -118,24 +118,24 @@ fn formats_convert_to_lemnos_and_back() {
         size_image: 8,
         ..Default::default()
     });
-    assert_eq!(from_lemnos(&to_lemnos(&single).unwrap()), single);
-    let multi = Format::Multi(crate::v4l2::PixFormatMplane {
+    assert_eq!(to_lemnos(&single).unwrap(), single);
+    let multi = Format::Multi(lemnos_v4l2::v4l2::PixFormatMplane {
         width: 4,
         height: 2,
         fourcc: FourCc::new(b"NM12"),
         planes: vec![
-            crate::v4l2::PlaneFormat {
+            lemnos_v4l2::v4l2::PlaneFormat {
                 bytes_per_line: 4,
                 size_image: 8,
             },
-            crate::v4l2::PlaneFormat {
+            lemnos_v4l2::v4l2::PlaneFormat {
                 bytes_per_line: 4,
                 size_image: 4,
             },
         ],
         ..Default::default()
     });
-    assert_eq!(from_lemnos(&to_lemnos(&multi).unwrap()), multi);
+    assert_eq!(to_lemnos(&multi).unwrap(), multi);
 }
 
 /// vim2m (`modprobe vim2m`): RGB24 frames through the scaler come back the same size,
@@ -165,8 +165,8 @@ fn vim2m_round_trips_frames() {
 /// Skipped without the module or the heap.
 #[test]
 fn vim2m_reads_dmabufs_in_place() {
-    use crate::dma_heap::{Access, DmaHeap};
     use std::rc::Rc;
+    use styx_native::dma::{Access, DmaHeap};
     let (Some(dev), Ok(heap)) = (node("vim2m"), DmaHeap::open("system")) else {
         eprintln!("skipped: no vim2m node or system dma-heap");
         return;

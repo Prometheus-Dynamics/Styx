@@ -8,6 +8,7 @@ use std::os::fd::AsFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 
+use lemnos_v4l2::Mapping;
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
 use styx_core::buffer::BackingPool;
@@ -16,8 +17,7 @@ use styx_core::prelude::{
     FrameResidency,
 };
 use styx_core::queue::{BoundedRx, BoundedTx, RecvOutcome};
-use styx_kernel::Mapping;
-use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
+use styx_native::dma::{self, Access, DmaBuf, DmaHeap};
 
 use super::layouts;
 use crate::metrics::{BufferStats, CaptureMetrics, MeteredBacking};
@@ -134,7 +134,7 @@ impl OutBuf {
     /// before, `false` after, so a device reading the dma-buf sees them.
     pub(super) fn sync_write(&self, start: bool) {
         if let Mem::Dma { buf, .. } = &self.mem {
-            let _ = dma_heap::sync(buf.as_fd(), Access::Write, start);
+            let _ = dma::sync(buf.as_fd(), Access::Write, start);
         }
     }
 

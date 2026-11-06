@@ -9,7 +9,7 @@
 use styx_algo::Statistics;
 #[allow(unused_imports)]
 use styx_core::math::Float as _;
-use styx_rkisp::{AnyParams, Isp};
+use styx_rkisp::{AnyParams, Isp, IspBuffers};
 use styx_softisp::ToneCurve;
 
 use crate::isp::IspSettings;

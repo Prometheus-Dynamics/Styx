@@ -1,5 +1,5 @@
-//! The statistics the ISP measured, read from its registers ([`read_raw`]) and turned into
-//! Styx's 3A input ([`statistics`]).
+//! The statistics the ISP measured, read from its registers ([`read_raw`], Lemnos's) and turned
+//! into Styx's 3A input ([`statistics`]).
 //!
 //! The AE block gives a 5x5 grid of 8-bit luma means: the 3A's luma grid. The AWB block gives
 //! one white-pixel mean per channel and the number of pixels it averaged: a 1x1 colour grid.
@@ -8,46 +8,12 @@
 
 use styx_algo::{ColourZone, LumaZone, Statistics};
 
-use crate::params::RegisterAccess;
-use crate::regs::{
-    AE_GRID, AE_MEAN_0, AE_MEAN_MASK, AWB_WHITE_CNT_MASK, HIST_BIN_0, HIST_BIN_FRAC_BITS,
-    HIST_BIN_MASK, ISP_AWB_MEAN, ISP_AWB_WHITE_CNT,
-};
+use crate::regs::{AE_GRID, HIST_BIN_FRAC_BITS};
 
-/// Bins of the luma histogram.
-pub const HIST_BINS: usize = 16;
+pub use lemnos_drivers_k230isp::stats::{HIST_BINS, Raw, read_raw};
+
 /// Full scale of an AE or AWB mean (8 bits).
 pub const MEAN_FULL: f64 = 255.0;
-
-/// A statistics snapshot as the registers hold it.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Raw {
-    /// The AE block means, row-major (`y * 5 + x`), 8 bits each.
-    pub ae: [u8; 25],
-    /// The histogram bins as the registers hold them: 16 integer and 4 fractional bits.
-    pub hist: [u32; HIST_BINS],
-    /// The AWB means of red, green and blue (RGB measurement mode), 8 bits each.
-    pub awb_mean: [u8; 3],
-    /// Pixels the AWB block averaged.
-    pub awb_white: u32,
-}
-
-/// Reads a statistics snapshot: the 25 AE means, the 16 histogram bins and the AWB means and
-/// count.
-pub fn read_raw<R: RegisterAccess>(regs: &mut R) -> Result<Raw, R::Error> {
-    let mut raw = Raw::default();
-    for (i, m) in raw.ae.iter_mut().enumerate() {
-        *m = (regs.read(AE_MEAN_0 + 4 * i as u32)? & AE_MEAN_MASK) as u8;
-    }
-    for (i, b) in raw.hist.iter_mut().enumerate() {
-        *b = regs.read(HIST_BIN_0 + 4 * i as u32)? & HIST_BIN_MASK;
-    }
-    let mean = regs.read(ISP_AWB_MEAN)?;
-    // RGB measurement mode: red in bits 7..0, blue in 15..8, green in 23..16.
-    raw.awb_mean = [mean as u8, (mean >> 16) as u8, (mean >> 8) as u8];
-    raw.awb_white = regs.read(ISP_AWB_WHITE_CNT)? & AWB_WHITE_CNT_MASK;
-    Ok(raw)
-}
 
 /// `snapshot` as [`Statistics`], written into `out` (its buffers reused). `pixels_per_block`
 /// is the pixel count of one AE block (the window the [`crate::Params::measure`] builder

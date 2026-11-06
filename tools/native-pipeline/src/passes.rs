@@ -13,9 +13,9 @@
 
 use std::time::Duration;
 
+use lemnos_drivers_pisp::uapi::BeCropConfig;
 use styx_pipeline::device::{PispFrame, PispPipeline};
 use styx_pipeline::pisp_passes::{PassSpec, PassTdn};
-use styx_pisp::uapi::BeCropConfig;
 
 /// One `--passes` region: crop, output size, output.
 pub type Region = ((u16, u16, u16, u16), Option<(u16, u16)>, usize);

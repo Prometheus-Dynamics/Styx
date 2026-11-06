@@ -1,13 +1,13 @@
 #![doc = include_str!("../README.md")]
 #![deny(clippy::print_stderr, clippy::print_stdout)]
+use lemnos_v4l2::v4l2::{
+    BufType, CapabilityFlags, ControlFlags, ControlInfo, ControlType, Controls, Format,
+    FrameIntervals, FrameSizes, MenuValue, VideoDevice,
+};
 use smallvec::smallvec;
 use std::num::NonZeroU32;
 use styx_capture::prelude::*;
 use styx_core::controls::{Access, ControlKind, ControlMetadata, ControlValue};
-use styx_kernel::v4l2::{
-    BufType, CapabilityFlags, ControlFlags, ControlInfo, ControlType, Controls, Format,
-    FrameIntervals, FrameSizes, MenuValue, VideoDevice,
-};
 
 fn read_node_name(path: &std::path::Path) -> Option<String> {
     let node = path.file_name()?.to_string_lossy();
@@ -78,7 +78,7 @@ pub struct V4l2DeviceInfo {
 pub fn probe_devices() -> (Vec<V4l2DeviceInfo>, Vec<String>) {
     let mut devices = Vec::new();
     let mut errors = Vec::new();
-    for path in styx_kernel::v4l2::list_video_nodes() {
+    for path in lemnos_v4l2::v4l2::list_video_nodes() {
         match build_info(&path) {
             Ok(Probed::Camera(info)) => devices.push(info),
             Ok(Probed::Skipped(_why)) => {

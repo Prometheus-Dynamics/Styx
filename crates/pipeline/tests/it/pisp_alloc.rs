@@ -13,6 +13,11 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::time::Duration;
 
+use lemnos_drivers_pisp::fe::FrontEnd;
+use lemnos_drivers_pisp::format::{compute_stride_align, formats};
+use lemnos_drivers_pisp::uapi::{
+    AWB_STATS_NUM_ZONES, BayerOrder, BeCropConfig, ImageFormatConfig, RawStatistics,
+};
 use styx_algo::{Deflicker, Flicker, Statistics, Tuning};
 use styx_pipeline::Result;
 use styx_pipeline::controller::{Controller, SensorValues};
@@ -21,11 +26,6 @@ use styx_pipeline::pisp_be::BeConfigBuilder;
 use styx_pipeline::pisp_passes::{PassConfigs, PassSpec, PassTdn};
 use styx_pipeline::process::{Algorithms, FrameIsp, InlineIsp, NoControls};
 use styx_pipeline::{SensorInfo, stats};
-use styx_pisp::fe::FrontEnd;
-use styx_pisp::format::{compute_stride_align, formats};
-use styx_pisp::uapi::{
-    AWB_STATS_NUM_ZONES, BayerOrder, BeCropConfig, ImageFormatConfig, RawStatistics,
-};
 use styx_sensor::SensorDescription;
 
 // --- the counting allocator -------------------------------------------------------------------

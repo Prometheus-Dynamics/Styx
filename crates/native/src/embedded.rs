@@ -7,9 +7,9 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use styx_kernel::media::{EntityFunction, Topology};
-use styx_kernel::v4l2::{BufType, Format, Memory, MetaFormat, QueueBuffer, VideoDevice};
-use styx_kernel::{FourCc, Mapping};
+use lemnos_v4l2::media::{EntityFunction, Topology};
+use lemnos_v4l2::v4l2::{BufType, Format, Memory, MetaFormat, QueueBuffer, VideoDevice};
+use lemnos_v4l2::{FourCc, Mapping};
 
 use crate::control::lock;
 use crate::error::{KernelContext, Result};
@@ -152,7 +152,7 @@ impl Drop for EmbeddedCapture {
 
 #[cfg(test)]
 mod tests {
-    use styx_kernel::media::{Link, LinkFlags, Pad, PadFlags};
+    use lemnos_v4l2::media::{Link, LinkFlags, Pad, PadFlags};
 
     use super::*;
     use crate::topology::{find_route, testing::cm5_topology};

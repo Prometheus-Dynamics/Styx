@@ -23,12 +23,12 @@
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use styx_kernel::subdev::MbusCode;
-use styx_pisp::be::BackEnd;
-use styx_pisp::device::{BackEndDevice, BeOutput, FrontEndDevice, FrontEndSetup};
-use styx_pisp::fe::FrontEnd;
-use styx_pisp::stats::Statistics;
-use styx_pisp::uapi::{BayerOrder, BeOutputFormatConfig, ImageFormatConfig, fe_enable};
+use lemnos_drivers_pisp::be::BackEnd;
+use lemnos_drivers_pisp::device::{BackEndDevice, BeOutput, FrontEndDevice, FrontEndSetup};
+use lemnos_drivers_pisp::fe::FrontEnd;
+use lemnos_drivers_pisp::stats::Statistics;
+use lemnos_drivers_pisp::uapi::{BayerOrder, BeOutputFormatConfig, ImageFormatConfig, fe_enable};
+use lemnos_v4l2::subdev::MbusCode;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
@@ -405,10 +405,10 @@ fn run() -> Result<(), String> {
         let mut img = ImageFormatConfig {
             width: WIDTH as u16,
             height: HEIGHT as u16,
-            format: styx_pisp::format::formats::BAYER16,
+            format: lemnos_drivers_pisp::format::formats::BAYER16,
             ..Default::default()
         };
-        styx_pisp::format::compute_stride_align(&mut img, 64);
+        lemnos_drivers_pisp::format::compute_stride_align(&mut img, 64);
         let raw = synthetic_raw(img.stride as usize);
         back_end(&a, &raw, img, (1.0, 1.0), BeOutput::Nv12)?;
         let rgb = back_end(&a, &raw, img, (1.0, 1.0), BeOutput::Rgb24)?;

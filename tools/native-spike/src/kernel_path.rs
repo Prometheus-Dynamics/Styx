@@ -6,12 +6,12 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use styx_kernel::media::{self, LinkFlags, MediaDevice};
-use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
-use styx_kernel::v4l2::{
+use lemnos_v4l2::media::{self, LinkFlags, MediaDevice};
+use lemnos_v4l2::subdev::{MbusCode, MbusFormat, Subdev, Which};
+use lemnos_v4l2::v4l2::{
     BufType, ControlValue, Controls, Format, Memory, PixFormat, QueueBuffer, VideoDevice, cid,
 };
-use styx_kernel::{FourCc, Mapping};
+use lemnos_v4l2::{FourCc, Mapping};
 
 use crate::analysis::{FrameLevels, describe_frame};
 use crate::frames::Raw10Layout;

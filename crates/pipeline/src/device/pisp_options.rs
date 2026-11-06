@@ -1,7 +1,7 @@
 //! How the PiSP path is set up.
 
-use styx_pisp::device::{BeFormat, BeOutputSetup, ConfigMemory, OutputMemory};
-use styx_pisp::uapi::BeCropConfig;
+use lemnos_drivers_pisp::device::{BeFormat, BeOutputSetup, ConfigMemory, OutputMemory};
+use lemnos_drivers_pisp::uapi::BeCropConfig;
 
 /// How the PiSP path is set up.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -24,7 +24,7 @@ pub struct PispOptions {
     /// More buffers per output, for the extra passes that write into them
     /// ([`super::PispPipeline::set_pass`]).
     pub pass_buffers: [u32; 2],
-    /// Extra passes' jobs queued at once, up to [`styx_pisp::device::QUEUED_JOBS`]: `1` and `0`
+    /// Extra passes' jobs queued at once, up to [`lemnos_drivers_pisp::device::QUEUED_JOBS`]: `1` and `0`
     /// (default) wait for each before queuing the next. More than 1 is refused without
     /// [`Self::unsafe_queued_passes`]: the driver overwrites a job the hardware still holds
     /// ("not safe to queue new job!"), and on the CM5 (2026-10-31) a lost completion left

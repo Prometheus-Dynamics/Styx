@@ -130,9 +130,9 @@ pub fn path() -> PathMetrics {
     let p = path_counters();
     #[allow(unused_mut)]
     let (mut syncs, mut sync_ns) = (p.syncs.get(), p.sync_ns.get());
-    #[cfg(feature = "styx-kernel")]
+    #[cfg(feature = "native")]
     {
-        let (n, ns) = styx_kernel::dma_heap::sync_stats();
+        let (n, ns) = styx_native::dma::sync_stats();
         syncs += n;
         sync_ns += ns;
     }

@@ -75,7 +75,7 @@ if [[ -n "$changed" ]]; then
     affected=" $(./scripts/affected.sh "$changed" | xargs) "
     echo "affected since the merge base with $changed:${affected% }"
 fi
-nostd_packages="styx-core-rs styx-hal styx-runtime styx-pipeline styx-dng styx-pisp styx-algo \
+nostd_packages="styx-core-rs styx-hal styx-runtime styx-pipeline styx-dng styx-algo \
 styx-sensor styx-softisp styx-nostd-smoke styx-nostd-camera styx-mcu-footprint"
 declare -A step_packages=(
     [fmt]=any [clippy]=any [test]=any

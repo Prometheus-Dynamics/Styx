@@ -106,7 +106,7 @@ pub struct SubdevFormat {
     pub sizes: Vec<Size>,
 }
 
-/// What a sensor subdevice reports, as plain data (filled in by `styx-kernel`).
+/// What a sensor subdevice reports, as plain data (filled in by `lemnos-v4l2`).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SubdevReport {
     /// Entity name, e.g. `ov9782 10-0060`.

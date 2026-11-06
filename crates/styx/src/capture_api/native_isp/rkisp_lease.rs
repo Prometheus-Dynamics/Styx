@@ -9,6 +9,7 @@
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
 
+use lemnos_v4l2::Mapping;
 use smallvec::SmallVec;
 use styx_capture::prelude::*;
 use styx_core::buffer::{BackingPool, CpuReadWindow};
@@ -17,8 +18,7 @@ use styx_core::prelude::{
     FrameResidency,
 };
 use styx_core::queue::{BoundedRx, BoundedTx, RecvOutcome};
-use styx_kernel::Mapping;
-use styx_kernel::dma_heap::{self, Access, DmaBuf};
+use styx_native::dma::{self, Access, DmaBuf};
 use styx_pipeline::device::RkispPipeline;
 
 use super::layouts;
@@ -153,7 +153,7 @@ impl RkBacking {
     }
 
     fn sync(&self, start: bool) {
-        let _ = dma_heap::sync(self.buffer.fd.as_fd(), Access::Read, start);
+        let _ = dma::sync(self.buffer.fd.as_fd(), Access::Read, start);
     }
 }
 

@@ -6,12 +6,10 @@ members = [
     "crates/libcamera",
     "crates/styx",
     "crates/v4l2",
-    "crates/kernel",
     "crates/sensor",
     "crates/hal",
     "crates/runtime",
     "crates/graph",
-    "crates/pisp",
     "crates/algo",
     "crates/native",
     "crates/softisp",
@@ -62,7 +60,6 @@ styx-capture = { path = "crates/capture", version = "2.0.1-dev" }
 styx-codec = { path = "crates/codec", version = "2.0.1-dev" }
 styx-libcamera = { path = "crates/libcamera", version = "2.0.1-dev" }
 styx-v4l2 = { path = "crates/v4l2", version = "2.0.1-dev" }
-styx-kernel = { path = "crates/kernel", version = "2.0.1-dev" }
 styx-sensor = { path = "crates/sensor", version = "2.0.1-dev" }
 styx-hal = { path = "crates/hal", version = "2.0.1-dev" }
 styx-runtime = { path = "crates/runtime", version = "2.0.1-dev" }
@@ -71,25 +68,41 @@ embedded-hal = "1.0"
 # instructions as core's), a lock-based fallback where it does not (Cortex-M, RISC-V 32).
 portable-atomic = { version = "1.15", default-features = false, features = ["fallback"] }
 embedded-hal-async = "1.0"
-# Lemnos 2.0: the hardware foundation under Styx (generic buses, pins, power, hotplug;
-# docs/portability-design.md). The Lemnos `dev` branch until 2.0 is on crates.io. To build
+# Lemnos 2.0: the hardware foundation under Styx (generic buses, pins, power, hotplug, V4L2,
+# dma-bufs, the PiSP, Rockchip and K230 ISP devices, the sensor bridge;
+# docs/portability-design.md). Pinned to a Lemnos `dev` revision until 2.0 is on crates.io. To build
 # against a local Lemnos checkout, override it in an untracked `.cargo/config.toml`:
 #   [patch."https://github.com/Prometheus-Dynamics/Lemnos.git"]
 #   lemnos-hal = { path = "../lemnos/crates/lemnos-hal" }   (same for the other two)
 # lemnos-hal: no_std, no alloc (register maps, regulators, clocks, ErrorKind).
-lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
+lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
 # lemnos-linux: i2c-dev, GPIO v2 and uevents in pure Rust (Linux only).
-lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
+lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
 # lemnos-linux-sys: the uAPI layer under lemnos-linux (dma-buf sync, identity, size).
-lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
+lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
 # lemnos-usb: USB devices, controls and URB rings (UVC).
-lemnos-usb = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev" }
+lemnos-usb = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
 # lemnos-drivers-vcm: no_std focus lens (VCM) drivers.
-lemnos-drivers-vcm = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev" }
+lemnos-drivers-vcm = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+# lemnos-v4l2: V4L2 devices and buffers, the media controller, subdevices, events (Linux).
+lemnos-v4l2 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+# lemnos-drivers-pisp: the Raspberry Pi PiSP (front and back end configs, tiling, statistics;
+# its device nodes with `device`).
+lemnos-drivers-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+# lemnos-drivers-rkisp: Rockchip rkisp detection, buffer trait, ISP32 nodes, device layer;
+# lemnos-rkisp-sys: its parameter and statistics layouts (no_std).
+lemnos-drivers-rkisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+lemnos-rkisp-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+# lemnos-drivers-k230isp: the K230's ISP registers, register access and statistics readout.
+lemnos-drivers-k230isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2", default-features = false }
+# lemnos-sensor-bridge: userspace side of the sensor bridge kernel module.
+lemnos-sensor-bridge = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
+# lemnos-drivers-rga: the Rockchip RGA 2D engine (V4L2 mem2mem and /dev/rga), for
+# `styx-codec`'s optional `codec-rga` feature (Linux).
+lemnos-drivers-rga = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "4dceae2" }
 # Compact binary sensor descriptions for targets without a TOML parser (styx-sensor `build`).
 postcard = { version = "1.1", default-features = false, features = ["alloc"] }
 styx-graph = { path = "crates/graph", version = "2.0.1-dev" }
-styx-pisp = { path = "crates/pisp", version = "2.0.1-dev" }
 styx-algo = { path = "crates/algo", version = "2.0.1-dev" }
 styx-native = { path = "crates/native", version = "2.0.1-dev" }
 styx-softisp = { path = "crates/softisp", version = "2.0.1-dev" }
@@ -110,9 +123,6 @@ styx-tune = { path = "crates/tune", version = "2.0.1-dev" }
 daedalus = { package = "daedalus-rs", git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev", default-features = false }
 # Daedalus's GPU crate, for `styx-gpuisp`'s optional `daedalus` feature (its raw Vulkan handles).
 daedalus-gpu = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev", default-features = false }
-# Daedalus's RGA 2D engine (V4L2 mem2mem and librga): the stack's one RGA binding, for
-# `styx-codec`'s optional `codec-rga` feature (Linux).
-daedalus-rga = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", branch = "dev" }
 crossbeam-queue = { version = "0.3.14", default-features = false, features = ["alloc"] }
 # Locks for the no_std frame path (styx-core without `std`), and its targets without
 # compare-and-swap (`critical-section`, `portable-atomic-util`'s `Arc`).

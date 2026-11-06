@@ -39,10 +39,12 @@ impl From<NativeError> for PipelineError {
     }
 }
 
-impl From<styx_pisp::device::DeviceError> for PipelineError {
-    fn from(e: styx_pisp::device::DeviceError) -> Self {
+impl From<lemnos_drivers_pisp::device::DeviceError> for PipelineError {
+    fn from(e: lemnos_drivers_pisp::device::DeviceError) -> Self {
         match e {
-            styx_pisp::device::DeviceError::OutputsHeld(i) => PipelineError::OutputsHeld(i),
+            lemnos_drivers_pisp::device::DeviceError::OutputsHeld(i) => {
+                PipelineError::OutputsHeld(i)
+            }
             e => PipelineError::Device(format!("pisp: {e}")),
         }
     }
@@ -56,7 +58,7 @@ pub type RawCopy = Box<dyn FnMut(&SensorValues) -> bool + Send>;
 /// with the settings `step` processes it with; `None` if the buffer is short.
 fn hold_raw(
     data: &[u8],
-    format: styx_pisp::uapi::ImageFormatConfig,
+    format: lemnos_drivers_pisp::uapi::ImageFormatConfig,
     info: &crate::SensorInfo,
     step: &crate::Step,
     values: &SensorValues,
@@ -107,7 +109,7 @@ pub(crate) struct Profiled<'a>(pub(crate) &'a CameraControls);
 
 impl SensorControls for Profiled<'_> {
     fn request(&self, r: &SensorRequest) -> crate::Result<u64> {
-        styx_pisp::device::profile::time("sensor", "request", || apply_request(self.0, r))
+        lemnos_drivers_pisp::device::profile::time("sensor", "request", || apply_request(self.0, r))
     }
 
     fn lens(&self, r: &LensRequest) -> crate::Result<()> {
@@ -198,7 +200,7 @@ pub fn isp_kind(info: &styx_native::CameraInfo) -> IspKind {
         return IspKind::Software;
     }
     let fe = info.topology.entity_by_name("pisp-fe").is_some();
-    if fe && !styx_pisp::device::find_media("pispbe").is_empty() {
+    if fe && !lemnos_drivers_pisp::device::find_media("pispbe").is_empty() {
         IspKind::Pisp
     } else if has_rkisp() {
         IspKind::Rkisp

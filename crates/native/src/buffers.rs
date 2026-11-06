@@ -17,9 +17,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use styx_kernel::dma_heap::{self, DmaBuf, DmaHeap};
-use styx_kernel::v4l2::{Memory, QueueBuffer};
-use styx_kernel::{FourCc, Mapping};
+use crate::dma::{self, DmaBuf, DmaHeap};
+use lemnos_v4l2::v4l2::{Memory, QueueBuffer};
+use lemnos_v4l2::{FourCc, Mapping};
 use styx_runtime::styx_core::buffer::{
     CpuAccess, FrameBackingExport, FrameExportError, FrameFdPlane, FrameResidency,
 };
@@ -136,7 +136,7 @@ impl BufferSet {
                     let buf = alloc.allocate(len)?;
                     // What the kernel allocated, not what was asked for: the receiver is told
                     // `len` at every QBUF and writes up to the format's `sizeimage`.
-                    let size = dma_heap::dmabuf_size(buf.as_fd()).step("dma-buf size")?;
+                    let size = dma::dmabuf_size(buf.as_fd()).step("dma-buf size")?;
                     check_len("imported dma-buf", usize::try_from(size).unwrap_or(0), len)?;
                     let map = buf.map().step("map dma-buf")?;
                     set.buffers.push(Buffer {
@@ -247,11 +247,11 @@ impl FrameBuffer for V4l2Buffer {
     fn begin_cpu(&self, access: Access) {
         if let Some(fd) = self.export() {
             let access = match access {
-                Access::Read => dma_heap::Access::Read,
-                Access::Write => dma_heap::Access::Write,
-                Access::ReadWrite => dma_heap::Access::ReadWrite,
+                Access::Read => dma::Access::Read,
+                Access::Write => dma::Access::Write,
+                Access::ReadWrite => dma::Access::ReadWrite,
             };
-            let _ = dma_heap::sync(fd, access, true);
+            let _ = dma::sync(fd, access, true);
         }
     }
 
@@ -263,10 +263,10 @@ impl FrameBuffer for V4l2Buffer {
             && let Some(fd) = self.export()
         {
             let access = match access {
-                Access::Write => dma_heap::Access::Write,
-                _ => dma_heap::Access::ReadWrite,
+                Access::Write => dma::Access::Write,
+                _ => dma::Access::ReadWrite,
             };
-            let _ = dma_heap::sync(fd, access, false);
+            let _ = dma::sync(fd, access, false);
         }
     }
 

@@ -27,8 +27,8 @@ fuzz_target!(|data: &[u8]| {
                 }
             }
         }
-        1 => styx_kernel::media::fuzz_topology(rest),
-        2 => styx_kernel::event::fuzz_event(rest),
-        _ => styx_kernel::v4l2::Format::fuzz_from_bytes(rest),
+        1 => lemnos_v4l2::media::fuzz_topology(rest),
+        2 => lemnos_v4l2::event::fuzz_event(rest),
+        _ => lemnos_v4l2::v4l2::Format::fuzz_from_bytes(rest),
     }
 });

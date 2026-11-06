@@ -162,7 +162,7 @@ Notes:
 | rkisp (RK3566, RK3562, RK3576) | the ISP stages and 3A statistics | gap: needs a board |
 | rkisp (RV1106, Flame) | the ISP stages, pyramid levels | gap: needs a board and its BSP |
 | ISP8000 via vvcam (K230D) | the ISP stages and 3A statistics | gap: needs a board |
-| RGA (Rockchip 2D) | colour conversion, scaling, crop (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Daedalus's `daedalus-rga`, the one binding; the registry offers its format conversions as `CodecKind::Converter` and the planner picks them for raw-to-raw steps; scaling is not a planner stage yet |
+| RGA (Rockchip 2D) | colour conversion, scaling, crop (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Lemnos's `lemnos-drivers-rga`, the one binding; the registry offers its format conversions as `CodecKind::Converter` and the planner picks them for raw-to-raw steps; scaling is not a planner stage yet |
 | Stateless VPUs (Hantro, rkvenc) | JPEG, H.264 encode | gap: `V4l2M2mEncoder` is stateful only |
 | Rockchip MPP (vendor `/dev/mpp_service`) | H.264, H.265, JPEG encode | written, untested on board: `RkMppEncoder` (`codec-rkmpp`) |
 | K230D VPU and 2D unit | H.264, H.265, JPEG encode; rotation, scaling | written, untested on board: the V4L2 M2M codecs, frames imported by dma-buf |
@@ -250,7 +250,7 @@ States:
 | rkisp | main path (full ISP) | unused (board): parameter and statistics code exists for ISP30 only | software ISP |
 | rkisp | 3A statistics | unused (board) | software ISP statistics |
 | rkisp | self path (second scaled output) | unused (board) | `box2_row`, software scaling |
-| RGA2 / RGA3 | scale, crop, convert (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Daedalus's `daedalus-rga` (mainline `rockchip-rga` over V4L2 M2M, RGA3 through librga) | `styx_core::simd` |
+| RGA2 / RGA3 | scale, crop, convert (no rotation yet) | written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`) over Lemnos's `lemnos-drivers-rga` (mainline `rockchip-rga` over V4L2 M2M, RGA3 through librga) | `styx_core::simd` |
 | MPP / rkvenc, Hantro | H.264, H.265, JPEG encode | written, untested on board: `RkMppEncoder`, ISP NV12 imported by dma-buf | libjpeg-turbo, FFmpeg |
 | MPP / rkvdec | H.264, H.265 decode | unused (board) | FFmpeg software |
 | IEP | denoise, enhancement (deinterlace n/a: cameras are progressive) | unused (board) | software ISP denoise |

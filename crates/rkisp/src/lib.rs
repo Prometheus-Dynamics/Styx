@@ -3,15 +3,15 @@
 //! frame, written by Styx's 3A instead of Rockchip's `rkaiq`) and the statistics buffer (read
 //! into Styx's 3A input).
 //!
-//! - [`uapi`]: the buffers' layouts, from the kernel's `rk-isp21-config.h` and
-//!   `rk-isp3-config.h` (MIT), checked against the C compiler's.
+//! - [`uapi`]: the buffers' layouts, Lemnos's (`lemnos-rkisp-sys`, from the kernel's
+//!   `rk-isp21-config.h`, `rk-isp3-config.h` and `rk-isp32-config.h`).
 //! - [`Params`]: a parameter buffer for a frame: the statistics Styx's 3A reads, black level,
 //!   white balance gains, lens shading, colour matrix, output gamma.
 //! - [`statistics`]: a statistics buffer as [`styx_algo::Statistics`].
 //! - `device` (feature `device`): the vendor driver's ISP, parameter, statistics and main
-//!   path nodes (the same names on both generations).
+//!   path nodes, re-exported from `lemnos-drivers-rkisp`.
 //!
-//! [`Isp`] names a system's ISP (from the SoC, [`Isp::detect`]) and builds its parameter
+//! [`Isp`] (Lemnos's) names a system's ISP from the SoC; [`IspBuffers`] builds its parameter
 //! buffer ([`AnyParams`]) and reads its statistics whatever the generation.
 //!
 //! [`Generation`] selects the layout. The two share the modules and most of the layouts; the
@@ -36,15 +36,15 @@ extern crate alloc;
 extern crate std;
 
 #[cfg(feature = "device")]
-pub mod device;
+pub use lemnos_drivers_rkisp::device;
 mod isp;
 pub mod isp32;
 
 mod params;
 mod stats;
-pub mod uapi;
 
-pub use isp::{AnyParams, Isp, ParamBuffer};
+pub use isp::{AnyParams, IspBuffers};
+pub use lemnos_drivers_rkisp::{Isp, ParamBuffer, uapi};
 pub use params::{
     CCM_ONE, GAIN_ONE, GAMMA_OUT_MAX, Generation, ISP21_GAMMA_SAMPLES, ISP21_LSC_SECTORS,
     ISP30_LSC_SECTORS, LSC_ONE, Params,

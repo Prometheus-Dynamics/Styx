@@ -30,7 +30,8 @@ daedalus = ["dep:daedalus-gpu"]
 # `tests/one_device.rs`: an engine and the ISP on the process's device.
 daedalus = { workspace = true, features = ["engine", "plugins", "gpu-wgpu"] }
 libc.workspace = true
-styx-kernel.workspace = true
+# `tests/it/dmabuf.rs`: frames in heap dma-bufs with the tail pad Vulkan import needs.
+styx-native.workspace = true
 
 [lints]
 workspace = true

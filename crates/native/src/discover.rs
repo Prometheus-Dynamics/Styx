@@ -5,10 +5,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use styx_kernel::FourCc;
-use styx_kernel::bus::{BridgeLocation, find_bridges};
-use styx_kernel::media::{self, MediaDevice, Topology};
-use styx_kernel::v4l2::{BufType, VideoDevice};
+use lemnos_sensor_bridge::{BridgeLocation, find_bridges};
+use lemnos_v4l2::FourCc;
+use lemnos_v4l2::media::{self, MediaDevice, Topology};
+use lemnos_v4l2::v4l2::{BufType, VideoDevice};
 use styx_sensor::SensorDescription;
 
 use crate::error::{KernelContext, NativeError, Result};

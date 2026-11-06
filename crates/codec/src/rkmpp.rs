@@ -17,10 +17,10 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use lemnos_v4l2::Mapping;
 use parking_lot::Mutex;
 use styx_core::prelude::*;
-use styx_kernel::Mapping;
-use styx_kernel::dma_heap::{self, Access, DmaBuf, DmaHeap};
+use styx_native::dma::{self, Access, DmaBuf, DmaHeap};
 
 use crate::{Codec, CodecDescriptor, CodecError, CodecKind};
 use ffi::Handle;
@@ -418,7 +418,7 @@ impl RkMppEncoder {
             return None;
         }
         let first = input.dmabuf_plane(0)?;
-        let id = dma_heap::dmabuf_id(first.fd);
+        let id = dma::dmabuf_id(first.fd);
         let views = input.planes_visible().ok()?;
         let mut planes = [PlaneAt {
             same: true,
@@ -432,14 +432,14 @@ impl RkMppEncoder {
             let plane = input.dmabuf_plane(i)?;
             *at = PlaneAt {
                 same: plane.fd.as_raw_fd() == first.fd.as_raw_fd()
-                    || (id.is_some() && dma_heap::dmabuf_id(plane.fd) == id),
+                    || (id.is_some() && dma::dmabuf_id(plane.fd) == id),
                 offset: plane.offset,
                 stride: view.stride(),
             };
         }
         let height = input.meta().format.resolution.height.get() as usize;
         let (hor, ver) = import_strides(input.meta().format.code, height, &planes[..views.len()])?;
-        let size = dma_heap::dmabuf_size(first.fd).ok()? as usize;
+        let size = dma::dmabuf_size(first.fd).ok()? as usize;
         Some((first.fd.as_raw_fd(), size, hor, ver))
     }
 }

@@ -12,7 +12,7 @@ publish = false
 [features]
 default = []
 # The device runs (native cameras, PiSP); without it only `replay` is available.
-device = ["styx-pipeline/device", "dep:styx-native", "dep:styx-pisp", "dep:bytemuck"]
+device = ["styx-pipeline/device", "dep:styx-native", "dep:lemnos-drivers-pisp", "dep:bytemuck"]
 # The GPU ISP (styx-gpuisp, Vulkan loaded at run time). Its `gpu-quality` and `gpu-bench`
 # subcommands need this feature; they are not features themselves.
 gpu = ["styx-pipeline/gpu", "dep:libc"]
@@ -26,7 +26,7 @@ styx-core = { workspace = true, features = ["std", "neon", "x86"] }
 styx-pipeline.workspace = true
 styx-softisp.workspace = true
 styx-native = { workspace = true, optional = true }
-styx-pisp = { workspace = true, optional = true }
+lemnos-drivers-pisp = { workspace = true, optional = true }
 
 [lints]
 workspace = true

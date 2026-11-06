@@ -9,7 +9,7 @@
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use styx_kernel::bus::{StreamAction, StreamRequest};
+use lemnos_sensor_bridge::{StreamAction, StreamRequest};
 use styx_runtime::Controls;
 pub use styx_runtime::{SensorState, StartFormat};
 use styx_sensor::{Control, ControlRequest, DriverBus, Landing, SensorDriver, SensorPins, Timing};
@@ -28,7 +28,7 @@ pub const PROCESSED_LOOP_LATENCY: u64 = 1;
 pub fn sensor_control<B: DriverBus, P: SensorPins>(
     driver: SensorDriver<B, P>,
 ) -> SensorState<B, P> {
-    SensorState::new(driver).with_clock(styx_kernel::monotonic_now)
+    SensorState::new(driver).with_clock(lemnos_v4l2::monotonic_now)
 }
 
 /// The format a bridge start request carries.

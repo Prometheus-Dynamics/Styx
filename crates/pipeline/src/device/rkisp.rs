@@ -17,8 +17,8 @@
 use std::path::Path;
 use std::time::Duration;
 
+use lemnos_v4l2::subdev::MbusCode;
 use styx_algo::{Statistics, Tuning, WarmStart};
-use styx_kernel::subdev::MbusCode;
 use styx_native::{
     CameraControls, Configured, NativeCamera, SensorStream, StreamSettings, select_mode,
 };
@@ -30,7 +30,7 @@ use crate::error::{PipelineError, Result};
 use crate::process::Algorithms;
 use crate::rkisp::{params, statistics};
 use crate::sensor::{ISSUE_LATENCY, SensorInfo};
-use styx_rkisp::{AnyParams, Isp};
+use styx_rkisp::{AnyParams, Isp, IspBuffers};
 
 impl From<styx_rkisp::device::DeviceError> for PipelineError {
     fn from(e: styx_rkisp::device::DeviceError) -> Self {

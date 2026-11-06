@@ -5,7 +5,7 @@
 
 use std::time::Duration;
 
-use styx_pisp::device::{BackEndStream, DeviceError, QUEUED_JOBS, QueuedJob};
+use lemnos_drivers_pisp::device::{BackEndStream, DeviceError, QUEUED_JOBS, QueuedJob};
 
 use super::{PassOutput, PispPipeline};
 use crate::error::Result;

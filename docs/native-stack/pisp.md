@@ -1,7 +1,8 @@
 # PiSP natively (phase 3 groundwork)
 
 The Raspberry Pi 5 / CM5 ISP ("PiSP") driven from Rust with no libcamera and no libpisp:
-`crates/pisp` (`styx-pisp`) and the on-device tool `tools/pisp-spike`.
+Lemnos's `lemnos-drivers-pisp` (it was `crates/pisp`, `styx-pisp`, until it moved to Lemnos;
+the sections below describe it) and the on-device tool `tools/pisp-spike`.
 
 ## Hardware and nodes
 
@@ -136,7 +137,7 @@ only the words that differ (enables, crops, formats, TDN) are written. See
   (`BackEnd::Prepare`), TDN and stitch buffers ping-pong. 16-bit sensors need an endian swap
   and 14-bit ones an unpack on the CPU (hardware gaps).
 
-## styx-pisp
+## lemnos-drivers-pisp (was styx-pisp)
 
 - `uapi`: `#[repr(C)]` mirrors of every FE, statistics and BE structure; `bytemuck::Pod`
   (no implicit padding) and compile-time size/offset assertions generated from the device's

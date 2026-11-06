@@ -207,7 +207,7 @@ process; default 30 and 90): the raw `pisp_be_tiles_config` (16720 bytes) and `p
 (632 bytes) the kernel receives. libpisp's `BackEnd::GetJsonConfig` turns either stack's back-end
 bytes into the same JSON, so the two diff field by field, tiles included.
 
-To find which block makes two images differ, `STYX_PISP_BE_PATCH=REF.bin:block,...` copies the
+To find which block makes two images differ, `LEMNOS_PISP_BE_PATCH=REF.bin:block,...` copies the
 named blocks of a reference back-end config into every job: `dpc`, `geq`, `tdn`, `sdn`, `blc`,
 `lsc`, `wbg`, `cdn`, `cac`, `debin`, `tonemap`, `demosaic`, `ccm`, `ycbcr`, `sharpen`,
 `false_colour`, `sh_fc_combine`, `ycbcr_inverse`, `gamma`, `resample`, `bayer_enables`,
@@ -224,16 +224,16 @@ showed the second tile starting at an unaligned x=494.
 The PiSP path reads its options from `PispOptions` (styx-pipeline) and `NativeIspConfig` (styx).
 Environment variables never change a build's options: the variables below are diagnostics (config
 dumps, probes, timing logs) read only in builds with the feature named in the table
-(`pisp-debug-hooks` on `styx`, `styx-pipeline` or `styx-pisp`'s `debug-hooks`), and ignored
+(`pisp-debug-hooks` on `styx` or `styx-pipeline`, `lemnos-drivers-pisp`'s `debug-hooks`), and ignored
 otherwise. To try another slice line, buffer memory, TDN format, CPU sync or prefetch, or raw
 depth, set the option (`NativeIspConfig`, `PispOptions`). These hooks are not for production
 builds.
 
 | Variable | Effect | Feature needed |
 | --- | --- | --- |
-| `STYX_PISP_BE_DUMP=DIR[:N,...]` | Writes the back-end configs of jobs N (default 30, 90) to `DIR/styx_be_N.bin` | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_PISP_FE_DUMP=DIR[:N,...]` | Writes the front-end configs of jobs N to `DIR/styx_fe_N.bin` | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
-| `STYX_PISP_BE_PATCH=REF.bin:blocks` | Copies the named back-end blocks of a reference config into every job | `pisp-debug-hooks` (styx-pisp `debug-hooks`) |
+| `LEMNOS_PISP_BE_DUMP=DIR[:N,...]` | Writes the back-end configs of jobs N (default 30, 90) to `DIR/pisp_be_N.bin` | `pisp-debug-hooks` (lemnos-drivers-pisp `debug-hooks`) |
+| `LEMNOS_PISP_FE_DUMP=DIR[:N,...]` | Writes the front-end configs of jobs N to `DIR/pisp_fe_N.bin` | `pisp-debug-hooks` (lemnos-drivers-pisp `debug-hooks`) |
+| `LEMNOS_PISP_BE_PATCH=REF.bin:blocks` | Copies the named back-end blocks of a reference config into every job | `pisp-debug-hooks` (lemnos-drivers-pisp `debug-hooks`) |
 | `STYX_PISP_BE_STRIPE=N` | Splits back-end jobs into horizontal stripes of at most N rows (slicing cost) | `pisp-debug-hooks` (styx-pipeline) |
 | `STYX_PISP_SLICE_LOG=1` | Logs the slice line and counts when a slicing run ends | `pisp-debug-hooks` (styx-pipeline) |
 

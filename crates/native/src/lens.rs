@@ -22,9 +22,9 @@ use std::sync::Arc;
 
 use lemnos_drivers_vcm::{Vcm, VcmError};
 use lemnos_linux::hal::{I2cBus, IoError, StdDelay};
-use styx_kernel::media::{EntityFunction, LinkType, Topology};
-use styx_kernel::subdev::Subdev;
-use styx_kernel::v4l2::{ControlValue, Controls, cid};
+use lemnos_v4l2::media::{EntityFunction, LinkType, Topology};
+use lemnos_v4l2::subdev::Subdev;
+use lemnos_v4l2::v4l2::{ControlValue, Controls, cid};
 use styx_runtime::LensDrive;
 use styx_sensor::{DriverBus, LensDescription, SensorPins, VcmI2c};
 

@@ -290,7 +290,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let opened_to_open = opened.elapsed();
     let mut options = PispOptions::nv12_and_half_rgb(1280, 800);
     if a.driver_buffers {
-        options.output_memory = styx_pisp::device::OutputMemory::Driver;
+        options.output_memory = lemnos_drivers_pisp::device::OutputMemory::Driver;
     }
     if a.every_frame {
         options.settled_rate_hz = None;
@@ -311,7 +311,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     let mut p =
         PispPipeline::open(cam, &settings(a), &tuning, options).map_err(|e| e.to_string())?;
     for (i, ((x, y, w, h), _, _)) in crate::passes::parse(&a.main_crops)?.into_iter().enumerate() {
-        let crop = styx_pisp::uapi::BeCropConfig {
+        let crop = lemnos_drivers_pisp::uapi::BeCropConfig {
             offset_x: x,
             offset_y: y,
             width: w,
@@ -345,7 +345,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     let (cpu0, _) = process_usage();
-    styx_pisp::device::profile::enable(a.profile);
+    lemnos_drivers_pisp::device::profile::enable(a.profile);
     p.start().map_err(|e| e.to_string())?;
     println!(
         "pisp: frame sync / embedded data: {:?}; back end config buffer: {}",
@@ -466,7 +466,7 @@ pub fn pisp(a: &Args) -> Result<(), String> {
     extra.push(startup_line(p_startup, opened_to_open, first));
     extra.extend(pass_lines);
     let n = frames.len().max(1) as f64;
-    for e in styx_pisp::device::profile::report() {
+    for e in lemnos_drivers_pisp::device::profile::report() {
         extra.push(format!(
             "profile {}.{}: {:.1} us/frame ({:.2} calls/frame, {:.1} us each)",
             e.what,

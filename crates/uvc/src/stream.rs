@@ -175,7 +175,7 @@ impl std::fmt::Debug for UvcStream {
 }
 
 fn mono_ns() -> u64 {
-    styx_kernel::monotonic_now().as_nanos() as u64
+    lemnos_v4l2::monotonic_now().as_nanos() as u64
 }
 
 impl UvcStream {

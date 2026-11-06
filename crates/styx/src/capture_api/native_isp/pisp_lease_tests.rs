@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
+use lemnos_drivers_pisp::device::BeJob;
 use styx_pipeline::SensorValues;
 use styx_pipeline::device::PispTimes;
-use styx_pisp::device::BeJob;
 
 use super::*;
 
@@ -222,7 +222,7 @@ fn early_access_opens_the_window_on_the_capture_thread() {
 /// a frame, and any back end crop of it, in the field's coordinates.
 #[test]
 fn crops_are_reported_in_the_sensors_field() {
-    let w = styx_pisp::device::SensorWindow {
+    let w = lemnos_drivers_pisp::device::SensorWindow {
         x: 0,
         y: 160,
         width: 1280,

@@ -1,7 +1,7 @@
 //! Raw formats: which pixel formats a CSI-2 receiver writes for a media bus code, and how many
 //! bytes a line takes.
 
-use styx_kernel::FourCc;
+use lemnos_v4l2::FourCc;
 
 /// How the samples of a raw format are laid out in memory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

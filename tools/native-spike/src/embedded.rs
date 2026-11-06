@@ -5,9 +5,9 @@
 use std::collections::VecDeque;
 use std::path::Path;
 
-use styx_kernel::media::{LinkFlags, MediaDevice, PadRef, Topology};
-use styx_kernel::v4l2::{BufType, Format, Memory, MetaFormat, QueueBuffer, VideoDevice};
-use styx_kernel::{FourCc, Mapping};
+use lemnos_v4l2::media::{LinkFlags, MediaDevice, PadRef, Topology};
+use lemnos_v4l2::v4l2::{BufType, Format, Memory, MetaFormat, QueueBuffer, VideoDevice};
+use lemnos_v4l2::{FourCc, Mapping};
 
 use crate::{Result, ResultExt, log};
 

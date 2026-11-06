@@ -14,9 +14,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lemnos_linux::hal::{I2cBus, IoError, StdDelay};
-use styx_kernel::bus::{SensorBridge, StreamRequest, StreamState};
-use styx_kernel::subdev::Subdev;
-use styx_kernel::v4l2::{ControlValue, ControlWhich, Controls};
+use lemnos_sensor_bridge::{SensorBridge, StreamRequest, StreamState};
+use lemnos_v4l2::subdev::Subdev;
+use lemnos_v4l2::v4l2::{ControlValue, ControlWhich, Controls};
 use styx_sensor::lemnos_hal::register::{RegisterError, RegisterResult};
 use styx_sensor::styx_hal::embedded_hal::delay::DelayNs;
 use styx_sensor::{

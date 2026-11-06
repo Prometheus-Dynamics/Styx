@@ -26,9 +26,9 @@ use std::os::fd::BorrowedFd;
 use std::path::Path;
 use std::sync::Arc;
 
-use styx_kernel::event::{EventType, Events, SubscribeFlags};
-use styx_kernel::media::{LinkFlags, MediaDevice};
-use styx_kernel::v4l2::VideoDevice;
+use lemnos_v4l2::event::{EventType, Events, SubscribeFlags};
+use lemnos_v4l2::media::{LinkFlags, MediaDevice};
+use lemnos_v4l2::v4l2::VideoDevice;
 
 use crate::camera::{Configured, NativeCamera, StreamSettings};
 use crate::control::FrameControls;
@@ -141,7 +141,7 @@ impl NativeCamera {
         let configured = Configured {
             interval: crate::modes::frame_interval(&mode.timing, frame_length),
             mode,
-            fourcc: settings.fourcc.unwrap_or(styx_kernel::FourCc(0)),
+            fourcc: settings.fourcc.unwrap_or(lemnos_v4l2::FourCc(0)),
             stride: 0,
             size_image: 0,
             frame_length,

@@ -15,13 +15,13 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lemnos_linux::hal::I2cBus;
+use lemnos_sensor_bridge::{PadFormat, SensorBridge, StreamState, Timing as BridgeTiming};
+use lemnos_v4l2::FourCc;
+use lemnos_v4l2::event::{EventType, Events, SubscribeFlags};
+use lemnos_v4l2::media::{LinkFlags, MediaDevice};
+use lemnos_v4l2::subdev::{MbusCode, MbusFormat, Subdev, Which};
+use lemnos_v4l2::v4l2::{BufType, Format, PixFormat, VideoDevice};
 use styx_graph::Fraction;
-use styx_kernel::FourCc;
-use styx_kernel::bus::{PadFormat, SensorBridge, StreamState, Timing as BridgeTiming};
-use styx_kernel::event::{EventType, Events, SubscribeFlags};
-use styx_kernel::media::{LinkFlags, MediaDevice};
-use styx_kernel::subdev::{MbusCode, MbusFormat, Subdev, Which};
-use styx_kernel::v4l2::{BufType, Format, PixFormat, VideoDevice};
 use styx_sensor::{AddressWidth, ControlRequest, SensorDriver, Step};
 
 use crate::buffers::BufferMemory;

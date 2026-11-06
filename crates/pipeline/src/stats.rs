@@ -5,9 +5,9 @@ use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use styx_core::math::Float as _;
 
+use lemnos_drivers_pisp::stats::Statistics as PispStatistics;
+use lemnos_drivers_pisp::uapi::{AWB_STATS_SIZE, CDAF_STATS_SIZE, RawStatistics};
 use styx_algo::{ColourZone, Histogram, LumaZone, Statistics};
-use styx_pisp::stats::Statistics as PispStatistics;
-use styx_pisp::uapi::{AWB_STATS_SIZE, CDAF_STATS_SIZE, RawStatistics};
 use styx_softisp::IspStats;
 
 /// Full scale of the PiSP statistics: sums are of 16-bit samples after the statistics black
@@ -194,8 +194,8 @@ pub fn histogram_mean(h: &Histogram) -> f64 {
 #[cfg(test)]
 mod tests {
     use alloc::vec;
+    use lemnos_drivers_pisp::uapi::RawStatistics;
     use styx_algo::ZoneGrid;
-    use styx_pisp::uapi::RawStatistics;
     use styx_softisp::ZoneStats;
 
     use super::*;

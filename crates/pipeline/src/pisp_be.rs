@@ -12,9 +12,11 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 
+use lemnos_drivers_pisp::be::BackEnd;
+use lemnos_drivers_pisp::uapi::{
+    BeCropConfig, BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable,
+};
 use styx_algo::{LensShading, Pwl};
-use styx_pisp::be::BackEnd;
-use styx_pisp::uapi::{BeCropConfig, BeLscExtra, BeTilesConfig, ImageFormatConfig, bayer_enable};
 
 use crate::error::{PipelineError, Result};
 use crate::isp::{IspSettings, be_lens_shading, gamma_points_into};
@@ -68,7 +70,7 @@ pub struct BeConfigBuilder {
 /// Raspberry Pi IPA; the ratio register holds up to 4).
 const TDN_MAX_RATIO: f64 = 4.0;
 
-fn config_error(e: styx_pisp::be::PrepareError) -> PipelineError {
+fn config_error(e: lemnos_drivers_pisp::be::PrepareError) -> PipelineError {
     PipelineError::Config(format!("back end: {}", e.0))
 }
 
@@ -95,7 +97,7 @@ impl BeConfigBuilder {
     }
 
     /// Temporal denoise buffers of `format` (the input's, see
-    /// `styx_pisp::device::BackEndStream::enable_tdn`) are there: frames whose settings ask
+    /// `lemnos_drivers_pisp::device::BackEndStream::enable_tdn`) are there: frames whose settings ask
     /// for temporal denoise get it from [`Self::update_frame`] on.
     pub fn enable_tdn(&mut self, format: ImageFormatConfig) {
         self.template.set_tdn_format(format);
@@ -182,7 +184,8 @@ impl BeConfigBuilder {
         // The detail and temporal denoise settings are applied to `work` in place (the non-rebuild
         // path below applies them again, after the black levels, as before). Only the enables
         // are compared, so no copy of the whole back end is made per frame.
-        let enables = |g: styx_pisp::uapi::BeGlobalConfig| (g.bayer_enables & mask, g.rgb_enables);
+        let enables =
+            |g: lemnos_drivers_pisp::uapi::BeGlobalConfig| (g.bayer_enables & mask, g.rgb_enables);
         let before = enables(self.work.config().global);
         isp.apply_be_detail(&mut self.work);
         self.work
@@ -295,11 +298,11 @@ impl BeConfigBuilder {
 
 #[cfg(test)]
 mod tests {
+    use lemnos_drivers_pisp::format::{compute_stride_align, formats};
+    use lemnos_drivers_pisp::uapi::{BayerOrder, ImageFormatConfig};
     use styx_algo::{
         CdnParams, DenoiseParams, GeqParams, Params, SdnParams, SharpenParams, TdnParams,
     };
-    use styx_pisp::format::{compute_stride_align, formats};
-    use styx_pisp::uapi::{BayerOrder, ImageFormatConfig};
 
     use super::*;
     use crate::isp::be_template;
@@ -515,8 +518,8 @@ mod tests {
     /// `all-algorithms`).
     #[cfg(feature = "all-algorithms")]
     mod denoise {
+        use lemnos_drivers_pisp::uapi::rgb_enable;
         use styx_algo::Algorithm;
-        use styx_pisp::uapi::rgb_enable;
 
         use super::*;
 

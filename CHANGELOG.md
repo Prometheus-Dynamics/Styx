@@ -8,6 +8,22 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Removed
 
+- `styx-kernel` and `styx-pisp` (`crates/kernel`, `crates/pisp`): Styx runs on Lemnos (rev
+  4dceae2). `styx_kernel::{v4l2, subdev, media, event}` and the root types are `lemnos_v4l2`'s;
+  `styx_kernel::bus` is the `lemnos-sensor-bridge` crate (its `find_bridges` matches the
+  `lemnos-sensor-bridge` driver only, `DRIVER_NAMES` is gone); `styx_pisp` is
+  `lemnos_drivers_pisp`, its debug variables `LEMNOS_PISP_BE_DUMP`, `LEMNOS_PISP_FE_DUMP` and
+  `LEMNOS_PISP_BE_PATCH`, its dumps `pisp_be_N.bin` / `pisp_fe_N.bin`. `styx_kernel::dma_heap`
+  is `styx_native::dma` (the same API; Styx's tail pad and memfd stand-in on
+  `lemnos_linux::dma`, whose `sync_stats` counts every sync of the process).
+  `styx_kernel::v4l2::{M2mSession, M2mFrame, DmabufSource, ImageRows, Span}` are
+  `styx_codec::m2m`'s. The `daedalus-rga` dependency is `lemnos-drivers-rga`.
+- `styx_rkisp`'s `uapi` and `device` and `styx_k230isp`'s `regs` and `device` are Lemnos's
+  (`lemnos-drivers-rkisp`, `lemnos-rkisp-sys`, `lemnos-drivers-k230isp`), re-exported under the
+  same paths; `styx_k230isp::RegisterAccess`, `stats::{Raw, read_raw, HIST_BINS}` and
+  `styx_rkisp::{Isp, ParamBuffer, isp32::{Variant, nodes}}` too. `Isp::params` and
+  `Isp::statistics` are the `styx_rkisp::IspBuffers` trait's (import it).
+
 - `kernel-modules/ov9282`, `kernel-modules/pispbe` and `kernel-modules/rp1-cfe` with their
   packaging, the `STYX_KMODS` Buildroot tree, and the OV9782's 1280x480 kernel mode: Styx runs on
   the image's stock `ov9282`, `pisp_be` and `rp1-cfe`. `BR2_LINUX_KERNEL_EXT_STYX_PISPBE` and
@@ -19,9 +35,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Changed
 
 - The native backend also takes a sensor entity whose node is a `lemnos-sensor-bridge` as
-  bridged, and `find_bridges` a subdevice bound to the `lemnos-sensor-bridge` driver
-  (`DRIVER_NAMES`; Lemnos's bridge module, the `styx-sensor-bridge` renamed, same protocol);
-  the old names stay for one release.
+  bridged (Lemnos's bridge module, the `styx-sensor-bridge` renamed, same protocol); the old
+  entity name stays for one release.
 - GPU ISP: the full-size shaders' tile fill has a fixed trip count, so it unrolls and the
   samples' loads overlap: 28.9 to 27.7 ms of GPU for a 1280x800 frame on the Pi 5's V3D, bit
   for bit the same output. The V3D profile is in `crates/gpuisp/README.md`.

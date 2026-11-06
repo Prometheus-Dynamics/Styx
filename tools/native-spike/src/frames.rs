@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 use std::time::Duration;
 
-use styx_kernel::FourCc;
+use lemnos_v4l2::FourCc;
 
 /// Packed 10-bit Bayer and mono formats (`V4L2_PIX_FMT_S*10P`, `Y10P`): four pixels in five
 /// bytes, the high 8 bits of each pixel first, then one byte of the four low 2-bit pairs.

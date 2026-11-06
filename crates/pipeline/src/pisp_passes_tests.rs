@@ -1,6 +1,6 @@
+use lemnos_drivers_pisp::format::{compute_stride_align, formats};
+use lemnos_drivers_pisp::uapi::{BayerOrder, ImageFormatConfig};
 use styx_algo::{DenoiseParams, Params, TdnParams};
-use styx_pisp::format::{compute_stride_align, formats};
-use styx_pisp::uapi::{BayerOrder, ImageFormatConfig};
 
 use super::*;
 use crate::isp::{IspSettings, be_template};
@@ -218,7 +218,7 @@ fn passes_scale_convert_and_must_fit_their_buffers() {
     );
     // Luma alone fits any buffer.
     let luma = PassSpec {
-        format: Some(styx_pisp::uapi::image_format::BPS_8),
+        format: Some(lemnos_drivers_pisp::uapi::image_format::BPS_8),
         ..region(crop(0, 0, 1280, 800))
     };
     passes.set(2, Some(luma), &main).unwrap();

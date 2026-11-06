@@ -3,10 +3,10 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use std::thread;
 use std::time::Duration;
 
+use lemnos_v4l2::v4l2::{BufType, Format, VideoDevice};
 use parking_lot::Mutex;
 use smallvec::{SmallVec, smallvec};
 use styx_core::prelude::*;
-use styx_kernel::v4l2::{BufType, Format, VideoDevice};
 
 use crate::capture_api::controls::apply_v4l2_controls;
 use crate::capture_api::handle::{CaptureQueue, record_worker_error};
@@ -157,7 +157,7 @@ pub(super) fn start_v4l2(
         _ => return Err(CaptureError::Backend("v4l2 path missing".into())),
     };
 
-    let backend_err = |e: styx_kernel::Error| CaptureError::Backend(e.to_string());
+    let backend_err = |e: lemnos_v4l2::Error| CaptureError::Backend(e.to_string());
     let dev = VideoDevice::open(&path).map_err(backend_err)?;
 
     let fmt = negotiate_format(&dev, &mode, config.capture_tunables().gpu_import_pad)
@@ -175,7 +175,7 @@ pub(super) fn start_v4l2(
     };
 
     if let Some(iv) = interval {
-        let interval = styx_kernel::Fraction::new(iv.numerator.get(), iv.denominator.get());
+        let interval = lemnos_v4l2::Fraction::new(iv.numerator.get(), iv.denominator.get());
         dev.set_frame_interval(BufType::VideoCapture, interval)
             .map_err(backend_err)?;
     }
@@ -486,22 +486,22 @@ fn negotiate_format(
     dev: &VideoDevice,
     mode: &Mode,
     gpu_pad: u32,
-) -> styx_kernel::Result<PixFormat> {
+) -> lemnos_v4l2::Result<PixFormat> {
     const PIX_FMT_FLAG_PREMUL_ALPHA: u32 = 1;
     let Format::Single(mut pix) = dev.format(BufType::VideoCapture)? else {
-        return Err(styx_kernel::Error::Invalid(
+        return Err(lemnos_v4l2::Error::Invalid(
             "v4l2 capture node has no single-planar format".into(),
         ));
     };
     pix.width = mode.format.resolution.width.get();
     pix.height = mode.format.resolution.height.get();
-    pix.fourcc = styx_kernel::FourCc(mode.format.code.to_u32());
+    pix.fourcc = lemnos_v4l2::FourCc(mode.format.code.to_u32());
     pix.ycbcr_enc = 0;
     pix.flags &= PIX_FMT_FLAG_PREMUL_ALPHA;
     dev.set_format(BufType::VideoCapture, &Format::Single(pix))?;
     let read = || match dev.format(BufType::VideoCapture)? {
         Format::Single(pix) => Ok(pix),
-        _ => Err(styx_kernel::Error::Invalid(
+        _ => Err(lemnos_v4l2::Error::Invalid(
             "v4l2 capture node has no single-planar format".into(),
         )),
     };
@@ -527,8 +527,8 @@ mod mmap;
 mod tests;
 mod yuv_layout;
 
+use lemnos_v4l2::v4l2::PixFormat;
 use mmap::{V4l2MmapManager, to_io};
-use styx_kernel::v4l2::PixFormat;
 
 use layout::{
     is_encoded_bitstream, min_stride_for_fourcc, plan_v4l2_single_plane_layout,

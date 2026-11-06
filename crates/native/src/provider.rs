@@ -11,12 +11,12 @@ use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
 use futures_core::Stream;
+use lemnos_v4l2::FourCc;
 use styx_graph::rt::Sleep;
 use styx_graph::{
     Device, DeviceGraph, DeviceInfo, DeviceKey, HotplugEvent, HotplugStream, OutputStream,
     Provider, ProviderError, StreamConfig,
 };
-use styx_kernel::FourCc;
 
 use crate::buffers::NativeFrame;
 use crate::camera::{CameraOptions, NativeCamera, StreamSettings};

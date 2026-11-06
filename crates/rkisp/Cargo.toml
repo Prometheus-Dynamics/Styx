@@ -12,14 +12,14 @@ categories = ["multimedia::images", "hardware-support"]
 
 [features]
 # Links std (for `device`); the rest of the crate is `no_std` + `alloc` either way.
-std = []
-# Drive the vendor `rkisp` driver's nodes through styx-kernel.
-device = ["std", "dep:styx-kernel"]
+std = ["lemnos-drivers-rkisp/std"]
+# The vendor `rkisp` driver's nodes, Lemnos's (`lemnos-drivers-rkisp/device`).
+device = ["std", "lemnos-drivers-rkisp/device"]
 
 [dependencies]
 bytemuck = { version = "1.25", features = ["extern_crate_alloc"] }
 styx-algo = { workspace = true, default-features = false }
-styx-kernel = { workspace = true, optional = true }
+lemnos-drivers-rkisp.workspace = true
 styx-math.workspace = true
 
 [lints]

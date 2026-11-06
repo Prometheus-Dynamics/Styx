@@ -18,8 +18,8 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec::Vec;
 
-use styx_pisp::be::BackEnd;
-use styx_pisp::uapi::{
+use lemnos_drivers_pisp::be::BackEnd;
+use lemnos_drivers_pisp::uapi::{
     BE_MIN_TILE_HEIGHT, BE_MIN_TILE_WIDTH, BeConfig, BeCropConfig, BeTilesConfig,
     ImageFormatConfig, bayer_enable, image_format, rgb_enable,
 };
@@ -343,7 +343,7 @@ fn pass_geometry(main: &BackEnd, spec: &PassSpec, buffer: ImageFormatConfig) -> 
     let yuv = f & (image_format::SAMPLING_MASK | image_format::PLANARITY_MASK) != 0
         || f & image_format::THREE_CHANNEL == 0;
     if yuv {
-        let jpeg = styx_pisp::be::defaults::encoding("jpeg").expect("jpeg encoding");
+        let jpeg = lemnos_drivers_pisp::be::defaults::encoding("jpeg").expect("jpeg encoding");
         be.set_csc(o, jpeg.ycbcr);
         rgb |= rgb_enable::csc(o);
     } else {
@@ -357,8 +357,8 @@ fn pass_geometry(main: &BackEnd, spec: &PassSpec, buffer: ImageFormatConfig) -> 
     be
 }
 
-fn bayer_order(v: u8) -> styx_pisp::uapi::BayerOrder {
-    use styx_pisp::uapi::BayerOrder;
+fn bayer_order(v: u8) -> lemnos_drivers_pisp::uapi::BayerOrder {
+    use lemnos_drivers_pisp::uapi::BayerOrder;
     match v {
         1 => BayerOrder::Gbrg,
         2 => BayerOrder::Bggr,

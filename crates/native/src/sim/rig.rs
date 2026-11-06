@@ -4,8 +4,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use styx_kernel::FourCc;
-use styx_kernel::bus::{StreamAction, StreamRequest};
+use lemnos_sensor_bridge::{StreamAction, StreamRequest};
+use lemnos_v4l2::FourCc;
 use styx_sensor::{SensorDescription, SensorDriver, Step};
 
 use super::scene::{Exposure, FrameContext, GroundTruth, Readout, SimScene, render};
@@ -475,12 +475,12 @@ impl SimRig {
         let (stamp, elapsed) = if lockstep {
             let (base, sim) = *pace
                 .clock
-                .get_or_insert((styx_kernel::monotonic_now(), Duration::ZERO));
+                .get_or_insert((lemnos_v4l2::monotonic_now(), Duration::ZERO));
             pace.clock = Some((base, sim + period));
             let t = Duration::from_secs_f64((sim.as_secs_f64() + offset).max(0.0));
             (base + t, t)
         } else {
-            (styx_kernel::monotonic_now(), now.duration_since(since))
+            (lemnos_v4l2::monotonic_now(), now.duration_since(since))
         };
         let faults = &self.spec.faults;
         if let Some(every) = faults.unplug_every
