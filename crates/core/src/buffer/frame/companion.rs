@@ -151,7 +151,8 @@ impl FrameLease {
     /// filters, each level from the previous one. Levels a hardware producer already attached
     /// are kept and reused as the source for deeper levels.
     ///
-    /// Costs ~0.16 ms for a 1280x800 → 640x400 level on a Cortex-A76 (CM5).
+    /// Costs ~0.09 ms for a 1280x800 → 640x400 level from a frame out of cache on a Cortex-A76
+    /// (CM5); ~0.14 ms before the NEON loop prefetched its source rows.
     pub fn with_box_pyramid(
         self,
         levels: u8,

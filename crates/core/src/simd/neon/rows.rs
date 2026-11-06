@@ -238,6 +238,10 @@ pub(in crate::simd) unsafe fn yuyv_chroma(
     blocks * 16
 }
 
+/// How far ahead [`box2`] prefetches each source row. On a Cortex-A76 (CM5, 1280x800): 512 B
+/// gives 0.110-0.114 ms, 1-2 KB 0.090-0.097 ms, 8 KB 0.116-0.128 ms.
+const BOX2_PREFETCH: usize = 1024;
+
 /// # Safety
 /// As [`swap_rb24`]; `top` and `bottom` hold `2 * width` bytes, `dst` `width`.
 #[target_feature(enable = "neon")]
@@ -253,6 +257,18 @@ pub(in crate::simd) unsafe fn box2(
         // bottom row's, then (sum + 2) >> 2.
         unsafe {
             let (t, b) = (top.as_ptr().add(i * 32), bottom.as_ptr().add(i * 32));
+            // The loop is memory-bound and the A76's prefetcher does not keep two interleaved
+            // row streams ahead: one streaming hint per row, BOX2_PREFETCH bytes ahead (1 KB
+            // measured best on a CM5: 0.093 ms against 0.145 for 1280x800 -> 640x400). A
+            // hint reads nothing architecturally, and an address past the row or the buffer
+            // does not fault.
+            core::arch::asm!(
+                "prfm pldl1strm, [{t}]",
+                "prfm pldl1strm, [{b}]",
+                t = in(reg) t.wrapping_add(BOX2_PREFETCH),
+                b = in(reg) b.wrapping_add(BOX2_PREFETCH),
+                options(nostack, readonly, preserves_flags),
+            );
             let s0 = vpadalq_u8(vpaddlq_u8(vld1q_u8(t)), vld1q_u8(b));
             let s1 = vpadalq_u8(vpaddlq_u8(vld1q_u8(t.add(16))), vld1q_u8(b.add(16)));
             vst1q_u8(

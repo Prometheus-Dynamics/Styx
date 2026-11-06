@@ -37,6 +37,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The NEON 2x2 box row loop (pyramid levels, `box_downscale_luma_in`) prefetches each source
+  row 1 KB ahead: the A76's prefetcher does not keep two interleaved row streams ahead. On
+  Raze #1 a 1280x800 → 640x400 halving from frames out of cache goes from 0.105 to 0.074 ms
+  p50 (measured by Eidos through `box_downscale_luma_in`: 0.145 to 0.093 ms). Outputs are
+  unchanged.
 - Daedalus and Lemnos are declared `branch = "dev"`, like every Prometheus git dependency, and
   the exact commits live only in Cargo.lock (Daedalus 6d651e1, Lemnos cf3a4ac): a `rev =`
   declaration is a second cargo source, which downstream locks see as a second copy.
