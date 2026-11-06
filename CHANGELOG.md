@@ -37,9 +37,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
-- Daedalus is pinned at rev 872de95 (it was `branch = "dev"`), which pins Lemnos cf3a4ac too:
-  one Lemnos in the lock.
-- Lemnos is pinned at cf3a4ac. A CMA dma-heap is now capped by the whole pool (`CmaTotal`), not
+- Daedalus and Lemnos are declared `branch = "dev"`, like every Prometheus git dependency, and
+  the exact commits live only in Cargo.lock (Daedalus 6d651e1, Lemnos cf3a4ac): a `rev =`
+  declaration is a second cargo source, which downstream locks see as a second copy.
+- Lemnos is at cf3a4ac. A CMA dma-heap is now capped by the whole pool (`CmaTotal`), not
   its idle pages (`CmaFree`), so allocations the kernel serves by migrating movable pages are no
   longer refused up front; Raze #1 reports `CmaFree` 0 of 64 MiB and still hands out eight
   1.28 MB buffers. Since 952e1c7, heap dma-bufs get their Vulkan import pad from Lemnos's
