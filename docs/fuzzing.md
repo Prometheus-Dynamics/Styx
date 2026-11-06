@@ -2,7 +2,7 @@
 
 Styx reads bytes it did not write: USB descriptors and payloads from whatever is plugged in,
 embedded data lines from sensors, statistics buffers, recordings, tuning and sensor files, and
-messages from other processes (the camera service, the frame socket). Every parser of such bytes
+messages from other processes (the camera service). Every parser of such bytes
 has a [cargo-fuzz](https://github.com/rust-fuzz/cargo-fuzz) target in [`fuzz/`](../fuzz/), run
 with AddressSanitizer and overflow checks. The rule the targets enforce: **untrusted input gives
 an error, never a panic, a read outside a buffer, a hang, or an allocation sized from a header.**
@@ -22,14 +22,13 @@ an error, never a panic, a read outside a buffer, a hang, or an allocation sized
 | `codec_raw` | structured | every raw decoder and converter (Bayer through the software ISP, YUV, NV12, mono, RGB) with odd sizes, strides and short planes |
 | `mjpeg_decode` | bytes | MJPEG frames through the turbojpeg, turbojpeg-luma and zune decoders |
 | `core_frame_layout` | structured | frame descriptors (format, sizes, offsets, strides) imported over memfds, dma-buf-like descriptors or host buffers, then every read, copy, crop, pyramid and re-allocation |
-| `frame_socket_message` | bytes: descriptor shape byte, JSON | frame socket messages decoded as a consumer decodes them (`styx_core::lease_codec::decode`), every plane read |
 | `ipc_messages` | bytes | camera service and frame client messages (camera control requests, replies, events and control lists too); decoded requests must encode back to themselves |
 | `ipc_request` | bytes | camera service requests (wire format 4, `FrameRequest`): decoded, checked as the service checks them, planned on virtual cameras alone and shared |
 | `replay_reader` | bytes | MCAP and `.styxrec` recordings (CDR messages included), every frame's pixels read |
 | `pipeline_rawrec` | bytes: index, NUL, frames | `styx-pipeline` raw recordings and the virtual sensor replaying them |
 
 Hooks the targets need inside crates are `#[doc(hidden)] pub fn fuzz_*` functions
-(`styx::ipc::fuzz_messages`, `fuzz_service_request`, `frame_socket::fuzz_import`,
+(`styx::ipc::fuzz_messages`, `fuzz_service_request`,
 `lemnos_v4l2::media::fuzz_topology`, `event::fuzz_event`, `v4l2::Format::fuzz_from_bytes`).
 
 ## Running
@@ -61,14 +60,14 @@ demand, and uploads `fuzz/artifacts/` when a target fails.
 ## Seeds and dictionaries
 
 `fuzz/seeds/<target>` holds small committed seeds (a few KB each): the C270's descriptors,
-recordings, wire messages, frame socket messages, embedded lines, kernel messages, a raw
+recordings, wire messages, embedded lines, kernel messages, a raw
 recording. The script also copies the repository's own data in at start: the sensor
 descriptions, the OV9782 and generic tunings, `rpi-minimal.json`, the C270 MJPEG frames, and
 generated PiSP statistics buffers. Seeds written by code come from ignored tests; regenerate them
 with
 
 ```bash
-STYX_FUZZ_SEEDS=$PWD/fuzz/seeds cargo test -p styx --features replay-styxrec,frame-socket --lib write_fuzz_seeds -- --ignored
+STYX_FUZZ_SEEDS=$PWD/fuzz/seeds cargo test -p styx --features replay-styxrec --lib write_fuzz_seeds -- --ignored
 STYX_FUZZ_SEEDS=$PWD/fuzz/seeds cargo test -p styx-pipeline --lib write_fuzz_seeds -- --ignored
 ```
 
@@ -116,7 +115,6 @@ The runs, on a 24-core x86-64 host shared with other builds (ASan, overflow chec
 | `replay_reader` | 30 min | 4.5 M |
 | `ipc_messages` | 30 min twice (request wire format 3, then 4) | 95.5 M, 323 M |
 | `ipc_request` | 30 min | 1.4 M |
-| `frame_socket_message` | 30 min | 15.3 M |
 | `core_frame_layout` | 30 min | 34.1 M |
 | `codec_raw` | 30 min | 1.8 M |
 | `uvc_stream` | 15 min | 4.9 M |

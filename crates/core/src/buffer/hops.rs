@@ -1,7 +1,7 @@
 //! Per-frame hop timestamps: when a frame passed each step between the sensor and a consumer
 //! ([`Hop`]), carried in its metadata ([`FrameMeta::hops`](super::FrameMeta::hops)) from the
-//! backend through queues, processes and the frame socket, so the time between any two steps
-//! (and where a frame was copied) can be measured per frame and joined with other tools' records.
+//! backend through queues and processes, so the time between any two steps (and where a frame
+//! was copied) can be measured per frame and joined with other tools' records.
 //!
 //! Every hop is `CLOCK_MONOTONIC` nanoseconds (with `std`: the [`Instant`](std::time::Instant)
 //! timeline, which is `CLOCK_MONOTONIC` on Linux; without `std` the platform clock
@@ -35,7 +35,7 @@ pub enum Hop {
     Queued = 3,
     /// A consumer in the capturing process took it from the queue (`recv`).
     Taken = 4,
-    /// A frame socket or camera service sent it to another process (`sendmsg` returned).
+    /// A camera service sent it to another process (`sendmsg` returned).
     Sent = 5,
     /// The consumer process received the message and its descriptors.
     Received = 6,

@@ -54,9 +54,9 @@ for arg in "$@"; do
     esac
 done
 
-# styx's feature-set clippy: the native stack, V4L2, libcamera, Daedalus, the frame socket,
-# previews with libjpeg-turbo; styx-record-cli with all its features (a subset of these).
-clippy_features="styx/native,styx/sim,styx/v4l2,styx/async,styx/libcamera,styx/daedalus,styx/frame-socket,styx/preview,styx/codec-turbojpeg,styx/codec-v4l2m2m,styx/codec-rkmpp,styx-record-cli/libcamera,styx-record-cli/native,styx-record-cli/v4l2"
+# styx's feature-set clippy: the native stack, V4L2, libcamera, Daedalus, previews with
+# libjpeg-turbo; styx-record-cli with all its features (a subset of these).
+clippy_features="styx/native,styx/sim,styx/v4l2,styx/async,styx/libcamera,styx/daedalus,styx/preview,styx/codec-turbojpeg,styx/codec-v4l2m2m,styx/codec-rkmpp,styx-record-cli/libcamera,styx-record-cli/native,styx-record-cli/v4l2"
 # styx's feature tests in one build: the native features (every styx test, zero_alloc without
 # Daedalus included), zero_alloc with Daedalus, styx-record-cli with all its features, and the
 # integration tests that need libjpeg-turbo, MCAP replay or previews (camera_service,

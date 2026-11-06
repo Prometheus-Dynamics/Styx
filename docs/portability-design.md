@@ -893,8 +893,8 @@ embedded node being the last to stop, `report_start_errors`.
 * `styx-kernel`, `styx-graph::rt`, usbfs UVC (`styx-uvc` device/stream/hotplug), V4L2
   probing of other cameras, libcamera compat.
 * The `styx` facade: `BackendKind` dispatch, capture workers and supervisors, `FrameLease`
-  and the shared-capture fan-out, the planner, the camera service and IPC (`FrameSocket`,
-  dma-buf passing), recordings (MCAP, `.styxrec`), metrics export (Prometheus, `/proc` CPU),
+  and the shared-capture fan-out, the planner, the camera service and IPC (dma-buf
+  passing), recordings (MCAP, `.styxrec`), metrics export (Prometheus, `/proc` CPU),
   PipeWire and GStreamer bridges, GPU ISP.
 * Persistence: warm starts on disk (`warm.rs` keeps an in-memory default; the runtime takes a
   `WarmStore` callback), replay recordings to files.

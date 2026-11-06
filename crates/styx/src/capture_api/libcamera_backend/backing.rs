@@ -637,8 +637,7 @@ impl<R: Send + 'static> ExternalBacking for LibcameraBacking<R> {
         Ok(Some(FrameBackingExport::DmabufPlanes { planes }))
     }
 
-    /// Into the sender's list (a frame socket's or a camera service's, reused): no list of
-    /// its own per frame.
+    /// Into the sender's list (a camera service's, reused): no list of its own per frame.
     fn export_into(
         &self,
         out: &mut Vec<FrameFdPlane>,

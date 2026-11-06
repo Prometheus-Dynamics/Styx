@@ -15,8 +15,6 @@
 //! metrics_top --service [PATH] [--prometheus | --json] [--seconds S] [--interval MS]
 //!     The metrics of a camera service running in another process (default socket:
 //!     $STYX_SOCKET or /tmp/styx-camera.sock, as `camera_service serve` uses).
-//! metrics_top --frame-socket PATH [--prometheus | --json] [--seconds S] [--interval MS]
-//!     The statistics of a frame socket served by another process (its `PATH.stats`).
 //! ```
 //!
 //! Under each camera: the time between the hops of the frames its consumers took (sensor,
@@ -39,7 +37,6 @@ struct Options {
     seconds: Option<f64>,
     interval: Duration,
     service: Option<String>,
-    frame_socket: Option<String>,
     prometheus: bool,
     json: bool,
     verify: bool,
@@ -53,7 +50,6 @@ fn options() -> Result<Options, String> {
         seconds: None,
         interval: Duration::from_secs(1),
         service: None,
-        frame_socket: None,
         prometheus: false,
         json: false,
         verify: false,
@@ -81,7 +77,6 @@ fn options() -> Result<Options, String> {
                 };
                 o.service = Some(path);
             }
-            "--frame-socket" => o.frame_socket = Some(value()?),
             "--overhead" => {
                 // Warm up, then the median of several runs.
                 styx::metrics::frame_path_cost(100_000);
@@ -267,57 +262,14 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
     }
 }
 
-#[cfg(feature = "frame-socket")]
+#[cfg(feature = "metrics-serde")]
 fn json(s: &MetricsSnapshot) -> String {
     s.to_json()
 }
 
-#[cfg(not(feature = "frame-socket"))]
+#[cfg(not(feature = "metrics-serde"))]
 fn json(_: &MetricsSnapshot) -> String {
-    "JSON needs the frame-socket feature (styx's metrics-serde)".into()
-}
-
-/// A frame socket's statistics, from its `PATH.stats` endpoint.
-#[cfg(feature = "frame-socket")]
-fn frame_socket(
-    path: &str,
-    o: &Options,
-    last: &mut HashMap<u64, (u64, u64)>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use styx::ipc::frame_socket::{fetch_metrics, fetch_metrics_text};
-    if o.prometheus {
-        print!("{}", fetch_metrics_text(path)?);
-        return Ok(());
-    }
-    let m = fetch_metrics(path)?;
-    if o.json {
-        println!("{}", m.to_json());
-        return Ok(());
-    }
-    println!(
-        "frame socket {}: published {}  copied {}  served {}  leases {}  held {}  revoked {}  unserved {}  hold ms p50/p95/max {}",
-        m.path,
-        m.published,
-        m.copied,
-        m.served,
-        m.leases,
-        m.held_frames,
-        m.revoked,
-        m.unserved,
-        window(&m.hold)
-    );
-    print!("{}", styx::metrics::hop_lines(&m.hops));
-    table(&m.snapshot, last);
-    Ok(())
-}
-
-#[cfg(not(feature = "frame-socket"))]
-fn frame_socket(
-    _: &str,
-    _: &Options,
-    _: &mut HashMap<u64, (u64, u64)>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    Err("--frame-socket needs the frame-socket feature".into())
+    "JSON needs the metrics-serde feature".into()
 }
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -423,7 +375,7 @@ fn open_cameras(o: &Options) -> Vec<Consumer> {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let o = options()?;
-    let cameras = if o.service.is_none() && o.frame_socket.is_none() {
+    let cameras = if o.service.is_none() {
         open_cameras(&o)
     } else {
         Vec::new()
@@ -432,46 +384,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last = HashMap::new();
     loop {
         std::thread::sleep(o.interval);
-        if let Some(path) = &o.frame_socket {
-            frame_socket(path, &o, &mut last)?;
-        } else {
-            match &o.service {
-                Some(path) if o.prometheus => {
-                    print!("{}", FrameClient::service_metrics_text(path)?)
-                }
-                #[cfg(feature = "frame-socket")]
-                Some(path) => {
-                    let m = FrameClient::service_metrics(path)?;
-                    if o.json {
-                        println!("{}", m.to_json());
-                    } else {
-                        println!(
-                            "service: clients {}  sent {}  skipped {}  copied {}  restarts {}  revoked {}  rejected {}",
-                            m.clients,
-                            m.sent,
-                            m.skipped,
-                            m.copied,
-                            m.restarts,
-                            m.revoked,
-                            m.rejected
-                        );
-                        for c in &m.client_metrics {
-                            consumer_row(c);
-                        }
-                        table(&m.snapshot, &mut last);
+        match &o.service {
+            Some(path) if o.prometheus => {
+                print!("{}", FrameClient::service_metrics_text(path)?)
+            }
+            #[cfg(feature = "metrics-serde")]
+            Some(path) => {
+                let m = FrameClient::service_metrics(path)?;
+                if o.json {
+                    println!("{}", m.to_json());
+                } else {
+                    println!(
+                        "service: clients {}  sent {}  skipped {}  copied {}  restarts {}  revoked {}  rejected {}",
+                        m.clients, m.sent, m.skipped, m.copied, m.restarts, m.revoked, m.rejected
+                    );
+                    for c in &m.client_metrics {
+                        consumer_row(c);
                     }
+                    table(&m.snapshot, &mut last);
                 }
-                #[cfg(not(feature = "frame-socket"))]
-                Some(path) => print!("{}", FrameClient::service_metrics_text(path)?),
-                None => {
-                    let s = styx::metrics::snapshot();
-                    if o.prometheus {
-                        print!("{}", s.prometheus_text());
-                    } else if o.json {
-                        println!("{}", json(&s));
-                    } else {
-                        table(&s, &mut last);
-                    }
+            }
+            #[cfg(not(feature = "metrics-serde"))]
+            Some(path) => print!("{}", FrameClient::service_metrics_text(path)?),
+            None => {
+                let s = styx::metrics::snapshot();
+                if o.prometheus {
+                    print!("{}", s.prometheus_text());
+                } else if o.json {
+                    println!("{}", json(&s));
+                } else {
+                    table(&s, &mut last);
                 }
             }
         }

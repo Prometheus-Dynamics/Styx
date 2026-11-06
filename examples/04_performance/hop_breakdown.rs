@@ -5,8 +5,6 @@
 //! ```sh
 //! # In the capturing process (NV12 1280x800 at 30 fps from the first camera, 20 s):
 //! hop_breakdown inproc 20
-//! # Through a frame socket to another process:
-//! hop_breakdown socket-serve /tmp/hops.sock 25 &   hop_breakdown socket-fetch /tmp/hops.sock 20
 //! # Through a camera service to another process:
 //! hop_breakdown service-serve /tmp/hops-svc.sock 25 &   hop_breakdown service-client /tmp/hops-svc.sock 20
 //! ```
@@ -20,13 +18,9 @@
 //! one-second windows: the median window is the steady state, the whole run's average includes
 //! one-off work such as answering a statistics request or a client joining or leaving.
 //!
-//! The frame-socket consumer takes each frame once, as it is published
-//! (`FrameFetcher::fetch_next`, the socket's `<path>.next` endpoint); the server's counts of
-//! sends, distinct frames and repeated sends say whether any frame went out twice.
-//!
-//! The camera is the first one the enabled backends probe (`--features frame-socket,native`
-//! for a native camera; `--features frame-socket,libcamera` probes libcamera only, so a
-//! libcamera camera, e.g. through the Raspberry Pi PiSP, is used).
+//! The camera is the first one the enabled backends probe (`--features native` for a native
+//! camera; `--features libcamera,metrics-serde` probes libcamera only, so a libcamera camera,
+//! e.g. through the Raspberry Pi PiSP, is used).
 //!
 //! `STYX_HOPS_REQUEST=gray-pyramid` asks for luma with ISP pyramid level 1 (a vision client)
 //! instead of NV12; `STYX_HOPS_PRIORITY=low` makes the service client low-priority (it joins
@@ -44,7 +38,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use styx::ipc::{CameraService, FrameClient, FrameFetcher, FrameSocket, frame_socket};
+use styx::ipc::{CameraService, FrameClient};
 use styx::metrics::{HopMetrics, PathMetrics};
 use styx::prelude::*;
 
@@ -275,97 +269,6 @@ fn inproc(seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn socket_serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
-    let mut frames = request().plan_best(&probe_all())?.exportable().start()?;
-    let socket = FrameSocket::bind(path)?;
-    println!("serving {path} for {seconds} s");
-    let start = Instant::now();
-    let end = start + Duration::from_secs(seconds);
-    let (mut allocs, mut n) = (None::<AllocRate>, 0u64);
-    while Instant::now() < end {
-        if let RecvOutcome::Data(frame) = frames.next_frame(Duration::from_millis(500)) {
-            socket.publish(&frame)?;
-            n += 1;
-        }
-        if start.elapsed() > Duration::from_secs(3) {
-            allocs.get_or_insert_with(|| AllocRate::start(n)).sample(n);
-        }
-    }
-    if let Some(a) = &mut allocs {
-        a.print("server process, after 3 s", n);
-    }
-    let m = socket.metrics();
-    table("frame socket server (sensor to send)", &m.hops);
-    println!(
-        "sends: {} ({} distinct frames, {} repeated) of {} published; leases hold ms p50/p99/max {}/{}/{}",
-        m.served,
-        m.served_frames,
-        m.repeated,
-        m.published,
-        ms(m.hold.p50_ms),
-        ms(m.hold.p99_ms),
-        ms(m.hold.max_ms)
-    );
-    frames.stop();
-    Ok(())
-}
-
-fn socket_fetch(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
-    // Each frame once, as it is published: no polling, no frame sent twice.
-    let mut fetcher = FrameFetcher::new(path);
-    let warm = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < warm {
-        drop(fetcher.fetch_next(Duration::from_secs(2))?);
-    }
-    let server_before = frame_socket::fetch_metrics(path)?;
-    let mut fetcher = FrameFetcher::new(path);
-    let before = styx::metrics::path();
-    let mut allocs = AllocRate::start(0);
-    let cpu = (cpu_time(), Instant::now());
-    let end = Instant::now() + Duration::from_secs(seconds);
-    let (mut n, mut x) = (0u64, 0u8);
-    while Instant::now() < end {
-        let frame = fetcher.fetch_next(Duration::from_secs(2))?;
-        x ^= touch(&frame);
-        n += 1;
-        drop(frame);
-        allocs.sample(n);
-    }
-    print_cpu("consumer process", cpu, n);
-    allocs.print("consumer process", n);
-    let after = styx::metrics::path();
-    let server = frame_socket::fetch_metrics(path)?;
-    let f = fetcher.stats();
-    table(
-        &format!(
-            "frame socket consumer ({n} frames read, {} repeated, {} polled, x={x})",
-            f.repeated, f.polled
-        ),
-        &fetcher.hop_metrics(),
-    );
-    per_frame("consumer process", &before, &after, n);
-    per_frame(
-        "server process",
-        &server_before.snapshot.process.path,
-        &server.snapshot.process.path,
-        n,
-    );
-    println!(
-        "server, meanwhile: {} sends, {} distinct frames, {} repeated sends, {} published",
-        server.served - server_before.served,
-        server.served_frames - server_before.served_frames,
-        server.repeated - server_before.repeated,
-        server.published - server_before.published,
-    );
-    println!(
-        "leases: hold ms p50/p99/max {}/{}/{}",
-        ms(server.hold.p50_ms),
-        ms(server.hold.p99_ms),
-        ms(server.hold.max_ms)
-    );
-    Ok(())
-}
-
 fn service_serve(path: &str, seconds: u64) -> Result<(), Box<dyn std::error::Error>> {
     let service = CameraService::new(camera()?).keep_streaming().serve(path)?;
     println!("camera service on {path} for {seconds} s");
@@ -448,10 +351,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let secs = |i: usize| arg(i).and_then(|s| s.parse().ok()).unwrap_or(20);
     match arg(0) {
         Some("inproc") => inproc(secs(1)),
-        Some("socket-serve") => socket_serve(arg(1).ok_or("socket path")?, secs(2)),
-        Some("socket-fetch") => socket_fetch(arg(1).ok_or("socket path")?, secs(2)),
         Some("service-serve") => service_serve(arg(1).ok_or("socket path")?, secs(2)),
         Some("service-client") => service_client(arg(1).ok_or("socket path")?, secs(2)),
-        _ => Err("usage: hop_breakdown inproc [S] | socket-serve PATH [S] | socket-fetch PATH [S] | service-serve PATH [S] | service-client PATH [S]".into()),
+        _ => Err(
+            "usage: hop_breakdown inproc [S] | service-serve PATH [S] | service-client PATH [S]"
+                .into(),
+        ),
     }
 }

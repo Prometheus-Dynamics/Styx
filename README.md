@@ -148,8 +148,8 @@ blocking task/thread, then use async receive/control APIs for coordination.
   the frame type and descriptor, a metadata adapter and zero-copy payloads ([docs/daedalus.md](docs/daedalus.md)).
 - `simulation-bevy`: Bevy-backed synthetic scene capture and the heaviest optional feature group.
 - `schema`, `serde`: API schema and serialization support.
-- `metrics-serde`, `metrics-http`: serde for metrics snapshots (also with `serde`,
-  `frame-socket` and `native`), and a tiny HTTP endpoint serving them as Prometheus text.
+- `metrics-serde`, `metrics-http`: serde for metrics snapshots (also with `serde`), and a tiny
+  HTTP endpoint serving them as Prometheus text.
   Metrics themselves are always on ([docs/metrics.md](docs/metrics.md)).
 - `examples`: convenience bundle for example-oriented features.
 

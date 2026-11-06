@@ -8,6 +8,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Removed
 
+- The legacy frame socket (`styx-frame-lease-v1`): `ipc::FrameSocket`, `FrameFetcher`,
+  `fetch_frame`, `IpcError::Lease`, the `frame-socket` feature, and styx-core's `lease_codec` /
+  `lease-codec` feature. Use the camera service and `FrameClient` (`styx-frames`). `native`
+  still brings `metrics-serde` (the camera service's metrics requests).
 - `kernel-modules/styx-sensor-bridge` and `kernel-modules/kernel-env.sh`: the bridge module moved to
   Lemnos as `kernel-modules/lemnos-sensor-bridge` (Lemnos 2676ccd; driver, node and overlays named
   `lemnos-sensor-bridge`), whose userspace side Styx already uses.

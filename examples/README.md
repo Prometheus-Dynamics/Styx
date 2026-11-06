@@ -8,7 +8,7 @@ Examples are organized as the top-level `styx-examples` package:
 - `02_graph`: Daedalus graph integration and `FrameLease` graph flow
 - `03_codecs`: decode/encode examples
 - `04_performance`: benchmarks, zero-copy validation, the native stack's measurements
-- `05_apps`: camera service, frame socket, preview and recording applications
+- `05_apps`: camera service, preview and recording applications
 - `06_new_camera`: adding a camera (a sensor description, a kernel-driver data file, a checker)
 
 Every example says at the top what it shows and how to run it. Features pick the camera
@@ -35,7 +35,6 @@ backends: `v4l2` (USB and other V4L2 cameras, with the CPU converters for YUYV),
 | [`metrics_top`](05_apps/metrics_top.rs) | A live table of every open camera's metrics (rate, drops by cause, latency, ISP and CPU time, 3A, consumers), or a camera service's from another process ([docs/metrics.md](../docs/metrics.md)) | `... --bin metrics_top -- --consumers 2 --slow 100` and `-- --service` |
 | [`preview_server`](05_apps/preview_server.rs) | A camera preview in the browser (MJPEG, latest JPEG, WebSocket message, metrics) from a low-priority camera service client, next to a vision client that takes every full-size frame; its rate, latency and restarts and the preview's cost each second ([docs/preview.md](../docs/preview.md)) | `cargo run --release -p styx-examples --features preview --bin preview_server -- --seconds 20` |
 | [`preview_encode_bench`](04_performance/preview_encode_bench.rs) | Preview JPEG cost per encoder, size, quality and input (YUV planes, NV12, RGB), and the whole scale-and-encode path | `cargo run --release -p styx-examples --features preview,image --bin preview_encode_bench` |
-| [`frame_socket`](05_apps/frame_socket.rs) | The latest frame for other processes, leased: its buffer is not reused while a consumer holds it | `... --bin frame_socket -- serve /tmp/cam.sock` and `-- fetch /tmp/cam.sock 10 300` |
 | [`sensor_check`](06_new_camera/sensor_check.rs) | Validating a new sensor description or kernel-driver data file, and what Styx makes of it (modes, exact rates, exposure limits) | `cargo run -p styx-examples --features native --bin sensor_check -- examples/06_new_camera/example_sensor.toml` |
 
 How these compare with libcamera, raw V4L2 and GStreamer code for the same tasks:
@@ -259,7 +258,7 @@ detector: 100 frames RG24 640x400 (dma-buf), 20.0 fps, 50 dropped
 
 </details>
 
-<details><summary>CM5: <code>raw_processing</code>, <code>hotplug</code>, <code>frame_socket</code>, <code>camera_service</code>, <code>landing</code></summary>
+<details><summary>CM5: <code>raw_processing</code>, <code>hotplug</code>, <code>camera_service</code>, <code>landing</code></summary>
 
 `raw_processing record /tmp/ex/out/raw.mcap 60 20000 4`, then `replay` (on the CM5, and the
 same recording on the desktop: identical numbers, 1.0 ms per frame there):
@@ -288,14 +287,6 @@ watching for 16 s
   9.80 s added 046d:0825
   capturing from 046d:0825
 frames so far: 046d:0825: 52, ov9782 (styx bridge i2c 10-0060): 599
-```
-
-`frame_socket serve /tmp/ex/cam.sock 10` and, in another process, `fetch /tmp/ex/cam.sock 6 300`:
-
-```text
-NV12 1280x800 t=21308.460 s via Some(Dmabuf), 2 planes, fetched in 0.12 ms, 39.9 ms old, unchanged after 300 ms: true
-NV12 1280x800 t=21309.693 s via Some(Dmabuf), 2 planes, fetched in 0.06 ms, 10.1 ms old, unchanged after 300 ms: true
-FrameSocketStats { published: 301, copied: 0, served: 6, leases: 0, held_frames: 0, revoked: 0, unserved: 0 }
 ```
 
 `camera_service serve ov9782` with two clients at once, `client luma 320x200 5` and
@@ -340,10 +331,6 @@ frame plan for platform:v4l2loopback-000 via v4l2 YUYV 1280x720 @ 30 fps: ~27.0 
 $ two_consumers 4
 recorder: 122 frames NV12 1280x720 (memory), 30.5 fps, 0 dropped
 detector: 80 frames RG24 1280x720 (memory), 20.0 fps, 39 dropped
-
-$ frame_socket fetch target/host-frame.sock 4 200     # serve running in another process
-NV12 1280x720 t=231.341 s via Some(HostExternal), 2 planes, fetched in 0.09 ms, unchanged after 200 ms: true
-FrameSocketStats { published: 182, copied: 0, served: 4, leases: 0, held_frames: 0, revoked: 0, unserved: 0 }
 
 $ sensor_check examples/06_new_camera/example_sensor.toml
 sensor example (vendor not given), I2C address 0x10, 16-bit register addresses, chip id 0x0219 at 0x0000

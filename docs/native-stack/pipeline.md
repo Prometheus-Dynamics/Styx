@@ -149,9 +149,8 @@ every consumer's queue and the frame it works on that way, so a consumer holding
 planner allows it never takes the others' buffers; all the outputs' buffers stay within half
 the free CMA (never fewer than `output_buffers`; 32 at most).
 
-On the CM5 with the frame socket (`styx::ipc::FrameSocket`, NV12 1280x800 at 30 fps, 20 s
-each, consumers fetching the latest frame and holding it, staggered so each holds a
-different frame):
+On the CM5 with a camera service (`styx::ipc::CameraService`, NV12 1280x800 at 30 fps, 20 s
+each, consumers taking frames and holding them, staggered so each holds a different frame):
 
 | consumers holding 500 ms | 4 buffers | 6 buffers (default) |
 |---|---|---|

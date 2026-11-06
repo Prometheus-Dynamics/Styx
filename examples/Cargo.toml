@@ -35,12 +35,13 @@ v4l2 = ["styx/v4l2", "raw-decoders"]
 raw-decoders = ["styx/raw-decoders"]
 # Pure-Rust JPEG encoding for stills (the `image` crate) when no other JPEG encoder is enabled.
 image = ["styx/image"]
-# The native stack; also brings `frame-socket` and the sensor / software ISP crates the
+# The native stack; also brings the sensor / software ISP crates the
 # `sensor_check` and `raw_processing` examples use directly.
 # Styx's debug log on stderr (sliced_rejoin).
 trace-log = ["styx/tracing", "dep:tracing-subscriber"]
-native = ["styx/native", "frame-socket", "dep:styx-sensor", "dep:styx-softisp", "dep:styx-dng", "dep:styx-pipeline"]
-frame-socket = ["styx/frame-socket"]
+# Metrics as JSON (`metrics_top --json`, `hop_breakdown`): styx's metrics-serde, also on with `native`.
+metrics-serde = ["styx/metrics-serde"]
+native = ["styx/native", "metrics-serde", "dep:styx-sensor", "dep:styx-softisp", "dep:styx-dng", "dep:styx-pipeline"]
 # Camera previews (`styx::preview`) with libjpeg-turbo: the `preview_server` (a tiny std HTTP
 # server, no framework) and `preview_encode_bench` examples. `preview-only` leaves the JPEG
 # encoder to other features (mozjpeg and libjpeg-turbo do not link into one binary):
@@ -146,13 +147,13 @@ required-features = ["native", "trace-log"]
 name = "record_bench"
 path = "04_performance/record_bench.rs"
 test = false
-required-features = ["frame-socket", "replay-mcap"]
+required-features = ["replay-mcap"]
 
 [[bin]]
 name = "hop_breakdown"
 path = "04_performance/hop_breakdown.rs"
 test = false
-required-features = ["frame-socket"]
+required-features = ["metrics-serde"]
 
 [[bin]]
 name = "native_roi"
@@ -233,12 +234,6 @@ name = "hotplug"
 path = "01_capture/hotplug.rs"
 test = false
 required-features = ["hotplug"]
-
-[[bin]]
-name = "frame_socket"
-path = "05_apps/frame_socket.rs"
-test = false
-required-features = ["frame-socket"]
 
 [[bin]]
 name = "sensor_check"

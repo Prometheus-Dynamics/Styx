@@ -33,7 +33,7 @@ it; `scripts/gate.sh --list` prints its steps:
 | --- | --- |
 | `fmt`, `file-sizes`, `test-targets` | `cargo fmt --all --check`, `check-file-sizes.sh`, `check-test-targets.sh` |
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` (default features) |
-| `clippy-features` | `styx` with `native,v4l2,async,libcamera,daedalus,frame-socket,preview,codec-turbojpeg` and `styx-record-cli` with all its features, in one pass |
+| `clippy-features` | `styx` with `native,v4l2,async,libcamera,daedalus,preview,codec-turbojpeg` and `styx-record-cli` with all its features, in one pass |
 | `test` | the workspace's tests with default features: `cargo nextest run --workspace`, then `cargo test --workspace --doc` |
 | `test-features` | `styx` and `styx-record-cli` in one build: `styx` with `native,daedalus,codec-turbojpeg,replay-mcap,preview`, `styx-record-cli` with all features (styx's native tests, `zero_alloc` with Daedalus, the recorder, and `camera_service`, `scaled_planning`, `shared_planning` and `preview`) |
 | `nostd` | `check-nostd.sh`: the `no_std` crates linted in seven groups, each for all five targets in one cargo run, their host tests, the MCU images and `mcu-size.sh --check` |
@@ -247,7 +247,7 @@ above all), and on a busy spinning disk that takes hours and slows every other b
 # glibc, against a Buildroot output (only read): what links libcamera or other C libraries
 export STYX_AARCH64_BUILDROOT=/path/to/buildroot-output
 scripts/cross-aarch64.sh -p styx-record-cli --features styx-record-cli/libcamera --out out/cm5
-scripts/cross-aarch64.sh -p styx-examples --features frame-socket,libcamera \
+scripts/cross-aarch64.sh -p styx-examples --features libcamera,metrics-serde \
     --bins hop_breakdown,libcamera_format_check --out out/cm5
 # musl, static, linked by rust-lld: no toolchain or sysroot, runs on any aarch64 Linux
 scripts/cross-aarch64.sh --musl -p styx-record-cli \

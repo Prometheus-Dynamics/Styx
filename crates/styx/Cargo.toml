@@ -74,13 +74,8 @@ libc.workspace = true
 
 # The integration tests are one binary (`tests/it`, modules gated on the features they need) and
 # three of their own: `zero_alloc` and `worker_alloc` (counting global allocators) and `metrics`
-# (process-wide counts). `zero_alloc` is skipped without `frame-socket`, `worker_alloc` without
-# `sim` (no empty test binary to build and link); their `#![cfg]` lines keep the platform
-# condition.
-[[test]]
-name = "zero_alloc"
-required-features = ["frame-socket"]
-
+# (process-wide counts). `worker_alloc` is skipped without `sim` (no empty test binary to build
+# and link); its `#![cfg]` line keeps the platform condition.
 [[test]]
 name = "worker_alloc"
 required-features = ["sim"]
@@ -139,8 +134,6 @@ replay-styxrec = ["facade"]
 # without it. For a FrameLease-only dependency, use `default-features = false` (no capture, codec,
 # backend, service or preview modules).
 framelease = []
-# `ipc::FrameSocket`: the latest frame, leased, in the frame-lease wire format (`styx-frame-lease-v1`).
-frame-socket = ["facade", "dep:serde", "dep:serde_json", "styx-core/serde", "styx-core/lease-codec", "metrics-serde"]
 # `styx::preview`: low-latency JPEG previews for user interfaces (a low-priority camera service
 # client or offered frames, MJPEG and WebSocket serving helpers). The JPEG encoder comes from
 # `codec-turbojpeg` (recommended), `codec-mozjpeg`, `image` or Styx's own, always there
@@ -182,7 +175,8 @@ native = [
     "dep:styx-softisp",
     "dep:styx-dng",
     "lemnos-v4l2",
-    "frame-socket",
+    # The camera service answers metrics requests (`metrics_top --service` on a board).
+    "metrics-serde",
 ]
 # Native cameras without a PiSP process on a Vulkan GPU when one exists (styx-gpuisp: Vulkan
 # loaded at run time, the software ISP otherwise; `STYX_GPU_ISP=0` turns it off).

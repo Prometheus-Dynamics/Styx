@@ -192,28 +192,3 @@ fn a_service_lists_only_its_own_captures() {
     busy.stop();
     idle.stop();
 }
-
-#[cfg(feature = "frame-socket")]
-#[test]
-fn a_frame_socket_lists_only_the_capture_it_serves() {
-    use styx::ipc::FrameSocket;
-    let served = CaptureRequest::new(&virtual_camera("scope-served", 60))
-        .start()
-        .unwrap();
-    let _other = CaptureRequest::new(&virtual_camera("scope-unserved", 60))
-        .start()
-        .unwrap();
-    let path = std::env::temp_dir().join(format!("styx-scope-socket-{}.sock", std::process::id()));
-    let socket = FrameSocket::bind(&path).unwrap();
-    assert!(socket.metrics().snapshot.cameras.is_empty());
-    socket.set_source(&served);
-    let frame = loop {
-        if let RecvOutcome::Data(frame) = served.recv_blocking(Duration::from_millis(500)) {
-            break frame;
-        }
-    };
-    socket.publish(&frame).unwrap();
-    let cameras = socket.metrics().snapshot.cameras;
-    let names: Vec<&str> = cameras.iter().map(|c| c.name.as_str()).collect();
-    assert_eq!(names, ["scope-served"], "{cameras:?}");
-}

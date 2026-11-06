@@ -166,7 +166,7 @@ backing:
 | Backing | Mapping | Sync |
 | --- | --- | --- |
 | shared-fd (`from_dmabuf_import`, IPC imports with planes on several buffers) | each buffer mapped (`MAP_POPULATE`) on the frame's first CPU read, unmapped on drop | the mapped dma-bufs, through the window |
-| IPC (camera service, frame socket: `CachedDmabuf`) | the receiver's mapping cache: each buffer mapped once, on its first CPU read, and reused for later frames in it | the dma-buf, through the window (nothing for memfds) |
+| IPC (camera service: `CachedDmabuf`) | the receiver's mapping cache: each buffer mapped once, on its first CPU read, and reused for later frames in it | the dma-buf, through the window (nothing for memfds) |
 | libcamera | the capture's mapping cache, on the first CPU read of a buffer | each mapped buffer, through the window |
 | PiSP back end | mapped when the output buffer is first leased | the buffer (`dma_heap::sync`), through the window |
 | native capture (`LeaseBuffer`) | the receiver's mapping, made with the stream's buffers | `FrameBuffer::begin_cpu` / `end_cpu` (V4L2 buffers skip the read END, which only cleans cache lines the CPU did not dirty), through the window |
@@ -184,7 +184,7 @@ crossing into a stable-ABI plugin is wrapped in a handle to the same `Arc` (one 
 increment). `crates/styx/tests/zero_alloc.rs` checks it: a camera service client reading each
 frame through `FrameView` allocates once per frame (the received frame's release record) and
 copies nothing; wrapping it in a payload adds `frame_payload`'s own two allocations. With a
-frame socket's dma-buf frames (from the system dma-heap where there is one), a consumer that
+dma-buf frames from the system dma-heap (where there is one) handed to a consumer that
 reads only metadata and fds makes Styx map nothing, begin no CPU access and sync nothing
 (`styx_core::metrics::path_counters()`: `frame_maps`, `cpu_reads`, `syncs`), and a CPU
 consumer reading both planes at once makes one START and one END per frame and maps each buffer

@@ -1,6 +1,5 @@
 //! Unix `SOCK_SEQPACKET` sockets carrying file descriptors (`SCM_RIGHTS`). Message boundaries
-//! are kept, so each frame is one message with its descriptors attached. The frame socket
-//! ([`super::frame_socket`]) uses `SOCK_STREAM` sockets, as the transport it speaks does.
+//! are kept, so each frame is one message with its descriptors attached.
 
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -61,20 +60,10 @@ fn address(path: &Path) -> io::Result<(libc::sockaddr_un, libc::socklen_t)> {
 
 /// A non-blocking listening socket at `path`; a stale socket file there is replaced.
 pub(super) fn listen(path: &Path) -> io::Result<OwnedFd> {
-    listen_kind(path, libc::SOCK_SEQPACKET)
-}
-
-/// [`listen`] for a `SOCK_STREAM` socket.
-#[cfg(feature = "frame-socket")]
-pub(super) fn listen_stream(path: &Path) -> io::Result<OwnedFd> {
-    listen_kind(path, libc::SOCK_STREAM)
-}
-
-fn listen_kind(path: &Path, kind: libc::c_int) -> io::Result<OwnedFd> {
     if std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_socket()) {
         std::fs::remove_file(path)?;
     }
-    let socket = unix_socket(kind)?;
+    let socket = unix_socket(libc::SOCK_SEQPACKET)?;
     let (addr, len) = address(path)?;
     // SAFETY: `addr` is a valid `sockaddr_un` of `len` bytes; the fd is open.
     check(unsafe {
@@ -114,7 +103,17 @@ pub(super) fn accept(listener: &OwnedFd) -> io::Result<Option<OwnedFd>> {
 }
 
 pub(super) fn connect(path: &Path) -> io::Result<OwnedFd> {
-    connect_kind(path, libc::SOCK_SEQPACKET)
+    let socket = unix_socket(libc::SOCK_SEQPACKET)?;
+    let (addr, len) = address(path)?;
+    // SAFETY: `addr` is a valid `sockaddr_un` of `len` bytes; the fd is open.
+    check(unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            (&raw const addr).cast::<libc::sockaddr>(),
+            len,
+        )
+    })?;
+    Ok(socket)
 }
 
 /// A non-blocking connection being made: [`Connecting::attempt`] does not wait, so a caller can
@@ -173,26 +172,6 @@ pub(super) fn connect_until(path: &Path, deadline: std::time::Instant) -> io::Re
         std::thread::sleep(Duration::from_millis(2));
     }
     Ok(connecting.into_socket())
-}
-
-/// [`connect`] for a `SOCK_STREAM` socket.
-#[cfg(feature = "frame-socket")]
-pub(super) fn connect_stream(path: &Path) -> io::Result<OwnedFd> {
-    connect_kind(path, libc::SOCK_STREAM)
-}
-
-fn connect_kind(path: &Path, kind: libc::c_int) -> io::Result<OwnedFd> {
-    let socket = unix_socket(kind)?;
-    let (addr, len) = address(path)?;
-    // SAFETY: `addr` is a valid `sockaddr_un` of `len` bytes; the fd is open.
-    check(unsafe {
-        libc::connect(
-            socket.as_raw_fd(),
-            (&raw const addr).cast::<libc::sockaddr>(),
-            len,
-        )
-    })?;
-    Ok(socket)
 }
 
 /// Send one message with `fds` attached, without blocking. `Ok(false)`: the socket is full.
@@ -261,36 +240,6 @@ pub(super) fn send(socket: &OwnedFd, bytes: &[u8], fds: &[RawFd]) -> io::Result<
         ));
     }
     Ok(true)
-}
-
-/// Waits up to `wait` until any of `polls` (`pollfd`s for `POLLIN`) is readable (or closed by
-/// the other end); their `revents` say which. The caller keeps `polls` across calls (no
-/// allocation per wait).
-#[cfg(feature = "frame-socket")]
-pub(super) fn poll_readable(polls: &mut [libc::pollfd], wait: Duration) -> io::Result<()> {
-    for p in polls.iter_mut() {
-        p.revents = 0;
-    }
-    let timeout = i32::try_from(wait.as_millis()).unwrap_or(i32::MAX);
-    // SAFETY: `polls` holds `polls.len()` valid `pollfd`s for the duration of the call.
-    let ready = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, timeout) };
-    if ready < 0 {
-        let err = io::Error::last_os_error();
-        if err.kind() != io::ErrorKind::Interrupted {
-            return Err(err);
-        }
-    }
-    Ok(())
-}
-
-/// A `pollfd` waiting for `fd` to be readable.
-#[cfg(feature = "frame-socket")]
-pub(super) fn pollfd(fd: RawFd) -> libc::pollfd {
-    libc::pollfd {
-        fd,
-        events: libc::POLLIN,
-        revents: 0,
-    }
 }
 
 /// The process at the other end of a connected Unix socket, as the kernel reports it.

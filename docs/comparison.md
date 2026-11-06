@@ -263,8 +263,7 @@ which request, and when to re-queue).
 ### Sharing a camera between processes
 
 Styx: a camera service plans one shared capture for all clients, each asking for its own
-format and size, and passes frames as dma-bufs (`camera_service`); or the latest frame on a
-socket with a lease per consumer (`frame_socket`, the `styx-frame-lease-v1` wire format).
+format and size, and passes frames as dma-bufs (`camera_service`).
 
 ```rust
 // camera process

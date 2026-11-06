@@ -2,8 +2,6 @@
 //! nothing per frame beyond each received frame's one release record, measured with a counting
 //! allocator over many frames after a warm-up, thread by thread:
 //!
-//! - a frame socket: the camera publishing (test thread), the frame socket's thread sending,
-//!   a consumer fetching, importing and reading each frame (test thread);
 //! - a camera service: the virtual camera's capture thread, the service's thread for the client
 //!   (taking the frame, exporting, sending, taking releases), the client receiving, importing,
 //!   reading and releasing each frame (test thread).
@@ -13,10 +11,7 @@
 //!
 //! - with `daedalus`: a camera service's client reading each frame through Daedalus's generic
 //!   frame view (`FrameView`, `daedalus:frame` v2), borrowed from the frame and from a payload
-//!   retyped by Styx's provider, as a node in a separately built plugin reads it; and a frame
-//!   socket's dma-buf frames (from the system dma-heap where there is one) handed to an fd-only
-//!   consumer (a GPU importer), which makes Styx map nothing, sync nothing and begin no CPU
-//!   access (`plane_data`), against a CPU consumer that does each once per frame and plane.
+//!   retyped by Styx's provider, as a node in a separately built plugin reads it.
 //!
 //! And the copy counters (`HopMetrics`, `styx::metrics::path`) say nothing was copied.
 //!
@@ -31,20 +26,17 @@
 //! `STYX_ZERO_ALLOC_TRACE=1` prints the call stack of every counted allocation (the rare ones
 //! symbolised) as the test ends, to name an unexpected one.
 
-#![cfg(all(target_os = "linux", feature = "frame-socket"))]
+#![cfg(target_os = "linux")]
 #![allow(unsafe_code)]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::collections::VecDeque;
-use std::os::fd::{AsFd, FromRawFd, OwnedFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use smallvec::smallvec;
-use styx::ipc::{CameraService, FrameClient, FrameFetcher, FrameSocket};
+use styx::ipc::{CameraService, FrameClient};
 use styx::prelude::*;
 
 /// Counts allocations while armed, by the kind of thread making them.
@@ -52,21 +44,19 @@ struct Counting;
 
 static ARMED: AtomicBool = AtomicBool::new(false);
 /// Allocations by thread kind: [`Kind`].
-static COUNTS: [AtomicU64; 5] = [const { AtomicU64::new(0) }; 5];
+static COUNTS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 enum Kind {
-    /// The test thread: the publisher, the consumer.
+    /// The test thread: the client.
     Test = 0,
-    /// The frame socket's thread.
-    FrameSocket = 1,
     /// A camera service's thread for one client.
-    ServiceClient = 2,
+    ServiceClient = 1,
     /// Anything else (capture workers).
-    Other = 3,
+    Other = 2,
     /// styx-graph's reactor thread (waking awaited frame clients).
-    Reactor = 4,
+    Reactor = 3,
 }
 
 thread_local! {
@@ -85,9 +75,7 @@ fn kind() -> Kind {
     let mut name = [0u8; 32];
     // SAFETY: writes at most `name.len()` bytes (NUL-terminated) for the calling thread.
     unsafe { libc::pthread_getname_np(libc::pthread_self(), name.as_mut_ptr().cast(), name.len()) };
-    let k = if name.starts_with(b"styx-frame-sock") {
-        Kind::FrameSocket
-    } else if name.starts_with(b"styx-camera-cli") {
+    let k = if name.starts_with(b"styx-camera-cli") {
         Kind::ServiceClient
     } else if name.starts_with(b"styx-reactor") {
         Kind::Reactor
@@ -136,7 +124,7 @@ static ALLOC: Counting = Counting;
 /// What a measurement window counted.
 struct Counted {
     /// Allocations by thread kind ([`Kind`]).
-    kinds: [u64; 5],
+    kinds: [u64; 4],
     /// Buffers a consumer in this process mapped (`frame_maps`): each is one allocation, the
     /// mapping its frames share (`styx::ipc`'s map cache).
     maps: u64,
@@ -241,132 +229,6 @@ const FRAMES: u64 = 300;
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 200;
 
-fn memfd(len: usize) -> OwnedFd {
-    // SAFETY: memfd_create returns a new descriptor or -1 (checked).
-    let fd = unsafe { libc::memfd_create(c"styx-zero-alloc".as_ptr(), libc::MFD_CLOEXEC) };
-    assert!(fd >= 0);
-    // SAFETY: a fresh descriptor we own.
-    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
-    // SAFETY: resizes the memfd we own.
-    assert_eq!(
-        unsafe { libc::ftruncate(std::os::fd::AsRawFd::as_raw_fd(&fd), len as i64) },
-        0
-    );
-    fd
-}
-
-/// A PiSP stand-in: NV12 buffers (memfds standing in for its dma-bufs), each exported as one
-/// dma-buf plane per image plane, reused oldest first as soon as they come back.
-struct Camera {
-    buffers: Vec<OwnedFd>,
-    free: Mutex<VecDeque<usize>>,
-}
-
-struct CameraBuffer {
-    camera: Arc<Camera>,
-    index: usize,
-}
-
-const LUMA: usize = (WIDTH * HEIGHT) as usize;
-const LEN: usize = LUMA * 3 / 2;
-
-impl ExternalBacking for CameraBuffer {
-    fn plane_data(&self, _index: usize) -> Option<&[u8]> {
-        None
-    }
-
-    fn can_export(&self) -> bool {
-        true
-    }
-
-    fn residency(&self) -> FrameResidency {
-        FrameResidency::Dmabuf
-    }
-
-    fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
-        let fd = self.camera.buffers[self.index].as_fd();
-        let plane = |offset, len| -> Result<FrameFdPlane, FrameExportError> {
-            Ok(FrameFdPlane {
-                fd: fd.try_clone_to_owned().map_err(FrameExportError::Fd)?,
-                offset,
-                len,
-            })
-        };
-        Ok(Some(FrameBackingExport::DmabufPlanes {
-            planes: vec![plane(0, LUMA)?, plane(LUMA, LUMA / 2)?],
-        }))
-    }
-
-    /// As the PiSP's buffers do: into the sender's list, no list of its own.
-    fn export_into(
-        &self,
-        out: &mut Vec<FrameFdPlane>,
-    ) -> Result<Option<ExportedKind>, FrameExportError> {
-        let fd = self.camera.buffers[self.index].as_fd();
-        for (offset, len) in [(0, LUMA), (LUMA, LUMA / 2)] {
-            out.push(FrameFdPlane {
-                fd: fd.try_clone_to_owned().map_err(FrameExportError::Fd)?,
-                offset,
-                len,
-            });
-        }
-        Ok(Some(ExportedKind::DmabufPlanes))
-    }
-}
-
-impl Drop for CameraBuffer {
-    fn drop(&mut self) {
-        self.camera.free.lock().push_back(self.index);
-    }
-}
-
-impl Camera {
-    fn new(buffers: usize) -> Arc<Self> {
-        Self::over((0..buffers).map(|_| memfd(LEN)).collect())
-    }
-
-    fn over(buffers: Vec<OwnedFd>) -> Arc<Self> {
-        let free = Mutex::new((0..buffers.len()).collect());
-        Arc::new(Self { buffers, free })
-    }
-
-    /// The next frame in a free buffer, with the hops a native capture stamps.
-    fn capture(self: &Arc<Self>, seq: u32) -> Option<FrameLease> {
-        let index = self.free.lock().pop_front()?;
-        let now = TimestampClock::Monotonic.now_ns().unwrap();
-        let format = MediaFormat::new(
-            FourCc::NV12,
-            Resolution::new(WIDTH, HEIGHT).unwrap(),
-            ColorSpace::Srgb,
-        );
-        let mut meta = FrameMeta::new(format, now - 9_000_000).with_backend(
-            BackendFrameMeta::Native(NativeFrameMeta {
-                sequence: seq,
-                ..Default::default()
-            }),
-        );
-        meta.clock = Some(TimestampClock::Monotonic);
-        meta.hops.set_sequence(Some(seq));
-        meta.hops.set(Hop::Sensor, now - 9_000_000);
-        meta.hops.set(Hop::Dequeued, now - 3_000_000);
-        meta.hops.set(Hop::IspDone, now - 200_000);
-        meta.hops.mark(Hop::Queued);
-        let layout = |offset, len| PlaneLayout {
-            offset,
-            len,
-            stride: WIDTH as usize,
-        };
-        Some(FrameLease::from_external(
-            meta,
-            smallvec![layout(0, LUMA), layout(0, LUMA / 2)],
-            Arc::new(CameraBuffer {
-                camera: self.clone(),
-                index,
-            }),
-        ))
-    }
-}
-
 fn read(frame: &FrameLease) -> u8 {
     frame
         .planes()
@@ -380,85 +242,6 @@ fn socket_path(name: &str) -> std::path::PathBuf {
         "styx-zero-alloc-{name}-{}.sock",
         std::process::id()
     ))
-}
-
-fn frame_socket() {
-    let path = socket_path("frame-socket");
-    let socket = FrameSocket::bind(&path).unwrap();
-    let camera = Camera::new(6);
-    let mut fetcher = FrameFetcher::new(&path);
-    let (mut capture, mut publish, mut fetch, mut consume) = (0u64, 0u64, 0u64, 0u64);
-    let mut seq = 0;
-    let mut step = |measure: bool,
-                    capture: &mut u64,
-                    publish: &mut u64,
-                    fetch: &mut u64,
-                    consume: &mut u64| {
-        seq += 1;
-        let mut ignored = 0;
-        let frame = counted_here(if measure { capture } else { &mut ignored }, || {
-            camera.capture(seq)
-        })
-        .expect("a free buffer");
-        counted_here(if measure { publish } else { &mut ignored }, || {
-            socket.publish(&frame).unwrap();
-            drop(frame);
-        });
-        let fetched = counted_here(if measure { fetch } else { &mut ignored }, || {
-            fetcher.fetch(Duration::from_secs(2)).unwrap()
-        });
-        counted_here(if measure { consume } else { &mut ignored }, || {
-            std::hint::black_box(read(&fetched));
-            drop(fetched);
-        });
-        // The frame socket's thread sees the connection close (the lease ends) before the next.
-        let t = std::time::Instant::now();
-        while socket.stats().leases > 0 {
-            assert!(t.elapsed() < Duration::from_secs(2));
-            std::thread::yield_now();
-        }
-    };
-    IS_TEST.with(|t| t.set(true));
-    for _ in 0..50 {
-        step(false, &mut capture, &mut publish, &mut fetch, &mut consume);
-    }
-    let counts = counted(|| {
-        for _ in 0..FRAMES {
-            step(true, &mut capture, &mut publish, &mut fetch, &mut consume);
-        }
-    });
-    let per = |n: u64| n as f64 / FRAMES as f64;
-    println!(
-        "frame socket, allocations per frame: camera {:.2}, publish {:.2}, send (frame socket thread) {:.2}, fetch + import {:.2}, read + release {:.2}",
-        per(capture),
-        per(publish),
-        per(counts[Kind::FrameSocket]),
-        per(fetch),
-        per(consume)
-    );
-    // The camera's own frame record (its buffer's handle), as a capture makes one per frame.
-    assert_eq!(capture, FRAMES, "the camera allocates {capture} times");
-    assert_eq!(publish, 0, "publishing allocates");
-    assert_eq!(counts[Kind::FrameSocket], 0, "sending allocates");
-    // A fetched frame is the consumer's to keep: one refcounted record (its lease) each.
-    assert_eq!(
-        fetch, FRAMES,
-        "fetching allocates {fetch} times for {FRAMES} frames"
-    );
-    // The camera's six buffers were mapped in the warm-up, once each.
-    assert_eq!(counts.maps, 0, "buffers mapped again");
-    assert_eq!(consume, 0, "reading or releasing allocates");
-    let hops = fetcher.hop_metrics();
-    assert_eq!((hops.copied, hops.zero_copy), (0, FRAMES + 50));
-    for hop in [
-        "dequeued", "isp_done", "queued", "sent", "received", "imported",
-    ] {
-        assert!(hops.hop(hop).is_some(), "no {hop} hop: {hops:?}");
-    }
-    let server = socket.metrics();
-    assert_eq!(server.copied, 0);
-    assert_eq!(server.hops.copied, 0);
-    IS_TEST.with(|t| t.set(false));
 }
 
 fn camera_service() {
@@ -663,11 +446,8 @@ fn steady_state_ipc_paths_do_not_allocate_or_copy() {
     let _flush = trace::Flush;
     presize_parking_table();
     stage_window();
-    frame_socket();
     camera_service();
     camera_service_without_a_thread();
     #[cfg(feature = "daedalus")]
     daedalus::camera_service_frame_view();
-    #[cfg(feature = "daedalus")]
-    daedalus::frame_socket_frame_view();
 }

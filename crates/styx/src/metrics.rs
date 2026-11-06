@@ -50,14 +50,10 @@ pub(crate) use live::BufferStats;
 pub(crate) use live::ConsumerStats;
 #[cfg(feature = "native")]
 pub(crate) use live::MeteredBacking;
-#[cfg(feature = "frame-socket")]
-pub(crate) use live::RingWindow;
 pub(crate) use live::stamp_queued;
 pub use live::{CaptureMetrics, WINDOW, frame_path_cost, hop_path_cost};
 #[cfg(feature = "metrics-http")]
 pub use openmetrics::{MetricsHttpServer, serve_http};
-#[cfg(feature = "frame-socket")]
-pub(crate) use path::frame_socket_text;
 pub use path::{CopySiteMetrics, HopMetrics, HopWindow, PathMetrics, hop_lines, path};
 #[cfg(all(feature = "preview", target_os = "linux"))]
 pub(crate) use preview::PreviewCounters;

@@ -11,8 +11,6 @@ pub mod controls;
 #[cfg(feature = "daedalus")]
 pub mod daedalus;
 pub mod format;
-#[cfg(all(feature = "lease-codec", unix))]
-pub mod lease_codec;
 pub use styx_math as math;
 pub mod metrics;
 pub mod multicam;

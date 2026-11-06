@@ -658,10 +658,8 @@ Numbers are as of the commit named.
 ### Ecosystem
 - [x] GStreamer `styxsrc` + device provider (`crates/gst-styx`). (b0f609b)
 - [x] PipeWire camera node daemon (`crates/pipewire-styx`). (788684b)
-- [x] Frame socket with leases (`styx::ipc::FrameSocket`, frame-lease wire format). (a926bb0)
-- [x] Public frame-lease codec (`styx_core::lease_codec`: message, descriptor order, limits,
-      encode/decode, `styx-frame-lease+unix://` endpoint records) and the frame socket's hold and
-      flow-control rules documented and tested (`docs/frame-server.md`). (225c0a5)
+- [x] Legacy frame socket with leases and its public codec: removed for 3.0 (the camera service
+      and `FrameClient` replace them).
 - [x] Examples for every task (listing, planned capture, async, controls and metadata, shared
       captures, other processes, raw frames and recordings, hotplug, adding a camera), run on the
       CM5; [docs/comparison.md](docs/comparison.md) against libcamera, V4L2 and GStreamer, with a
@@ -691,7 +689,7 @@ Numbers are as of the commit named.
 
 ### Native stack and decisions
 - [x] CM5 dev box boots the bridge overlay (`camera-mode.sh native|libcamera|status`). (e7ec24d)
-- [x] Default PiSP output buffer count: 6 (two frame-socket consumers holding 500 ms: 17 fps
+- [x] Default PiSP output buffer count: 6 (two socket consumers holding 500 ms: 17 fps
       with 4, 30 with 6; +3.1 MB CMA for NV12 1280x800), plus the planner's extra buffers
       within half the free CMA (a slow shared consumer no longer slows the others). (d429a9a)
 - [x] Black level at high gain: not a black level difference. Zero-exposure levels through the
@@ -809,8 +807,8 @@ Numbers are as of the commit named.
       (unit-tested; no camera with a lens on the dev box yet). (2a5b7bc)
 - [x] cargo-fuzz targets for every parser of untrusted bytes but the netcam multipart parser (below) (UVC descriptors and streams, sensor
       descriptions, embedded data and kernel-driver reports, tuning files, PiSP statistics,
-      kernel messages, raw and MJPEG decoders, imported frame layouts, frame socket and camera
-      service messages and requests, recordings, raw recordings), `scripts/fuzz.sh`, nightly CI
+      kernel messages, raw and MJPEG decoders, imported frame layouts, camera service messages
+      and requests, recordings, raw recordings), `scripts/fuzz.sh`, nightly CI
       smoke run; see [docs/fuzzing.md](docs/fuzzing.md). Found and fixed: out-of-bounds reads in
       odd-width UYVY/NV12 decoding, SIGBUS on a short memfd from another process, unchecked
       imported descriptors, allocations sized from headers, overflow panics. (1bf166d)

@@ -31,11 +31,10 @@ print!("{}", all.prometheus_text());      // Prometheus text exposition (version
 | `styx::metrics::process()` | `ProcessMetrics` alone |
 | `MetricsSnapshot::prometheus_text()`, `ServiceMetrics::prometheus_text()` | Prometheus/OpenMetrics text, for an application to serve |
 | `styx::metrics::serve_http(addr)` (feature `metrics-http`) | a tiny HTTP endpoint answering every request with `snapshot().prometheus_text()` |
-| `MetricsSnapshot::to_json()`, serde on every type (feature `metrics-serde`, on with `serde`, `frame-socket` and `native`) | JSON |
+| `MetricsSnapshot::to_json()`, serde on every type (feature `metrics-serde`) | JSON |
 | `CameraServiceHandle::metrics()` | `ServiceMetrics` of a camera service run in this process |
 | `FrameClient::service_metrics(path)` (`metrics-serde`), `FrameClient::service_metrics_text(path)` | the same from another process (below) |
-| `FrameSocket::metrics()`; `frame_socket::fetch_metrics(path)`, `fetch_metrics_text(path)` | a frame socket's statistics, in its process or from another (its `<path>.stats` endpoint, below) |
-| `CameraMetrics::path`, `ConsumerMetrics::hops`, `FrameFetcher::hop_metrics()`, `FrameClient::hop_metrics()` | hop times and copies of the frames a capture's consumers took, a service client got, a consumer process imported ([Hops](#hops-where-each-frames-time-goes)) |
+| `CameraMetrics::path`, `ConsumerMetrics::hops`, `FrameClient::hop_metrics()` | hop times and copies of the frames a capture's consumers took, a service client got, a consumer process imported ([Hops](#hops-where-each-frames-time-goes)) |
 | `styx::metrics::path()`, `ProcessMetrics::path` | the process's copies by site, dma-buf syncs and exhausted pools |
 | `FrameMeta::hops`, `FrameMeta::hop_record()` | one frame's hops, and its record for joining with other tools' |
 | `MetricsSnapshot::sync_groups`, `styx::metrics::sync_groups()`, `FrameGrouper::report()` / `metrics()` | multi-camera sync quality of every named frame grouper ([Multi-camera sync](#multi-camera-sync)) |
@@ -46,11 +45,11 @@ print!("{}", all.prometheus_text());      // Prometheus text exposition (version
 camera service's metrics (`metrics_top --service [socket]`), Prometheus text (`--prometheus`) or
 JSON (`--json`); `--consumers N --slow MS` shares each capture between consumers, the last a slow
 one; `--verify` has the consumers measure rate, sequence gaps and latency themselves for
-comparison; `--overhead` measures the frame path cost; `--frame-socket PATH` shows a frame
-socket's statistics. Under each camera it prints the hop table of the frames its consumers took,
-on the process line the copies, dma-buf syncs and exhausted pools.
+comparison; `--overhead` measures the frame path cost. Under each camera it prints the hop table
+of the frames its consumers took, on the process line the copies, dma-buf syncs and exhausted
+pools.
 `examples/04_performance/hop_breakdown.rs` prints a frame's path hop by hop for a consumer in the
-capturing process, behind a frame socket and behind a camera service.
+capturing process and behind a camera service.
 
 ## Per capture: `CameraMetrics`
 
@@ -166,8 +165,7 @@ Every frame carries a hop record from the sensor to its consumer (`FrameMeta::ho
 `styx_core::buffer::FrameHops`: fixed size, `Copy`, no allocation, `no_std`): when it passed each
 step, in `CLOCK_MONOTONIC` nanoseconds, and the copies made of its pixels on the way. Backends fill
 the hops they know; a hop a frame did not pass stays `None`. The record travels with the frame
-through queues, into other processes (frame socket, camera service) and back (camera service
-releases), so every consumer has the frame's whole path, and tools that keep their own per-frame
+through queues, into other processes (camera service) and back (camera service releases), so every consumer has the frame's whole path, and tools that keep their own per-frame
 records (Daedalus, Eidos) join on the frame's sequence number with its sensor timestamp
 (`FrameMeta::hop_record()`, a serde `HopRecord`).
 
@@ -178,9 +176,9 @@ records (Daedalus, Eidos) join on the frame's sequence number with its sensor ti
 | `isp_done` | the ISP finished: PiSP back end job and its extra passes done (`dequeued + PispTimes::total`), software/GPU ISP pass done | the PiSP and software ISP workers |
 | `queued` | the frame entered the capture's consumer queue (its buffer leased to consumers) | `deliver` |
 | `taken` | a consumer in the capturing process took it (`recv*`, `Frames::next_frame`, a camera service's thread for a client) | `CaptureHandle::recv*` |
-| `sent` | a frame socket or camera service wrote the message (just before `sendmsg`) | the frame socket's thread, the service's thread for the client |
-| `received` | the consumer process received the message and its descriptors | `FrameFetcher`/`fetch_frame`, `FrameClient::recv` |
-| `imported` | the consumer built the frame over the descriptors (camera service clients and frame socket fetches: the buffer's mapping comes from a cache of each buffer's mapping, made on the first read of a buffer not seen before) | the same |
+| `sent` | a camera service wrote the message (just before `sendmsg`) | the service's thread for the client |
+| `received` | the consumer process received the message and its descriptors | `FrameClient::recv` |
+| `imported` | the consumer built the frame over the descriptors (camera service clients: the buffer's mapping comes from a cache of each buffer's mapping, made on the first read of a buffer not seen before) | the same |
 
 Sliced native frames (`NativeIspConfig::deliver_slices`) are handed out at their first slice,
 so `dequeued` and `isp_done` are that moment, and `dequeued -> isp_done` reads about 0. A camera
@@ -195,8 +193,6 @@ Hop deltas are aggregated where a frame's record is complete for a path, in wind
 | where | what | API |
 |---|---|---|
 | a capture | sensor → dequeued → ISP done → queued → taken, for the frames its consumers took | `CameraMetrics::path` (`HopMetrics`) |
-| a frame socket | the server's hops up to `sent`, per frame sent | `FrameSocket::metrics().hops`, `<path>.stats` |
-| a frame socket consumer | the whole path to `imported` | `FrameFetcher::hop_metrics()` |
 | a camera service, per client | the whole path to `imported` (the client reports `received` and `imported` with its release) | `ServiceMetrics::client_metrics[..].hops` |
 | a camera service client | the whole path to `imported` | `FrameClient::hop_metrics()` |
 
@@ -215,28 +211,16 @@ the per-capture, per-socket and per-client `HopMetrics`) count it as copied. Eve
 
 | field | what | counted at |
 |---|---|---|
-| `copies[site]`, `bytes` | `softisp`: raw input rows staged by the software ISP for uncached receiver buffers; `conversion`: a planner conversion or decode into new memory (YUYV to NV12, NV12 to RGB, JPEG); `region`: a crop or luma view realigned into new memory; `memfd_export`: a frame not in shareable memory copied into a memfd to send it (frame socket, camera service, frame server); `materialize`: `materialize_owned`, `copy_visible_to_slice`, `to_visible_vec`; `capture`: a backend copying out of the driver's buffer (V4L2 without zero copy, UVC payload assembly); `raw`: raw frames kept for stills; `other`: scaling into new memory (overviews the ISP does not make) | the copy itself |
+| `copies[site]`, `bytes` | `softisp`: raw input rows staged by the software ISP for uncached receiver buffers; `conversion`: a planner conversion or decode into new memory (YUYV to NV12, NV12 to RGB, JPEG); `region`: a crop or luma view realigned into new memory; `memfd_export`: a frame not in shareable memory copied into a memfd to send it (camera service, frame server); `materialize`: `materialize_owned`, `copy_visible_to_slice`, `to_visible_vec`; `capture`: a backend copying out of the driver's buffer (V4L2 without zero copy, UVC payload assembly); `raw`: raw frames kept for stills; `other`: scaling into new memory (overviews the ISP does not make) | the copy itself |
 | `dmabuf_syncs`, `dmabuf_sync_ns` | `DMA_BUF_IOCTL_SYNC` calls (start and end each count) and their time | the ioctl |
 | `pool_exhausted` | a pool or a capture found every buffer held: the PiSP back end with all its output buffers held (the frame is dropped, `drops.isp_skipped`), a shared memfd pool allocating another buffer | the pool |
 
 Prometheus: `styx_camera_hop_ms{from,to,quantile}`, `styx_camera_path_ms{quantile}`,
 `styx_camera_path_frames_total{kind="zero_copy"|"copied"}`, `styx_camera_path_copied_bytes_total`;
-the same as `styx_consumer_*` for camera service clients and frame sockets
-(`consumer="frame_socket"`); `styx_process_copies_total{site}`,
+the same as `styx_consumer_*` for camera service clients; `styx_process_copies_total{site}`,
 `styx_process_copied_bytes_total{site}`, `styx_process_dmabuf_syncs_total`,
 `styx_process_dmabuf_sync_seconds_total`, `styx_process_pool_exhausted_total`. Windows have a
 `quantile="0.99"` sample now, and `Window::p99_ms`.
-
-## A frame socket's statistics
-
-`FrameSocket::metrics()` (`FrameSocketMetrics`): the counters (`published`, `copied`, `served`,
-`leases`, `held_frames`, `revoked`, `unserved`), the lease hold times (send to close),
-`HopMetrics` of the frames sent and the snapshot of the serving process. Another process (a downstream
-profiler) reads them while the socket serves, without touching the frame socket itself (a
-connection to it is always a frame lease): the sibling endpoint `<path>.stats`
-(`frame_socket::stats_path`) answers each connection that writes `json` or `prometheus` with
-the statistics and closes; `frame_socket::fetch_metrics(path)` and `fetch_metrics_text(path)` do
-that (or `printf prometheus | socat - UNIX-CONNECT:<path>.stats`).
 
 ## No copies, no allocations on the way to a consumer
 
@@ -246,18 +230,16 @@ counters, on the host (tests that run with `cargo test`):
 | path | per frame | test |
 |---|---|---|
 | in-process, native PiSP: lease an output buffer, deliver, `recv`, read the pixels, drop (the buffer goes back) | 1 allocation (the lease record) in the lease; 0 in delivering, taking, reading, giving back; 0 copies | `native_isp::pisp_lease::alloc_tests` |
-| frame socket: publish, send (the socket's thread), fetch and import (`FrameFetcher`), read, release | 0 publishing, 0 sending, 1 fetching (the lease record), 0 reading and releasing; 0 copies | `crates/styx/tests/zero_alloc.rs` |
 | camera service: the service's thread for a client (take, export, send, take releases), the client receiving, importing, reading, releasing | 0 on the service's thread, 1 on the client (the release record); 0 copies | `crates/styx/tests/zero_alloc.rs` |
 
 The one allocation per frame on each side is the frame's lease record: a frame handed out is
 the consumer's to keep for as long as it likes, and its buffer must go back (to the back end, to
 the server) the moment its last share drops. That needs a reference-counted record whose drop
 says so, one per frame; everything else (message buffers, descriptor lists, frame records, the
-mapping of each buffer, the PiSP's buffer returns) is reused. Fixed on the way: the frame socket
-consumer mapped every frame (`mmap` and `munmap`, about 0.5 ms for a 1280x800 NV12 frame on the
-CM5) and camera service clients mapped every memfd frame; the frame socket, the service and its
-clients built their messages, descriptor lists and frame records anew for every frame; the
-PiSP's buffer returns went through a channel that allocates in blocks.
+mapping of each buffer, the PiSP's buffer returns) is reused. Fixed on the way: camera service
+clients mapped every memfd frame (`mmap` and `munmap`, about 0.5 ms for a 1280x800 NV12 frame on
+the CM5); the service and its clients built their messages, descriptor lists and frame records
+anew for every frame; the PiSP's buffer returns went through a channel that allocates in blocks.
 
 ## Finding allocations on a device
 
@@ -274,7 +256,7 @@ hook costs one relaxed atomic load; set, it records each allocation's stack into
 ```sh
 # Build (musl, static, release; RUSTFLAGS not needed). --out copies a stripped binary, so keep
 # the unstripped one from the target directory:
-scripts/cross-aarch64.sh --musl -p styx-examples --features native,frame-socket \
+scripts/cross-aarch64.sh --musl -p styx-examples --features native \
     --bins hop_breakdown --profile release
 # On the device, the same as the hop breakdown above (the stripped copy has the same offsets):
 scp target/aarch64-musl/aarch64-unknown-linux-musl/release/hop_breakdown root@<device>:/tmp/
@@ -354,10 +336,7 @@ Per consumer (the camera's labels and `consumer`; service clients: `service="cam
 `styx_consumer_path_copied_bytes_total`. Service: `styx_service_clients`,
 `styx_service_events_total{event}`. Process: `styx_process_copies_total{site}`,
 `styx_process_copied_bytes_total{site}`, `styx_process_dmabuf_syncs_total`,
-`styx_process_dmabuf_sync_seconds_total`, `styx_process_pool_exhausted_total`. Frame socket
-(label `socket`): `styx_frame_socket_events_total{event}` (published, copied, served, revoked,
-unserved), `styx_frame_socket_leases`, `styx_frame_socket_held_frames`,
-`styx_frame_socket_hold_ms{quantile}`, its hops as `styx_consumer_*{consumer="frame_socket"}`.
+`styx_process_dmabuf_sync_seconds_total`, `styx_process_pool_exhausted_total`.
 
 The older `HealthReport::metric_samples()` / `render_prometheus` (pipeline health reports) remain.
 
@@ -448,8 +427,7 @@ themselves; `service_clients 2`, `cameras_open 1`.
 
 `hop_breakdown` prints, for native PiSP NV12 1280x800 at 30 fps, each hop's p50/p99/max, the
 copies and dma-buf syncs per frame of each process and their heap allocations per frame (every
-thread), for a consumer in the capturing process, behind a frame socket and behind a camera
-service. Built static, so it runs on the device as it is:
+thread), for a consumer in the capturing process and behind a camera service. Built static, so it runs on the device as it is:
 
 ```sh
 CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld cargo build --release \

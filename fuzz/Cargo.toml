@@ -17,7 +17,7 @@ libc = "0.2"
 libfuzzer-sys = "0.4"
 smallvec = "1"
 lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
-styx = { path = "../crates/styx", default-features = false, features = ["replay-mcap", "replay-styxrec", "frame-socket"] }
+styx = { path = "../crates/styx", default-features = false, features = ["replay-mcap", "replay-styxrec"] }
 styx-algo = { path = "../crates/algo", features = ["sim"] }
 styx-codec = { path = "../crates/codec", features = ["codec-turbojpeg", "codec-zune", "raw-decoders"] }
 styx-core = { package = "styx-core-rs", path = "../crates/core" }
@@ -45,13 +45,6 @@ bench = false
 [[bin]]
 name = "ipc_messages"
 path = "fuzz_targets/ipc_messages.rs"
-test = false
-doc = false
-bench = false
-
-[[bin]]
-name = "frame_socket_message"
-path = "fuzz_targets/frame_socket_message.rs"
 test = false
 doc = false
 bench = false

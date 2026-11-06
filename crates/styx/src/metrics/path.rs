@@ -1,5 +1,5 @@
 //! Snapshots of the frame path's own costs: the time between consecutive hops of the frames a
-//! capture, a frame socket or a camera service client saw ([`HopMetrics`], from
+//! capture or a camera service client saw ([`HopMetrics`], from
 //! `styx_core::metrics::HopCounters`), and the process's copies by site, dma-buf syncs and
 //! exhausted pools ([`PathMetrics`]). See `docs/metrics.md`.
 
@@ -26,8 +26,7 @@ pub struct HopWindow {
 }
 
 /// Hop times and copies of the frames recorded at one place (a capture's consumers taking
-/// them, a frame socket or camera service client sending them, a consumer process importing
-/// them).
+/// them, a camera service client sending them, a consumer process importing them).
 #[derive(Clone, Debug, Default, PartialEq)]
 #[cfg_attr(
     feature = "metrics-serde",
@@ -278,52 +277,4 @@ pub fn hop_lines(h: &HopMetrics) -> String {
         );
     }
     out
-}
-
-/// A frame socket's statistics as Prometheus text.
-#[cfg(feature = "frame-socket")]
-pub(crate) fn frame_socket_text(m: &crate::ipc::frame_socket::FrameSocketMetrics) -> String {
-    let mut t = super::openmetrics::Text::default();
-    let l = format!("socket=\"{}\"", super::openmetrics::esc(&m.path));
-    for (what, v) in [
-        ("published", m.published),
-        ("copied", m.copied),
-        ("served", m.served),
-        ("served_frames", m.served_frames),
-        ("repeated", m.repeated),
-        ("revoked", m.revoked),
-        ("unserved", m.unserved),
-    ] {
-        t.counter(
-            "styx_frame_socket_events_total",
-            "Frame socket events: frames published, copied into a memfd, served (sends), distinct frames served, repeated sends; leases revoked; consumers unserved.",
-            &format!("{l},event=\"{what}\""),
-            v,
-        );
-    }
-    t.gauge(
-        "styx_frame_socket_leases",
-        "Leases open now.",
-        &l,
-        Some(m.leases as f64),
-    );
-    t.gauge(
-        "styx_frame_socket_held_frames",
-        "Frames held for consumers besides the latest.",
-        &l,
-        Some(m.held_frames as f64),
-    );
-    t.window(
-        "styx_frame_socket_hold_ms",
-        "Lease hold times, send to close (quantile 1: max).",
-        &l,
-        &m.hold,
-    );
-    t.hops(
-        CONSUMER_HOPS,
-        &format!("{l},consumer=\"frame_socket\""),
-        &m.hops,
-    );
-    t.snapshot(&m.snapshot);
-    t.out
 }

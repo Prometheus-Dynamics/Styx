@@ -132,7 +132,7 @@ impl Drop for Flush {
             .unwrap_or_default();
         let names: Vec<&str> = out.lines().collect();
         for (label, kind, stack, count) in groups {
-            let kind = ["Test", "FrameSocket", "ServiceClient", "Other", "Reactor"][kind];
+            let kind = ["Test", "ServiceClient", "Other", "Reactor"][kind];
             eprintln!("=== {label}: {count} x {kind}");
             if !rare(count) {
                 continue;
