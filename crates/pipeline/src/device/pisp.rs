@@ -39,7 +39,7 @@ use styx_native::{
 use styx_softisp::CfaPattern;
 
 use super::pisp_isp::{BackEnd, FeStats};
-use super::pisp_options::PispOptions;
+use super::pisp_options::{PispOptions, debug_var};
 use super::pisp_slices::{PispEvent, Waited};
 use super::{Profiled, sensor_values};
 use crate::controller::{Controller, Step};
@@ -59,19 +59,6 @@ fn bayer(c: CfaPattern) -> BayerOrder {
     }
 }
 
-/// Debug hook (feature `pisp-debug-hooks`): the environment variable `name`, parsed. Without
-/// the feature it is ignored, so the options are the only way to set these.
-#[cfg(feature = "pisp-debug-hooks")]
-fn debug_var<T: std::str::FromStr>(name: &str) -> Option<T> {
-    std::env::var(name).ok()?.parse().ok()
-}
-
-/// See the feature-enabled version: the environment is not read.
-#[cfg(not(feature = "pisp-debug-hooks"))]
-fn debug_var<T>(_name: &str) -> Option<T> {
-    None
-}
-
 /// The front and back end, opened for a sensor mode.
 struct Isp {
     fe: FrontEnd,
@@ -83,6 +70,8 @@ struct Isp {
     /// The line frames are split at ([`PispOptions::slice_line`]), when the front end reports
     /// it; else why not.
     slice: std::result::Result<Option<u16>, String>,
+    /// The raw buffers for a raw lease: the back end's imports, duplicated (one dma-buf each).
+    raw_fds: Vec<std::os::fd::OwnedFd>,
 }
 
 impl Isp {
@@ -139,12 +128,16 @@ impl Isp {
         };
         fe.enable(fe_enable::OUTPUT0, true);
         let input_len = input.stride as u32 * u32::from(input.height);
+        // Exported once: every export is another dma-buf of the same memory.
+        let raw = fe_dev.image_dmabufs()?;
         let initial = options.be_buffers_initial.unwrap_or(options.be_buffers);
         let mut be_dev = BackEndStream::open_with_initial(
             options.be_group,
             input,
             order,
-            fe_dev.image_dmabufs()?,
+            raw.iter()
+                .map(|f| f.try_clone())
+                .collect::<std::io::Result<_>>()?,
             input_len,
             options.outputs,
             options.pass_buffers.map(|p| options.be_buffers + p),
@@ -187,6 +180,7 @@ impl Isp {
                 be,
                 tdn_error,
                 slice,
+                raw_fds: if options.raw_lease { raw } else { Vec::new() },
             },
             fe_open,
             t.elapsed(),
@@ -304,7 +298,7 @@ impl PispPipeline {
             [isp.be_dev.output_format(0), isp.be_dev.output_format(1)],
             options.pass_tdn,
         );
-        let mut p = Self {
+        let p = Self {
             camera,
             controls,
             configured,
@@ -335,10 +329,9 @@ impl PispPipeline {
             slice_error: isp.slice.err(),
             last_seq: None,
             raw_copy: None,
-            raw_fds: Vec::new(),
+            raw_fds: isp.raw_fds,
             passes,
         };
-        p.export_raw()?;
         Ok(p)
     }
 
@@ -487,7 +480,7 @@ impl PispPipeline {
             // A new builder: the passes prepare again against it.
             self.passes.invalidate();
             self.fe_dev = Some(isp.fe_dev);
-            self.export_raw()?;
+            self.raw_fds = isp.raw_fds;
             self.be_dev = Some(isp.be_dev);
             (self.startup.fe_open, self.startup.be_open) = (fe_open, be_open);
         }

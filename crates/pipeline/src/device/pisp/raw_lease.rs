@@ -21,15 +21,6 @@ pub struct RawLayout {
 }
 
 impl PispPipeline {
-    /// Exports the front end's raw buffers when they are leased.
-    pub(super) fn export_raw(&mut self) -> Result<()> {
-        self.raw_fds.clear();
-        if let (true, Some(fe)) = (self.options.raw_lease, self.fe_dev.as_ref()) {
-            self.raw_fds = fe.image_dmabufs()?;
-        }
-        Ok(())
-    }
-
     /// Raw buffer `index` as a dma-buf (with [`PispOptions::raw_lease`]).
     pub fn raw_dmabuf(&self, index: u32) -> Option<BorrowedFd<'_>> {
         Some(self.raw_fds.get(index as usize)?.as_fd())

@@ -37,6 +37,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- PiSP with the raw lease (`sensor_raw`): the front end's raw buffers are exported once and
+  shared by the back end and the raw lease, instead of exported twice. Each export made another
+  dma-buf of the same memory, so tools counting dma-bufs saw every raw buffer twice. The memory
+  was not duplicated.
+
 - Locked to Daedalus ce45a6a (stable ABI 6: a plugin counts its live `Local` objects, no
   keepalive per payload); Lemnos stays at cf3a4ac.
 

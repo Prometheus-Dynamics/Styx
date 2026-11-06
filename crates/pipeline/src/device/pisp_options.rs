@@ -3,6 +3,19 @@
 use lemnos_drivers_pisp::device::{BeFormat, BeOutputSetup, ConfigMemory, OutputMemory};
 use lemnos_drivers_pisp::uapi::BeCropConfig;
 
+/// Debug hook (feature `pisp-debug-hooks`): the environment variable `name`, parsed. Without
+/// the feature it is ignored, so the options are the only way to set these.
+#[cfg(feature = "pisp-debug-hooks")]
+pub(super) fn debug_var<T: std::str::FromStr>(name: &str) -> Option<T> {
+    std::env::var(name).ok()?.parse().ok()
+}
+
+/// See the feature-enabled version: the environment is not read.
+#[cfg(not(feature = "pisp-debug-hooks"))]
+pub(super) fn debug_var<T>(_name: &str) -> Option<T> {
+    None
+}
+
 /// How the PiSP path is set up.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PispOptions {
