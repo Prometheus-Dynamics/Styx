@@ -1102,6 +1102,12 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- `BackingPool` (raw native frames, software ISP outputs, frames shared into Daedalus): its
+  records are made with the pool, so a frame in flight beyond those the warm-up saw no longer
+  allocates one (`worker_alloc` counted 1 per 120 raw frames under load, 5 of 48 runs at a load
+  average of 50; 0 in 64 now). A record no longer holds its pool's free list strongly, so a
+  stopped capture frees the list and its records (each was a reference cycle, kept for good).
+
 - Frame sockets (`styx-frame-lease-v1`): a dma-buf the sender maps cached (e.g. the PiSP back
   end's outputs, from the cached dma-heap) arrived `CpuAccess::Uncached`; the message now says so
   (`"cached": true`, `LeaseMessage::cached`, left out when false so older peers read the same

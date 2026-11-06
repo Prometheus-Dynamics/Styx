@@ -5,14 +5,16 @@
 use alloc::vec::Vec;
 
 use super::{CpuAccess, ExternalBacking, FrameResidency};
-use crate::sync::{Arc, Mutex};
+use crate::sync::{Arc, Mutex, Weak};
 
 type Free<B> = Arc<Mutex<Vec<Arc<Pooled<B>>>>>;
 
 struct Pooled<B: ExternalBacking + 'static> {
     /// `None` only on the pool's free list, where nothing reads it.
     inner: Option<B>,
-    free: Free<B>,
+    /// Weak: the free list holds its records, so a strong reference back would keep the list
+    /// and every record on it alive after the pool is gone.
+    free: Weak<Mutex<Vec<Arc<Pooled<B>>>>>,
 }
 
 impl<B: ExternalBacking + 'static> Pooled<B> {
@@ -37,12 +39,21 @@ impl<B: ExternalBacking + 'static> Clone for BackingPool<B> {
 }
 
 impl<B: ExternalBacking + 'static> BackingPool<B> {
-    /// A pool that keeps up to `keep` allocations (the frames in flight at most; more are freed).
+    /// A pool that keeps up to `keep` allocations (the frames in flight at most; more are
+    /// freed), all made now: a frame finds one free however many are in flight, up to `keep`,
+    /// with no allocation the first time that many are.
     pub fn new(keep: usize) -> Self {
-        Self {
-            free: Arc::new(Mutex::new(Vec::with_capacity(keep))),
-            keep,
+        let free: Free<B> = Arc::new(Mutex::new(Vec::with_capacity(keep)));
+        {
+            let mut list = free.lock();
+            for _ in 0..keep {
+                list.push(Arc::new(Pooled {
+                    inner: None,
+                    free: Arc::downgrade(&free),
+                }));
+            }
         }
+        Self { free, keep }
     }
 
     /// `backing` as a frame's backing, in a reused allocation when one is free.
@@ -56,7 +67,7 @@ impl<B: ExternalBacking + 'static> BackingPool<B> {
         }
         Arc::new(Pooled {
             inner: Some(backing),
-            free: Arc::clone(&self.free),
+            free: Arc::downgrade(&self.free),
         })
     }
 }
@@ -138,13 +149,16 @@ impl<B: ExternalBacking + 'static> ExternalBacking for Pooled<B> {
     }
 
     fn recycle(mut self: Arc<Self>) {
-        let free = Arc::clone(&self.free);
+        let free = self.free.upgrade();
         if let Some(pooled) = Arc::get_mut(&mut self) {
             // The wrapped backing's drop, as if the allocation had gone with it.
             pooled.inner = None;
-            let mut free = free.lock();
-            if free.len() < free.capacity() {
-                free.push(self);
+            // The pool gone: the record goes with this last reference.
+            if let Some(free) = free {
+                let mut free = free.lock();
+                if free.len() < free.capacity() {
+                    free.push(self);
+                }
             }
         }
     }
@@ -205,5 +219,41 @@ mod tests {
         b.recycle();
         assert_eq!(drops.load(Ordering::Relaxed), 2);
         assert_eq!(pool.free.lock().len(), 1);
+    }
+
+    /// Every record is made with the pool, so a frame in flight beyond those seen so far takes
+    /// one already there; and the pool's records go when it does.
+    #[test]
+    fn records_are_made_up_front_and_freed_with_the_pool() {
+        let drops = Arc::new(AtomicU32::new(0));
+        let pool = BackingPool::new(3);
+        let made: Vec<_> = pool
+            .free
+            .lock()
+            .iter()
+            .map(|p| Arc::as_ptr(p) as *const ())
+            .collect();
+        assert_eq!(made.len(), 3);
+        let held: Vec<_> = (0..3)
+            .map(|_| pool.wrap(Counted(Arc::clone(&drops))))
+            .collect();
+        for h in &held {
+            assert!(made.contains(&address(h)), "a record made up front");
+        }
+        let weak = Arc::downgrade(&pool.free);
+        for h in held {
+            h.recycle();
+        }
+        drop(pool);
+        assert!(
+            weak.upgrade().is_none(),
+            "the free list and its records are freed"
+        );
+        // A frame outliving its pool still drops its backing.
+        let pool = BackingPool::new(1);
+        let late = pool.wrap(Counted(Arc::clone(&drops)));
+        drop(pool);
+        late.recycle();
+        assert_eq!(drops.load(Ordering::Relaxed), 4);
     }
 }

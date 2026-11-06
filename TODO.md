@@ -170,7 +170,8 @@ user lifts them.
       frames (`styx-native-capture`, its lease records now from a `BackingPool`) and the software
       ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and
       2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
-      box and the reactor's timer map node). Whole process
+      box and the reactor's timer map node; under load, a lease record the warm-up had not made: the
+      pool makes all of them up front now, 0 in 64 runs at load 39). Whole process
       on the Raze, 2026-11-03, frames 60-300 at 30 fps: UVC MJPG and YUYV 0.000 (was 1.007: the
       stream's frame list lost its capacity every frame). V4L2 MJPG and YUYV 0.000 (2026-11-05,
       `uvc_capture` counts and traces them now; were 0.033: the buffer-recycle channel was an
