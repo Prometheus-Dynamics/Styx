@@ -96,6 +96,19 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
 6. [ ] **Shared and static build forms.** Static and shared modes, core, surface and wrapper per
       dependency. Gaia's LTO test informs how shared gets built. *Why:* the same code ships either
       way. *Done when:* both forms build and run on the Raze with their cost measured.
+7. [ ] **A `FrameLease` from Daedalus's stable frame handle** (`styx::core::daedalus`). A
+      `daedalus:frame` handle (`SharedFrame` / `FrameView`) becomes a `FrameLease` over an
+      `ExternalBacking` holding the `SharedFrame`, e.g. `FrameLease::from_shared_frame(&SharedFrame)
+      -> Result<Arc<FrameLease>>`: planes through `plane_data` with no copy, dma-buf fds borrowed and
+      dup'd only if the lease outlives the call, residency, mutability and colorimetry from
+      `frame_meta`. The same `SharedFrame` gives the same `Arc<FrameLease>` while it lives (a small
+      cache keyed by owner pointer, holding a `Weak`), since Eidos's `SHARED_LEVELS` pyramid cache
+      keys on `Weak<FrameLease>`. Released exactly once on drop, whether the node drops it, keeps
+      it in state, or the plugin reloads. Daedalus offered a per-type-key foreign-to-native
+      converter hook instead; which one is decided with Daedalus when this starts. *Why:* frames
+      from Daedalus's stable path reach Styx consumers without a copy. *Done when:* a lease from a
+      `SharedFrame` reads its planes in place, the same frame gives the same `Arc`, and a test
+      counts one release for each of the three drop paths. *Numbers:* none yet.
 
 ## Alpha (Raze)
 
