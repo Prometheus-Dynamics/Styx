@@ -120,7 +120,7 @@ frame length registers with their models, delays, group hold, flips, embedded da
 Put it on the search path as `<name>.toml` (descriptions that ship with Styx are listed in
 `styx_sensor::BUILTIN_DESCRIPTIONS`, today the OV9782's, and come after the search path, so an
 installed file overrides them), and bind the generic bridge to the sensor's I²C
-address in the device tree (`kernel-modules/styx-sensor-bridge`, overlay template there). The
+address in the device tree (Lemnos's `kernel-modules/lemnos-sensor-bridge`, overlay template there). The
 bridge makes the receiver see a sensor subdevice; Styx powers the sensor, writes its
 registers and starts and stops it when the receiver asks (`PROTOCOL.md`). The registers go
 through Lemnos (`lemnos_hal::register::I2cRegisters` on `lemnos_linux::hal::I2cBus`, the

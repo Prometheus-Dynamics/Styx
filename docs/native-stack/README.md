@@ -35,7 +35,7 @@ Sensor drivers        descriptions, timing, register sequences                 s
 Kernel interfaces     V4L2, media controller, subdevs, dma-bufs, bridge, ISPs  Lemnos 2.0
 Generic hardware      register maps, i2c-dev, GPIO, uevents, VCM drivers      Lemnos 2.0
 ─────────────────────────────────────── kernel ───────────────────────────────────────
-Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo or usbfs)
+Receiver + ISP (upstream)   lemnos-sensor-bridge (generic, once) USB (uvcvideo or usbfs)
 ```
 
 ## Crates and ownership
@@ -53,7 +53,6 @@ Receiver + ISP (upstream)   styx-sensor-bridge (generic, once)   USB (uvcvideo o
 | `tools/compare` | `styx-compare` | Same capture through the libcamera and native backends: start latency (first frame, AE converged, exposure settled), rate and jitter, drops, CPU (with the IPA proxy), RSS/PSS and dma-bufs, frame statistics; JSON and markdown. `device-run.sh` runs the set on the CM5 | compare agent |
 | `crates/dng` | `styx-dng` | DNG 1.4 writer and reader in pure Rust (no Styx dependencies): raw frames with calibration, lens shading opcodes, EXIF, preview; camera DNGs read for calibration; see [stills-and-dng.md](../stills-and-dng.md) | stills agent |
 | `crates/uvc` | `styx-uvc` | USB Video Class cameras from userspace over usbfs (`lemnos-usb`; hotplug through `lemnos_linux::uevent`): descriptors, PROBE/COMMIT, isochronous/bulk streaming, frame assembly, PTS/SCR timestamps, controls, hotplug; `styx` backend `BackendKind::Uvc` (feature `uvc`); see [uvc.md](../uvc.md) | usb-uvc agent |
-| `kernel-modules/styx-sensor-bridge` | (C, GPL-2.0) | The generic sensor bridge module, overlay template, build scripts | bridge agent |
 
 `styx-core-rs`, `styx-sensor`, `styx-algo`, `styx-softisp` and
 `styx-dng` build as `no_std` + `alloc` without their default `std` feature, for targets with no
@@ -81,7 +80,7 @@ It has no sensor knowledge:
 - Power, clocks, reset and all register access are userspace's.
 
 The exact event ids, the acknowledgement mechanism and timeouts are defined in
-`kernel-modules/styx-sensor-bridge/PROTOCOL.md` by the bridge agent; `lemnos-sensor-bridge` (Lemnos)
+Lemnos's `kernel-modules/lemnos-sensor-bridge/PROTOCOL.md`; `lemnos-sensor-bridge` (Lemnos)
 implements the userspace side.
 
 ### Sensors with a kernel driver
@@ -122,13 +121,13 @@ limits at that fps.
   `camera-mode.sh` switches), the A/B images and the updater alone; anything else may be changed
   as needed (say so in your report).
   - The baseline: the device boots the shipping configuration, the bridge overlay in
-    `config.txt` (`dtoverlay=styx-sensor-bridge-cm5,cam0,clk-continuous` in place of the image's
-    `ov9782-overlay`; `overlays/styx-sensor-bridge-cm5.dtbo`) with `styx_sensor_bridge.ko` in
+    `config.txt` (Lemnos's `lemnos-sensor-bridge-bcm2712*` overlay in place of the image's
+    `ov9782-overlay`; until 2026-11-06 this was Styx's `styx-sensor-bridge`) with the bridge module in
     `/lib/modules/$(uname -r)/updates/` (on the root overlay's upper layer, `depmod`ed: udev
     loads it at boot). The bridge is bound at boot, `ov9282` is not,
     `<camera service>` and
     `styx-bridge.service` are disabled. Installed by
-    `kernel-modules/styx-sensor-bridge/install/install.sh` (rerun it after rebuilding the
+    Lemnos's `kernel-modules/lemnos-sensor-bridge/install/install.sh` (rerun it after rebuilding the
     module, then reboot).
   - Read-only probing needs no lock.
   - **Use `scripts/with-device-lock.sh <owner> '<remote command>'` for every device run**
@@ -174,8 +173,8 @@ limits at that fps.
 
 Two kernels are in use: Raspberry Pi `stable_20250916` (6.12.47-v8-16k), and `rpi-7.2.y`
 (7.2.9-v8-16k at `53679a5`). Both
-The `kernel-modules/` build takes `STYX_KERNEL=6.12|7.2` (`kernel-modules/kernel-env.sh`); the
-bridge uses one source for both. Checked on the host for 7.2 (no device
+The bridge module's build is Lemnos's now (`kernel-modules/lemnos-sensor-bridge`, the successor of
+Styx's `kernel-modules/styx-sensor-bridge`); the bridge used one source for both kernels. Checked on the host for 7.2 (no device
 run yet): the bridge builds unchanged (`W=1` and checkpatch clean, the subdev, async, fwnode,
 control and event APIs it uses did not change), the overlays' labels all exist in the 7.2
 `bcm2712-rpi-cm5-cm5io`/`bcm2712-rpi-5-b` trees. In rpi-7.2.y the receiver module is `rp1-cfe-downstream`

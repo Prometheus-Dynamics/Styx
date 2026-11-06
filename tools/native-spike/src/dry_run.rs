@@ -159,7 +159,7 @@ fn check_i2c(args: &Args, desc: &SensorDescription, bridge_bus: Option<u32>) {
 }
 
 fn check_overlay() {
-    let dir = Path::new("/sys/kernel/config/device-tree/overlays/styx-sensor-bridge");
+    let dir = Path::new("/sys/kernel/config/device-tree/overlays/lemnos-sensor-bridge");
     let status = std::fs::read_to_string(dir.join("status")).unwrap_or_default();
     log!(
         "overlay: {}",

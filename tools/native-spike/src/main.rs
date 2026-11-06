@@ -1,6 +1,6 @@
 //! First on-device spike of the Styx native stack: raw OV9782 frames from `rp1-cfe` on a
 //! Raspberry Pi CM5, with the sensor driven from userspace over I²C and the Styx sensor bridge
-//! standing in for the sensor driver. See `kernel-modules/styx-sensor-bridge/spike/README.md`.
+//! standing in for the sensor driver. See Lemnos's `kernel-modules/lemnos-sensor-bridge/spike/README.md`.
 //!
 //! Flow: find the bridge → subscribe to its events → power up → chip id → init → mode (sensor
 //! in standby) → bridge format and timing → media links, receiver pads, video format → start
@@ -140,7 +140,7 @@ fn run(args: &args::Args, desc: Arc<SensorDescription>) -> Result<()> {
         .iter()
         .find(|b| b.sensor_name == desc.sensor.name)
         .or(bridges.first())
-        .ok_or("no styx-sensor-bridge bound (run up.sh first)")?;
+        .ok_or("no lemnos-sensor-bridge bound (run up.sh first)")?;
     log!(
         "bridge {} for \"{}\"",
         loc.subdev.display(),

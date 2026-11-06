@@ -104,7 +104,7 @@ pub fn soft(a: &Args) -> Result<(), String> {
                     format,
                     stride: cfg.stride as usize,
                     sensor: p.soft_loop().info().clone(),
-                    notes: format!("{} via styx-sensor-bridge, CM5", cfg.mode.mode),
+                    notes: format!("{} via the sensor bridge, CM5", cfg.mode.mode),
                 },
             )
             .map_err(|e| e.to_string())?,

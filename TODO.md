@@ -86,8 +86,8 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
       `IspBuffers` and the K230 builder stay here), `lemnos-sensor-bridge` for `bus`,
       `lemnos-drivers-rga` for `daedalus-rga`. `styx_native::dma` keeps Styx's tail pad
       (Lemnos's `allocate_importable`, 952e1c7) and memfd stand-in on `lemnos_linux::dma`; `sync_stats` is Lemnos's.
-      The styx-named bridge module in `kernel-modules/styx-sensor-bridge` is no longer found by
-      `find_bridges` (Lemnos's matches `lemnos-sensor-bridge`); images ship neither.
+      `kernel-modules/styx-sensor-bridge` is deleted; its successor is Lemnos's
+      `kernel-modules/lemnos-sensor-bridge` (2676ccd). Images ship neither.
       Raze #1, 2026-11-06, 120 fps sliced (line 600), A/B against 9d5a3bf on the stock modules:
       frame-out p50 7.975 / 7.975 ms, p99 9.294 / 9.298 ms; 1199/1200 sliced, 0 early fires;
       149/149 verified stripes byte-identical; 0 steady-state allocations in the pipeline (the

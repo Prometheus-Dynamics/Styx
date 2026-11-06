@@ -1,7 +1,7 @@
 //! The Styx native camera runtime: camera sensors driven from userspace Rust over I²C, with the
 //! generic Styx sensor bridge standing in for a kernel sensor driver.
 //!
-//! See `docs/native-stack/README.md` and `kernel-modules/styx-sensor-bridge/PROTOCOL.md`.
+//! See `docs/native-stack/README.md` and Lemnos's `kernel-modules/lemnos-sensor-bridge/PROTOCOL.md`.
 //!
 //! # Lifecycle and faults
 //!

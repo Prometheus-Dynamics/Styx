@@ -1,7 +1,8 @@
 #!/bin/sh
 # Runs the comparison set on a CM5. Run as root from a /tmp directory holding:
 #   styx-compare (built with --features libcamera,native), ov9782.toml,
-#   up.sh down.sh spike-env.sh styx_sensor_bridge.ko styx-sensor-bridge-cm5-runtime.dtbo
+#   up.sh down.sh spike-env.sh (Lemnos's kernel-modules/lemnos-sensor-bridge/spike), the bridge
+#   module and its runtime overlay
 # while holding the device lock (docs/native-stack/README.md), with the kernel log streamed
 # to the host.
 #

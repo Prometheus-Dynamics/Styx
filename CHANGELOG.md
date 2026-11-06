@@ -8,6 +8,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Removed
 
+- `kernel-modules/styx-sensor-bridge` and `kernel-modules/kernel-env.sh`: the bridge module moved to
+  Lemnos as `kernel-modules/lemnos-sensor-bridge` (Lemnos 2676ccd; driver, node and overlays named
+  `lemnos-sensor-bridge`), whose userspace side Styx already uses.
 - `styx-kernel` and `styx-pisp` (`crates/kernel`, `crates/pisp`): Styx runs on Lemnos (rev
   4dceae2). `styx_kernel::{v4l2, subdev, media, event}` and the root types are `lemnos_v4l2`'s;
   `styx_kernel::bus` is the `lemnos-sensor-bridge` crate (its `find_bridges` matches the
@@ -34,6 +37,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Daedalus is pinned at rev 81ec527 (it was `branch = "dev"`), which pins Lemnos 952e1c7 too:
+  one Lemnos in the lock.
 - Lemnos is pinned at 952e1c7. Heap dma-bufs get their Vulkan import pad from Lemnos's
   `DmaHeap::allocate_importable` (256 bytes, rounded up to the system's page size rather than
   4 KiB); `styx_native::dma::padded_len` is gone and `TAIL_SLACK` is Lemnos's `IMPORT_SLACK`.

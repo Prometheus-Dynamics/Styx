@@ -48,7 +48,7 @@ pub fn cm5_ov9782() -> DeviceGraph {
     g.add_node(
         Node::new("ov9782", NodeKind::Sensor)
             .device("/dev/v4l-subdev2")
-            .property("bridge", "styx-sensor-bridge")
+            .property("bridge", "lemnos-sensor-bridge")
             .port(Port::output(
                 "out",
                 Capabilities::new().format(

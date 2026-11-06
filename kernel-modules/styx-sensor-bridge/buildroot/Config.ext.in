@@ -1,8 +1,0 @@
-config BR2_LINUX_KERNEL_EXT_STYX_SENSOR_BRIDGE
-	bool "Styx sensor bridge"
-	help
-	  Build styx_sensor_bridge.ko, the generic V4L2 sensor subdevice
-	  for camera sensors driven from userspace by Styx, into the
-	  kernel the package builds (Raspberry Pi 6.12 or rpi-7.2.y), and
-	  the CM5 camera overlays (styx-sensor-bridge-cm5.dtbo,
-	  styx-cam0-i2c-fast.dtbo).
