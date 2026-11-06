@@ -377,6 +377,15 @@ memory when it runs.
 
 Not on the freeze list. *Numbers:* none measured unless stated.
 
+- [ ] **Row-sliced box2 (Eidos, low priority).** *What:* a `box_downscale_luma_in` variant that
+      hands the consumer each finished run of half-level rows (a callback, or a row-range
+      iterator over the output) so it can threshold them while they are in cache, instead of
+      writing all 256 KB and reading it back. *Why:* Eidos's CPU-level path reads the level
+      once, straight after it is made. *Done when:* the API exists with rows identical to
+      `box_downscale_luma_in`, zero steady-state allocations, and a Raze number against
+      make-then-read (18.7 µs hot read today). *Blocked by:* nothing. *Numbers:* ceiling about
+      0.01-0.02 ms per frame (Eidos); CPU-level path only (the PiSP level is a 2x2 box too,
+      c8ffb21).
 - [ ] **MCU flash: watch config C on the Cortex-M7.** *What:* C is 131,704 bytes against its
       134,000 limit (1.7% headroom; the others have 4-11%, D 5%). *Why:* the limits are guards,
       and lean is the default: the next growth in the code C links (sensor driver, algorithms,
