@@ -44,13 +44,14 @@ use styx_pipeline::device::{
     IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning_with, isp_kind,
     soft_capture_memory,
 };
+use styx_pipeline::pisp_half::HalfFilter;
 use styx_softisp::Scale;
 
 use self::output_buffers::{MAX_OUTPUT_BUFFERS, cma_free, pisp_output_buffers};
 use super::control_plane::ControlPlane;
 use super::handle::{CaptureHandle, CaptureQueue, WorkerHandle};
 use super::request::CaptureError;
-use super::tunables::StyxConfig;
+use super::tunables::{NativeHalfFilter, StyxConfig};
 use crate::BackendKind;
 use crate::metrics::{AaaSample, CaptureMetrics, StageMetrics};
 
@@ -488,6 +489,11 @@ pub(super) fn start_processed(
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
                 tdn_compressed: config.backends.native.tdn_compressed,
+                half_filter: match config.backends.native.half_filter {
+                    NativeHalfFilter::Box => HalfFilter::Box,
+                    NativeHalfFilter::BoxDownscaler => HalfFilter::BoxDownscaler,
+                    NativeHalfFilter::Lanczos3 => HalfFilter::Lanczos3,
+                },
                 slice_line: config.backends.native.slice_line,
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
                 be_buffers,

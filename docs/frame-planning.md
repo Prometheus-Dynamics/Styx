@@ -133,7 +133,12 @@ JPEG with restart markers; `every_frame`: one), unless `decode_threads` says oth
   - `PreferHardware` (default) takes level 1 from the ISP's second output where possible and
     computes deeper levels with box filters. A native PiSP makes every level: level 1 from its
     second output, each deeper one from an extra back end pass at that level's size
-    (`NativeIspConfig::pyramid_all_levels`).
+    (`NativeIspConfig::pyramid_all_levels`). Its level 1 is a 2x2 box like the CPU's
+    (`NativeIspConfig::half_filter`, default `NativeHalfFilter::Box`): on Raze #1 89.8 % of a
+    640x400 level's pixels equal `box_downscale_luma_in` of the full luma and the rest are 1
+    apart, because the back end rounds after averaging. `NativeHalfFilter::Lanczos3`
+    (libcamera's, sharper: 66 % equal, up to 38 apart) and `BoxDownscaler` stay selectable.
+    Deeper levels from extra passes use the back end's smart resize.
   - `HardwareOnly` fails without an ISP output, or for more levels than the ISP makes (a native
     PiSP makes up to three; another ISP's second output one).
   - `Software` always uses box filters.

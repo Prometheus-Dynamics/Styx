@@ -64,6 +64,8 @@ pub struct BeConfigBuilder {
     tdn_last: Option<f64>,
     /// Full prepares so far (extra passes re-prepare when it moves).
     generation: u64,
+    /// How output 1 makes an image of half its crop ([`Self::set_half_filter`]).
+    half: crate::pisp_half::HalfFilter,
 }
 
 /// Above this exposure ratio between frames the temporal average starts over (as the
@@ -93,7 +95,31 @@ impl BeConfigBuilder {
             tdn: false,
             tdn_last: None,
             generation: 0,
+            half: crate::pisp_half::HalfFilter::Lanczos3,
         })
+    }
+
+    /// Output 1, when exactly half of `crop` (`None`: the whole input), made with `filter`;
+    /// kept across [`Self::set_output_crop`] (another size uses the smart resize). Fails,
+    /// changing nothing, if the back end cannot make it.
+    pub fn set_half_filter(
+        &mut self,
+        filter: crate::pisp_half::HalfFilter,
+        crop: Option<BeCropConfig>,
+    ) -> Result<()> {
+        let mut template = self.template.clone();
+        crate::pisp_half::set_half_filter(&mut template, filter, self.crop_size(crop));
+        template.clone().prepare().map_err(config_error)?;
+        self.template = template;
+        self.half = filter;
+        self.fresh = true;
+        Ok(())
+    }
+
+    fn crop_size(&self, crop: Option<BeCropConfig>) -> (u16, u16) {
+        let input = self.template.config().input_format;
+        crop.filter(|c| c.width != 0)
+            .map_or((input.width, input.height), |c| (c.width, c.height))
     }
 
     /// Temporal denoise buffers of `format` (the input's, see
@@ -116,6 +142,9 @@ impl BeConfigBuilder {
     pub fn set_output_crop(&mut self, i: usize, crop: Option<BeCropConfig>) -> Result<()> {
         let mut template = self.template.clone();
         template.set_crop(i, crop.unwrap_or_default());
+        if i == 1 {
+            crate::pisp_half::set_half_filter(&mut template, self.half, self.crop_size(crop));
+        }
         let next = template.clone().prepare().map_err(config_error)?;
         let (a, b) = (
             crate::pisp_passes::tiles_cover(&self.cfg),

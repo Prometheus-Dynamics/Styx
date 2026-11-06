@@ -67,6 +67,9 @@ pub struct PispOptions {
     /// consumer of the raw frame (`PispFrame::raw_image`, [`super::PispPipeline::release_raw`]);
     /// give the front end extra `fe_buffers` for those held. `false` (default): requeued at once.
     pub raw_lease: bool,
+    /// How output 1 makes an image of exactly half its input (`HalfFilter::Box`, the default: a
+    /// 2x2 box, as `box_downscale_luma_in`; see [`crate::pisp_half`]).
+    pub half_filter: crate::pisp_half::HalfFilter,
 }
 
 impl PispOptions {
@@ -110,6 +113,7 @@ impl PispOptions {
             pass_tdn: Default::default(),
             slice_line: None,
             raw_lease: false,
+            half_filter: Default::default(),
         }
     }
 }

@@ -4,6 +4,23 @@ use styx_core::prelude::{FourCc, FrameRect};
 
 use super::StyxConfig;
 
+/// How the PiSP back end makes an output of exactly half its input
+/// ([`NativeIspConfig::half_filter`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum NativeHalfFilter {
+    /// A 2x2 box (the default), as `box_downscale_luma_in`: on Raze #1 89.8 % of a 640x400
+    /// level's pixels equal the CPU's box of the full luma and the rest differ by 1 (the back
+    /// end rounds after averaging), at no back end cost.
+    #[default]
+    Box,
+    /// A 2x2 box from the downscaler (87.7 % equal, at most 3 apart).
+    BoxDownscaler,
+    /// Lanczos 3, corner aligned (libcamera's; sharper: 66 % equal, up to 38 apart).
+    Lanczos3,
+}
+
 /// Prefetch of a native processed frame's pixels by the capture thread, before the frame is
 /// handed over (see [`NativeIspConfig::cpu_prefetch`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -215,6 +232,10 @@ pub struct NativeIspConfig {
     /// half its memory traffic, 0.55 ms less back end time per 1280x800 frame on the CM5, with
     /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit.
     pub tdn_compressed: bool,
+    /// How the PiSP back end's second output makes an image of exactly half its input (a
+    /// pyramid level 1, a half-size second output): [`NativeHalfFilter::Box`] by default.
+    /// Other sizes use the smart resize.
+    pub half_filter: NativeHalfFilter,
     /// Process each frame in two back end jobs, the first once the raw frame's first
     /// `slice_line` rows are in (a frame whose rows are not in when checked runs whole): the frame is ready sooner after its readout (1280x800@120 on the
     /// OV9782: 7.80 → 6.85 ms at line 640). `None` (default): off. The algorithms' settings
@@ -298,6 +319,7 @@ impl Default for NativeIspConfig {
             raw_bits: None,
             raw_buffers: 4,
             tdn_compressed: true,
+            half_filter: NativeHalfFilter::Box,
             slice_line: None,
             deliver_slices: false,
             soft_threads: None,

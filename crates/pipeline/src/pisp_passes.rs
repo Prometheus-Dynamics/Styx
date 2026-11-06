@@ -353,6 +353,8 @@ fn pass_geometry(main: &BackEnd, spec: &PassSpec, buffer: ImageFormatConfig) -> 
     be.set_crop(o, spec.crop);
     let (w, h) = spec.size.unwrap_or((spec.crop.width, spec.crop.height));
     be.set_smart_resize(o, w, h);
+    // The main output 1's half-size box steps by exactly 2; a pass has its own size.
+    be.set_resample_step(o, None);
     be.set_global(g.bayer_enables, rgb, bayer_order(g.bayer_order));
     be
 }

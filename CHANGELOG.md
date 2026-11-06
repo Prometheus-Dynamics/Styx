@@ -37,6 +37,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The PiSP back end makes an output of exactly half its input (pyramid level 1, a half-size
+  second output) as a 2x2 box, the CPU's `box_downscale_luma_in` filter, instead of
+  libcamera's corner-aligned Lanczos 3: the resampler steps by exactly 2 with two equal taps.
+  On Raze #1 (1280x800 -> 640x400 luma, 150 live frames) 89.8 % of the pixels equal the CPU
+  box of the full luma, against 66.0 %, and the rest differ by 1 (one pixel in 38 M by 2) rather than by up to 38 (the
+  back end rounds after averaging), at the same back end time. New
+  `NativeIspConfig::half_filter` (`NativeHalfFilter::{Box, BoxDownscaler, Lanczos3}`),
+  `PispOptions::half_filter`, `BeConfigBuilder::set_half_filter` and `styx_pipeline::pisp_half`;
+  `STYX_PISP_HALF` (`box`, `ds`, `lanczos3`) overrides it with `pisp-debug-hooks`.
+
 - The NEON 2x2 box row loop (pyramid levels, `box_downscale_luma_in`) prefetches each source
   row 1 KB ahead: the A76's prefetcher does not keep two interleaved row streams ahead. On
   Raze #1 a 1280x800 → 640x400 halving from frames out of cache goes from 0.105 to 0.074 ms

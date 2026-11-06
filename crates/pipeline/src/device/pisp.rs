@@ -170,6 +170,8 @@ impl Isp {
         }
         // The template must prepare (sizes, strides, tiles) before streaming starts.
         let mut be = BeConfigBuilder::new(be)?;
+        let half = debug_var("STYX_PISP_HALF").unwrap_or(options.half_filter); // box, ds, lanczos3
+        be.set_half_filter(half, options.crop[1])?;
         let mut tdn_error = None;
         if want_tdn && options.temporal_denoise {
             match be_dev.enable_tdn() {
