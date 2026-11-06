@@ -190,3 +190,15 @@ build, 2026-10-03), JPEG by the `image` crate:
 At +1 EV and 30 fps the exposure is capped by the frame (33.2 ms) and the rest goes to gain
 (×2.19). The V4L2 path (Logitech C270, YUYV 640x480): request → JPEG 68 ms; the preview misses
 the frame taken (one sequence gap).
+
+With turbojpeg (`codec-turbojpeg`, the codec registry's encoder) on Raze #1, 2026-11-06: stock
+V4L2 and PiSP back end, kernel 7.2.9, Styx 9253cbc, a static aarch64 musl `still_capture`, PiSP
+at 30 fps:
+
+| | PiSP, 30 fps, turbojpeg |
+|---|---|
+| preview while taking stills | 30.00 fps, 0 sequence gaps, longest interval 33.4 ms |
+| still (JPEG + DNG), request → ready | 100.1 ms |
+| of that, reprocess + JPEG + DNG on the still thread | 25.3-27.5 ms (was 44-49 with the `image` crate) |
+| 3-shot bracket (−1, 0, +1 EV) request → ready | 300.7 ms |
+| bracket frames (target = frame, `landed`) | 83, 84, 85 (all landed) |

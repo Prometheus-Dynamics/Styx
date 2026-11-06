@@ -188,12 +188,12 @@ user lifts them.
       the driver's init table, are in no OV9281/OV9282 datasheet, and read 0 after any write on the
       CM5 (bursts and one transfer each, the baseline too) while the sensor streams normally, so
       they are not called write-only without a source.
-- [ ] **Still JPEG encoding numbers.** *Why:* the default features fall back to the `image` crate. *Done when:*
-      the ~45 ms still thread time is re-measured with turbojpeg. *Blocked by:* a still that lands: on the Raze 2026-11-02
-      `still_capture DIR 30 native` (turbojpeg) failed with "still: timed out". Likely cause, fixed
-      and written, untested on board: `settle(true)` armed the shot only once AE locked, so a scene
-      AE never locks on waited out the 5 s; it now waits half the timeout, then takes AE's exposure. *Numbers:*
-      ~45 ms, before turbojpeg.
+- [x] **Still JPEG encoding numbers.** Re-measured with turbojpeg on Raze #1, 2026-11-06
+      (`still_capture DIR 30 native`, static aarch64 musl, 9253cbc): the still lands now (the
+      `settle(true)` fix: wait half the timeout, then take AE's exposure). Reprocess + JPEG + DNG on
+      the still thread 25.3-27.5 ms over 4 shots, against 44-49 ms with the `image` crate; request →
+      ready 100.1 ms, bracket 300.7 ms, all three on their frames, preview 30.00 fps with 0 gaps
+      (docs/stills-and-dng.md).
 - [ ] **CM5 HEVC decode check** (`hevc_v4l2request` through FFmpeg). *Why:* HEVC recordings only; Styx
       records MJPEG and raw. *Done when:* a recording decodes through `rpi-hevc-dec`. *Blocked by:*
       an Atlas image with that driver; HeliOS says when. *Numbers:* none: the driver is not in the
