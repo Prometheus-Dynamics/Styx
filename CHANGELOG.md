@@ -41,6 +41,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- A native PiSP capture starts with 3 buffers per back end output, down from 6
+  (`NativeIspConfig::output_buffers`, `PispOptions::be_buffers`): the fewest that hold 120 fps
+  on Raze #1 with a consumer holding each frame for most of the period (7199 of 7200 frames in
+  60 s; 2 lost frames). One 1280x800 camera with one consumer holds 12.3 MB of dma-buf with
+  compressed raw (20.6 MB before), counted once per buffer (the back end imports the front
+  end's raw buffers, so counting fds counts them twice). Queues and held frames still add
+  buffers as they are held.
+
 - A raw consumer (`Frames::sensor_raw`) joining a running native capture no longer restarts it:
   `native_controls::SENSOR_RAW` turns the raw companions on in place (the PiSP adds its raw
   lease buffers while streaming, Lemnos `add_image_buffers` / `add_inputs`). On Raze #1 (OV9782
@@ -861,6 +869,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   unstripped build (docs/metrics.md, "Finding allocations on a device").
 
 ### Changed
+
+- A native PiSP capture starts with 3 buffers per back end output, down from 6
+  (`NativeIspConfig::output_buffers`, `PispOptions::be_buffers`): the fewest that hold 120 fps
+  on Raze #1 with a consumer holding each frame for most of the period (7199 of 7200 frames in
+  60 s; 2 lost frames). One 1280x800 camera with one consumer holds 12.3 MB of dma-buf with
+  compressed raw (20.6 MB before), counted once per buffer (the back end imports the front
+  end's raw buffers, so counting fds counts them twice). Queues and held frames still add
+  buffers as they are held.
 
 - `StillRequest::settle` waits for AE to lock for half of the request's timeout at most, then
   takes the still at AE's exposure; a scene AE never locked on used to fail with "still: timed out".
@@ -1971,6 +1987,14 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Changed
 
+- A native PiSP capture starts with 3 buffers per back end output, down from 6
+  (`NativeIspConfig::output_buffers`, `PispOptions::be_buffers`): the fewest that hold 120 fps
+  on Raze #1 with a consumer holding each frame for most of the period (7199 of 7200 frames in
+  60 s; 2 lost frames). One 1280x800 camera with one consumer holds 12.3 MB of dma-buf with
+  compressed raw (20.6 MB before), counted once per buffer (the back end imports the front
+  end's raw buffers, so counting fds counts them twice). Queues and held frames still add
+  buffers as they are held.
+
 - **Native timestamps honour `StyxConfig::timestamp_clock`**: raw and processed (PiSP and
   software ISP) native frames are converted from `CLOCK_MONOTONIC` the way V4L2 frames are. The
   default (`ClockSource::Native`) is unchanged: monotonic. `docs/timestamps.md` has a native row.
@@ -2405,6 +2429,14 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
   checks, file-size checks, Docker facade tests, and organized example binaries.
 
 ### Changed
+
+- A native PiSP capture starts with 3 buffers per back end output, down from 6
+  (`NativeIspConfig::output_buffers`, `PispOptions::be_buffers`): the fewest that hold 120 fps
+  on Raze #1 with a consumer holding each frame for most of the period (7199 of 7200 frames in
+  60 s; 2 lost frames). One 1280x800 camera with one consumer holds 12.3 MB of dma-buf with
+  compressed raw (20.6 MB before), counted once per buffer (the back end imports the front
+  end's raw buffers, so counting fds counts them twice). Queues and held frames still add
+  buffers as they are held.
 
 - Bumped the public workspace release from `1.0.0` to `2.0.0` and updated crate README install
   snippets to match.

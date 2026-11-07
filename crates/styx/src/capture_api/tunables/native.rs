@@ -272,7 +272,9 @@ pub struct NativeIspConfig {
     /// Strength of the PiSP's spatial and colour denoise in percent of the tuning's: their
     /// noise thresholds are scaled by this (100, the default: as tuned; 0: off).
     pub spatial_denoise_percent: u16,
-    /// Buffers of each PiSP back end output allocated at start (default 6, at least 2); with
+    /// Buffers of each PiSP back end output allocated at start (default 3, at least 2: the
+    /// fewest that hold 120 fps with a consumer holding each frame for most of a frame period,
+    /// measured on Raze #1; 2 lose frames then); with
     /// the software ISP, the spare output buffers it keeps for reuse. The rest a capture
     /// reserves (for clients that may join, queues, held frames) are allocated only as they
     /// are held, one spare ahead, from a helper thread. Frames consumers hold
@@ -327,7 +329,7 @@ impl Default for NativeIspConfig {
             sensor_raw: false,
             temporal_denoise: true,
             spatial_denoise_percent: 100,
-            output_buffers: 6,
+            output_buffers: 3,
             flicker: NativeFlicker::Auto,
             deflicker: NativeDeflicker::Auto,
             hflip: false,
@@ -613,7 +615,7 @@ mod tests {
     #[test]
     fn flicker_defaults_to_auto_and_maps_to_control_values() {
         assert_eq!(NativeIspConfig::default().flicker, NativeFlicker::Auto);
-        assert_eq!(NativeIspConfig::default().output_buffers, 6);
+        assert_eq!(NativeIspConfig::default().output_buffers, 3);
         for f in [
             NativeFlicker::Off,
             NativeFlicker::Mains50,

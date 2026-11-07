@@ -59,24 +59,24 @@ mod tests {
     fn output_buffers_cover_what_the_planner_reserves() {
         let set = 1280 * 800 * 3 / 2 + 640 * 400 * 3;
         let buffers = |c: &StyxConfig| pisp_output_buffers(c, set, None).0;
-        assert_eq!(buffers(&StyxConfig::default()), 6);
+        assert_eq!(buffers(&StyxConfig::default()), 3);
         assert_eq!(buffers(&StyxConfig::default().native_output_buffers(8)), 8);
         // A shared capture of two consumers with queues of 3 (the planner: queue 1, extra
-        // 3 + 3 + 3 + 3 + 2 = 14): 11 on top of the 6.
+        // 3 + 3 + 3 + 3 + 2 = 14): 11 on top of the 3.
         let shared = StyxConfig::new()
             .capture_queue_depth(1)
             .capture_extra_buffers(14);
-        assert_eq!(buffers(&shared), 17);
+        assert_eq!(buffers(&shared), 14);
         let huge = StyxConfig::new().capture_extra_buffers(200);
         assert_eq!(buffers(&huge), MAX_OUTPUT_BUFFERS);
         // Contiguous memory for at most half of what is free: 47 MB free on the CM5 holds 10
-        // sets of NV12 1280x800 + RGB 640x400, the other 7 come from the system heap; never
+        // sets of NV12 1280x800 + RGB 640x400, the other 4 come from the system heap; never
         // fewer contiguous than the base set.
-        assert_eq!(pisp_output_buffers(&shared, set, Some(47 << 20)), (17, 10));
-        assert_eq!(pisp_output_buffers(&shared, set, Some(0)), (17, 6));
+        assert_eq!(pisp_output_buffers(&shared, set, Some(47 << 20)), (14, 10));
+        assert_eq!(pisp_output_buffers(&shared, set, Some(0)), (14, 3));
         assert_eq!(
             pisp_output_buffers(&StyxConfig::default(), set, Some(0)),
-            (6, 6)
+            (3, 3)
         );
     }
 }

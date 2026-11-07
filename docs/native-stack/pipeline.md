@@ -142,8 +142,10 @@ Output buffers are reused in release order, and a buffer a consumer holds (a Sty
 frame server's latest frame, a frame another process has not released) is never written. When
 consumers hold every buffer of an output, `next` drops the frame (`PipelineError::OutputsHeld`:
 no job queued, the raw buffer goes back) and the Styx capture moves on to the next frame: the
-camera never waits for consumers. Each output has 6 buffers by default (`PispOptions::be_buffers`;
-through Styx `StyxConfig::native_output_buffers`, 4 before). A Styx capture adds whatever its
+camera never waits for consumers. Each output has 3 buffers by default (`PispOptions::be_buffers`;
+through Styx `StyxConfig::native_output_buffers`; 6 before): on Raze #1 at 120 fps (OV9782
+1280x800), 3 delivered 7199 of 7200 frames in 60 s to a consumer holding each frame 7 ms of
+the 8.3 ms period, where 2 lost 1 to 4 frames in 8 s. A Styx capture adds whatever its
 queue and extra buffers go beyond the defaults (2 + 2): the planner's shared captures reserve
 every consumer's queue and the frame it works on that way, so a consumer holding what the
 planner allows it never takes the others' buffers; all the outputs' buffers stay within half

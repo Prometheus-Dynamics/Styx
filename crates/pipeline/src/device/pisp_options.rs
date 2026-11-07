@@ -125,7 +125,7 @@ impl PispOptions {
             ],
             crop: [None; 2],
             fe_buffers: 4,
-            be_buffers: 6,
+            be_buffers: 3,
             be_buffers_initial: None,
             pass_buffers: [0; 2],
             pass_jobs: 0,
