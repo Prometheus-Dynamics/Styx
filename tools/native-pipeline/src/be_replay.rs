@@ -12,6 +12,9 @@ use crate::Args;
 
 /// Runs every `--configs` file on `--raw` (16-bit Bayer, the size of the configs' input).
 pub fn run(a: &Args) -> Result<(), String> {
+    if let Some(base) = &a.recording {
+        return crate::be_replay_rec::run(a, base);
+    }
     let raw_path = a.raw.as_ref().ok_or("be-replay needs --raw")?;
     let raw = std::fs::read(raw_path).map_err(|e| format!("{}: {e}", raw_path.display()))?;
     let mut dev: Option<BackEndDevice> = None;

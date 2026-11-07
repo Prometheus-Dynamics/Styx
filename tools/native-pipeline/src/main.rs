@@ -13,6 +13,10 @@
 //! native-pipeline latch  [options]   when within a frame a control write still lands on time
 //! native-pipeline be-replay --raw FILE --configs A.bin,B.bin   one 16-bit raw frame through the
 //!                                    back end with each config (device feature)
+//! native-pipeline be-replay --recording BASE --configs MAIN.bin --out DIR   every frame of a
+//!                                    raw10 recording through the back end: each enabled
+//!                                    output's luma as DIR/NAME.outN.grey8, the index with
+//!                                    "settled" as DIR/NAME.frames.jsonl (device feature)
 //! native-pipeline regcheck [options] bring-up only, read back every register written
 //!                                    (--frames: power cycles; --power-settle MS)
 //!
@@ -72,6 +76,8 @@
 
 #[cfg(feature = "device")]
 mod be_replay;
+#[cfg(feature = "device")]
+mod be_replay_rec;
 #[cfg(feature = "device")]
 mod device_run;
 #[cfg(feature = "gpu")]

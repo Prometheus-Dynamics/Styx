@@ -176,6 +176,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `native-pipeline be-replay --recording BASE --configs MAIN.bin --out DIR`: every frame of a
+  raw10 recording through the PiSP back end with one main-job config (e.g. from
+  `LEMNOS_PISP_BE_DUMP`), writing each enabled output's luma (`NAME.out0.grey8`,
+  `NAME.out1.grey8`) and the index with a per-frame `"settled"` flag (`NAME.frames.jsonl`).
+
 - Memory traffic by stage (`PathMetrics::traffic`, OpenMetrics
   `styx_process_traffic_bytes_total{stage,unit,direction}` and `..._jobs_total`, a metrics_top
   line): the bytes the receiver, the ISP and its extra passes, the software ISP, CPU pyramid
