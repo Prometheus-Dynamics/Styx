@@ -52,8 +52,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // These are intentionally loose so the command is usable as a smoke test across developer
     // machines and future CI runners. They are regression guards, not tight tuning targets.
-    let decode_limit = Duration::from_millis(25);
-    let transform_limit = Duration::from_millis(10);
+    // `check-perf-smoke.sh` scales them on a loaded machine (PERF_SMOKE_SCALE).
+    let scale = std::env::var("PERF_SMOKE_SCALE")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|s| *s >= 1.0)
+        .unwrap_or(1.0);
+    let decode_limit = Duration::from_millis(25).mul_f64(scale);
+    let transform_limit = Duration::from_millis(10).mul_f64(scale);
 
     if decode_p95 > decode_limit {
         return Err(format!(

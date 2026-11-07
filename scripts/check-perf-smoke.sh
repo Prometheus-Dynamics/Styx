@@ -58,12 +58,6 @@ build codec-jpeg-decoder,file-backend --bin perf_smoke --bin file_replay_perf
 build codec-mozjpeg --bin encode_perf
 bin_dir="${CARGO_TARGET_DIR:-$root_dir/target}/release"
 
-run_and_record "pipeline decode/transform perf smoke" "$bin_dir/perf_smoke"
-run_and_record "MJPEG luma perf smoke (C270 fixture)" "$bin_dir/luma_perf"
-run_and_record "shared capture and frame server perf smoke (C270 fixture)" "$bin_dir/shared_perf"
-run_and_record "file replay perf smoke" "$bin_dir/file_replay_perf"
-run_and_record "mozjpeg encode perf smoke" "$bin_dir/encode_perf"
-
 # A loaded machine stretches every p95: with more runnable tasks than CPUs (the one-minute load
 # over the CPUs this process may use), limits scale by twice that ratio, at most 10x, so a busy
 # build host still catches a gross regression without failing on contention.
@@ -76,6 +70,14 @@ if [[ "${PERF_SMOKE_STRICT:-0}" == 1 ]]; then
 elif [[ "$scale" != 1.00 ]]; then
     printf 'perf smoke: load %s on %s CPUs, limits scaled %sx\n' "$load" "$cpus" "$scale"
 fi
+
+export PERF_SMOKE_SCALE="$scale"
+
+run_and_record "pipeline decode/transform perf smoke" "$bin_dir/perf_smoke"
+run_and_record "MJPEG luma perf smoke (C270 fixture)" "$bin_dir/luma_perf"
+run_and_record "shared capture and frame server perf smoke (C270 fixture)" "$bin_dir/shared_perf"
+run_and_record "file replay perf smoke" "$bin_dir/file_replay_perf"
+run_and_record "mozjpeg encode perf smoke" "$bin_dir/encode_perf"
 
 failures=0
 for metric in "${!limit_by_metric[@]}"; do
