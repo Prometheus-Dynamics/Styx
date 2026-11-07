@@ -1,7 +1,7 @@
 //! Raw frames between the front and back end compressed to 8 bits a sample (PiSP mode 1, the
 //! one the temporal-denoise average uses): the front end compresses its raw output, the back
 //! end decompresses its input. Half the raw buffers' memory and the back end's read traffic,
-//! for a small loss of precision (written, untested on board).
+//! for a small loss of precision (measured on Raze #1: matches to sensor noise).
 
 use lemnos_drivers_pisp::be::BackEnd;
 use lemnos_drivers_pisp::fe::FrontEnd;
