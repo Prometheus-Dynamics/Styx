@@ -87,6 +87,8 @@ tokio = { workspace = true, features = ["rt"] }
 # A critical-section implementation for the host tests of `--features critical-section`.
 critical-section = { workspace = true, features = ["std"] }
 serde_json.workspace = true
+# A graph engine for the host-bridge round trip test (`tests/graph_round_trip.rs`).
+daedalus = { workspace = true, features = ["engine", "plugins"] }
 
 [[bench]]
 name = "core"

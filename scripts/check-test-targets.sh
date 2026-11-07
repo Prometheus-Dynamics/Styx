@@ -41,6 +41,7 @@ module_files() {
 declare -A own_process=(
     [crates/gpuisp/tests/one_device.rs]="process-wide count of GPU devices (devices_created)"
     [crates/core/tests/descriptor_allocations.rs]="a counting #[global_allocator]"
+    [crates/core/tests/shared_frame_allocations.rs]="a counting #[global_allocator]"
     [crates/runtime/tests/no_alloc.rs]="a counting #[global_allocator]"
     [crates/sensor/tests/no_alloc.rs]="a counting #[global_allocator]"
     [crates/softisp/tests/alloc.rs]="a counting #[global_allocator]"
