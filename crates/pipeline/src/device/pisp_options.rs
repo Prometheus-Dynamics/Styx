@@ -101,6 +101,20 @@ impl PispOptions {
         self.pass_jobs.max(1)
     }
 
+    /// The temporal-denoise buffers: sized for the average as the jobs keep it (1 MB at
+    /// 1280x800 compressed), from the system heap unless [`PispOptions::tdn_contiguous`].
+    pub fn tdn_setup(&self) -> lemnos_drivers_pisp::device::TdnSetup {
+        use lemnos_drivers_pisp::device::{TdnMemory, TdnSetup};
+        TdnSetup {
+            compressed: self.tdn_compressed,
+            memory: if self.tdn_contiguous {
+                TdnMemory::Contiguous
+            } else {
+                TdnMemory::System
+            },
+        }
+    }
+
     /// Whether the raw frames are compressed: `raw_compressed` (or `STYX_PISP_RAW_COMPRESSED=1`)
     /// and no `raw_lease`, whose consumers take 16-bit samples.
     pub fn compressed_raw(&self) -> bool {
