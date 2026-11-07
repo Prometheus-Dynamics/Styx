@@ -93,7 +93,9 @@ pub(super) fn camera_service_frame_view() {
     );
     assert_eq!(receive, FRAMES, "receiving allocates {receive} times");
     // `frame_payload`'s one (the shared lease's `Arc`, which `Payload::providing` stores as is);
-    // the view borrows the lent handle (its read maps a new buffer).
+    // the view borrows the lent handle (its read maps a new buffer). Owed: 0, once Daedalus has a
+    // recycling payload storage (a pooled node whose last drop releases the frame); a pool of
+    // `Arc`s on this side would hold each frame's buffers until its slot came round again.
     counts.assert_maps_only_new_buffers();
     let payload = counts[Kind::Test] - receive;
     assert_eq!(
