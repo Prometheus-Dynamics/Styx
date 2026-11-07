@@ -111,6 +111,7 @@ impl Isp {
             image_output: true,
             buffers: debug_var("STYX_PISP_FE_BUFFERS").unwrap_or(options.fe_buffers), // total
             keep_embedded: true,
+            image_compressed: options.compressed_raw(),
         })?;
         let fe_open = t.elapsed();
         let t = Instant::now();
@@ -127,6 +128,9 @@ impl Isp {
             None => Ok(None),
         };
         fe.enable(fe_enable::OUTPUT0, true);
+        if options.compressed_raw() {
+            crate::pisp_raw_comp::compress_raw_output(&mut fe);
+        }
         let input_len = input.stride as u32 * u32::from(input.height);
         // Exported once: every export is another dma-buf of the same memory.
         let raw = fe_dev.image_dmabufs()?;
@@ -151,6 +155,9 @@ impl Isp {
             info.black_level,
             [be_dev.output_format(0), be_dev.output_format(1)],
         )?;
+        if options.compressed_raw() {
+            crate::pisp_raw_comp::decompress_raw_input(&mut be);
+        }
         // Debug: horizontal stripes of at most N rows (measuring what slicing costs).
         if let Some(n) = debug_var::<u16>("STYX_PISP_BE_STRIPE") {
             be.set_max_stripe_height(n);

@@ -83,6 +83,10 @@ pub struct PispOptions {
     /// consumer of the raw frame (`PispFrame::raw_image`, [`super::PispPipeline::release_raw`]);
     /// give the front end extra `fe_buffers` for those held. `false` (default): requeued at once.
     pub raw_lease: bool,
+    /// Raw frames between the front and back end in 8-bit PiSP compressed form
+    /// ([`crate::pisp_raw_comp`]): half the raw buffers' memory. Not with `raw_lease` (its
+    /// consumers take 16-bit samples). Default `false`; written, untested on board.
+    pub raw_compressed: bool,
     /// How output 1 makes an image of exactly half its input (`HalfFilter::Box`, the default: a
     /// 2x2 box, as `box_downscale_luma_in`; see [`crate::pisp_half`]).
     pub half_filter: crate::pisp_half::HalfFilter,
@@ -92,6 +96,14 @@ impl PispOptions {
     /// [`Self::pass_jobs`] with `0` resolved.
     pub fn pass_jobs_resolved(&self) -> usize {
         self.pass_jobs.max(1)
+    }
+
+    /// Whether the raw frames are compressed: `raw_compressed` (or `STYX_PISP_RAW_COMPRESSED=1`)
+    /// and no `raw_lease`, whose consumers take 16-bit samples.
+    pub fn compressed_raw(&self) -> bool {
+        let on =
+            debug_var::<u8>("STYX_PISP_RAW_COMPRESSED").map_or(self.raw_compressed, |v| v != 0);
+        on && !self.raw_lease
     }
 
     /// NV12 at the sensor size on output 0 and RGB24 at half size on output 1.
@@ -129,6 +141,7 @@ impl PispOptions {
             pass_tdn: Default::default(),
             slice_line: None,
             raw_lease: false,
+            raw_compressed: false,
             half_filter: Default::default(),
         }
     }

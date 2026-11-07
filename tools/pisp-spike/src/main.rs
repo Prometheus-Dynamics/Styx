@@ -143,6 +143,7 @@ fn front_end(a: &Args) -> Result<(Vec<u8>, ImageFormatConfig, Statistics), Strin
         image_output: true,
         buffers: 4,
         keep_embedded: false,
+        image_compressed: false,
     };
     let mut dev = FrontEndDevice::open(&setup).map_err(|e| format!("front end open: {e}"))?;
     let img = dev.image_format();

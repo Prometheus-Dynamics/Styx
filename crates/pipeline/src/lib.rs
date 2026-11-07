@@ -58,6 +58,7 @@ pub mod measure;
 pub mod pisp_be;
 pub mod pisp_half;
 pub mod pisp_passes;
+pub mod pisp_raw_comp;
 pub mod process;
 #[cfg(feature = "std")]
 pub mod rawrec;

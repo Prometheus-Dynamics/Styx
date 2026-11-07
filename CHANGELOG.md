@@ -123,6 +123,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `PispOptions::raw_compressed` (and `STYX_PISP_RAW_COMPRESSED=1` with debug hooks): the PiSP front
+  end writes raw frames in 8-bit compressed form (mode 1, offset 2048) and the back end
+  decompresses them: half the raw buffers' memory and the back end's raw reads. Ignored with
+  `raw_lease`. Default off; written, untested on board.
+
 - `styx_core::daedalus::from_shared_frame`: a Daedalus `SharedFrame` (`daedalus:frame` v3) as an
   `Arc<FrameLease>` in place, the same `Arc` for the same frame while it lives, released once
   with the last clone. A Styx frame sent in through `shared_frame_payload` comes back as itself.
