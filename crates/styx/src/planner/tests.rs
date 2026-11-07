@@ -434,18 +434,24 @@ fn native_pisp_supplies_every_pyramid_level() {
     dev.backends[0].properties = vec![("isp".into(), "pisp".into())];
     let plan = plan_frames_with(&dev, &Frames::gray().pyramid(2), &registry()).unwrap();
     assert_eq!(plan.mode.format.code, FourCc::NV12, "{plan}");
-    // Level 1 from the second output, level 2 from an extra pass.
-    assert_eq!(plan.isp_pyramid_level, Some(2), "{plan}");
+    // Level 1 from the second output, level 2 box-filtered from it (no extra pass).
+    assert_eq!(plan.isp_pyramid_level, Some(1), "{plan}");
     let pyramid: Vec<StepExecution> = plan
         .steps
         .iter()
         .filter(|s| matches!(s.kind, StepKind::Pyramid { .. }))
         .map(|s| s.execution)
         .collect();
-    assert_eq!(
-        pyramid,
-        vec![StepExecution::Hardware, StepExecution::Hardware]
-    );
+    assert_eq!(pyramid, vec![StepExecution::Hardware, StepExecution::Cpu]);
+    let config = plan.start_config();
+    assert!(!config.backends.native.pyramid_all_levels, "{plan}");
+    assert!(!config.backends.native.pyramid_pass(), "{plan}");
+    // Both levels required in hardware: level 2 from an extra pass.
+    let hw2 = Frames::gray()
+        .pyramid(2)
+        .pyramid_source(PyramidSource::HardwareOnly);
+    let plan = plan_frames_with(&dev, &hw2, &registry()).unwrap();
+    assert_eq!(plan.isp_pyramid_level, Some(2), "{plan}");
     let config = plan.start_config();
     assert!(config.backends.native.pyramid_all_levels, "{plan}");
     assert_eq!(config.backends.native.pyramid_pass_levels(), 2..=2);

@@ -41,6 +41,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Pyramid levels on a native PiSP: the second output makes level 1 and the deeper levels are
+  2x2 box-filtered from it on the CPU (`PyramidSource::PreferHardware`, the default). Extra back
+  end passes for levels 2-3 remain for `PyramidSource::HardwareOnly`. Raze #1, gray 1280x800 +
+  3 levels at 120 fps: latency p50 8.88 -> 7.25 ms, memory traffic 10.26 -> 6.44 MB a frame,
+  dma-bufs 16.3 -> 13.6 MiB, for 38 us of CPU a frame. Levels 2-3 are now an exact box of level 1.
 - `styx_algo::LensShading` has a `generation` (new pub field, `LensShading::next_generation`):
   ALSC gives its tables a new one only when they change, and comparing or copying two tables of
   the same non-zero generation touches no gains. Between adaptive runs (3 frames in 4 at the

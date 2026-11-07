@@ -1,5 +1,6 @@
 //! Pyramid levels: from the ISP's second output (or an extra pass of an ISP-cropped region; on
-//! a native PiSP every level, the deeper ones from extra passes), else 2x2 box filters on the
+//! a native PiSP, when every level must be hardware's, the deeper ones from extra passes), else
+//! 2x2 box filters on the
 //! CPU, or on the GPU when asked (`PyramidSource::Gpu`, feature `gpu-wgpu`).
 
 use styx_core::prelude::*;
@@ -30,12 +31,15 @@ pub(crate) fn add_pyramid_steps(
     let isp_possible = (has_isp_second_output(backend) || native)
         && matches!(route, Route::Direct | Route::LumaView)
         && !matches!(req.hardware, Hardware::Off);
-    // A native PiSP makes the deeper levels too, an extra back end pass each
-    // (`NativeIspConfig::pyramid_all_levels`); another ISP's second output makes level 1.
+    // The ISP's second output makes level 1; the deeper levels are box-filtered from it. Only
+    // when every level must come from hardware does a native PiSP make them too, an extra back
+    // end pass each (`NativeIspConfig::pyramid_all_levels`): each pass reads the raw frame
+    // again and the frame waits for it (Raze #1, 1280x800 at 120 fps: 1.6 ms and 3.8 MB a frame
+    // for L2 and L3, against 38 us of CPU from L1).
     let isp_deepest = if native { pyramid.levels.min(3) } else { 1 };
     let isp_level = match pyramid.source {
         PyramidSource::Software | PyramidSource::Gpu => None,
-        PyramidSource::PreferHardware => isp_possible.then_some(isp_deepest),
+        PyramidSource::PreferHardware => isp_possible.then_some(1),
         PyramidSource::HardwareOnly => {
             if !isp_possible {
                 return Err("hardware pyramid required but no ISP second output".into());
