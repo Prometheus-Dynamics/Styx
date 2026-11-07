@@ -41,6 +41,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Drops by cause: a sliced PiSP frame handed out at its first slice that then fails or is
+  overtaken now counts in `Drops::corrupted` (it was in no counter). `metrics_top` shows every
+  cause: sensor gaps, queue overflow, corrupted, ISP skipped (back end buffers all held), raw
+  skipped and unread (`drop g/q/c/i/raw/u`); `--service` adds the service's socket-full skips
+  and revoked clients.
+
 - `styx_core::daedalus::frame_payload` stores the frame in Daedalus's recycling payload storage
   (`Payload::providing_recycled`, Daedalus dfa1a2f): a frame into a graph allocates nothing once
   the pool holds one node per frame in flight (was 1 per frame). Readers are unchanged

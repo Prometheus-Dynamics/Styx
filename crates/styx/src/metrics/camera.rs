@@ -94,7 +94,8 @@ pub struct Drops {
     /// The consumer queue was full (send timed out) or a queued frame was replaced by a newer one:
     /// a consumer there to read it was too slow.
     pub queue_overflow: u64,
-    /// The receiver flagged the frame as corrupt, or the backend dropped it as damaged.
+    /// The receiver flagged the frame as corrupt, the backend dropped it as damaged, or a sliced
+    /// frame handed out early did not complete.
     pub corrupted: u64,
     /// The ISP had no output buffer (consumers held them all).
     pub isp_skipped: u64,

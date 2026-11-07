@@ -345,6 +345,23 @@ impl CaptureMetrics {
         self.0.counters.rt.raw_skipped.incr();
     }
 
+    /// A sliced frame handed out at its first slice did not complete (it failed, or a newer
+    /// frame overtook it): its consumer saw it fail, so it counts as corrupted.
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
+    pub(crate) fn slice_failed(&self) {
+        let c = &self.0.counters.rt.corrupted;
+        let before = c.get();
+        c.add(1);
+        if doubled(before, before + 1) {
+            crate::trace::info!(
+                capture = self.0.id,
+                failed = before + 1,
+                cause = "slice_failed",
+                "sliced frames handed out did not complete"
+            );
+        }
+    }
+
     /// The ISP dropped a frame (all its output buffers were held by consumers).
     #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn isp_skipped(&self) {

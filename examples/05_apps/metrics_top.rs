@@ -186,13 +186,13 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
     );
     path_row(&p.path);
     println!(
-        "{:<14} {:<7} {:<15} {:>11} {:>17} {:>15} {:>20} {:>14} {:>6} {:<34} {:>5} {:>4}",
+        "{:<14} {:<7} {:<15} {:>11} {:>17} {:>19} {:>20} {:>14} {:>6} {:<34} {:>5} {:>4}",
         "camera",
         "backend",
         "mode",
         "fps cfg/now",
         "frames cap/rx",
-        "drop gap/q/c/i",
+        "drop g/q/c/i/raw/u",
         "lat ms p50/p95/max",
         "isp ms p50/p95",
         "cpu us",
@@ -231,7 +231,7 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
             format!("{} {}/{}", i.kind, ms(i.isp.p50_ms), ms(i.isp.p95_ms))
         });
         println!(
-            "{:<14} {:<7} {:<15} {:>11} {:>17} {:>15} {:>20} {:>14} {:>6} {:<34} {:>5} {:>4}",
+            "{:<14} {:<7} {:<15} {:>11} {:>17} {:>19} {:>20} {:>14} {:>6} {:<34} {:>5} {:>4}",
             c.name.chars().take(14).collect::<String>(),
             c.backend,
             c.mode,
@@ -242,8 +242,13 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
             ),
             format!("{}/{}", c.frames.captured, c.frames.received),
             format!(
-                "{}/{}/{}/{}",
-                d.sensor_sequence_gaps, d.queue_overflow, d.corrupted, d.isp_skipped
+                "{}/{}/{}/{}/{}/{}",
+                d.sensor_sequence_gaps,
+                d.queue_overflow,
+                d.corrupted,
+                d.isp_skipped,
+                d.raw_skipped,
+                d.unread
             ),
             window(&c.latency.sensor_to_delivery),
             isp,

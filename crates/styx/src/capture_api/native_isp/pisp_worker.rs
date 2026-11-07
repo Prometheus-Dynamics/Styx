@@ -291,6 +291,7 @@ pub(super) fn spawn(
                     Ok(PispEvent::Slice(s)) => {
                         if let Some(prev) = sliced.take() {
                             crate::trace::debug!(backend = "native", sliced = prev.sequence, next = s.sequence, "sliced frame failed: the next frame's slice came first");
+                            w.live.slice_failed();
                             orphans.extend(prev.fail(&mut p));
                         }
                         let room = want_raw && raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
@@ -317,6 +318,7 @@ pub(super) fn spawn(
                     Err(PipelineError::OutputsHeld(output)) => {
                         if let Some(prev) = sliced.take() {
                             crate::trace::debug!(backend = "native", sliced = prev.sequence, output, "sliced frame failed: back end buffers held");
+                            w.live.slice_failed();
                             orphans.extend(prev.fail(&mut p));
                         }
                         held_drops += 1;
@@ -337,6 +339,7 @@ pub(super) fn spawn(
                     Err(e) => {
                         if let Some(prev) = sliced.take() {
                             crate::trace::debug!(backend = "native", sliced = prev.sequence, error = %e, "sliced frame failed: frame error");
+                            w.live.slice_failed();
                             orphans.extend(prev.fail(&mut p));
                         }
                         *w.error.lock() = Some(err(e));
@@ -380,6 +383,7 @@ pub(super) fn spawn(
                 }
                 if let Some(prev) = sliced.take() {
                     crate::trace::debug!(backend = "native", sliced = prev.sequence, frame = f.sequence, "sliced frame failed: another frame completed");
+                    w.live.slice_failed();
                     orphans.extend(prev.fail(&mut p));
                 }
                 let frame = match frame_leases(&p, &f, &mut buffers, &w, &ret_tx, None) {
@@ -425,6 +429,7 @@ pub(super) fn spawn(
             // service's clients, a later client among them) must not wait for it.
             if let Some(prev) = sliced.take() {
                 crate::trace::debug!(backend = "native", sliced = prev.sequence, "sliced frame failed: the capture stopped");
+                w.live.slice_failed();
                 orphans.extend(prev.fail(&mut p));
             }
             // Leases still out return their buffers to a closed channel; the back end frees

@@ -50,6 +50,16 @@ fn drops_are_told_apart_by_cause() {
 }
 
 #[test]
+fn a_sliced_frame_that_does_not_complete_counts_as_corrupted() {
+    let m = CaptureMetrics::default();
+    m.frame(&meta(0, 1000, false));
+    m.slice_failed();
+    let s = m.snapshot();
+    assert_eq!(s.drops.corrupted, 1);
+    assert_eq!(s.drops.total, 1);
+}
+
+#[test]
 fn uvc_gaps_count_as_corrupt_frames() {
     let m = CaptureMetrics::default().gaps_are_corrupt();
     let uvc = |sequence| {
