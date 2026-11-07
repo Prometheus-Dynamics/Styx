@@ -208,7 +208,12 @@ step test-targets ./scripts/check-test-targets.sh
 step clippy cargo clippy --workspace --all-targets -- -D warnings
 step clippy-features cargo clippy -p styx -p styx-record-cli --all-targets \
     --features "$clippy_features" -- -D warnings
-step test run_tests --workspace
+# The C surface's libraries first: its C client tests link them, and cargo test does not build
+# them. With STYX_CAPI_C_REQUIRED a missing one fails instead of skipping.
+capi_then_tests() {
+    cargo build -q -p styx-capi --lib && STYX_CAPI_C_REQUIRED=1 run_tests "$@"
+}
+step test capi_then_tests --workspace
 step test-features run_tests -p styx -p styx-record-cli --features "$test_features"
 # check-nostd.sh ends with scripts/mcu-size.sh --check.
 step nostd ./scripts/check-nostd.sh

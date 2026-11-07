@@ -123,6 +123,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx-capi`: Styx's versioned C surface, `include/styx.h` 1.0, on `lemnos-abi` 1.0 handles,
+  statuses and buffer descriptions: cameras, streams, frames (dma-bufs or host planes, held until
+  released) and controls, as `libstyx_capi.a` and `libstyx_capi.so.1`, with a Rust wrapper
+  (`Camera`, `Stream`, `Frame`) that calls through the same functions. One form per process.
+
 - `PispOptions::raw_compressed` (and `STYX_PISP_RAW_COMPRESSED=1` with debug hooks): the PiSP front
   end writes raw frames in 8-bit compressed form (mode 1, offset 2048) and the back end
   decompresses them: half the raw buffers' memory and the back end's raw reads. Ignored with

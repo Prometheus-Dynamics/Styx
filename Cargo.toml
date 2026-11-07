@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/capi",
     "crates/core",
     "crates/capture",
     "crates/codec",
@@ -75,6 +76,7 @@ embedded-hal-async = "1.0"
 #   [patch."https://github.com/Prometheus-Dynamics/Lemnos.git"]
 #   lemnos-hal = { path = "../lemnos/crates/lemnos-hal" }   (same for the other two)
 # lemnos-hal: no_std, no alloc (register maps, regulators, clocks, ErrorKind).
+lemnos-abi = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
 lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }
 # lemnos-linux: i2c-dev, GPIO v2 and uevents in pure Rust (Linux only).
 lemnos-linux = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", branch = "dev", default-features = false }

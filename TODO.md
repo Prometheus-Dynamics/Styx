@@ -40,6 +40,9 @@ close or drop stale items with a reason, park board-only work as written, untest
 - [ ] **Compressed raw on the board** (written, untested on board; needs Lemnos a461e81, after the
       joint lock's 80d5d1e, so it lands with the next Lemnos round). *Done when:* Raze #1
       streams with `STYX_PISP_RAW_COMPRESSED=1`, image compared with uncompressed and memory stated.
+- [ ] **A same-request join with every spare consumer in use restarts the capture** (HeliOS
+      alpha, make-before-break redeploys). *Done when:* such a join shares the existing consumer's
+      frames instead of growing capacity.
 - [ ] **YUYV no-frames fallback: the bench check** (no longer paused: only anti-flicker is). *Why:*
       a UVC camera that negotiates YUYV and delivers nothing hung a client. The fallback and the
       cause in the error are in (302b1f6, 9cb7009: `planner/stalled.rs`; unit tests in
@@ -56,7 +59,12 @@ outside the image, and per-frame hot loops stay inside one library. Styx's part:
 and 6 below, the stock V4L2 fallback kept.
 
 1. [ ] **Consumer C surface and static Rust wrapper on `lemnos-abi`,** with a recycled handle slab,
-      timed on the CM5. ISP, 3A and sensor traits stay internal. *Why:* consumers link Styx through
+      timed on the CM5. *Written:* `crates/capi` (`styx-capi`), `include/styx.h` 1.0 on
+      `lemnos-abi` 1.0: handshake, cameras (probe, names, a virtual camera), streams (open, next,
+      close), frames (`LemnosBufferDesc` dma-bufs, host planes, release) and controls; staticlib,
+      `libstyx_capi.so.1` and the Rust wrapper through the same calls. Host tests: the wrapper on
+      a virtual camera, stale handles refused, a C program linked static and shared. Not yet:
+      fences, the CM5 timing. ISP, 3A and sensor traits stay internal. *Why:* consumers link Styx through
       one boundary instead of its Rust types. *Done when:* a consumer takes frames through the C
       surface and the wrapper, with the cost per frame measured on the CM5. *Numbers:* audit
       estimate under 1 µs a frame; `FrameLease` 552 B, `FrameMeta` 328 B, `NativeFrameMeta` 88 B;
