@@ -64,6 +64,10 @@ const FIRST_RETRY_WAIT: Duration = Duration::from_secs(1);
 const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
 /// Most modes a join tries after a start fails for lack of bus bandwidth or for no frames.
 const MAX_REPLANS: usize = 16;
+/// How long the capture keeps the setup of a client that left before it is planned for the
+/// others alone: a client back within it (reconnecting after a frame rate change) costs no
+/// restart, and one that does not come back costs a single one.
+pub(super) const LEAVE_GRACE: Duration = Duration::from_millis(250);
 
 struct Client {
     id: u64,
@@ -407,7 +411,10 @@ impl Camera {
         })
     }
 
-    pub(super) fn leave(&self, id: u64, config: &ServiceConfig, counters: &Counters) {
+    /// A client left. Whether the others' capture may be planned smaller: call
+    /// [`Camera::shrink`] after [`LEAVE_GRACE`] then, so clients reconnecting one at a time (as
+    /// after a frame rate change) find the setup they left and no client restarts it.
+    pub(super) fn leave(&self, id: u64, config: &ServiceConfig) -> bool {
         let _gate = self.start_gate.lock();
         let mut state = self.state.lock();
         if let Some(i) = state.clients.iter().position(|c| c.id == id) {
@@ -425,6 +432,14 @@ impl Camera {
             state.running = None;
         }
         note_reader(&state);
+        state.running.is_some() && !state.clients.is_empty()
+    }
+
+    /// After a client left (see [`Camera::leave`]): the clients connected now get the capture
+    /// planned for them alone when that sets it up differently.
+    pub(super) fn shrink(&self, config: &ServiceConfig, counters: &Counters) {
+        let _gate = self.start_gate.lock();
+        let mut state = self.state.lock();
         if self.replan_remaining(&mut state, config) {
             counters.restarts.fetch_add(1, Ordering::Relaxed);
         }

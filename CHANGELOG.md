@@ -41,6 +41,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Camera service: a client that leaves keeps the capture's setup for 250 ms before the other
+  clients' plan shrinks, so clients reconnecting one at a time (after a frame rate change) find it
+  unchanged and restart nothing; one that stays away costs a single restart, as before.
+
 - PiSP front end buffers default to 4 per queue (was 6), measured on a CM5 at 120 fps with
   and without a raw consumer: with `sensor_raw` the raw buffers drop from 10 to 8 (4 MB less
   per camera). Debug builds with `pisp-debug-hooks` take `STYX_PISP_FE_BUFFERS` (the total).
