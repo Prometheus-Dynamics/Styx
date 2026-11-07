@@ -19,8 +19,8 @@
 //!
 //! Under each camera: the time between the hops of the frames its consumers took (sensor,
 //! dequeued, ISP done, queued, taken; p50/p99/max) and their copies; for each camera service
-//! client the whole path to its import; on the process line the copies by site, dma-buf syncs
-//! and exhausted pools.
+//! client the whole path to its import; on the process lines the copies by site, dma-buf
+//! syncs, exhausted pools, and the memory traffic by stage (MB/s, MB read/written per job).
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -171,6 +171,50 @@ fn path_row(p: &PathMetrics) {
     );
 }
 
+/// Memory traffic by stage since the last refresh: MB/s read+written and MB per job (computed
+/// from the buffers each job touches unless the source says otherwise).
+fn traffic_row(p: &PathMetrics) {
+    static LAST: std::sync::Mutex<Option<(Instant, PathMetrics)>> = std::sync::Mutex::new(None);
+    let now = Instant::now();
+    let mut last = LAST.lock().unwrap();
+    if let Some((then, before)) = last.as_ref() {
+        let secs = now.duration_since(*then).as_secs_f64().max(1e-3);
+        let mut total = 0.0;
+        let stages: Vec<String> = p
+            .traffic
+            .iter()
+            .filter_map(|t| {
+                let b = before.traffic.iter().find(|b| b.stage == t.stage)?;
+                let jobs = t.jobs.saturating_sub(b.jobs);
+                let (r, w) = (
+                    t.read_bytes.saturating_sub(b.read_bytes) as f64,
+                    t.written_bytes.saturating_sub(b.written_bytes) as f64,
+                );
+                (jobs > 0).then(|| {
+                    total += (r + w) / secs / 1e6;
+                    format!(
+                        "{} {:.0} MB/s (r/w per job {:.2}/{:.2} MB)",
+                        t.stage,
+                        (r + w) / secs / 1e6,
+                        r / jobs as f64 / 1e6,
+                        w / jobs as f64 / 1e6
+                    )
+                })
+            })
+            .collect();
+        println!(
+            "memory traffic ({}) {total:.0} MB/s: {}",
+            p.traffic_source,
+            if stages.is_empty() {
+                "-".into()
+            } else {
+                stages.join(", ")
+            }
+        );
+    }
+    *last = Some((now, p.clone()));
+}
+
 fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
     let p = &s.process;
     println!(
@@ -185,6 +229,7 @@ fn table(s: &MetricsSnapshot, last: &mut HashMap<u64, (u64, u64)>) {
         p.dmabuf_bytes as f64 / 1048576.0
     );
     path_row(&p.path);
+    traffic_row(&p.path);
     println!(
         "{:<14} {:<7} {:<15} {:>11} {:>17} {:>19} {:>20} {:>14} {:>6} {:<34} {:>5} {:>4}",
         "camera",

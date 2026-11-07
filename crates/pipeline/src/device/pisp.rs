@@ -174,7 +174,17 @@ impl Isp {
         be.set_half_filter(half, options.crop[1])?;
         let mut tdn_error = None;
         if want_tdn && options.temporal_denoise {
-            match be_dev.enable_tdn() {
+            // Buffers sized for the average as the jobs keep it (1 MB at 1280x800 compressed),
+            // from the system heap unless asked otherwise.
+            let setup = lemnos_drivers_pisp::device::TdnSetup {
+                compressed: options.tdn_compressed,
+                memory: if options.tdn_contiguous {
+                    lemnos_drivers_pisp::device::TdnMemory::Contiguous
+                } else {
+                    lemnos_drivers_pisp::device::TdnMemory::System
+                },
+            };
+            match be_dev.enable_tdn_with(setup) {
                 Ok(()) => be.enable_tdn(be_dev.tdn_format(options.tdn_compressed)),
                 Err(e) => tdn_error = Some(e.to_string()),
             }

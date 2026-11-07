@@ -169,6 +169,18 @@ impl Scaler {
         if y.is_empty() {
             return Err("frame memory is not readable here".into());
         }
+        // Memory traffic: the source planes read (once, roughly: halving reads each row once),
+        // the picture written.
+        let written = match kind {
+            Kind::Gray => dw * dh,
+            Kind::Rgb | Kind::Bgr => 3 * dw * dh,
+            _ => dw * dh * 3 / 2,
+        };
+        styx_core::metrics::moved(
+            styx_core::metrics::TrafficStage::CpuScale,
+            planes.iter().map(|p| p.data().len() as u64).sum(),
+            written as u64,
+        );
         let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
         let plane = |data, stride, width, height, step, offset| View {
             data,

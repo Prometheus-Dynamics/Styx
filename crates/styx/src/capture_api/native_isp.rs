@@ -17,6 +17,7 @@ mod output_buffers;
 mod pisp_lease;
 mod pisp_regions;
 mod pisp_sliced;
+mod pisp_traffic;
 mod pisp_worker;
 mod rkisp_lease;
 mod rkisp_worker;
@@ -495,6 +496,7 @@ pub(super) fn start_processed(
                 },
                 temporal_denoise: config.backends.native.temporal_denoise,
                 tdn_compressed: config.backends.native.tdn_compressed,
+                tdn_contiguous: config.backends.native.tdn_contiguous,
                 half_filter: match config.backends.native.half_filter {
                     NativeHalfFilter::Box => HalfFilter::Box,
                     NativeHalfFilter::BoxDownscaler => HalfFilter::BoxDownscaler,

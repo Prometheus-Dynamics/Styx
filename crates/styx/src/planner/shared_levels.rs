@@ -50,6 +50,11 @@ fn box_level(
         .lease()
         .and_then(|mut lease| lease.try_resize(len).map(|()| lease))
         .map_err(|e| err(&e))?;
+    styx_core::metrics::moved(
+        styx_core::metrics::TrafficStage::CpuPyramid,
+        (4 * width * height) as u64,
+        (width * height) as u64,
+    );
     let dst = &mut lease.as_mut_slice()[..len];
     for (y, out) in dst.chunks_exact_mut(stride).enumerate() {
         if let (Some(top), Some(bottom)) = (rows.row(2 * y), rows.row(2 * y + 1)) {

@@ -214,12 +214,15 @@ the per-capture, per-socket and per-client `HopMetrics`) count it as copied. Eve
 | `copies[site]`, `bytes` | `softisp`: raw input rows staged by the software ISP for uncached receiver buffers; `conversion`: a planner conversion or decode into new memory (YUYV to NV12, NV12 to RGB, JPEG); `region`: a crop or luma view realigned into new memory; `memfd_export`: a frame not in shareable memory copied into a memfd to send it (camera service, frame server); `materialize`: `materialize_owned`, `copy_visible_to_slice`, `to_visible_vec`; `capture`: a backend copying out of the driver's buffer (V4L2 without zero copy, UVC payload assembly); `raw`: raw frames kept for stills; `other`: scaling into new memory (overviews the ISP does not make) | the copy itself |
 | `dmabuf_syncs`, `dmabuf_sync_ns` | `DMA_BUF_IOCTL_SYNC` calls (start and end each count) and their time | the ioctl |
 | `pool_exhausted` | a pool or a capture found every buffer held: the PiSP back end with all its output buffers held (the frame is dropped, `drops.isp_skipped`), a shared memfd pool allocating another buffer | the pool |
+| `traffic[stage]`: `jobs`, `read_bytes`, `written_bytes`, `unit` | memory each stage read and wrote: `receiver` (raw frame and statistics written), `isp` (raw and the denoise history read; outputs and the next history written), `isp_pass` (each extra back end pass: its region of the raw frame read again, its output written), `cpu_isp`, `cpu_pyramid` (each level read, the next written), `cpu_copy` (every copy above, read and written), `cpu_scale` (preview scaling), `gpu` (GPU ISP, GPU pyramid levels). `traffic_source` says how: `computed` from the buffers each job touches (no bus counters read yet). Per frame: a difference of bytes over a difference of jobs; MB/s: over time (metrics_top shows both) | the job |
 
 Prometheus: `styx_camera_hop_ms{from,to,quantile}`, `styx_camera_path_ms{quantile}`,
 `styx_camera_path_frames_total{kind="zero_copy"|"copied"}`, `styx_camera_path_copied_bytes_total`;
 the same as `styx_consumer_*` for camera service clients; `styx_process_copies_total{site}`,
 `styx_process_copied_bytes_total{site}`, `styx_process_dmabuf_syncs_total`,
-`styx_process_dmabuf_sync_seconds_total`, `styx_process_pool_exhausted_total`. Windows have a
+`styx_process_dmabuf_sync_seconds_total`, `styx_process_pool_exhausted_total`,
+`styx_process_traffic_jobs_total{stage,unit}`,
+`styx_process_traffic_bytes_total{stage,unit,direction="read"|"written"}`. Windows have a
 `quantile="0.99"` sample now, and `Window::p99_ms`.
 
 ## No copies, no allocations on the way to a consumer

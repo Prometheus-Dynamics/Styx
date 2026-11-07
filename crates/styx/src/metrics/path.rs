@@ -5,7 +5,7 @@
 
 use std::fmt::Write as _;
 
-use styx_core::metrics::{CopySite, HopCounters, path_counters};
+use styx_core::metrics::{CopySite, HopCounters, TrafficStage, path_counters, traffic_counters};
 
 use super::camera::Window;
 use super::live::RingWindow as _;
@@ -96,8 +96,26 @@ pub struct CopySiteMetrics {
     pub bytes: u64,
 }
 
+/// The memory one stage read and wrote, process-wide: totals since the start, so per frame is
+/// a difference of bytes over a difference of jobs, and MB/s a difference over time.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "metrics-serde",
+    derive(serde::Serialize, serde::Deserialize)
+)]
+pub struct StageTrafficMetrics {
+    /// `receiver`, `isp`, `isp_pass`, `cpu_isp`, `cpu_pyramid`, `cpu_copy`, `gpu`, `cpu_scale`.
+    pub stage: String,
+    /// `hardware`, `cpu` or `gpu`.
+    pub unit: String,
+    /// Jobs (a frame, a pass, a level, a copy).
+    pub jobs: u64,
+    pub read_bytes: u64,
+    pub written_bytes: u64,
+}
+
 /// The process's frame path costs: copies by site, dma-buf cache maintenance, pools that had
-/// no free buffer.
+/// no free buffer, memory traffic by stage.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(
     feature = "metrics-serde",
@@ -113,6 +131,11 @@ pub struct PathMetrics {
     /// Times a pool or a capture found every buffer held (the ISP dropping a frame, a shared
     /// memfd pool allocating another buffer).
     pub pool_exhausted: u64,
+    /// Memory read and written by stage (zeros included).
+    pub traffic: Vec<StageTrafficMetrics>,
+    /// Where the traffic comes from: `computed` (from the buffers each job touches; no bus
+    /// counters are read yet).
+    pub traffic_source: String,
 }
 
 impl PathMetrics {
@@ -147,6 +170,20 @@ pub fn path() -> PathMetrics {
         dmabuf_syncs: syncs,
         dmabuf_sync_ns: sync_ns,
         pool_exhausted: p.pool_exhausted.get(),
+        traffic: TrafficStage::ALL
+            .into_iter()
+            .map(|stage| {
+                let t = traffic_counters();
+                StageTrafficMetrics {
+                    stage: stage.name().into(),
+                    unit: stage.unit().into(),
+                    jobs: t.jobs(stage),
+                    read_bytes: t.read(stage),
+                    written_bytes: t.written(stage),
+                }
+            })
+            .collect(),
+        traffic_source: "computed".into(),
     }
 }
 
@@ -187,6 +224,23 @@ impl super::openmetrics::Text {
     }
 
     pub(super) fn path(&mut self, p: &PathMetrics) {
+        for t in &p.traffic {
+            let l = format!("stage=\"{}\",unit=\"{}\"", t.stage, t.unit);
+            self.counter(
+                "styx_process_traffic_jobs_total",
+                "Jobs of a stage that moves frame memory (frames, passes, levels, copies).",
+                &l,
+                t.jobs,
+            );
+            for (dir, v) in [("read", t.read_bytes), ("written", t.written_bytes)] {
+                self.counter(
+                    "styx_process_traffic_bytes_total",
+                    "Frame memory a stage read or wrote (computed from the buffers it touches).",
+                    &format!("{l},direction=\"{dir}\""),
+                    v,
+                );
+            }
+        }
         for s in &p.copies {
             let l = format!("site=\"{}\"", s.site);
             self.counter(

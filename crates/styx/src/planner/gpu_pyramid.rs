@@ -83,6 +83,12 @@ impl GpuPyramid {
                 .lock()
                 .run(src, levels, &mut |l| {
                     let width = l.width as usize;
+                    let bytes = (width * l.height as usize) as u64;
+                    styx_core::metrics::moved(
+                        styx_core::metrics::TrafficStage::Gpu,
+                        4 * bytes,
+                        bytes,
+                    );
                     let level = luma_level_in(
                         frame,
                         l.level,

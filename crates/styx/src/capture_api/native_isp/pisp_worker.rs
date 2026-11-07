@@ -358,6 +358,7 @@ pub(super) fn spawn(
                 w.still
                     .after_frame(&mut p, &f.sensor, (f.request_lands, request), ae, raw);
                 w.live.isp_time(f.times.be_job, f.times.total);
+                super::pisp_traffic::count(&p, &f, &w.specs);
                 w.live
                     .aaa(&aaa_sample(&p.step().params, p.controls(), f.sequence));
                 // A frame already handed out at its first slice: complete it (its leases are

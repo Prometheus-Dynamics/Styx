@@ -123,6 +123,12 @@ fn buffers(code: FourCc, (w, h): (u32, u32), buf: &mut [u8]) -> OutputBuffers<'_
 fn count_isp_copies(p: &mut SoftPipeline, f: &styx_pipeline::device::SoftFrame, out_bytes: usize) {
     use styx_core::metrics::{CopySite, copied};
     let soft = p.soft_loop();
+    let stage = match soft.engine() {
+        styx_pipeline::IspEngine::Gpu { .. } => styx_core::metrics::TrafficStage::Gpu,
+        _ => styx_core::metrics::TrafficStage::CpuIsp,
+    };
+    let raw_bytes = f.raw.stride as u64 * u64::from(f.raw.height);
+    styx_core::metrics::moved(stage, raw_bytes, out_bytes as u64);
     if soft.copies_input() {
         let raw = f.raw.stride as usize * f.raw.height as usize;
         copied(CopySite::SoftIsp, raw);

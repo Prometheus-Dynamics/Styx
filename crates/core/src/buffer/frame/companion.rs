@@ -211,6 +211,12 @@ pub fn box_downscale_luma_in(
 ) -> Result<FrameLease, FrameValidationError> {
     let rows = source.luma_rows()?;
     let (width, height) = (rows.row_bytes() / 2, rows.len() / 2);
+    #[cfg(feature = "path-metrics")]
+    crate::metrics::moved(
+        crate::metrics::TrafficStage::CpuPyramid,
+        (4 * width * height) as u64,
+        (width * height) as u64,
+    );
     luma_level_in(
         source,
         1,

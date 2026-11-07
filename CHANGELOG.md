@@ -41,6 +41,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- The PiSP temporal-denoise average's two buffers come from the `system` heap and, compressed,
+  are 1 MB each at 1280x800 instead of 2 MB (Lemnos `enable_tdn_with`;
+  `NativeIspConfig::tdn_contiguous` takes CMA first). With the back end outputs on the system
+  heap too, a native camera takes no CMA (Raze #1 at 120 fps: ~0 instead of 9.7 MB, the same 0
+  drops and latency). Lemnos is at cfb80bb.
+
 - A preview or other low-priority client no longer costs the vision client frames: the camera
   service sends it at most its rate (`FrameRequest::deliver_at_most`, which `Preview` sets from
   `max_fps`), so the frames in between are neither prepared nor held for it, and it has at most
@@ -165,6 +171,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - `styx_kernel::poll_into` waits with nanosecond precision (`ppoll`).
 
 ### Added
+
+- Memory traffic by stage (`PathMetrics::traffic`, OpenMetrics
+  `styx_process_traffic_bytes_total{stage,unit,direction}` and `..._jobs_total`, a metrics_top
+  line): the bytes the receiver, the ISP and its extra passes, the software ISP, CPU pyramid
+  levels, copies, CPU scaling and GPU stages read and wrote, computed from the buffers each job
+  touches (`traffic_source: "computed"`; bus counters later). Raze #1, 1280x800 gray + 3 levels
+  at 120 fps: 12.3 MB per frame, 1.48 GB/s (8.2 MB, 0.99 GB/s with compressed raw); the two
+  back end passes for levels 2 and 3 read the raw frame again (4.1 MB per frame).
 
 - `FrameRequest::deliver_at_most(fps)`: at most this many frames a second for this consumer,
   applied where the frames are shared out (and across the camera service's wire).

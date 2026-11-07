@@ -245,6 +245,10 @@ pub struct NativeIspConfig {
     /// half its memory traffic, 0.55 ms less back end time per 1280x800 frame on the CM5, with
     /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit.
     pub tdn_compressed: bool,
+    /// Take the temporal-denoise average's two buffers from contiguous memory (`linux,cma`)
+    /// first. `false` (the default): the `system` heap, as the back end works through its
+    /// IOMMU, so the camera leaves the CMA pool alone.
+    pub tdn_contiguous: bool,
     /// How the PiSP back end's second output makes an image of exactly half its input (a
     /// pyramid level 1, a half-size second output): [`NativeHalfFilter::Box`] by default.
     /// Other sizes use the smart resize.
@@ -336,6 +340,7 @@ impl Default for NativeIspConfig {
             raw_compressed: false,
             contiguous_output_buffers: Some(0),
             tdn_compressed: true,
+            tdn_contiguous: false,
             half_filter: NativeHalfFilter::Box,
             slice_line: None,
             deliver_slices: false,

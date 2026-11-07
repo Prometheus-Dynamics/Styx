@@ -11,6 +11,10 @@
 //! * [`frame_mapped`] / [`PathCounters::cpu_reads`]: frame memory mapped for the CPU, and
 //!   bracketed CPU reads of frames.
 //! * [`pool_exhausted`]: a pool or a capture had no free buffer (every one held).
+//! * [`moved`] / [`traffic_counters`]: the bytes each [`TrafficStage`] read and wrote in
+//!   memory (the receiver, the ISP and its extra passes, CPU pyramid levels, copies, the GPU),
+//!   process-wide: computed from the buffers each job touches until the SoC's bus counters
+//!   are read.
 
 use core::time::Duration;
 
@@ -131,12 +135,122 @@ impl PathCounters {
     }
 }
 
+/// A stage that reads and writes frame memory ([`moved`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum TrafficStage {
+    /// The receiver writing raw frames (and its statistics) to memory.
+    Receiver = 0,
+    /// An ISP's main job: raw in, its outputs, statistics and denoise history.
+    Isp = 1,
+    /// An ISP's extra passes (regions, pyramid levels), each reading the raw frame again.
+    IspPass = 2,
+    /// The software ISP on the CPU: raw in, outputs out.
+    CpuIsp = 3,
+    /// Pyramid levels box-filtered on the CPU: each level read, the next written.
+    CpuPyramid = 4,
+    /// Pixels copied on the CPU ([`copied`]): read once, written once.
+    CpuCopy = 5,
+    /// GPU stages: frames read, results written.
+    Gpu = 6,
+    /// Frames scaled on the CPU (previews, overviews the ISP does not make).
+    CpuScale = 7,
+}
+
+/// Traffic stages counted.
+pub const TRAFFIC_STAGES: usize = 8;
+
+impl TrafficStage {
+    /// Every stage.
+    pub const ALL: [TrafficStage; TRAFFIC_STAGES] = [
+        TrafficStage::Receiver,
+        TrafficStage::Isp,
+        TrafficStage::IspPass,
+        TrafficStage::CpuIsp,
+        TrafficStage::CpuPyramid,
+        TrafficStage::CpuCopy,
+        TrafficStage::Gpu,
+        TrafficStage::CpuScale,
+    ];
+
+    /// Snake-case name, as metric labels use it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            TrafficStage::Receiver => "receiver",
+            TrafficStage::Isp => "isp",
+            TrafficStage::IspPass => "isp_pass",
+            TrafficStage::CpuIsp => "cpu_isp",
+            TrafficStage::CpuPyramid => "cpu_pyramid",
+            TrafficStage::CpuCopy => "cpu_copy",
+            TrafficStage::Gpu => "gpu",
+            TrafficStage::CpuScale => "cpu_scale",
+        }
+    }
+
+    /// What does the work: `hardware` (a device's DMA), `cpu` or `gpu`.
+    pub const fn unit(self) -> &'static str {
+        match self {
+            TrafficStage::Receiver | TrafficStage::Isp | TrafficStage::IspPass => "hardware",
+            TrafficStage::CpuIsp
+            | TrafficStage::CpuPyramid
+            | TrafficStage::CpuCopy
+            | TrafficStage::CpuScale => "cpu",
+            TrafficStage::Gpu => "gpu",
+        }
+    }
+}
+
+/// Process-wide memory traffic by stage ([`traffic_counters`]).
+#[derive(Debug)]
+pub struct TrafficCounters {
+    jobs: [Counter; TRAFFIC_STAGES],
+    read: [Counter; TRAFFIC_STAGES],
+    written: [Counter; TRAFFIC_STAGES],
+}
+
+static TRAFFIC: TrafficCounters = TrafficCounters {
+    jobs: [const { Counter::new() }; TRAFFIC_STAGES],
+    read: [const { Counter::new() }; TRAFFIC_STAGES],
+    written: [const { Counter::new() }; TRAFFIC_STAGES],
+};
+
+/// The process's memory traffic by stage.
+pub fn traffic_counters() -> &'static TrafficCounters {
+    &TRAFFIC
+}
+
+impl TrafficCounters {
+    /// Jobs `stage` ran (a frame, a pass, a level, a copy).
+    pub fn jobs(&self, stage: TrafficStage) -> u64 {
+        self.jobs[stage as usize].get()
+    }
+
+    /// Bytes `stage` read from memory.
+    pub fn read(&self, stage: TrafficStage) -> u64 {
+        self.read[stage as usize].get()
+    }
+
+    /// Bytes `stage` wrote to memory.
+    pub fn written(&self, stage: TrafficStage) -> u64 {
+        self.written[stage as usize].get()
+    }
+}
+
+/// Counts one job of `stage` that read `read` and wrote `written` bytes of memory.
+#[inline]
+pub fn moved(stage: TrafficStage, read: u64, written: u64) {
+    TRAFFIC.jobs[stage as usize].incr();
+    TRAFFIC.read[stage as usize].add(read);
+    TRAFFIC.written[stage as usize].add(written);
+}
+
 /// Counts a copy of `bytes` bytes of pixels at `site` (process-wide). Prefer [`copied_frame`]
 /// where the copy's output frame is at hand, so the frame carries the count to its consumer.
 #[inline]
 pub fn copied(site: CopySite, bytes: usize) {
     PATH.copies[site as usize].incr();
     PATH.copied_bytes[site as usize].add(bytes as u64);
+    moved(TrafficStage::CpuCopy, bytes as u64, bytes as u64);
 }
 
 /// Counts a copy of `bytes` bytes at `site` that produced the frame `meta` describes:
@@ -282,6 +396,25 @@ impl HopCounters {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each stage counts its jobs and bytes; a copy counts as CPU traffic, read and written.
+    #[test]
+    fn traffic_counts_jobs_and_bytes_by_stage() {
+        let t = traffic_counters();
+        let before = (t.jobs(TrafficStage::IspPass), t.read(TrafficStage::IspPass));
+        let copy = (
+            t.read(TrafficStage::CpuCopy),
+            t.written(TrafficStage::CpuCopy),
+        );
+        moved(TrafficStage::IspPass, 1000, 10);
+        copied(CopySite::Other, 64);
+        assert!(t.jobs(TrafficStage::IspPass) > before.0);
+        assert!(t.read(TrafficStage::IspPass) >= before.1 + 1000);
+        assert!(t.read(TrafficStage::CpuCopy) >= copy.0 + 64);
+        assert!(t.written(TrafficStage::CpuCopy) >= copy.1 + 64);
+        assert_eq!(TrafficStage::ALL.len(), TRAFFIC_STAGES);
+        assert_eq!(TrafficStage::IspPass.unit(), "hardware");
+    }
 
     #[test]
     fn hop_windows_follow_the_recorded_hops() {
