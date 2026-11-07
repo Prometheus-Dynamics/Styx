@@ -38,6 +38,7 @@ fn mjpeg_frame(jpeg: &[u8]) -> FrameLease {
 
 /// Every MJPEG decoder compiled in, with how many damaged frames to feed it (the pure-Rust
 /// decoders are slow in debug builds).
+#[allow(clippy::vec_init_then_push)] // the pushes depend on the features
 fn decoders() -> Vec<(Box<dyn Codec>, usize)> {
     #[allow(unused_mut)]
     let mut decoders: Vec<(Box<dyn Codec>, usize)> = Vec::new();

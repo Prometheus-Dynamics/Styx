@@ -10,12 +10,16 @@ description = "Styx camera daemon: one camera service per attached camera, start
 publish = false
 
 [features]
-default = ["native", "v4l2"]
+default = ["native", "v4l2", "decoders"]
 # Capture backends the served cameras may use.
 native = ["styx/native"]
 v4l2 = ["styx/v4l2"]
 uvc = ["styx/uvc"]
 libcamera = ["styx/libcamera"]
+# Raw and MJPG decoding in Rust, so USB cameras can serve gray and RGB to clients.
+decoders = ["styx/raw-decoders", "styx/codec-jpeg-decoder"]
+# libjpeg-turbo for MJPG (faster than the Rust decoder; needs the system library).
+turbojpeg = ["styx/codec-turbojpeg"]
 
 [dependencies]
 styx = { workspace = true, features = ["facade", "hotplug", "serde"] }
