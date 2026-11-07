@@ -210,12 +210,23 @@ pub fn payload_residency(frame: &FrameLease) -> Residency {
 }
 
 /// `frame` as a Daedalus payload, without copying it: the payload owns the frame (and with it
-/// its buffer) until the graph drops it. One allocation per frame (the shared lease's `Arc`):
-/// Daedalus's recycled storage would make it 0, but a node taking the frame by value
-/// (`fn node(frame: FrameLease)`) cannot take it out of recycled storage yet
-/// (`tests/graph_round_trip.rs`).
+/// its buffer) until the graph drops it. The payload's storage comes from a pool of this
+/// process and goes back to it when the last holder lets go, so once the pool holds as many
+/// as are in flight this allocates nothing. Same-build readers borrow the `FrameLease`
+/// (`get_ref`) or, as its only holder, take it by value (`fn node(frame: FrameLease)`); other
+/// builds borrow a `daedalus:frame` handle lent from it (`tests/graph_round_trip.rs`). A frame
+/// that must come back from a graph as the same `Arc` goes in through [`shared_frame_payload`].
 pub fn frame_payload(frame: FrameLease) -> Payload {
-    shared_frame_payload(Arc::new(frame))
+    static POOL: std::sync::OnceLock<::daedalus::transport::RecyclePool<FrameLease>> =
+        std::sync::OnceLock::new();
+    frame.finish_cpu_write();
+    let residency = payload_residency(&frame);
+    Payload::providing_recycled::<FrameLease, FrameInterface>(
+        FRAME_TYPE_KEY,
+        POOL.get_or_init(Default::default),
+        frame,
+        residency,
+    )
 }
 
 /// [`frame_payload`] for a frame already shared (e.g. one also kept by the caller). CPU writes

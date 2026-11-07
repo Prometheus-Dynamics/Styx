@@ -47,10 +47,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   skipped and unread (`drop g/q/c/i/raw/u`); `--service` adds the service's socket-full skips
   and revoked clients.
 
-- `styx_core::daedalus::frame_payload` stays on `Payload::providing` (1 allocation per frame):
-  Daedalus's recycled storage (`providing_recycled`, 0 allocations) left nodes that take the
-  frame by value (`fn node(frame: FrameLease)`) without their input, so no tick ran. A host-bridge
-  round trip test (`crates/core/tests/graph_round_trip.rs`) covers by-value and borrowing nodes.
+- `styx_core::daedalus::frame_payload` stores the frame in Daedalus's recycling payload storage
+  (`Payload::providing_recycled`, Daedalus 8f53774): a frame into a graph allocates nothing once
+  the pool holds one node per frame in flight (was 1 per frame). Nodes borrow it
+  (`get_ref::<FrameLease>()`) or, as its only holder, take it by value (`fn node(frame:
+  FrameLease)`); other builds borrow the lent `daedalus:frame`. A frame that must come back as
+  the same `Arc` still goes in through `shared_frame_payload`. A host-bridge round trip test
+  (`crates/core/tests/graph_round_trip.rs`) covers by-value and borrowing nodes.
 
 - A native PiSP capture starts with 3 buffers per back end output, down from 6
   (`NativeIspConfig::output_buffers`, `PispOptions::be_buffers`): the fewest that hold 120 fps
