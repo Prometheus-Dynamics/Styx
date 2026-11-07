@@ -110,7 +110,26 @@ pub(in crate::ipc) fn encode_request_with(
         w.u32(width);
         w.u32(height);
     }
+    // The delivery interval trailer, after the sensor mode one: older services ignore it.
+    if let Some(interval) = req.min_interval {
+        w.u8(MIN_INTERVAL_TAG);
+        w.u32(u32::try_from(interval.as_micros()).unwrap_or(u32::MAX));
+    }
     w.0
+}
+
+/// Tag of the request's delivery interval trailer ([`FrameRequest::deliver_at_most`]).
+const MIN_INTERVAL_TAG: u8 = 4;
+
+/// The delivery interval trailer, after the sensor mode one (none: every frame).
+pub(super) fn read_min_interval(
+    r: &mut Reader<'_>,
+) -> Result<Option<std::time::Duration>, IpcError> {
+    if r.0.first() != Some(&MIN_INTERVAL_TAG) {
+        return Ok(None);
+    }
+    r.u8()?;
+    Ok(Some(std::time::Duration::from_micros(u64::from(r.u32()?))))
 }
 
 /// Tag of the request's sensor mode trailer.

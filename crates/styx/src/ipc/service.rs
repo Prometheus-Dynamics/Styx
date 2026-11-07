@@ -503,7 +503,13 @@ fn serve_client(service: &Service, mut conn: Connection) {
         service
             .client_metrics
             .add(id, &camera.device.identity.display, &mut conn);
-        send_frames(service, &camera, &mut conn, id, &frames);
+        // A low-priority client has at most one frame in flight: it never holds back buffers
+        // the other clients' frames need.
+        let max_in_flight = match priority {
+            super::ClientPriority::Low => 1,
+            _ => service.config.max_in_flight,
+        };
+        send_frames(service, &camera, &mut conn, id, &frames, max_in_flight);
         super::metrics::client_left(&mut conn);
     }
     if camera.leave(id, &service.config) {
@@ -669,8 +675,8 @@ fn send_frames(
     conn: &mut Connection,
     id: u64,
     frames: &FramesSlot,
+    max_in_flight: usize,
 ) {
-    let max_in_flight = service.config.max_in_flight;
     let counters = &service.counters;
     // An H.264/H.265 client that missed a packet cannot decode until the next keyframe.
     let mut awaiting_keyframe = false;

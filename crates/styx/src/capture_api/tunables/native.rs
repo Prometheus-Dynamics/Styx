@@ -228,6 +228,19 @@ pub struct NativeIspConfig {
     /// 1280x800). 3, or 2 at 120 fps on the CM5 without loss, save one
     /// raw frame each on a small device; fewer leave less slack when the ISP falls behind.
     pub raw_buffers: u32,
+    /// Keep raw frames between the front and back end in the PiSP's 8-bit compressed form
+    /// (half the raw buffers' memory: 1 MB instead of 2 MB per buffer at 1280x800; Raze #1:
+    /// the same rate, temporal noise 0.266 against 0.286 uncompressed). Not for raw consumers
+    /// (`sensor_raw`), which take 16-bit samples. `STYX_PISP_RAW_COMPRESSED=0/1` overrides it.
+    pub raw_compressed: bool,
+    /// At most this many of each back end output's buffers from contiguous memory
+    /// (`linux,cma`), the rest from the `system` heap: the back end reads and writes through
+    /// its IOMMU, so it needs no contiguous memory. `Some(0)` (the default): none, so the
+    /// camera leaves the CMA pool to what needs it (Raze #1, 1280x800 gray + 3 pyramid levels
+    /// at 120 fps: 4.0 MB of CMA instead of 9.7 MB, all of it the temporal-denoise average;
+    /// the same 0 drops and latency). `None`: as many as fit in half the free contiguous
+    /// memory, the rest from the system heap.
+    pub contiguous_output_buffers: Option<u32>,
     /// Keep the PiSP's temporal-denoise average compressed (8-bit mode 1, as libcamera does):
     /// half its memory traffic, 0.55 ms less back end time per 1280x800 frame on the CM5, with
     /// the same AprilTag jitter and recall (`true`, the default). `false`: 16-bit.
@@ -320,6 +333,8 @@ impl Default for NativeIspConfig {
             cpu_prefetch: NativeCpuPrefetch::Off,
             raw_bits: None,
             raw_buffers: 4,
+            raw_compressed: false,
+            contiguous_output_buffers: Some(0),
             tdn_compressed: true,
             half_filter: NativeHalfFilter::Box,
             slice_line: None,
@@ -446,7 +461,22 @@ impl StyxConfig {
         self
     }
 
-    /// Give a native camera's receiver `buffers` raw capture buffers (see
+    /// Keep a native camera's raw frames compressed between front and back end (see
+    /// [`NativeIspConfig::raw_compressed`]).
+    pub fn native_raw_compressed(mut self, on: bool) -> Self {
+        self.backends.native.raw_compressed = on;
+        self
+    }
+
+    /// Take at most `buffers` of each back end output's buffers from contiguous memory (see
+    /// [`NativeIspConfig::contiguous_output_buffers`]).
+    /// `None`: as many as fit in half the free contiguous memory.
+    pub fn native_contiguous_output_buffers(mut self, buffers: Option<u32>) -> Self {
+        self.backends.native.contiguous_output_buffers = buffers;
+        self
+    }
+
+    /// Raw capture buffers of a native camera's front end (see
     /// [`NativeIspConfig::raw_buffers`]).
     pub fn native_raw_buffers(mut self, buffers: u32) -> Self {
         self.backends.native.raw_buffers = buffers.max(2);

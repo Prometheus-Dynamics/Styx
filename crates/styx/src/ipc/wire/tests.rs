@@ -401,3 +401,29 @@ fn an_inactive_refusal_stays_typed_over_the_wire() {
         Ok(ServerMessage::ControlReply(7, ControlReply::Refused(r))) if r == refusal
     ));
 }
+
+#[test]
+fn a_delivery_interval_crosses_the_wire_after_the_sensor_mode() {
+    use crate::ipc::ClientPriority;
+    use crate::planner::Frames;
+    let req = Frames::nv12()
+        .size(640, 400)
+        .sensor_mode(1280, 800)
+        .deliver_at_most(15.0);
+    let bytes = encode_request_with(&req, None, ClientPriority::Low, true);
+    let ClientMessage::Request(back, _, p, s) = decode_client(&bytes).unwrap() else {
+        panic!("not a request");
+    };
+    assert_eq!((p, s), (ClientPriority::Low, true));
+    assert_eq!(back.sensor_mode, Some((1280, 800)));
+    assert_eq!(
+        back.min_interval,
+        Some(std::time::Duration::from_micros(66_666))
+    );
+    // Without one: every frame.
+    let bytes = encode_request_with(&Frames::nv12(), None, ClientPriority::Normal, false);
+    let ClientMessage::Request(back, ..) = decode_client(&bytes).unwrap() else {
+        panic!("not a request");
+    };
+    assert_eq!(back.min_interval, None);
+}

@@ -165,6 +165,9 @@ pub struct FrameRequest {
     pub strict: bool,
     /// Only the camera mode of this size ([`FrameRequest::sensor_mode`]).
     pub sensor_mode: Option<(u32, u32)>,
+    /// At least this long between frames delivered to this consumer
+    /// ([`FrameRequest::deliver_at_most`]).
+    pub min_interval: Option<std::time::Duration>,
 }
 
 /// Regions of interest a request can ask for ([`FrameRequest::regions`]): the frame and 15
@@ -237,6 +240,7 @@ impl FrameRequest {
             decode_threads: None,
             strict: false,
             sensor_mode: None,
+            min_interval: None,
         }
     }
 
@@ -418,6 +422,16 @@ impl FrameRequest {
     /// [`Self::size`] still scales the frames from it. Planning fails for a camera without one.
     pub fn sensor_mode(mut self, width: u32, height: u32) -> Self {
         self.sensor_mode = Some((width, height));
+        self
+    }
+
+    /// Deliver at most `fps` frames a second to this consumer, without changing the camera's
+    /// rate: a shared capture skips it for the frames in between, so they are neither prepared
+    /// nor held for it (a preview, a recorder of stills next to a vision client at full rate).
+    /// Not positive: every frame.
+    pub fn deliver_at_most(mut self, fps: f32) -> Self {
+        self.min_interval = (fps > 0.0 && fps.is_finite())
+            .then(|| std::time::Duration::from_secs_f64(1.0 / f64::from(fps)));
         self
     }
 

@@ -126,7 +126,12 @@ fn offered(shared: &Shared, encoder: &mut Encoder) {
 }
 
 fn service(shared: &Shared, options: &ClientOptions, encoder: &mut Encoder) {
-    let request = shared.config.request();
+    // Only as many frames as it encodes: the service skips this client for the others, so
+    // they are neither scaled nor held for it.
+    let request = shared
+        .config
+        .request()
+        .deliver_at_most(shared.config.max_fps);
     let counters = &shared.counters;
     let mut client: Option<FrameClient> = None;
     let mut unwatched_since: Option<Instant> = None;

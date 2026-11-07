@@ -21,9 +21,43 @@ use crate::capture_api::CaptureHandle;
 /// Pull-based fan-out of frames to receivers that come and go: the first to ask reads the source
 /// and leaves a zero-copy share of each frame for the others.
 pub(crate) struct Fanout {
-    branches: Mutex<Vec<Option<BoundedTx<FrameLease>>>>,
+    branches: Mutex<Vec<Option<Receiver>>>,
     /// Set while a receiver reads the source; the others wait on their own queues.
     pulling: AtomicBool,
+}
+
+/// One receiver of a [`Fanout`]: its queue, and how often it takes frames.
+struct Receiver {
+    tx: BoundedTx<FrameLease>,
+    /// At least this long between its frames (`FrameRequest::deliver_at_most`): it gets no
+    /// share of the frames in between, so they are neither prepared nor held for it.
+    min_interval: Option<Duration>,
+    /// When its next frame is due.
+    next: Option<Instant>,
+    /// Due the frame being fanned out ([`Fanout::fan_out`]).
+    pending: bool,
+}
+
+impl Receiver {
+    /// Whether it takes a frame now (and if so, counts it as taken). Paced like the preview's
+    /// gate: a frame up to an eighth of the interval early still counts, and each next one is
+    /// due an interval after the last was due, so frames on a camera's grid keep the rate.
+    fn due(&mut self, now: Instant) -> bool {
+        let Some(interval) = self.min_interval else {
+            return true;
+        };
+        match self.next {
+            Some(next) if now + interval / 8 < next => false,
+            Some(next) if now < next + interval => {
+                self.next = Some(next + interval);
+                true
+            }
+            _ => {
+                self.next = Some(now + interval);
+                true
+            }
+        }
+    }
 }
 
 /// Held by the receiver reading the source.
@@ -45,6 +79,21 @@ impl Fanout {
 
     /// A new receiver; returns its index.
     pub(crate) fn add(&self, tx: BoundedTx<FrameLease>) -> usize {
+        self.add_limited(tx, None)
+    }
+
+    /// A new receiver taking at most one frame per `min_interval`; returns its index.
+    pub(crate) fn add_limited(
+        &self,
+        tx: BoundedTx<FrameLease>,
+        min_interval: Option<Duration>,
+    ) -> usize {
+        let tx = Receiver {
+            tx,
+            min_interval,
+            next: None,
+            pending: false,
+        };
         let mut branches = self.branches.lock();
         match branches.iter().position(Option::is_none) {
             Some(free) => {
@@ -98,7 +147,9 @@ impl Fanout {
             if let Some(_pulling) = self.try_pull() {
                 match source(remaining.min(Duration::from_millis(50))) {
                     RecvOutcome::Data(frame) => {
-                        return RecvOutcome::Data(self.fan_out(frame, Some(index)));
+                        if let Some(frame) = self.fan_out(frame, Some(index)) {
+                            return RecvOutcome::Data(frame);
+                        }
                     }
                     RecvOutcome::Empty => {}
                     RecvOutcome::Closed => {
@@ -141,7 +192,9 @@ impl Fanout {
             if let Some(_pulling) = self.try_pull() {
                 match wait().await {
                     RecvOutcome::Data(frame) => {
-                        return RecvOutcome::Data(self.fan_out(frame, Some(index)));
+                        if let Some(frame) = self.fan_out(frame, Some(index)) {
+                            return RecvOutcome::Data(frame);
+                        }
                     }
                     RecvOutcome::Empty => {}
                     RecvOutcome::Closed => {
@@ -166,27 +219,36 @@ impl Fanout {
         }
     }
 
-    /// Send shares of `frame` to every receiver but `keep`, returning the frame itself.
-    fn fan_out(&self, frame: FrameLease, keep: Option<usize>) -> FrameLease {
-        let branches = self.branches.lock();
-        let others = branches
-            .iter()
-            .enumerate()
-            .filter(|(i, tx)| tx.is_some() && Some(*i) != keep)
-            .count();
-        if others == 0 {
-            return frame;
-        }
-        let frame = frame.into_shareable();
-        for (i, tx) in branches.iter().enumerate() {
-            if let Some(tx) = tx
-                && Some(i) != keep
-                && let Some(share) = frame.share()
-            {
-                tx.send(share);
+    /// Send shares of `frame` to every receiver due a frame but `keep`, returning the frame
+    /// itself for `keep` when it is due one (receivers taking fewer frames skip the others).
+    fn fan_out(&self, frame: FrameLease, keep: Option<usize>) -> Option<FrameLease> {
+        let now = Instant::now();
+        let mut branches = self.branches.lock();
+        let mut kept = keep.is_none();
+        let mut others = 0usize;
+        for (i, receiver) in branches.iter_mut().enumerate() {
+            let Some(r) = receiver else { continue };
+            let due = r.due(now);
+            if Some(i) == keep {
+                kept = due;
+                r.pending = false;
+            } else {
+                r.pending = due;
+                others += usize::from(due);
             }
         }
-        frame
+        if others > 0 {
+            let frame = frame.into_shareable();
+            for r in branches.iter_mut().flatten() {
+                if std::mem::take(&mut r.pending)
+                    && let Some(share) = frame.share()
+                {
+                    r.tx.send(share);
+                }
+            }
+            return kept.then_some(frame);
+        }
+        kept.then_some(frame)
     }
 
     fn close(&self) {
@@ -194,7 +256,7 @@ impl Fanout {
             .lock()
             .iter()
             .flatten()
-            .for_each(BoundedTx::close);
+            .for_each(|r| r.tx.close());
     }
 }
 
@@ -518,16 +580,22 @@ impl SharedSession {
         groups.retain(|g| g.strong_count() > 0);
         let joined = share
             .then(|| {
-                groups
-                    .iter()
-                    .filter_map(Weak::upgrade)
-                    .find(|g| g.open && same_preparation(&g.plan, plan))
+                groups.iter().filter_map(Weak::upgrade).find(|g| {
+                    g.open
+                        && same_preparation(&g.plan, plan)
+                        && g.plan.request.min_interval == plan.request.min_interval
+                })
             })
             .flatten();
         let joined_running = joined.is_some();
         let group = joined.unwrap_or_else(|| {
             let (raw_tx, raw_rx) = bounded_with(depth, QueueOverflow::DropOldest);
-            let index = self.shared.fanout.add(raw_tx);
+            // A group takes frames as often as its request asks (`deliver_at_most`): members
+            // join only a group asking the same.
+            let index = self
+                .shared
+                .fanout
+                .add_limited(raw_tx, plan.request.min_interval);
             let group = Arc::new(PreparedGroup {
                 shared: self.shared.clone(),
                 index,
@@ -571,5 +639,52 @@ impl SharedSession {
             seen_evictions: 0,
         };
         super::Frames::branch(plan, branch, roi)
+    }
+}
+
+#[cfg(test)]
+mod pacing_tests {
+    use super::*;
+
+    fn receiver(fps: f64) -> Receiver {
+        let (tx, _rx) = bounded_with(1, QueueOverflow::DropOldest);
+        Receiver {
+            tx,
+            min_interval: Some(Duration::from_secs_f64(1.0 / fps)),
+            next: None,
+            pending: false,
+        }
+    }
+
+    /// A 15 fps receiver of a 120 fps camera takes every eighth frame, jitter or not.
+    #[test]
+    fn a_limited_receiver_keeps_its_rate_on_the_cameras_grid() {
+        let mut r = receiver(15.0);
+        let start = Instant::now();
+        let frame = Duration::from_secs_f64(1.0 / 120.0);
+        let taken = (0..1200u32)
+            .filter(|&i| {
+                // +-0.4 ms of arrival jitter.
+                let jitter = Duration::from_micros(u64::from(i % 9) * 100);
+                r.due(start + frame * i + jitter - Duration::from_micros(400).min(jitter))
+            })
+            .count();
+        assert!(
+            (148..=152).contains(&taken),
+            "{taken} of 1200 frames (10 s at 120 fps)"
+        );
+    }
+
+    #[test]
+    fn an_unlimited_receiver_takes_every_frame() {
+        let (tx, _rx) = bounded_with(1, QueueOverflow::DropOldest);
+        let mut r = Receiver {
+            tx,
+            min_interval: None,
+            next: None,
+            pending: false,
+        };
+        let now = Instant::now();
+        assert!((0..10).all(|_| r.due(now)));
     }
 }

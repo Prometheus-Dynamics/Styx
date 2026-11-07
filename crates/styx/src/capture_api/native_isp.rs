@@ -472,6 +472,11 @@ pub(super) fn start_processed(
                 specs.iter().flatten().map(|s| s.bytes()).sum(),
                 cma_free().filter(|_| !config.backends.native.driver_buffers),
             );
+            let contiguous = config
+                .backends
+                .native
+                .contiguous_output_buffers
+                .map_or(contiguous, |cap| contiguous.min(cap));
             // Extra passes write into an output's buffers (the main one's, unless a region is
             // in the second output's format): half as many again per pass (at least 3: one
             // being written, one queued, one read), within the limit (a pass without a free
@@ -505,6 +510,7 @@ pub(super) fn start_processed(
                 pass_buffers,
                 pass_jobs: usize::from(config.backends.native.pass_jobs),
                 raw_lease: config.backends.native.sensor_raw,
+                raw_compressed: config.backends.native.raw_compressed,
                 fe_buffers: PispOptions::nv12_and_half_rgb(w, h).fe_buffers
                     + if config.backends.native.sensor_raw {
                         PispOptions::RAW_LEASE_BUFFERS

@@ -41,6 +41,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- A preview or other low-priority client no longer costs the vision client frames: the camera
+  service sends it at most its rate (`FrameRequest::deliver_at_most`, which `Preview` sets from
+  `max_fps`), so the frames in between are neither prepared nor held for it, and it has at most
+  one frame in flight. A group taking fewer frames is never joined by a request asking for more.
+- PiSP back end outputs come from the `system` heap by default
+  (`NativeIspConfig::contiguous_output_buffers`, `Some(0)`): the back end works through its
+  IOMMU. Raze #1, 1280x800 gray + 3 pyramid levels at 120 fps: 4.0 MB of CMA instead of 9.7 MB
+  (all of it the temporal-denoise average), the same 0 drops and latency. `None` takes the old
+  CMA-first split.
+
 - Drops by cause: a sliced PiSP frame handed out at its first slice that then fails or is
   overtaken now counts in `Drops::corrupted` (it was in no counter). `metrics_top` shows every
   cause: sensor gaps, queue overflow, corrupted, ISP skipped (back end buffers all held), raw
@@ -155,6 +165,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - `styx_kernel::poll_into` waits with nanosecond precision (`ppoll`).
 
 ### Added
+
+- `FrameRequest::deliver_at_most(fps)`: at most this many frames a second for this consumer,
+  applied where the frames are shared out (and across the camera service's wire).
+- `NativeIspConfig::raw_compressed` (`native_raw_compressed`): the PiSP's 8-bit compressed raw
+  between front and back end, half the raw buffers' memory (off by default).
 
 - `styx-camerad` (crates/camerad): a camera daemon, library first. One `CameraService` per
   attached camera on its own socket (named after its identity key), started when the camera

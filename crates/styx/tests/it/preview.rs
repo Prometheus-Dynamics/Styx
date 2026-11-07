@@ -107,6 +107,7 @@ fn a_preview_never_changes_the_vision_clients_capture() {
     std::thread::sleep(Duration::from_millis(2000));
 
     // A preview that, as a normal client, would have moved the capture to 640x400.
+    let opened = Instant::now();
     let preview = Preview::from_service(
         FrameClient::options(&path),
         PreviewConfig::new()
@@ -188,9 +189,10 @@ fn a_preview_never_changes_the_vision_clients_capture() {
     );
     let m = preview.metrics();
     assert_eq!(m.source_size, (1280, 800), "{m:?}");
-    // Frames beyond the cap were dropped: by the rate limit, or (scaler still busy on a
-    // loaded machine) before it.
-    assert!(m.dropped_rate + m.dropped_busy > 0, "{m:?}");
+    // Frames beyond the cap never reached it: the service sends a preview at most its
+    // `max_fps` (10, plus one for the edge of the window).
+    let cap = 10.0 * opened.elapsed().as_secs_f64() + 1.0;
+    assert!(f64::from(m.frames_in as u32) <= cap, "{m:?} over {cap}");
     assert_eq!(m.errors, 0, "{m:?}");
     drop(preview);
 }
@@ -217,12 +219,17 @@ fn a_preview_that_came_first_gives_way_to_the_vision_client() {
             service.plan()
         )
     });
-    // Alone, it was planned as it asked.
-    assert!(
-        service.plan().unwrap().contains("RG24 640x400"),
-        "{:?}",
-        service.plan()
-    );
+    // Alone, it was planned as it asked. (On a loaded machine the preview's first connection
+    // can time out while the camera starts and come again: the plan is gone in between.)
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let plan = loop {
+        if let Some(plan) = service.plan() {
+            break plan;
+        }
+        assert!(Instant::now() < deadline, "no plan: {:?}", service.stats());
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert!(plan.contains("RG24 640x400"), "{plan}");
 
     // The vision client gets the plan it would get alone (one restart, before its first frame).
     let client = FrameClient::request(&path, &Frames::rgb().size(1280, 800)).unwrap();

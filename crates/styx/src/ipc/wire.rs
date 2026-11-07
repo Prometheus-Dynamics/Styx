@@ -59,7 +59,7 @@ use self::hops::{read_frame_hops, read_release_hops, write_frame_hops};
 pub(in crate::ipc) use self::progress::{NO_OUTPUT, WireProgress};
 use self::progress::{read_frame_progress, read_slices_wanted, write_frame_progress};
 pub(in crate::ipc) use self::request::{encode_request, encode_request_with};
-use self::request::{read_priority, read_request, read_sensor_mode};
+use self::request::{read_min_interval, read_priority, read_request, read_sensor_mode};
 use super::IpcError;
 use crate::planner::{Delivered, FrameRequest};
 
@@ -644,6 +644,7 @@ pub(super) fn decode_client(bytes: &[u8]) -> Result<ClientMessage, IpcError> {
             let priority = read_priority(&mut r)?;
             let slices = read_slices_wanted(&mut r)?;
             request.sensor_mode = read_sensor_mode(&mut r)?;
+            request.min_interval = read_min_interval(&mut r)?;
             Ok(ClientMessage::Request(
                 Box::new(request),
                 camera,
