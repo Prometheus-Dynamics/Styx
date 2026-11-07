@@ -109,7 +109,7 @@ impl Isp {
             sensor_code: MbusCode(code),
             bayer: device_order,
             image_output: true,
-            buffers: options.fe_buffers,
+            buffers: debug_var("STYX_PISP_FE_BUFFERS").unwrap_or(options.fe_buffers), // total
             keep_embedded: true,
         })?;
         let fe_open = t.elapsed();

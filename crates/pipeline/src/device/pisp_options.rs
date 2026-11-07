@@ -26,7 +26,10 @@ pub struct PispOptions {
     /// keep the buffer's stride; the chroma plane stays where the buffer's size puts it).
     /// Changeable while running ([`super::PispPipeline::set_output_crop`]).
     pub crop: [Option<BeCropConfig>; 2],
-    /// Front end buffers per queue (raw frames, statistics, configs).
+    /// Front end buffers per queue (raw frames, statistics, configs). Default 4: on Raze #1
+    /// (OV9782 1280x800, 120 fps, 2026-11-06) 3 already delivered every processed frame, with
+    /// or without the raw lease, and 4 kept a raw consumer holding 3 frames on four busy cores
+    /// at the rate 6 did (a raw lease adds [`Self::RAW_LEASE_BUFFERS`] to this).
     pub fe_buffers: u32,
     /// Back end buffers per output.
     pub be_buffers: u32,
@@ -109,7 +112,7 @@ impl PispOptions {
                 }),
             ],
             crop: [None; 2],
-            fe_buffers: 6,
+            fe_buffers: 4,
             be_buffers: 6,
             be_buffers_initial: None,
             pass_buffers: [0; 2],

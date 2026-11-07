@@ -41,6 +41,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- PiSP front end buffers default to 4 per queue (was 6), measured on a CM5 at 120 fps with
+  and without a raw consumer: with `sensor_raw` the raw buffers drop from 10 to 8 (4 MB less
+  per camera). Debug builds with `pisp-debug-hooks` take `STYX_PISP_FE_BUFFERS` (the total).
+
 - Planner CPU constants re-measured on a CM5 (1280x800, cold sources): RGB to luma 1.2 → 0.45
   ms/MP, realign 0.3 → 0.2 ms/MP; YUYV luma (0.35) and the box level (0.16) confirmed. The box
   level's end-to-end cost was measured in process and served over IPC (0.17 ms per 1280x800).
