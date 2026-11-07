@@ -41,6 +41,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `styx_core::daedalus::frame_payload` stores the frame in Daedalus's recycling payload storage
+  (`Payload::providing_recycled`, Daedalus dfa1a2f): a frame into a graph allocates nothing once
+  the pool holds one node per frame in flight (was 1 per frame). Readers are unchanged
+  (`get_ref::<FrameLease>()`, `daedalus:frame` lent to other builds); a frame that must come
+  back as the same `Arc` still goes in through `shared_frame_payload`.
+
 - A native PiSP capture starts with 3 buffers per back end output, down from 6
   (`NativeIspConfig::output_buffers`, `PispOptions::be_buffers`): the fewest that hold 120 fps
   on Raze #1 with a consumer holding each frame for most of the period (7199 of 7200 frames in
