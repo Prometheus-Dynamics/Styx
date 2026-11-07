@@ -376,4 +376,44 @@ mod tests {
         let owned = frame.materialize_owned();
         assert!(owned.pyramid_level(1).is_some());
     }
+
+    /// The rule consumers check levels against (e.g. Eidos's `is_box_reduction`): each pixel
+    /// `(a + b + c + d + 2) / 4` of its 2x2 block, `floor(w / 2) x floor(h / 2)`, an odd last
+    /// row or column ignored. Odd and even sizes, every level, every value (SIMD rows included).
+    #[test]
+    fn box_levels_round_half_up_and_drop_odd_edges() {
+        for (w, h) in [(17u32, 9u32), (33, 21), (64, 48), (1281, 801)] {
+            let frame = grey(w, h, w.next_multiple_of(64) as usize, 0, |x, y| {
+                (x.wrapping_mul(37) ^ y.wrapping_mul(101)) as u8
+            })
+            .with_box_pyramid(3, 64)
+            .expect("pyramid");
+            for level in 1..=3u8 {
+                let src = frame.pyramid_level(level - 1).unwrap().luma_rows().unwrap();
+                let dst = frame.pyramid_level(level).unwrap();
+                let (sw, sh) = (src.row_bytes(), src.len());
+                let res = dst.meta().format.resolution;
+                assert_eq!(
+                    (res.width.get() as usize, res.height.get() as usize),
+                    (sw / 2, sh / 2)
+                );
+                let dst = dst.luma_rows().unwrap();
+                for y in 0..sh / 2 {
+                    let (t, b) = (src.row(2 * y).unwrap(), src.row(2 * y + 1).unwrap());
+                    let (t, b, d) = (t.data(), b.data(), dst.row(y).unwrap());
+                    for x in 0..sw / 2 {
+                        let sum: u32 = [t[2 * x], t[2 * x + 1], b[2 * x], b[2 * x + 1]]
+                            .iter()
+                            .map(|&v| u32::from(v))
+                            .sum();
+                        assert_eq!(
+                            u32::from(d.data()[x]),
+                            (sum + 2) / 4,
+                            "{w}x{h} L{level} ({x},{y})"
+                        );
+                    }
+                }
+            }
+        }
+    }
 }
