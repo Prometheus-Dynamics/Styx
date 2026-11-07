@@ -23,7 +23,10 @@ use crate::Args;
 
 pub fn run(a: &Args, base: &Path) -> Result<(), String> {
     let rec = RawRecording::open(base).map_err(|e| format!("{}: {e}", base.display()))?;
-    let cfg_path = a.configs.first().ok_or("be-replay --recording needs --configs MAIN.bin")?;
+    let cfg_path = a
+        .configs
+        .first()
+        .ok_or("be-replay --recording needs --configs MAIN.bin")?;
     let bytes = std::fs::read(cfg_path).map_err(|e| format!("{}: {e}", cfg_path.display()))?;
     let cfg: BeTilesConfig = bytemuck::pod_read_unaligned(
         bytes
@@ -31,7 +34,10 @@ pub fn run(a: &Args, base: &Path) -> Result<(), String> {
             .ok_or_else(|| format!("{}: too short", cfg_path.display()))?,
     );
     let input = cfg.config.input_format;
-    let (w, h) = (rec.header.format.width as usize, rec.header.format.height as usize);
+    let (w, h) = (
+        rec.header.format.width as usize,
+        rec.header.format.height as usize,
+    );
     if (input.width as usize, input.height as usize) != (w, h) {
         return Err(format!(
             "config input {}x{}, recording {w}x{h}",
@@ -69,7 +75,10 @@ pub fn run(a: &Args, base: &Path) -> Result<(), String> {
     let heap = DmaHeap::open("system").map_err(|e| e.to_string())?;
     let buf = heap.allocate(len).map_err(|e| e.to_string())?;
     let mut map = buf.map().map_err(|e| e.to_string())?;
-    let fd = buf.as_fd().try_clone_to_owned().map_err(|e| e.to_string())?;
+    let fd = buf
+        .as_fd()
+        .try_clone_to_owned()
+        .map_err(|e| e.to_string())?;
     let mut be = BackEndStream::open(0, input, order, vec![fd], len as u32, setups, 2)
         .map_err(|e| e.to_string())?;
     std::fs::create_dir_all(&a.out).map_err(|e| format!("{}: {e}", a.out.display()))?;
@@ -85,15 +94,22 @@ pub fn run(a: &Args, base: &Path) -> Result<(), String> {
     for n in 0..rec.len() {
         let src = rec.frame(n);
         let rs = rec.header.stride;
-        buf.begin_cpu_access(Access::Write).map_err(|e| e.to_string())?;
+        buf.begin_cpu_access(Access::Write)
+            .map_err(|e| e.to_string())?;
         let dst = map.as_mut_slice();
         for y in 0..h {
             styx_softisp::simd::unpack_raw10_row(&src[y * rs..(y + 1) * rs], &mut row, w);
-            for (d, s) in dst[y * stride..y * stride + 2 * w].as_chunks_mut::<2>().0.iter_mut().zip(&row) {
+            for (d, s) in dst[y * stride..y * stride + 2 * w]
+                .as_chunks_mut::<2>()
+                .0
+                .iter_mut()
+                .zip(&row)
+            {
                 d.copy_from_slice(&(s << 6).to_le_bytes());
             }
         }
-        buf.end_cpu_access(Access::Write).map_err(|e| e.to_string())?;
+        buf.end_cpu_access(Access::Write)
+            .map_err(|e| e.to_string())?;
         let job = be
             .process(0, &cfg, Duration::from_secs(1))
             .map_err(|e| format!("frame {n}: {e}"))?;
@@ -131,11 +147,18 @@ pub fn run(a: &Args, base: &Path) -> Result<(), String> {
 fn write_index(rec: &RawRecording, base: &Path, path: &Path) -> Result<(), String> {
     let src = base.with_extension("jsonl");
     let text = std::fs::read_to_string(&src).map_err(|e| format!("{}: {e}", src.display()))?;
-    let last = rec.frames.last().map(|f| (f.sensor.exposure, f.sensor.analogue_gain));
+    let last = rec
+        .frames
+        .last()
+        .map(|f| (f.sensor.exposure, f.sensor.analogue_gain));
     let mut out = String::new();
     for (line, f) in text.lines().skip(1).zip(&rec.frames) {
         let settled = Some((f.sensor.exposure, f.sensor.analogue_gain)) == last;
-        out.push_str(line.trim_end().strip_suffix('}').ok_or("index line is not an object")?);
+        out.push_str(
+            line.trim_end()
+                .strip_suffix('}')
+                .ok_or("index line is not an object")?,
+        );
         out.push_str(&format!(",\"settled\":{settled}}}\n"));
     }
     std::fs::write(path, out).map_err(|e| format!("{}: {e}", path.display()))

@@ -65,5 +65,8 @@ fn generation_changes_only_with_the_tables() {
     // A prepare makes new tables, with a new generation.
     a.prepare(&CameraConfig::default()).unwrap();
     a.initial(&mut p);
-    assert_ne!(p.lens_shading.as_ref().unwrap().generation, *gens.last().unwrap());
+    assert_ne!(
+        p.lens_shading.as_ref().unwrap().generation,
+        *gens.last().unwrap()
+    );
 }
