@@ -371,6 +371,7 @@ mod tests {
             r: (0..192).map(|i| 1.0 + k * f64::from(i) / 192.0).collect(),
             g: vec![1.25; 192],
             b: vec![1.0 + k; 192],
+            generation: 0,
         }
     }
 

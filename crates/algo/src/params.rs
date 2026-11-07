@@ -178,7 +178,7 @@ impl BlackLevels {
 }
 
 /// Lens-shading gain tables, row-major over a grid covering the output image.
-#[derive(Debug, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct LensShading {
     /// Cells across.
     pub width: u32,
@@ -190,6 +190,36 @@ pub struct LensShading {
     pub g: Vec<f64>,
     /// Blue gains.
     pub b: Vec<f64>,
+    /// Which tables these are ([`Self::next_generation`]): two tables of the same non-zero
+    /// generation are equal, so comparing or copying unchanged tables (every frame, between
+    /// the algorithm, the controller and an ISP) touches none of the gains. 0 (the default,
+    /// and after deserializing): unknown, compared and copied in full. Whoever edits the gains
+    /// in place sets it to 0 or to a fresh generation.
+    #[serde(skip)]
+    pub generation: u64,
+}
+
+impl LensShading {
+    /// A generation no tables have had before in this process (never 0).
+    pub fn next_generation() -> u64 {
+        static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn same_generation(&self, other: &Self) -> bool {
+        self.generation != 0 && self.generation == other.generation
+    }
+}
+
+/// Equal gains and grid; the generation only decides it faster ([`LensShading::generation`]).
+impl PartialEq for LensShading {
+    fn eq(&self, other: &Self) -> bool {
+        self.same_generation(other)
+            || (self.width, self.height) == (other.width, other.height)
+                && self.r == other.r
+                && self.g == other.g
+                && self.b == other.b
+    }
 }
 
 impl Clone for LensShading {
@@ -199,15 +229,21 @@ impl Clone for LensShading {
         out
     }
 
-    /// Copies into this table's own buffers (reusing them).
+    /// Copies into this table's own buffers (reusing them); nothing when it already holds
+    /// `source`'s generation.
     fn clone_from(&mut self, source: &Self) {
+        if self.same_generation(source) {
+            return;
+        }
         let Self {
             width,
             height,
             r,
             g,
             b,
+            generation,
         } = source;
+        self.generation = *generation;
         self.width = *width;
         self.height = *height;
         self.r.clone_from(r);

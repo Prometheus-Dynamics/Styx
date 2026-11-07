@@ -123,6 +123,7 @@ fn passes_follow_the_main_config() {
         r: vec![1.2; 192],
         g: vec![1.1; 192],
         b: vec![1.3; 192],
+        generation: 0,
     });
     main.update(&s).unwrap();
     let c = passes.config(1, &main).unwrap().unwrap().config;

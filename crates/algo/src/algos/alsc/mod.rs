@@ -369,6 +369,8 @@ pub struct Alsc {
     target: [Vec<f64>; 3],
     /// The tables in use (`prevSyncResults`).
     current: [Vec<f64>; 3],
+    /// `current`'s [`LensShading::generation`], new whenever they change.
+    generation: u64,
     /// Frames since the start (up to `startup_frames`), since the last run, and the last frame.
     frame_count: u32,
     frame_phase: u32,
@@ -395,6 +397,7 @@ impl Alsc {
             pending_set: false,
             target: [Vec::new(), Vec::new(), Vec::new()],
             current: [Vec::new(), Vec::new(), Vec::new()],
+            generation: 0,
             frame_count: 0,
             frame_phase: 0,
             last_frame: None,
@@ -434,6 +437,7 @@ impl Alsc {
             r: r.clone(),
             g: g.clone(),
             b: b.clone(),
+            generation: 0,
         }
     }
 
@@ -441,6 +445,10 @@ impl Alsc {
     /// buffers.
     fn write_shading(&self, out: &mut Option<LensShading>) {
         let ls = out.get_or_insert_with(LensShading::default);
+        if self.generation != 0 && ls.generation == self.generation {
+            return;
+        }
+        ls.generation = self.generation;
         ls.width = self.tuning.grid.0;
         ls.height = self.tuning.grid.1;
         ls.r.clone_from(&self.current[0]);
@@ -463,6 +471,7 @@ impl Alsc {
         for (target, current) in self.target.iter_mut().zip(&self.current) {
             target.clone_from(current);
         }
+        self.generation = LensShading::next_generation();
     }
 
     /// A fresh start at the current temperature (`switchMode` with a table reset).
@@ -554,7 +563,9 @@ impl Algorithm for Alsc {
     }
 
     fn initial(&self, params: &mut Params) {
-        params.lens_shading = Some(self.shading(&self.current));
+        let mut ls = self.shading(&self.current);
+        ls.generation = self.generation;
+        params.lens_shading = Some(ls);
     }
 
     fn process(&mut self, stats: &Statistics, meta: &FrameMetadata, params: &mut Params) {
@@ -585,14 +596,20 @@ impl Algorithm for Alsc {
             .flatten()
             .zip(self.target.iter().flatten())
             .all(|(c, x)| (c - x).abs() <= SNAP * x.abs());
+        let mut changed = false;
         for (cur, target) in self.current.iter_mut().zip(&self.target) {
             for (c, x) in cur.iter_mut().zip(target) {
-                *c = if close {
+                let next = if close {
                     *x
                 } else {
                     (1.0 - keep) * x + keep * *c
                 };
+                changed |= next != *c;
+                *c = next;
             }
+        }
+        if changed {
+            self.generation = LensShading::next_generation();
         }
         self.write_shading(&mut params.lens_shading);
         // `process`: start a run on this frame's statistics when one is due.
@@ -604,6 +621,9 @@ impl Algorithm for Alsc {
         }
     }
 }
+
+#[cfg(all(test, feature = "alsc"))]
+mod generation_tests;
 
 #[cfg(all(test, feature = "alsc"))]
 mod tests {

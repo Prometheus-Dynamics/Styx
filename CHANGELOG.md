@@ -41,6 +41,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `styx_algo::LensShading` has a `generation` (new pub field, `LensShading::next_generation`):
+  ALSC gives its tables a new one only when they change, and comparing or copying two tables of
+  the same non-zero generation touches no gains. Between adaptive runs (3 frames in 4 at the
+  default period) the per-frame copies into the controller and the PiSP back end's change check
+  skip the 3 × grid gain tables. Struct literals add `generation: 0` (unknown: full compare);
+  code editing gains in place sets it to 0.
 - Feature defaults trimmed. The Rockchip ISP backend is opt-in through a new `rkisp` feature on
   `styx`, `styx-pipeline` and `styx-camerad`; `native` no longer pulls `styx-rkisp`. Without the
   feature, opening an rkisp camera returns an error that names the feature. `tracing` is out of

@@ -397,6 +397,7 @@ mod tests {
             r: vec![1.5; 4],
             g: vec![1.0; 4],
             b: vec![1.2; 4],
+            generation: 0,
         });
         let mut isp = IspSettings::neutral(64.0 / 1024.0);
         isp.wb = [2.0, 1.0, 1.25];

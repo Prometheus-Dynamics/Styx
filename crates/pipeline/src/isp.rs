@@ -483,12 +483,15 @@ pub fn lens_shading_with_bands(ls: Option<&LensShading>, bands: &[f64]) -> LensS
             r: vec![1.0; n],
             g: vec![1.0; n],
             b: vec![1.0; n],
+            generation: 0,
         }
     });
     let (w, h) = (out.width as usize, out.height as usize);
     if bands.is_empty() || w == 0 || h == 0 {
         return out;
     }
+    // The gains change below: these are no longer `ls`'s tables.
+    out.generation = 0;
     for y in 0..h {
         // The band gain at the grid row's centre, linearly between band centres.
         let pos = ((y as f64 + 0.5) / h as f64 * bands.len() as f64 - 0.5)
@@ -642,6 +645,7 @@ mod tests {
             r: vec![1.5; 192],
             g: vec![1.25; 192],
             b: vec![1.0; 192],
+            generation: 0,
         });
         IspSettings::from_params(&p, 0, 1.0).apply_be(&mut be);
         let g = be.config().global;

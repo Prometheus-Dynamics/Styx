@@ -619,6 +619,7 @@ mod tests {
             r: vec![2.0; 6],
             g: vec![1.0; 6],
             b: vec![1.0; 6],
+            generation: 0,
         };
         let ls = crate::isp::lens_shading_with_bands(Some(&grid), &[1.2, 0.8]);
         assert!((ls.r[0] - 2.4).abs() < 1e-12 && (ls.r[5] - 1.6).abs() < 1e-12);
