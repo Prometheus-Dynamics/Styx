@@ -183,6 +183,29 @@ fn a_rejoin_after_a_stall_found_later_plans_the_next_mode() {
     assert!(text.contains("MJPG 1920x1080"), "{text}");
 }
 
+/// An uncompressed mode that stalled (YUYV 1920x1080 starving the bus) does not keep the larger
+/// compressed modes out: a later join still gets MJPG 2560x1440.
+#[test]
+fn a_stalled_yuyv_mode_leaves_larger_mjpg_modes_in() {
+    let name = "join-yuyv-stall-usb2";
+    let camera = Camera::new(usb2_webcam(name));
+    let yuyv = camera.device.backends[0]
+        .descriptor
+        .modes
+        .iter()
+        .find(|m| m.format.resolution.width.get() == 1920 && m.format.code == FourCc::YUYV)
+        .expect("the YUYV 1920 mode")
+        .clone();
+    crate::planner::stalled::record_stall(
+        &camera.device,
+        BackendKind::V4l2,
+        &yuyv,
+        "no frames for 2002 ms",
+    );
+    let text = join(&camera, Frames::nv12(), ClientPriority::Normal).expect("joins");
+    assert!(text.contains("MJPG 2560x1440"), "{text}");
+}
+
 /// A refused camera, joined again and again (its clients reconnect), starts each of its modes
 /// once and then waits: the bus refused every start, so the refused modes stay out for their
 /// expiry, and the driver is not asked again in a loop.

@@ -60,8 +60,13 @@ fn fps_of(mode: &Mode) -> f32 {
 
 /// Whether `candidate` is heavier than `failed`: a larger frame, or the same frame at a higher
 /// rate, or (the same frame and rate) an uncompressed mode where `failed` is compressed. A fallback
-/// only tries lighter modes than the one that failed.
+/// only tries lighter modes than the one that failed. A compressed mode is never heavier than an
+/// uncompressed one that failed: it carries a fraction of the bytes, so a starved YUYV 1920x1080
+/// leaves MJPG 2560x1440 in.
 pub(crate) fn heavier(candidate: &Mode, failed: &Mode) -> bool {
+    if candidate.format.code.is_compressed() && !failed.format.code.is_compressed() {
+        return false;
+    }
     let (ca, fa) = (super::mode_area(candidate), super::mode_area(failed));
     if ca != fa {
         return ca > fa;

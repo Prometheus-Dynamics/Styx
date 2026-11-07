@@ -43,8 +43,9 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 - A raw consumer (`Frames::sensor_raw`) joining a running native capture no longer restarts it:
   `native_controls::SENSOR_RAW` turns the raw companions on in place (the PiSP adds its raw
-  lease buffers while streaming, Lemnos `add_image_buffers` / `add_inputs`; written, untested on
-  board). They stay on until the capture restarts. The plan's setup key no longer includes raw.
+  lease buffers while streaming, Lemnos `add_image_buffers` / `add_inputs`). On Raze #1 (OV9782
+  1280x800 @60): the raw join's first frame in 36 ms, 180 raw frames in 3 s, vision at 60/s
+  before, during and after, no restart. They stay on until the capture restarts. The plan's setup key no longer includes raw.
 
 - `styx_core::daedalus::frame_payload` builds its payload with Daedalus's `Payload::providing`:
   a plugin built apart (across Daedalus's stable path) reads the frame through a lent
@@ -1167,6 +1168,10 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 - gst-styx's `priority` property: `queue-depth` (0 or 1 the newest frame, N every frame up to N).
 
 ### Fixed
+
+- A USB camera's uncompressed mode that delivered no frames (YUYV 1920x1080 starving a USB 2
+  bus) no longer keeps the larger compressed modes out of its fallback: the XZC webcam on
+  Raze #1 fell back to MJPG 1600x896 where MJPG 2560x1440 streams.
 
 - Planned CPU pyramid levels on colour frames (NV12 and other formats with a Y plane): the
   planner listed the box-filter step, but the frame stage returned non-luma frames before

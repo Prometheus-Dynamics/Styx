@@ -49,7 +49,8 @@ impl PispPipeline {
     /// Raw frames for consumers from now on, without a restart: the front end gets
     /// [`RAW_LEASE_BUFFERS`] more buffers, the back end takes them as inputs, and they are
     /// queued. They stay until the pipeline is opened again (the driver frees buffers only with
-    /// the stream off). Not with compressed raw. Written, untested on board.
+    /// the stream off). Not with compressed raw. Measured on Raze #1: no restart, raw frames
+    /// from the next frame on.
     pub fn enable_raw_lease(&mut self) -> Result<()> {
         if self.options.raw_lease {
             return Ok(());
