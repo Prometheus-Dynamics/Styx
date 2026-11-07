@@ -501,17 +501,11 @@ impl SharedFramePlan {
             .map(output);
         let pyramid = self.consumers.iter().find_map(|p| p.isp_pyramid_level);
         let region = region_shared::layout_key(&self.consumers);
-        // Raw companions are on for a raw consumer, or when the capture settings keep them on
-        // (a camera service that serves raw clients without restarting).
-        let raw = self.consumers.iter().any(|p| {
-            p.sensor_raw
-                || p.config
-                    .as_ref()
-                    .is_some_and(|c| c.backends.native.sensor_raw)
-        });
+        // Raw companions are not part of it: a raw consumer turns them on in the running capture
+        // (`native_controls::SENSOR_RAW`, the PiSP adding its buffers live).
         format!(
             "{:?} {:?} {:?} main={main:?} second={second:?} pyramid={pyramid:?} region={region} \
-             raw={raw} idle={:?}",
+             idle={:?}",
             self.backend, self.mode.id, self.interval, self.stop_when_idle
         )
     }

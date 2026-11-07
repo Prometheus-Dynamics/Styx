@@ -187,7 +187,7 @@ impl Isp {
                 be,
                 tdn_error,
                 slice,
-                raw_fds: if options.raw_lease { raw } else { Vec::new() },
+                raw_fds: raw,
             },
             fe_open,
             t.elapsed(),
@@ -229,7 +229,7 @@ pub struct PispPipeline {
     raw_copy: Option<super::RawCopy>,
     /// Extra back end passes over every frame (regions of interest).
     passes: PassConfigs,
-    /// The front end's raw buffers as dma-bufs, with [`PispOptions::raw_lease`].
+    /// The front end's raw buffers as dma-bufs (leased with [`PispOptions::raw_lease`]).
     raw_fds: Vec<std::os::fd::OwnedFd>,
 }
 

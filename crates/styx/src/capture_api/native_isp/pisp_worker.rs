@@ -262,6 +262,15 @@ pub(super) fn spawn(
                 }
                 // Consumers hold every buffer of an output: another one now, between frames.
                 p.top_up_outputs();
+                // A raw consumer joined (`SENSOR_RAW`): the raw lease buffers, no restart.
+                let want_raw = w.loop_controls.raw_wanted();
+                if want_raw
+                    && !p.leases_raw()
+                    && let Err(e) = p.enable_raw_lease()
+                {
+                    crate::trace::warn!(backend = "native", error = %e, "raw frames for consumers refused");
+                    w.loop_controls.set_raw(false);
+                }
                 if let Some(c) = w.loop_controls.take() {
                     p.set_controls(c);
                 }
@@ -284,7 +293,7 @@ pub(super) fn spawn(
                             crate::trace::debug!(backend = "native", sliced = prev.sequence, next = s.sequence, "sliced frame failed: the next frame's slice came first");
                             orphans.extend(prev.fail(&mut p));
                         }
-                        let room = raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
+                        let room = want_raw && raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
                         let mut slice = super::pisp_sliced::Slice { s: &s, raw_room: room, states: &mut slice_states, passes: &mut slice_passes };
                         match super::pisp_sliced::slice_leases(&mut p, &mut slice, &mut buffers, &w, &ret_tx) {
                             Ok(Some((frame, out))) => {
@@ -386,8 +395,8 @@ pub(super) fn spawn(
                     }
                 };
                 let conversion = super::super::native_backend::native_conversion(w.clock);
-                let room = raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
-                if raw_image.is_some() && !room {
+                let room = want_raw && raw_out < styx_pipeline::device::RAW_LEASE_BUFFERS;
+                if raw_image.is_some() && want_raw && !room {
                     w.live.raw_skipped();
                 }
                 let raw = raw_image.filter(|_| room).and_then(|_| {

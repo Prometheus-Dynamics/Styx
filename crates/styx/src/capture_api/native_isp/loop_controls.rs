@@ -42,6 +42,8 @@ pub struct LoopControls {
     pub(crate) regions: super::crop_control::RegionCrops,
     /// The last frame the loop processed (`u64::MAX`: none yet).
     processed: AtomicU64,
+    /// Raw frames as companions (`SENSOR_RAW`).
+    raw: std::sync::atomic::AtomicBool,
 }
 
 impl Default for LoopControls {
@@ -60,6 +62,7 @@ impl Default for LoopControls {
             crop: Default::default(),
             regions: Default::default(),
             processed: AtomicU64::new(u64::MAX),
+            raw: Default::default(),
         }
     }
 }
@@ -156,6 +159,15 @@ impl LoopControls {
         if id == ids::OUTPUT_CROP {
             return Some(self.crop.apply(value));
         }
+        if id == ids::SENSOR_RAW {
+            return Some(match value {
+                ControlValue::Bool(on) => {
+                    self.set_raw(*on);
+                    Ok(())
+                }
+                _ => Err(CaptureError::control_apply("sensor raw: a Bool")),
+            });
+        }
         if let Some(index) = ids::region_crop_index(id) {
             return Some(self.regions.apply(index, value));
         }
@@ -235,10 +247,22 @@ impl LoopControls {
         Some(Ok(()))
     }
 
+    /// Whether frames get their raw frame as a companion (`SENSOR_RAW`).
+    pub(crate) fn raw_wanted(&self) -> bool {
+        self.raw.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn set_raw(&self, on: bool) {
+        self.raw.store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// Reads one of the loop's controls (`None` for the camera's own).
     pub(crate) fn read(&self, id: ControlId) -> Option<ControlValue> {
         if id == ids::OUTPUT_CROP {
             return Some(self.crop.read());
+        }
+        if id == ids::SENSOR_RAW {
+            return Some(ControlValue::Bool(self.raw_wanted()));
         }
         if let Some(index) = ids::region_crop_index(id) {
             return self.regions.read(index);

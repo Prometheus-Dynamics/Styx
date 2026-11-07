@@ -41,6 +41,11 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- A raw consumer (`Frames::sensor_raw`) joining a running native capture no longer restarts it:
+  `native_controls::SENSOR_RAW` turns the raw companions on in place (the PiSP adds its raw
+  lease buffers while streaming, Lemnos `add_image_buffers` / `add_inputs`; written, untested on
+  board). They stay on until the capture restarts. The plan's setup key no longer includes raw.
+
 - `styx_core::daedalus::frame_payload` builds its payload with Daedalus's `Payload::providing`:
   a plugin built apart (across Daedalus's stable path) reads the frame through a lent
   `daedalus:frame` handle in place, where it got a descriptor without pixels; same-build readers

@@ -496,6 +496,18 @@ impl SharedSession {
     /// open group preparing frames the same way, or starts one; otherwise it gets its own group,
     /// which applies its region while preparing (e.g. a JPEG decode skips the rows below it).
     pub(crate) fn attach(&self, plan: &FramePlan, share: bool) -> super::Frames {
+        // A raw consumer joining a running capture: its raw companions, without a restart.
+        #[cfg(feature = "native")]
+        if plan.sensor_raw {
+            let on = ControlValue::Bool(true);
+            if let Err(e) = self
+                .shared
+                .capture()
+                .set_control(crate::capture_api::SENSOR_RAW, on)
+            {
+                crate::trace::warn!(error = %e, "raw frames for a joining consumer");
+            }
+        }
         let roi = RoiHandle::default();
         roi.set_regions(&plan.request.all_regions());
         if plan.region.isp() {

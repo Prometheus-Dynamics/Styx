@@ -54,6 +54,11 @@ pub(super) mod virtual_backend;
 pub(crate) const OUTPUT_CROP: styx_capture::prelude::ControlId =
     styx_capture::prelude::ControlId(0xF400_0030);
 
+/// A native capture's raw frames as companions (`native_controls::SENSOR_RAW`).
+#[cfg(feature = "native")]
+pub(crate) const SENSOR_RAW: styx_capture::prelude::ControlId =
+    styx_capture::prelude::ControlId(0xF400_0031);
+
 /// Smallest crop an ISP makes (the PiSP back end's smallest tile).
 const MIN_CROP_SIDE: u32 = 16;
 

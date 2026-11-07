@@ -124,6 +124,11 @@ pub mod controls {
     /// they show as `FrameMeta::crop`. The overview keeps seeing the whole frame
     /// (`NativeIspConfig::overview`). The software ISP then processes only the region.
     pub const OUTPUT_CROP: ControlId = crate::capture_api::OUTPUT_CROP;
+    /// Processed modes on the PiSP or the software ISP: the raw frame as each frame's
+    /// `CompanionKind::SensorRaw` companion (`Bool`). On, the PiSP adds its raw lease buffers
+    /// while streaming (no restart); off stops attaching them, the buffers staying until the
+    /// capture restarts. A planned `Frames::sensor_raw` consumer turns it on.
+    pub const SENSOR_RAW: ControlId = crate::capture_api::SENSOR_RAW;
     /// The first `region_crop` control (`REGION_CROP_BASE + index`).
     pub const REGION_CROP_BASE: ControlId = ControlId(0xF400_0040);
 

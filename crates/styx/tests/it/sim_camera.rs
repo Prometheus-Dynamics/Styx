@@ -139,15 +139,25 @@ fn software_isp_frames_are_cpu_readable_in_process_and_over_ipc() {
     }
 }
 
-/// The raw frames of a simulated camera's processed capture: a low-priority raw client (a
-/// recorder) next to a vision client, the service keeping the raw companions on, gets 16-bit
-/// Bayer frames of the sensor mode, named as `delivered()` says.
+/// The raw frames of a simulated camera's processed capture: a raw client (a recorder) next to a
+/// vision client gets 16-bit Bayer frames of the sensor mode, named as `delivered()` says. The
+/// raw companions are turned on in the running capture, so neither a low-priority client with
+/// the service keeping them on, nor a normal one without, restarts it.
 #[test]
 fn a_raw_client_records_a_simulated_camera() {
+    for (keep_raw, low) in [(true, true), (false, false)] {
+        raw_client_records(keep_raw, low);
+    }
+}
+
+fn raw_client_records(keep_raw: bool, low: bool) {
     let device = styx::sim::device(spec()).unwrap();
-    let path = std::env::temp_dir().join(format!("styx-sim-raw-{}.sock", std::process::id()));
-    let config = styx::capture_api::StyxConfig::default().native_sensor_raw(true);
-    let _service = CameraService::new(device)
+    let path = std::env::temp_dir().join(format!(
+        "styx-sim-raw-{keep_raw}-{}.sock",
+        std::process::id()
+    ));
+    let config = styx::capture_api::StyxConfig::default().native_sensor_raw(keep_raw);
+    let service = CameraService::new(device)
         .keep_streaming()
         .capture_config(config)
         .serve(&path)
@@ -160,8 +170,9 @@ fn a_raw_client_records_a_simulated_camera() {
         vision.recv(Duration::from_secs(15)),
         RecvOutcome::Data(_)
     ));
-    let raw = FrameClient::options(&path)
-        .low_priority()
+    let options = FrameClient::options(&path);
+    let options = if low { options.low_priority() } else { options };
+    let raw = options
         .request(&Frames::sensor_raw().every_frame(4))
         .unwrap();
     let delivered = raw.delivered().expect("delivered");
@@ -179,7 +190,15 @@ fn a_raw_client_records_a_simulated_camera() {
             got += 1;
         }
     }
-    assert!(got >= 5, "{got} raw frames");
+    assert!(
+        got >= 5,
+        "{got} raw frames (keep_raw {keep_raw}, low {low})"
+    );
+    assert_eq!(
+        service.stats().restarts,
+        0,
+        "keep_raw {keep_raw}, low {low}"
+    );
 }
 
 /// `scene=gltf`: a glTF scene through the lens, frames at the sensor's exposure, and each frame's

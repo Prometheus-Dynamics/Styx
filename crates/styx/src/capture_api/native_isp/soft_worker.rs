@@ -51,9 +51,6 @@ pub(super) struct SoftWorker {
     pub(super) clock: ClockSource,
     /// The camera's controls (the lens position for the metrics).
     pub(super) controls: styx_native::CameraControls,
-    /// Attach each frame's raw frame (`NativeIspConfig::sensor_raw`): 16-bit Bayer, the
-    /// sensor's value in the top bits, as the PiSP path hands out (a copy here).
-    pub(super) sensor_raw: bool,
     /// Where output buffers come from (`None`: heap memory; [`super::out_buf::out_heap`]).
     pub(super) heap: Option<Arc<super::out_buf::OutHeap>>,
 }
@@ -261,7 +258,8 @@ pub(super) fn spawn(
                 meta.hops.set(Hop::IspDone, isp_done.as_nanos());
                 // The raw frame for a raw consumer, before its buffer goes back.
                 let raw_frame = w
-                    .sensor_raw
+                    .loop_controls
+                    .raw_wanted()
                     .then(|| raw16(&f, p.soft_loop().format(), &meta))
                     .flatten();
                 p.recycle(f);

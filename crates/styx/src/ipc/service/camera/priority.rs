@@ -388,16 +388,16 @@ mod tests {
                 .unwrap();
             planned.consumers[1].map(|i| planned.plan.consumers[i].delivered())
         };
+        // Raw companions are turned on in the running capture (no restart, nobody else's frames
+        // change), so a low-priority raw client gets raw frames whether or not the capture
+        // settings keep them on.
         let keeps_raw = CameraService::new(dev.clone())
             .capture_config(crate::capture_api::StyxConfig::default().native_sensor_raw(true))
             .config;
-        let delivered = join_low(&keeps_raw).expect("raw frames");
-        assert_eq!(delivered.format, FourCc::new(*b"BYR2"));
-        assert_eq!(delivered.size, (1280, 800));
-        assert_eq!(
-            join_low(&config()),
-            None,
-            "a processed share in place of raw"
-        );
+        for config in [&keeps_raw, &config()] {
+            let delivered = join_low(config).expect("raw frames");
+            assert_eq!(delivered.format, FourCc::new(*b"BYR2"));
+            assert_eq!(delivered.size, (1280, 800));
+        }
     }
 }

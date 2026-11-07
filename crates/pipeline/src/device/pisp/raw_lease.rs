@@ -6,7 +6,7 @@ use std::os::fd::{AsFd, BorrowedFd};
 use styx_softisp::CfaPattern;
 
 use super::{PispOptions, PispPipeline};
-use crate::error::Result;
+use crate::error::{PipelineError, Result};
 
 /// How the front end stores a raw frame: 16-bit samples, the sensor's value in the top bits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +44,41 @@ impl PispPipeline {
             Some(fe) => Ok(fe.release_image(index)?),
             None => Ok(()),
         }
+    }
+
+    /// Raw frames for consumers from now on, without a restart: the front end gets
+    /// [`RAW_LEASE_BUFFERS`] more buffers, the back end takes them as inputs, and they are
+    /// queued. They stay until the pipeline is opened again (the driver frees buffers only with
+    /// the stream off). Not with compressed raw. Written, untested on board.
+    pub fn enable_raw_lease(&mut self) -> Result<()> {
+        if self.options.raw_lease {
+            return Ok(());
+        }
+        if self.options.compressed_raw() {
+            return Err(PipelineError::Config(
+                "raw frames for consumers: the raw frames are compressed".into(),
+            ));
+        }
+        let (Some(fe), Some(be)) = (self.fe_dev.as_mut(), self.be_dev.as_mut()) else {
+            return Err(PipelineError::Config(
+                "raw frames for consumers: not streaming".into(),
+            ));
+        };
+        let first = u32::try_from(self.raw_fds.len()).unwrap_or(u32::MAX);
+        let added = fe.add_image_buffers(RAW_LEASE_BUFFERS)?;
+        let clones = added
+            .iter()
+            .map(|f| f.try_clone())
+            .collect::<std::io::Result<Vec<_>>>()?;
+        be.add_inputs(clones)?;
+        for k in 0..added.len() as u32 {
+            fe.release_image(first + k)?;
+        }
+        self.raw_fds.extend(added);
+        self.options.raw_lease = true;
+        // A reopen (a mode change) keeps them.
+        self.options.fe_buffers += RAW_LEASE_BUFFERS;
+        Ok(())
     }
 
     /// Whether frames keep their raw buffer for a consumer.

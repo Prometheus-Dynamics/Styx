@@ -32,7 +32,13 @@ close or drop stale items with a reason, park board-only work as written, untest
 - [ ] **Raw buffers only while a raw consumer is attached** (coordinator, 2026-11-06). *Why:* 20 ×
       2 MB raw buffers with `sensor_raw` available (peripherals RSS 69 MB, 33 MB without). *Done
       when:* the raw lease's buffers exist only while a raw consumer is attached and are freed when
-      it leaves, with at most one capture restart each way, its cost stated.
+      it leaves, with at most one capture restart each way, its cost stated. *Written:* a raw
+      consumer joining turns `SENSOR_RAW` on in the running capture: the PiSP adds 4 front end
+      buffers (`add_image_buffers`) and gives them to the back end (`add_inputs`), no restart;
+      the software ISP just attaches them. They stay until the next restart (the driver frees
+      buffers only with the stream off). HeliOS attaches its raw client only while recording
+      (99ea403e). Host test: a raw client on a simulated camera, 0 restarts. PiSP untested on
+      board.
 - [ ] **One capture start on an fps change** (the triple start). *Why:* clients reconnecting one at
       a time each shrink and regrow the plan. Written: a client that leaves keeps its setup for
       `LEAVE_GRACE` (250 ms) before the others' plan shrinks. *Done when:* one start per change

@@ -384,6 +384,7 @@ pub(super) fn start_processed(
     ));
     loop_controls.af.set_output(w, h);
     loop_controls.af.set_lens(camera.info().lens.is_some());
+    loop_controls.set_raw(config.backends.native.sensor_raw);
     // The PiSP's main output at the mode's size can be a crop of the frame (`OUTPUT_CROP`).
     if kind == IspKind::Pisp
         && let Ok((specs, _)) = pisp_worker::output_specs(&mode, &config.backends.native)
@@ -662,7 +663,6 @@ pub(super) fn start_processed(
                     live: live_worker,
                     clock: timestamp_clock,
                     controls: controls.clone(),
-                    sensor_raw: config.backends.native.sensor_raw,
                     heap: out_buf::out_heap(config.backends.native.driver_buffers, gpu_pad, &live),
                 },
             )?;
