@@ -162,11 +162,16 @@ pub(crate) const HW_DECODE_LATENCY_MS_PER_MP: f32 = 1.5;
 pub(crate) const FFMPEG_SW_MJPEG_MS_PER_MP: f32 = 3.3;
 /// Software H.264/H.265 decode is far costlier than JPEG.
 pub(crate) const SW_VIDEO_DECODE_MS_PER_MP: f32 = 8.0;
-/// Extracting luma from packed YUYV (one strided copy).
+/// Per-frame costs below are a CM5 kernel's time (Raze #1, 1280x800, cold sources, p50,
+/// 2026-11-06) plus ~0.06 ms per megapixel for the frame around it (its buffer lease and the
+/// source's CPU-access sync), as the box level measured end to end shows.
+///
+/// Extracting luma from packed YUYV (kernel 0.28 ms/MP).
 pub(crate) const YUYV_LUMA_MS_PER_MP: f32 = 0.35;
-/// Converting RGB to luma.
-pub(crate) const RGB_LUMA_MS_PER_MP: f32 = 1.2;
-/// 2x2 box pyramid level, per megapixel of the level's source (1280x800 → 640x400: 0.16 ms).
+/// Converting RGB24 to luma (kernel 0.37 ms/MP).
+pub(crate) const RGB_LUMA_MS_PER_MP: f32 = 0.45;
+/// 2x2 box pyramid level, per megapixel of the level's source: 1280x800 → 640x400 costs
+/// 0.17 ms of process CPU end to end, in process or served over IPC (kernel 0.11 ms/MP).
 pub(crate) const BOX_LEVEL_MS_PER_MP: f32 = 0.16;
 /// A box filter level on the GPU, its upload and readback included. CM5 (V3D 7.1, wgpu on
 /// Mesa v3dv, 2026-10-26): levels 1-3 of 1280x800 (1.34 MP of source) take 1.67 ms (p50).
@@ -174,8 +179,8 @@ pub(crate) const GPU_LEVEL_MS_PER_MP: f32 = 1.25;
 /// The CPU's part of a GPU level (copying the frame in and the levels out, submitting,
 /// waiting): 0.38 ms for the same three levels on the CM5, more than the CPU's box filters.
 pub(crate) const GPU_COPY_MS_PER_MP: f32 = 0.28;
-/// Copying a frame to realign its rows.
-pub(crate) const REALIGN_MS_PER_MP: f32 = 0.3;
+/// Copying a frame to realign its rows (kernel 0.12 ms/MP).
+pub(crate) const REALIGN_MS_PER_MP: f32 = 0.2;
 /// libx264 low latency (`superfast`, `zerolatency`) on a Cortex-A76: 14.5 ms per 720p frame.
 pub(crate) const SW_H26X_ENCODE_MS_PER_MP: f32 = 16.0;
 /// JPEG encoding of YUV/RGB frames on a Cortex-A76.

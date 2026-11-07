@@ -41,6 +41,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Planner CPU constants re-measured on a CM5 (1280x800, cold sources): RGB to luma 1.2 → 0.45
+  ms/MP, realign 0.3 → 0.2 ms/MP; YUYV luma (0.35) and the box level (0.16) confirmed. The box
+  level's end-to-end cost was measured in process and served over IPC (0.17 ms per 1280x800).
+
 - `SharedBufferPool` keeps each free memfd's mapping, so a lease costs no `mmap`, page faults
   or `munmap` (decoded frames and served pyramid levels lease one per frame).
 
