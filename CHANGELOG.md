@@ -150,10 +150,13 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
   appears and stopped when it goes (kernel device events, else a rescan), and the endpoint
   list published on every change: an `EndpointSink` the product implements and/or a JSON file
   replaced atomically. Per camera (matched by key or name): capture settings, ISP output
-  buffers, most clients, and the CPUs its threads run on (a camera's service starts on a
+  buffers, most clients, spare clients, and the CPUs its threads run on (a camera's service starts on a
   thread pinned to them, so its accept loop, clients' connections and capture workers stay
   there). `styx_camerad::run(config, sink, &stop)` embeds it; the `styx-camerad` binary takes
-  a JSON configuration (`/etc/styx/camerad.json`, every field optional).
+  a JSON configuration (`/etc/styx/camerad.json`, every field optional). Each endpoint names
+  its camera (name, product, keys), the backend it is captured through and that backend's node
+  (V4L2 device, native or UVC key, libcamera id), so an embedder needs nothing from the device
+  list.
 
 - `styx-capi`: Styx's versioned C surface, `include/styx.h` 1.0, on `lemnos-abi` 1.0 handles,
   statuses and buffer descriptions: cameras, streams, frames (dma-bufs or host planes, held until

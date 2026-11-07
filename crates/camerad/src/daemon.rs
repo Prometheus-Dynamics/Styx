@@ -95,6 +95,8 @@ impl<S: EndpointSink> Daemon<S> {
                         name: device.identity.display.clone(),
                         product: device.identity.product.clone(),
                         keys: device.identity.keys.clone(),
+                        backend: device.backends.first().map(|b| b.kind),
+                        node: device.backends.first().and_then(|b| node(&b.handle)),
                         socket: path,
                         transport: TRANSPORT,
                     };
@@ -141,6 +143,9 @@ impl<S: EndpointSink> Daemon<S> {
         }
         if let Some(n) = resolved.max_clients {
             service = service.max_clients(n);
+        }
+        if let Some(n) = resolved.spare_clients {
+            service = service.spare_clients(n);
         }
         std::fs::create_dir_all(&self.config.socket_dir)
             .map_err(|e| format!("{}: {e}", self.config.socket_dir.display()))?;
@@ -222,6 +227,22 @@ fn stem_of(device: &ProbedDevice, k: usize) -> String {
             }
         })
         .collect()
+}
+
+/// Where the backend opens the camera: its V4L2 device node, native or UVC key, or libcamera
+/// id.
+fn node(handle: &styx::BackendHandle) -> Option<String> {
+    match handle {
+        #[cfg(feature = "v4l2")]
+        styx::BackendHandle::V4l2 { path } => Some(path.clone()),
+        #[cfg(feature = "native")]
+        styx::BackendHandle::Native { key } => Some(key.clone()),
+        #[cfg(feature = "uvc")]
+        styx::BackendHandle::Uvc { key } => Some(key.clone()),
+        #[cfg(feature = "libcamera")]
+        styx::BackendHandle::Libcamera { id } => Some(id.clone()),
+        _ => None,
+    }
 }
 
 fn fingerprint(device: &ProbedDevice) -> String {

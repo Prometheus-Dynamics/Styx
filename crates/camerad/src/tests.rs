@@ -62,6 +62,10 @@ fn cameras_are_served_while_attached_and_published_on_change() {
     assert_eq!(list.len(), 2);
     assert!(list.iter().all(|e| e.transport == TRANSPORT));
     assert!(list.iter().any(|e| e.socket == pa && e.name == "cam-a"));
+    assert!(
+        list.iter()
+            .all(|e| e.backend == Some(styx::BackendKind::Virtual))
+    );
     // The same cameras again: nothing changes, nothing is published.
     daemon.sync(&[a.clone(), b.clone()]);
     assert_eq!(lists.lock().unwrap().len(), 1);
@@ -99,6 +103,7 @@ fn the_configuration_picks_and_skips_cameras() {
             matches: b.identity.keys[0].clone(),
             output_buffers: Some(4),
             max_clients: Some(2),
+            spare_clients: Some(4),
             ..Default::default()
         }],
         ..config(d.clone())
@@ -106,6 +111,7 @@ fn the_configuration_picks_and_skips_cameras() {
     let resolved = only_rear.resolve(&b).expect("rear is listed");
     assert_eq!(resolved.capture.backends.native.output_buffers, 4);
     assert_eq!(resolved.max_clients, Some(2));
+    assert_eq!(resolved.spare_clients, Some(4));
     assert!(only_rear.resolve(&a).is_none());
     let _ = std::fs::remove_dir_all(&d);
 }
@@ -122,8 +128,12 @@ fn a_camera_back_on_other_nodes_restarts() {
     moved.backends[0].kind = styx::BackendKind::V4l2;
     daemon.sync(std::slice::from_ref(&moved));
     assert!(socket_path(&d, &a).exists());
-    // Stopped and started again: same endpoint, so the list is not published again.
-    assert_eq!(lists.lock().unwrap().len(), 1);
+    // Stopped and started again on the same socket; the list says the new backend.
+    let lists = lists.lock().unwrap();
+    assert_eq!(lists.len(), 2);
+    assert_eq!(lists[1][0].socket, socket_path(&d, &a));
+    assert_eq!(lists[1][0].backend, Some(styx::BackendKind::V4l2));
+    drop(lists);
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -203,10 +213,12 @@ fn an_empty_configuration_file_is_the_default() {
     assert_eq!(c.socket_dir, PathBuf::from("/run/styx/camerad"));
     assert_eq!(c.socket_mode, Some(0o660));
     let c: Config = serde_json::from_str(
-        r#"{"cpus": [0, 1], "cameras": [{"match": "ov9782", "output_buffers": 3}]}"#,
+        r#"{"cpus": [0, 1], "spare_clients": 2, "cameras": [{"match": "ov9782", "output_buffers": 3, "spare_clients": 4}]}"#,
     )
     .unwrap();
     assert_eq!(c.cpus, Some(vec![0, 1]));
     assert_eq!(c.cameras[0].output_buffers, Some(3));
+    assert_eq!(c.spare_clients, Some(2));
+    assert_eq!(c.cameras[0].spare_clients, Some(4));
     assert!(serde_json::from_str::<Config>(r#"{"cpu": [0]}"#).is_err());
 }

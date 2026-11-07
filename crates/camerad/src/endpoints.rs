@@ -18,6 +18,11 @@ pub struct Endpoint {
     pub product: Option<String>,
     /// Its identity keys (the first names the socket).
     pub keys: Vec<String>,
+    /// The backend it is captured through (its first as probed).
+    pub backend: Option<styx::BackendKind>,
+    /// Where that backend opens it: the V4L2 device node, the native or UVC key, or the
+    /// libcamera id.
+    pub node: Option<String>,
     /// Its service's socket.
     pub socket: PathBuf,
     /// [`TRANSPORT`].

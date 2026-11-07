@@ -26,6 +26,10 @@ pub struct Config {
     /// Capture settings of every camera (native ISP, buffers, queues), before `cameras`'
     /// overrides.
     pub capture: StyxConfig,
+    /// Clients each camera's capture keeps room for beyond the first, so they join without a
+    /// restart (`CameraService::spare_clients`; each spare costs a set of buffers). `None`:
+    /// the service's default.
+    pub spare_clients: Option<usize>,
     /// CPUs the threads of every camera's service run on (capture, ISP, 3A, clients'
     /// connections), e.g. all but the vision cores. `None`: wherever the host's thread may.
     pub cpus: Option<Vec<usize>>,
@@ -44,6 +48,7 @@ impl Default for Config {
             listed_only: false,
             idle_pause_ms: Some(2_000),
             capture: StyxConfig::default(),
+            spare_clients: None,
             cpus: None,
             rescan_ms: 1_000,
             cameras: Vec::new(),
@@ -66,6 +71,8 @@ pub struct CameraConfig {
     pub output_buffers: Option<u32>,
     /// Most clients at once.
     pub max_clients: Option<usize>,
+    /// Its spare clients, in place of [`Config::spare_clients`].
+    pub spare_clients: Option<usize>,
     /// CPUs of its service's threads, in place of [`Config::cpus`].
     pub cpus: Option<Vec<usize>>,
 }
@@ -84,6 +91,7 @@ impl CameraConfig {
 pub struct Resolved {
     pub capture: StyxConfig,
     pub max_clients: Option<usize>,
+    pub spare_clients: Option<usize>,
     pub cpus: Option<Vec<usize>>,
 }
 
@@ -105,6 +113,7 @@ impl Config {
         Some(Resolved {
             capture,
             max_clients: entry.and_then(|c| c.max_clients),
+            spare_clients: entry.and_then(|c| c.spare_clients).or(self.spare_clients),
             cpus: entry
                 .and_then(|c| c.cpus.clone())
                 .or_else(|| self.cpus.clone()),
