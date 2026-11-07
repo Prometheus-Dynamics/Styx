@@ -143,7 +143,8 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - `PispOptions::raw_compressed` (and `STYX_PISP_RAW_COMPRESSED=1` with debug hooks): the PiSP front
   end writes raw frames in 8-bit compressed form (mode 1, offset 2048) and the back end
   decompresses them: half the raw buffers' memory and the back end's raw reads. Ignored with
-  `raw_lease`. Default off; written, untested on board.
+  `raw_lease`. Default off. On Raze #1 the front end takes the compressed format, but Lemnos's
+  back-end stream still sets the 16-bit Bayer input format, so setup fails; it waits on Lemnos.
 
 - `styx_core::daedalus::from_shared_frame`: a Daedalus `SharedFrame` (`daedalus:frame` v3) as an
   `Arc<FrameLease>` in place, the same `Arc` for the same frame while it lives, released once
