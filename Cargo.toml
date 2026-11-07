@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/camerad",
     "crates/capi",
     "crates/core",
     "crates/capture",

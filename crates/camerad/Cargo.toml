@@ -1,0 +1,28 @@
+[package]
+name = "styx-camerad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Styx camera daemon: one camera service per attached camera, started and stopped as cameras come and go, with a list of their endpoints; a library a product embeds, and a thin binary"
+publish = false
+
+[features]
+default = ["native", "v4l2"]
+# Capture backends the served cameras may use.
+native = ["styx/native"]
+v4l2 = ["styx/v4l2"]
+uvc = ["styx/uvc"]
+libcamera = ["styx/libcamera"]
+
+[dependencies]
+styx = { workspace = true, features = ["facade", "hotplug", "serde"] }
+serde = { workspace = true, features = ["std"] }
+serde_json.workspace = true
+libc.workspace = true
+
+[[bin]]
+name = "styx-camerad"
+path = "src/main.rs"

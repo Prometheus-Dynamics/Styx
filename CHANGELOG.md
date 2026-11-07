@@ -145,6 +145,16 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Added
 
+- `styx-camerad` (crates/camerad): a camera daemon, library first. One `CameraService` per
+  attached camera on its own socket (named after its identity key), started when the camera
+  appears and stopped when it goes (kernel device events, else a rescan), and the endpoint
+  list published on every change: an `EndpointSink` the product implements and/or a JSON file
+  replaced atomically. Per camera (matched by key or name): capture settings, ISP output
+  buffers, most clients, and the CPUs its threads run on (a camera's service starts on a
+  thread pinned to them, so its accept loop, clients' connections and capture workers stay
+  there). `styx_camerad::run(config, sink, &stop)` embeds it; the `styx-camerad` binary takes
+  a JSON configuration (`/etc/styx/camerad.json`, every field optional).
+
 - `styx-capi`: Styx's versioned C surface, `include/styx.h` 1.0, on `lemnos-abi` 1.0 handles,
   statuses and buffer descriptions: cameras, streams, frames (dma-bufs or host planes, held until
   released) and controls, as `libstyx_capi.a` and `libstyx_capi.so.1`, with a Rust wrapper

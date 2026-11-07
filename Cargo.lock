@@ -5482,6 +5482,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "styx-camerad"
+version = "2.0.1-dev"
+dependencies = [
+ "libc",
+ "serde",
+ "serde_json",
+ "styx",
+]
+
+[[package]]
 name = "styx-capi"
 version = "2.0.1-dev"
 dependencies = [
