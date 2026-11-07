@@ -59,7 +59,9 @@ fn payloads_share_the_frame_and_say_where_it_lives() {
     let payload = shared_frame_payload(frame.clone());
     assert_eq!(payload.type_key().as_str(), FRAME_TYPE_KEY);
     assert_eq!(payload.residency(), Residency::Cpu);
-    assert_eq!(payload.bytes_estimate(), Some(128));
+    // No size estimate: Daedalus carries one only in a wrapper storage, and a payload that lends
+    // the frame handle (`Payload::providing`) must be the lease's own allocation.
+    assert_eq!(payload.bytes_estimate(), None);
     // The same frame, not a copy.
     let inside = payload.get_arc::<FrameLease>().unwrap();
     assert!(Arc::ptr_eq(&inside, &frame));
@@ -362,9 +364,15 @@ mod frame_views {
         );
 
         let frame = Arc::new(grey(16, 8, 1));
-        let payload = shared_frame_payload(frame.clone())
-            .provide_foreign::<FrameLease, FrameInterface>()
-            .unwrap();
+        // The payload lends the `daedalus:frame` handle itself (`Payload::providing`): a plugin
+        // across the stable path reads it in place, and same-build readers still get the lease
+        // under Styx's key.
+        let payload = shared_frame_payload(frame.clone());
+        assert_eq!(payload.type_key().as_str(), FRAME_TYPE_KEY);
+        assert!(std::ptr::eq(
+            payload.get_ref::<FrameLease>().unwrap(),
+            &*frame
+        ));
         let view = payload
             .foreign_borrow()
             .unwrap()

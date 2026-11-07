@@ -41,6 +41,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- `styx_core::daedalus::frame_payload` builds its payload with Daedalus's `Payload::providing`:
+  a plugin built apart (across Daedalus's stable path) reads the frame through a lent
+  `daedalus:frame` handle in place, where it got a descriptor without pixels; same-build readers
+  still take the `FrameLease` under `styx:framelease`. The payload no longer carries a size
+  estimate (Daedalus keeps one only in a wrapper storage, which cannot lend the handle).
+
 - Camera service: a client that leaves keeps the capture's setup for 250 ms before the other
   clients' plan shrinks, so clients reconnecting one at a time (after a frame rate change) find it
   unchanged and restart nothing; one that stays away costs a single restart, as before.

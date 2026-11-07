@@ -47,9 +47,7 @@ pub(super) fn camera_service_frame_view() {
         std::hint::black_box(read_view(view));
     };
     let through_payload = |frame: FrameLease| {
-        let payload = frame_payload(frame)
-            .provide_foreign::<FrameLease, FrameInterface>()
-            .unwrap();
+        let payload = frame_payload(frame);
         let view = payload.foreign_borrow().unwrap().view::<FrameInterface>();
         std::hint::black_box(read_view(view.unwrap()));
     };

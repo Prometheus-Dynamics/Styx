@@ -222,8 +222,9 @@ pub fn shared_frame_payload(frame: Arc<FrameLease>) -> Payload {
     frame.finish_cpu_write();
     shared_frame::remember_sent(&frame);
     let residency = payload_residency(&frame);
-    let bytes = frame.payload_bytes() as u64;
-    Payload::shared_with(FRAME_TYPE_KEY, frame, residency, None, Some(bytes))
+    // Same-build readers take the `FrameLease`; other builds (a plugin across Daedalus's stable
+    // path) get a `daedalus:frame` handle lent from it, no copy.
+    Payload::providing::<FrameLease, FrameInterface>(FRAME_TYPE_KEY, frame, residency)
 }
 
 /// The planner inserts this on an edge from a frame port to a descriptor port: it reads the frame's
