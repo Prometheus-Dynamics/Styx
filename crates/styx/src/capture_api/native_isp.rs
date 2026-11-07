@@ -19,7 +19,9 @@ mod pisp_regions;
 mod pisp_sliced;
 mod pisp_traffic;
 mod pisp_worker;
+#[cfg(feature = "rkisp")]
 mod rkisp_lease;
+#[cfg(feature = "rkisp")]
 mod rkisp_worker;
 mod soft_worker;
 mod still_process;
@@ -571,6 +573,11 @@ pub(super) fn start_processed(
             )?;
             (controls, worker)
         }
+        #[cfg(not(feature = "rkisp"))]
+        IspKind::Rkisp => {
+            return Err(err("a Rockchip ISP camera needs Styx built with `rkisp`"));
+        }
+        #[cfg(feature = "rkisp")]
         IspKind::Rkisp => rkisp_worker::open(
             (
                 raw_code(camera.info(), (w, h), &config.backends.native)?,

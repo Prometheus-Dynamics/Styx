@@ -63,6 +63,7 @@ impl StillHost for styx_pipeline::device::SoftPipeline {
     }
 }
 
+#[cfg(feature = "rkisp")]
 impl StillHost for styx_pipeline::device::RkispPipeline {
     fn set_controls(&mut self, c: Controls) {
         self.algorithms().controller().set_controls(c);

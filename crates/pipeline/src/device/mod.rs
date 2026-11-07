@@ -13,6 +13,7 @@ mod pisp;
 mod pisp_isp;
 mod pisp_options;
 mod pisp_slices;
+#[cfg(feature = "rkisp")]
 mod rkisp;
 mod soft;
 mod still_be;
@@ -26,7 +27,14 @@ pub use pisp::{
 };
 pub use pisp_options::PispOptions;
 pub use pisp_slices::{PispEvent, PispSlice, SliceCounts};
+#[cfg(feature = "rkisp")]
 pub use rkisp::{RKISP_BUFFERS, RkispFrame, RkispPipeline, has_rkisp};
+
+/// Built without `rkisp`: no Rockchip ISP is used.
+#[cfg(not(feature = "rkisp"))]
+pub fn has_rkisp() -> bool {
+    false
+}
 pub use soft::{SoftFrame, SoftPipeline};
 pub use still_be::StillBackEnd;
 

@@ -20,6 +20,8 @@ libcamera = ["styx/libcamera"]
 decoders = ["styx/raw-decoders", "styx/codec-jpeg-decoder"]
 # libjpeg-turbo for MJPG (faster than the Rust decoder; needs the system library).
 turbojpeg = ["styx/codec-turbojpeg"]
+# Cameras on the Rockchip ISP30 (RK3588 family).
+rkisp = ["styx/rkisp"]
 
 [dependencies]
 styx = { workspace = true, features = ["facade", "hotplug", "serde"] }

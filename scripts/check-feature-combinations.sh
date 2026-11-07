@@ -26,6 +26,7 @@ declare -a checks=(
     "codec-mozjpeg::cargo check -p styx --no-default-features --features codec-mozjpeg"
     "codec-turbojpeg::cargo check -p styx --no-default-features --features codec-turbojpeg"
     "daedalus::cargo check -p styx --no-default-features --features daedalus"
+    "rkisp::cargo check -p styx --no-default-features --features rkisp"
     "netcam-video::cargo check -p styx --no-default-features --features netcam,netcam-video"
     "file-backend-video::cargo check -p styx --no-default-features --features file-backend,file-backend-video"
     "simulation-bevy::cargo check -p styx --no-default-features --features simulation-bevy"
@@ -47,6 +48,14 @@ for packages in "--workspace" "-p styx --features native,v4l2"; do
         exit 1
     fi
 done
+
+# SoC backends stay opt-in: a native build pulls no Rockchip ISP crate.
+echo "==> Checking that the native build pulls no styx-rkisp"
+if cargo tree -p styx --no-default-features --features native -e normal --prefix none |
+    grep -E '^styx-rkisp '; then
+    echo "styx-rkisp is in the native build's dependency graph" >&2
+    exit 1
+fi
 
 for check in "${checks[@]}"; do
     name="${check%%::*}"

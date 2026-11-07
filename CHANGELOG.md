@@ -41,6 +41,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Feature defaults trimmed. The Rockchip ISP backend is opt-in through a new `rkisp` feature on
+  `styx`, `styx-pipeline` and `styx-camerad`; `native` no longer pulls `styx-rkisp`. Without the
+  feature, opening an rkisp camera returns an error that names the feature. `tracing` is out of
+  `styx`'s `default` (still in `examples`); enable it explicitly for spans.
 - The PiSP temporal-denoise average's two buffers come from the `system` heap and, compressed,
   are 1 MB each at 1280x800 instead of 2 MB (Lemnos `enable_tdn_with`;
   `NativeIspConfig::tdn_contiguous` takes CMA first). With the back end outputs on the system

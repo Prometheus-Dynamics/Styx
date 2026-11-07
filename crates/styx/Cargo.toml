@@ -100,7 +100,9 @@ test = false
 required-features = ["facade"]
 
 [features]
-default = ["facade", "tracing"]
+# The capture facade alone: diagnostics (`tracing`), serde, codecs, backends and the rest are
+# opt-in.
+default = ["facade"]
 # Recordings as MCAP files with ROS 2 message types (the main recording format). Opt-in: the
 # MCAP reader brings binrw, enumset and their proc macros.
 replay-mcap = ["facade", "dep:mcap"]
@@ -178,6 +180,9 @@ native = [
     # The camera service answers metrics requests (`metrics_top --service` on a board).
     "metrics-serde",
 ]
+# Native cameras on the Rockchip ISP30 (RK3588 family, vendor kernel; styx-rkisp). Opt-in: other
+# SoCs' builds leave it out, and without it such a camera fails to open.
+rkisp = ["native", "styx-pipeline/rkisp"]
 # Native cameras without a PiSP process on a Vulkan GPU when one exists (styx-gpuisp: Vulkan
 # loaded at run time, the software ISP otherwise; `STYX_GPU_ISP=0` turns it off).
 gpu-isp = ["native", "styx-pipeline/gpu"]
@@ -217,7 +222,7 @@ simulation-bevy = ["facade", "dep:bevy", "dep:crossbeam-channel"]
 # `styx::watch::LinuxVideoFsWatcher`: device changes from kernel uevents (Lemnos), a rescan per
 # poll where netlink is not available.
 hotplug = ["facade", "dep:lemnos-linux"]
-examples = ["preview-window", "async"]
+examples = ["preview-window", "async", "tracing"]
 serde = [
     "facade",
     "metrics-serde",

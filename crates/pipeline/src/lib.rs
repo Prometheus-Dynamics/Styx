@@ -65,6 +65,7 @@ pub mod rawrec;
 pub mod reexpose;
 #[cfg(feature = "std")]
 pub mod replay;
+#[cfg(feature = "rkisp")]
 pub mod rkisp;
 pub mod sensor;
 pub mod soft;
