@@ -10,6 +10,18 @@
 //! | [`HalfFilter::BoxDownscaler`] | 87.7 % | 100.0 % | 3 | -0.11 | 1.771 ms |
 //! | [`HalfFilter::Box`] | 89.8 % | 100.0 % | 2 (1 pixel) | -0.08 | 1.769 ms |
 //!
+//! Levels 2 and 3 from extra passes on output 1's downscaler (Raze #1, 145 live frames,
+//! 2026-11-07), against the area mean of the full luma (the CPU's chained 2x2 box rounds at
+//! every level, so it drifts further: 74.6 % and 63.1 % identical, max 4 and 2):
+//!
+//! | level | identical | \|diff\| <= 1 | max \|diff\| | mean (PiSP - CPU) |
+//! |---|---|---|---|---|
+//! | 2 (320x200) | 90.6 % | 100.0 % | 3 | -0.04 |
+//! | 3 (160x100) | 94.1 % | 100.0 % | 1 | -0.02 |
+//!
+//! Before, the passes ran on output 0, which has no downscaler, and fell back to the smart
+//! resize: 20.8 % and 10.6 % identical, max 65 and 111 (a scale error of up to 3/8 pixel).
+//!
 //! The rest cannot match: the back end averages its luma before rounding it to 8 bits, the CPU
 //! averages the rounded output (a Y offset on output 1's CSC only moves the difference: +1/8
 //! LSB gives 90.2 % identical, +1/4 82.7 %). The back end time is the same for all three.
@@ -63,11 +75,12 @@ pub fn set_half_filter(be: &mut BackEnd, filter: HalfFilter, input: (u16, u16)) 
 }
 
 /// Output `o` making `size` from `input` (its crop) as a box average when `size` is exactly
-/// `input` / k for k = 2, 4 or 8 and `filter` is a box: k = 2 as `filter` says, k = 4 and 8 from
-/// the downscaler alone (an area average of k x k, which the 6-tap resampler cannot do; the
-/// CPU's repeated 2x2 box gives the same mean). Only output 1 has a downscaler, so output 0
-/// takes only [`HalfFilter::Box`] at 2x. Anything else gets the smart resize. Returns k when
-/// the box was set.
+/// `input` / k for k = 2, 4 or 8 and `filter` is a box: on output 1, k = 2 as `filter` says and
+/// k = 4 and 8 from the downscaler alone (an area average of k x k; the CPU's repeated 2x2 box
+/// gives the same mean). Output 0 has no downscaler: its resampler steps by exactly k with k
+/// equal taps for k = 2 and 4; k = 8 would need 8 taps of its 6. Anything else gets the smart
+/// resize (Lanczos 3, corner aligned: at 4x it lands up to 3/8 of a pixel off the box at the
+/// edges). Returns k when the box was set.
 pub fn set_box(
     be: &mut BackEnd,
     o: usize,
@@ -84,9 +97,9 @@ pub fn set_box(
     };
     let exact =
         k > 0 && (u32::from(w) * k, u32::from(h) * k) == (u32::from(input.0), u32::from(input.1));
-    let downscaler = k >= 4 || filter == HalfFilter::BoxDownscaler;
-    if filter == HalfFilter::Lanczos3 || !exact || !matches!(k, 2 | 4 | 8) || (downscaler && o != 1)
-    {
+    let downscaler = o == 1 && (k >= 4 || filter == HalfFilter::BoxDownscaler);
+    let taps = !downscaler && matches!(k, 2 | 4) && (o == 0 || filter == HalfFilter::Box);
+    if filter == HalfFilter::Lanczos3 || !exact || !(downscaler || taps) {
         be.set_smart_resize(o, w, h);
         return None;
     }
@@ -111,11 +124,13 @@ pub fn set_box(
                 ..Default::default()
             },
         );
-        be.set_resample_step(o, Some((2 << 12, 2 << 12)));
+        // Output pixel x at input 2x (4x): the taps from the centre on are its k pixels.
+        let step = (k << 12) as u16;
+        be.set_resample_step(o, Some((step, step)));
+        let tap = ONE / k as i16;
         let mut coef = [0i16; 96];
         for phase in coef.as_chunks_mut::<TAPS>().0 {
-            phase[CENTRE] = ONE / 2;
-            phase[CENTRE + 1] = ONE / 2;
+            phase[CENTRE..CENTRE + k as usize].fill(tap);
         }
         be.config_mut().resample[o].coef = coef;
         rgb |= rgb_enable::resample(o);
@@ -250,13 +265,39 @@ mod tests {
         }
     }
 
+    /// Output 0 (no downscaler) at 4x: the resampler steps by 4 with four equal taps, so
+    /// output pixel x is the mean of input pixels 4x..4x + 3 on each axis.
+    #[test]
+    fn output_0_makes_a_quarter_box_with_four_taps() {
+        let mut be = template((640, 400));
+        assert_eq!(
+            set_box(&mut be, 0, HalfFilter::Box, (1280, 800), (320, 200)),
+            Some(4)
+        );
+        // Output 0 at 320x200, as an extra pass sets its format.
+        let mut out = be.config().output_format[0];
+        out.image = fmt(320, 200, formats::NV12);
+        be.set_output_format(0, out);
+        let c = be.prepare().unwrap().config;
+        assert_eq!(
+            c.global.rgb_enables & rgb_enable::resample(0),
+            rgb_enable::resample(0)
+        );
+        let r = c.resample[0];
+        assert_eq!((r.scale_factor_h, r.scale_factor_v), (4 << 12, 4 << 12));
+        for phase in r.coef.as_chunks::<TAPS>().0 {
+            assert_eq!(*phase, [0, 0, 256, 256, 256, 256]);
+        }
+    }
+
     #[test]
     fn output_0_has_no_downscaler_and_lanczos_never_boxes() {
         let mut be = template((640, 400));
         assert_eq!(
-            set_box(&mut be, 0, HalfFilter::Box, (1280, 800), (320, 200)),
+            set_box(&mut be, 0, HalfFilter::Box, (1280, 800), (160, 100)),
             None
         );
+        // Asked for the downscaler where there is none: the resampler's box.
         assert_eq!(
             set_box(
                 &mut be,
@@ -265,7 +306,7 @@ mod tests {
                 (1280, 800),
                 (640, 400)
             ),
-            None
+            Some(2)
         );
         assert_eq!(
             set_box(&mut be, 1, HalfFilter::Lanczos3, (1280, 800), (320, 200)),

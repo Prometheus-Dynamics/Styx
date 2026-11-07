@@ -48,6 +48,10 @@ pub(super) struct Regions {
     applied: [Option<FrameRect>; MAX_NATIVE_REGIONS],
     /// The pyramid levels extra passes make, and their passes.
     pyramid: Vec<(u8, usize)>,
+    /// The output whose buffers the pyramid passes write: the second one when it makes level 1
+    /// (its buffers hold the deeper levels, and only it has the downscaler that makes a box at
+    /// 1/4 and 1/8), else the main one.
+    pyramid_output: usize,
     /// The main output's crop the pyramid passes were set up for.
     pyramid_for: Option<Option<FrameRect>>,
     frame: (u32, u32),
@@ -100,10 +104,12 @@ impl Regions {
                  size",
             ));
         }
+        let pyramid_output = usize::from(cfg.pyramid_output_level() == 1 && specs[1].is_some());
         Ok(Self {
             places,
             applied: [None; MAX_NATIVE_REGIONS],
             pyramid,
+            pyramid_output,
             pyramid_for: None,
             frame,
         })
@@ -111,7 +117,8 @@ impl Regions {
 
     /// How many extra passes write into each output's buffers.
     pub(super) fn passes_per_output(&self) -> [u32; 2] {
-        let mut n = [self.pyramid.len() as u32, 0];
+        let mut n = [0, 0];
+        n[self.pyramid_output] = self.pyramid.len() as u32;
         for place in self.places.iter().flatten() {
             if let Place::Pass(_, shape) = place {
                 n[shape.output] += 1;
@@ -154,6 +161,7 @@ impl Regions {
                 let size = (side(crop.width) as u16, side(crop.height) as u16);
                 let spec = PassSpec {
                     size: Some(size),
+                    output: self.pyramid_output,
                     ..region_pass(crop)
                 };
                 if let Err(e) = p.set_pass(i, Some(spec)) {
@@ -490,6 +498,20 @@ mod tests {
             Regions::new(&cfg, specs(None), (1280, 800), &RegionCrops::default()).unwrap();
         assert_eq!(regions.pyramid, [(2, 0), (3, 1)]);
         assert_eq!(pass_count(&cfg), 2);
+        // In the second output's buffers, where the downscaler makes 1/4 and 1/8 as boxes.
+        let half = OutputSpec {
+            code: FourCc::NV12,
+            width: 640,
+            height: 400,
+        };
+        let regions = Regions::new(
+            &cfg,
+            specs(Some(half)),
+            (1280, 800),
+            &RegionCrops::default(),
+        )
+        .unwrap();
+        assert_eq!(regions.passes_per_output(), [0, 2]);
         // With a crop, every level from a pass, after the regions'.
         let region = NativeRegion {
             rect: Some(FrameRect::new(0, 0, 64, 64)),

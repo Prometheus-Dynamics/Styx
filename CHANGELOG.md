@@ -1173,6 +1173,13 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 
 ### Fixed
 
+- PiSP pyramid levels 2 and 3 from extra back end passes are boxes, as ff18ef7 meant: the
+  passes ran on output 0, which has no downscaler, and fell back to the smart resize (corner
+  aligned Lanczos 3, up to 3/8 pixel off at the edges; on Raze #1 20.8 % and 10.6 % of pixels
+  matched the CPU's area mean, max 65 and 111). They now run on output 1 when it makes level
+  1 (90.6 % and 94.1 % identical, all within 1); on output 0, 1/4 is a resampler box (step 4,
+  four equal taps; written, untested on board) and 1/8 stays on the smart resize.
+
 - A USB camera's uncompressed mode that delivered no frames (YUYV 1920x1080 starving a USB 2
   bus) no longer keeps the larger compressed modes out of its fallback: the XZC webcam on
   Raze #1 fell back to MJPG 1600x896 where MJPG 2560x1440 streams.
