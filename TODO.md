@@ -7,7 +7,7 @@ underneath. No libcamera, no `v4l` crate, no per-sensor kernel driver. Design an
 No patches on other people's code; our own kernel modules are fine. The stock V4L2 path stays
 working in Styx everywhere: SystemCore and other kernels we don't control depend on it. The
 sensor bridge in `kernel-modules/` is not the plan: the kernel module is happening in Lemnos, with the drivers in Rust in userspace
-([Decided](#decided-starts-when-the-user-says), item 4).
+([The leap](#the-leap-started-2026-11-06), item 4).
 
 Audited against the code at 475e07a (2026-11-01). Numbers are from the CM5 / Raze with the OV9782
 at 1280x800 unless stated. Every open item has *what* (its bold title), *why*, *done when*,
@@ -22,52 +22,38 @@ device, with a CPU fallback for each; CPU SIMD stays detected, as it changes no 
 
 ## Now
 
-The list from the coordinator, 2026-11-03. Every agent finishes this, then pauses.
+The clear-out before the leap (coordinator, 2026-11-06, the user's go). Land what is in flight,
+close or drop stale items with a reason, park board-only work as written, untested on board.
 
-- [x] **Push 77e3160 to dev once gated** and send the commit: pushed with this file.
-- [x] **Measure `rp1-cfe`: what sliced frames are worth on the default pipeline.** Raze #1, HeliOS
-      dev.921, the live camera service at 30 fps, a low-priority client, `Frames::gray()` 1280x800,
-      300 frames twice each. Complete frames received p50 8.47-8.48 ms (p90 8.73-8.76, p99
-      10.1-10.6); sliced frames p50 6.14-6.15 ms (p90 6.34, p99 7.7-7.9) with 552 rows final, and
-      complete at p50 8.65-8.66 ms (p90 8.9). The first rows are 2.33 ms earlier and the whole frame
-      0.18 ms later. This is delivery, not detection latency: the detector A/B was not run, since
-      the graph always takes slices and the board's default pipeline was left alone. From the
-      signal side at 120 fps: slicing takes a complete frame from 9.30 to 8.14 ms for 0.03 ms of
-      CPU; stock `FRAME_SYNC` plus a timer at 5.85 ms gives the same 8.14 ms for 0.015 ms, 0 of 1201
-      early at 120, 60 and 30 fps (5.75 ms: 3 early; 6.25 ms: flat; 6.65 ms: 8.48; 7.05 ms: 8.87).
-      Row 599 lands 5.727 ms after frame start. What an own receiver must match: 552 rows by about
-      6.15 ms, the whole frame by 8.1-8.5 ms, a line signal by 5.74 ms.
-- [x] **The bridge from the 2026-10-02 A/B** (kernel 6.12, not re-measured): reported to the
-      coordinator. HeliOS does not need it. It would end the device package's two OV9782 patches
-      only if every variant moved, and the libcamera variants still use the `ov9282` driver.
-- [x] **The timer path replaces the patched line event** (user's go, 2026-11-03; `rp1-cfe` module
-      and package removed). Stock `FRAME_SYNC`, no thread: a 16-byte marker starts the row after
-      the slice line in every raw buffer before it is queued, and at `line × line_time + 0.4 ms`
-      from the sensor's mode a marker gone raises the line event; one still there runs the frame
-      whole. Raze #1, 7.2.9, line 600 of 800 at 9.1 µs lines (delay 5.86 ms), 1200 frames:
-      complete frames 8.14 ms (p95 8.25) at 120 fps against 9.30 whole, 8.15 at 60, 8.08 at 30, 0
-      early in all of them. RAW8 at 7.58 µs lines, line 400 (delay 3.43 ms), through a camera
-      service at 120 fps with a raw client: 962 frames, 0 early. Under load (4 spinning threads on
-      the 4 cores, 120 fps): 0 early; 1171 of 1200 sliced, the other 29 lost to late wake-ups (23
-      replaced by the next frame's start, 6 a frame behind), worst 1.79 ms late; 8.15 ms (p95 9.68)
-      against 9.31 (p95 11.09) whole. Pixels, `--no-tdn`, every 8th frame re-run from its final raw
-      buffer: 729 frames, 282 of them under load, byte-identical to one job with the same stripes,
-      so no job read a row before it landed. Against one stripe, the unsliced path, every frame
-      differs around the stripe's edge (about 28000 of 2.3 M bytes, at most 14 codes): the tiling,
-      not the timing; the old event used the same stripes. Stock node, patched module still in the
-      slot; `FRAME_SYNC` there is the import's, unchanged.
-- [x] **Finish the Raze list.** 2571ba4 gated and pushed. No-reader overflow count: `Drops::unread`,
-      Raze #1 2026-11-03 on a V4L2 camera with `pause_when_idle`: 0 with a client, 13 in 3 s with
-      none, still 13 with the client back, `total` 0 throughout. UVC run: moved to
-      [Done](#done). Sync validation of the 0-message run: Debian's layer 1.4.309 loaded through
-      `LD_LIBRARY_PATH`, the control run reports 1 `SYNC-HAZARD-WRITE-AFTER-WRITE`, `sync_false` and
-      `one_device` 0, exit 0. `Submit::Own` review: item 5 below.
+- [ ] **Land the stack** (gate, push, report): the NV12 pyramid fix (83e11b2), the frame socket
+      removal (ae67432), served CPU levels in memfd (299afd1), the mapped pool (3eb841b), CPU
+      constants (eb7c610), 4 front end buffers (9dad856), perf-smoke scale (5e35ba7), and the
+      joint lock: Daedalus 04d747d, Lemnos 80d5d1e.
+- [ ] **Raw buffers only while a raw consumer is attached** (coordinator, 2026-11-06). *Why:* 20 ×
+      2 MB raw buffers with `sensor_raw` available (peripherals RSS 69 MB, 33 MB without). *Done
+      when:* the raw lease's buffers exist only while a raw consumer is attached and are freed when
+      it leaves, with at most one capture restart each way, its cost stated.
+- [ ] **One capture start on an fps change** (the triple start). *Why:* clients reconnecting one at
+      a time each shrink and regrow the plan. Written: a client that leaves keeps its setup for
+      `LEAVE_GRACE` (250 ms) before the others' plan shrinks. *Done when:* one start per change
+      on the Raze.
+- [ ] **Compressed raw on the board** (written, untested on board; needs Lemnos a461e81, after the
+      joint lock's 80d5d1e, so it lands with the next Lemnos round). *Done when:* Raze #1
+      streams with `STYX_PISP_RAW_COMPRESSED=1`, image compared with uncompressed and memory stated.
+- [ ] **YUYV no-frames fallback: the bench check** (no longer paused: only anti-flicker is). *Why:*
+      a UVC camera that negotiates YUYV and delivers nothing hung a client. The fallback and the
+      cause in the error are in (302b1f6, 9cb7009: `planner/stalled.rs`; unit tests in
+      `planner/usb_tests.rs`). *Done when:* the C270 on the CM5 in a YUYV mode it cannot sustain
+      falls back to MJPEG and the error names the cause. *Blocked by:* the C270 plugged in.
 
-## Decided, starts when the user says
+## The leap (started 2026-11-06)
 
-Two things are decided: the kernel module is happening in Lemnos, with the drivers in Rust in
-userspace, so the receiver, the sensor and the PiSP move onto it; and all the shared-library work
-is happening. Nothing here starts until the user starts it. Each is *blocked by* that.
+The user's go, relayed by the coordinator on 2026-11-06. One small Lemnos kernel module with Rust
+userspace drivers; every shared library in static and shared forms (Rust core, a small versioned C
+surface, a static Rust client wrapper, never both in one process); `lemnos-abi` holds the shared
+handles, status, slabs and fences. Static fat LTO stays the default; shared mode is for consumers
+outside the image, and per-frame hot loops stay inside one library. Styx's part: items 1, 2, 4
+and 6 below, the stock V4L2 fallback kept.
 
 1. [ ] **Consumer C surface and static Rust wrapper on `lemnos-abi`,** with a recycled handle slab,
       timed on the CM5. ISP, 3A and sensor traits stay internal. *Why:* consumers link Styx through
@@ -95,7 +81,7 @@ is happening. Nothing here starts until the user starts it. Each is *blocked by*
 4. [ ] **Move onto the Lemnos kernel module and Rust userspace drivers.** An own receiver replaces
       the stock `rp1-cfe`, the sensor runs over i2c-dev, the PiSP moves onto it, and the bridge and
       the OV9782 patches retire. The stock V4L2 path stays as the fallback. *Why:* one small module
-      of ours (claim, DMA, dma-buf, interrupts, registers) instead of other people's drivers. *Done when:* the Raze runs on it and matches the targets in [Now](#now), and the
+      of ours (claim, DMA, dma-buf, interrupts, registers) instead of other people's drivers. *Done when:* the Raze runs on it and matches the targets in Done ("Now list of 2026-11-03"), and the
       stock path still passes. *Numbers:* 552 rows by about 6.15 ms, the whole frame by 8.1-8.5 ms,
       a line signal by 5.74 ms.
 5. [ ] **`Submit::Own` in gpuisp: agree device ownership** per gpu-seam.md. *Why:* in a `daedalus`
@@ -140,50 +126,6 @@ user lifts them.
       V3D frame needs a different shader shape, not tuning. Live 2026-11-02 numbers: 28.3 fps,
       latency 133 ms, CPU 1.97 ms a frame, against the CPU software ISP's 59.98 fps, 12.3 ms, 9.5
       ms CPU.
-- [ ] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`).
-      *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs, 5x5 filters and demosaic + CCM
-      onto the BE memory to memory on its own dma-bufs. *Done when:* the ops run for Eidos on the board, GREY on the
-      NV12 route beside live frames included. *Blocked by:* nothing. *Numbers:* Raze #2, 2026-11-03, GREY 640x480, buffers from `linux,cma`: `box2`,
-      `downscale`, `pyramid2` 0.40-0.42 ms, truncated (59280 of 76800 one below rounding half up,
-      none further; 10680 of 19200 on level 2); `lut` 0.72 ms, max 5 from the table against
-      `LutFit`'s predicted 4; `resample` 0.40-0.85 ms over single runs, within 1 of the CPU model (2979 of 76800 differ);
-      `filter5x5` 0.36 ms, exact at unit gain clear of the 2-pixel border; `demosaic_ccm` 0.22 ms, four
-      flat patches exact.
-      4232 runs on group 1 beside live frames on group 0: 0 failed, 0 drops.
-- [ ] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
-      every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
-      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device for libcamera. Raze 2026-11-02, `hop_breakdown inproc` (PiSP NV12
-      1280x800 30 fps, whole process, every thread): 0.00 heap allocations per frame in steady
-      state (median of 9 one-second windows), 0.04 over the whole run. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
-      without a companion, UVC frame lease, GPU ISP frame from memory, PiSP processed path on a host
-      (`pisp_alloc`). Also asserted 0: software ISP output lease and rkisp lease
-      (`frames_allocate_nothing`, `BackingPool`); a `SoftIsp` frame at 1 and 4 threads, plain and post
-      stages, RGB24/NV12/I420, and with statistics when the caller uses `recycle_stats`
-      (`crates/softisp/tests/alloc.rs`), also with white balance, gain, lens shading and tone changing
-      every frame (`swap_params`, Int, IntPolyTone and Half). The software ISP loop (`SoftLoop`, the
-      algorithms included) on a host when its outputs are handed back (`SoftLoop::recycle`): 0.00 per
-      frame over 300 frames, 176 with the algorithms and 124 settled ones without (`soft_alloc`; was
-      129.83). The replay source's software ISP (`replay_isp.rs`): 0, its NV12 frames in pooled
-      buffers (`a_replayed_frame_allocates_nothing_when_warm`; was a new buffer, a copy and the
-      controls' clone per frame). Also asserted 0 (`crates/styx/tests/worker_alloc.rs`): the capture workers on a
-      simulated OV9782 (the real `NativeCamera`, queue, sensor driver and control schedule), raw
-      frames (`styx-native-capture`, its lease records now from a `BackingPool`) and the software
-      ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and
-      2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
-      box and the reactor's timer map node; under load, a lease record the warm-up had not made: the
-      pool makes all of them up front now, 0 in 64 runs at load 39). Whole process
-      on the Raze, 2026-11-03, frames 60-300 at 30 fps: UVC MJPG and YUYV 0.000 (was 1.007: the
-      stream's frame list lost its capacity every frame). V4L2 MJPG and YUYV 0.000 (2026-11-05,
-      `uvc_capture` counts and traces them now; were 0.033: the buffer-recycle channel was an
-      unbounded `mpsc`, a block every 31 frames, and a stage's timing window grew by doubling). **Not counted:** libcamera, and the kernel's side of the queue
-      on a board. Also asserted 0: the PiSP raw lease, whole and at a sliced frame's
-      first slice (`a_raw_lease_allocates_nothing`), and the sliced frame's states, reused once
-      their leases return (`slice_states_are_reused_once_free`; were 4 `Arc`s per frame). GPU ISP (`crates/gpuisp/tests/it/
-      alloc.rs`): 0 with statistics handed back (`recycle_stats`) and white balance, gain, lens
-      shading and tone changing every frame (`swap_params`, tables rebuilt in place); was a new
-      `IspStats` and new tables per frame. `Input::Buffer` on Daedalus's device: 0, submitted
-      through Daedalus's `RawSubmitter` (Daedalus fd18808); was 17 per frame in `submit_raw`
-      and wgpu-core's submission.
 - [x] **`native-pipeline regcheck`: `0x0101` and `0x1000` read back 0.** Description fixed
       (docs/portability-design.md, Gate B): 91 of 93 as in the baseline. Both registers come from
       the driver's init table, are in no OV9281/OV9282 datasheet, and read 0 after any write on the
@@ -195,22 +137,12 @@ user lifts them.
       the still thread 25.3-27.5 ms over 4 shots, against 44-49 ms with the `image` crate; request →
       ready 100.1 ms, bracket 300.7 ms, all three on their frames, preview 30.00 fps with 0 gaps
       (docs/stills-and-dng.md).
-- [ ] **CM5 HEVC decode check** (`hevc_v4l2request` through FFmpeg). *Why:* HEVC recordings only; Styx
-      records MJPEG and raw. *Done when:* a recording decodes through `rpi-hevc-dec`. *Blocked by:*
-      an Atlas image with that driver; HeliOS says when. *Numbers:* none: the driver is not in the
-      image.
 - [ ] **Anti-flicker verified at 120 fps** (paused: the user paused bench tests). *Why:* AE chased
       100 Hz flicker at 120 fps under mains lamps. *Done when:* `flicker_check` on the CM5/Raze
       under a 50 Hz lamp at 120 fps: AE locks and the output frame-to-frame spread stays under
       5%, with flicker avoidance and deflicker on (the defaults). *Blocked by:* the pause and a
       mains lamp at the bench in a Raze slot. *Numbers:* room lamp at 120 fps, 15-18% → 3.4-4.7%
       spread; not yet the checked run this item asks for.
-- [ ] **YUYV no-frames fallback: the bench check** (paused: bench tests). *Why:* a UVC camera that
-      negotiates YUYV and delivers nothing hung a client. The fallback and the cause in the error
-      are in (302b1f6, 9cb7009: `planner/stalled.rs`; unit tests in `planner/usb_tests.rs`).
-      *Done when:* the C270 on the CM5 in a YUYV mode it cannot sustain falls back to MJPEG and
-      the error names the cause. *Blocked by:* the pause, and the C270 plugged back in.
-      *Numbers:* none: unit tests only.
 - [ ] **OV9782 tuning of our own** (held until the user has a chart). *Why:* the imported tuning has
       an identity colour matrix. *Done when:* a `styx-tune` session (ColorChecker, 3-5 lights
       2700-6500 K) produces the TOML and colour error drops against the chart. *Blocked by:* the
@@ -283,7 +215,7 @@ memory when it runs.
       BSP's rkisp hardware table, then as RK3566. *Blocked by:* an RK3576 board and BSP.
 - [ ] **Rockchip: RGA scale, crop and convert** (RGA3 on RK3588S, RGA2 on the others). *Why:* deeper
       pyramid levels and preview frames without the CPU. RGA moves to Lemnos on V4L2 M2M with
-      [Decided](#decided-starts-when-the-user-says) item 3, no librga; until then the binding is
+      [The leap](#the-leap-started-2026-11-06) item 3, no librga; until then the binding is
       Daedalus's `daedalus-rga`. `V4l2M2mConverter` is not for RGA.
       Written, untested on board: `styx_codec::RgaConverter` (feature `codec-rga`), dma-buf frames
       read in place, host frames through dma-heap buffers, scale/crop/convert tests against vim2m
@@ -376,7 +308,7 @@ memory when it runs.
 
 ## Open: backlog
 
-Not on the freeze list. *Numbers:* none measured unless stated.
+Parked until after the leap: none blocks it. Not on the freeze list. *Numbers:* none measured unless stated.
 
 - [ ] **MCU flash: watch config C on the Cortex-M7.** *What:* C is 131,704 bytes against its
       134,000 limit (1.7% headroom; the others have 4-11%, D 5%). *Why:* the limits are guards,
@@ -399,7 +331,7 @@ Not on the freeze list. *Numbers:* none measured unless stated.
       by:* a Camera Module 3. *Numbers:* simulated one-shot 9 frames, PDAF 2.
 - [ ] **AF on a userspace-driven sensor with an I²C VCM.** *Why:* untested combination; the DW9807 busy flag
       is not polled. *Done when:* it focuses on one. *Blocked by:* a module, and
-      [Decided](#decided-starts-when-the-user-says) item 4.
+      [The leap](#the-leap-started-2026-11-06) item 4.
 - [ ] **PDAF beyond the IMX708; GPU ISP focus statistics.** *Why:* `crates/gpuisp/src/stats.rs` returns
       none, so AF has no contrast there. *Done when:* the GPU ISP reports them bit-exact, and a second
       sensor's PDAF decodes. *Blocked by:* a sensor for PDAF; nothing for the GPU.
@@ -412,7 +344,7 @@ Not on the freeze list. *Numbers:* none measured unless stated.
       the bench pause for the dark session.
 - [ ] **A second userspace-driven sensor and a non-Pi board.** *Why:* only the OV9782 on the CM5 has run
       without a kernel sensor driver. *Done when:* one of each streams over i2c-dev. *Blocked by:*
-      hardware, and [Decided](#decided-starts-when-the-user-says) item 4.
+      hardware, and [The leap](#the-leap-started-2026-11-06) item 4.
 - [ ] **The MCU port.** Not started: no `ports/` directory. *Why:* the footprint images are linked and
       sized, never run. *Done when:* `ports/stm32h7-dcmi` swaps `examples/mcu-footprint`'s `board` for a
       DCMI receiver, I²C and a timer, with cycle counts per frame on a core; an `rkisp1` board too.
@@ -425,10 +357,6 @@ Not on the freeze list. *Numbers:* none measured unless stated.
 - [ ] **`examples/nostd-camera` stills in a low-priority task.** *Why:* a bracket costs three full software
       passes between two frames on the superloop. *Done when:* a firmware with an executor runs them
       in a task. *Blocked by:* nothing.
-- [ ] **Runtime follow-ups.** *Why:* the PiSP's external "driven" path still runs the event thread and
-      `serve_sync` directly; `Receiver::poll_sync` on Linux wakes only at stop. *Done when:*
-      `PispFeReceiver` is a `Receiver` (designed in docs/portability-design.md, not written). Static
-      dispatch only if a profile shows it (`dyn` measured free). *Blocked by:* nothing.
 - [ ] **Lemnos from crates.io.** *Why:* root `Cargo.toml` and `fuzz/Cargo.toml` use the `dev` branch by git.
       *Done when:* switched to 2.0 from crates.io. *Blocked by:* Lemnos publishing it.
 - [ ] **Native provider hotplug on uevents.** *Why:* `crates/native/src/provider.rs` polls sysfs every second;
@@ -459,16 +387,73 @@ Not on the freeze list. *Numbers:* none measured unless stated.
       its description); 30 fps with short exposures leaves ~2%; with deflicker off, a clipped lamp makes AE
       chase the beat at 120 fps (simulated). *Done when:* verified on a sensor, or accepted by the user.
       *Blocked by:* the bench pause. *Numbers:* as stated.
-- [x] **Reject impossible frame-length reports.** *Why:* a value from embedded data is trusted even when
-      impossible (VTS 4 on an 800-line mode). *Done:* `ControlScheduler::with_frame_lengths` (set from
-      the mode's timing) drops frame lengths outside the mode and exposures past the longest frame,
-      counted in `rejected_reports()`.
 
 ## Done
 
 Numbers are as of the commit named.
 
 ### Since the last audit
+
+- [x] **PiSP back end ops for Eidos on the Raze** (`styx_pisp::be::ops` + `device::BeImageDevice`).
+      *Why:* Eidos lowers resample/downscale (pyramids), tone LUTs, 5x5 filters and demosaic + CCM
+      onto the BE memory to memory on its own dma-bufs. *Done when:* the ops run for Eidos on the board, GREY on the
+      NV12 route beside live frames included. *Blocked by:* nothing. *Numbers:* Raze #2, 2026-11-03, GREY 640x480, buffers from `linux,cma`: `box2`,
+      `downscale`, `pyramid2` 0.40-0.42 ms, truncated (59280 of 76800 one below rounding half up,
+      none further; 10680 of 19200 on level 2); `lut` 0.72 ms, max 5 from the table against
+      `LutFit`'s predicted 4; `resample` 0.40-0.85 ms over single runs, within 1 of the CPU model (2979 of 76800 differ);
+      `filter5x5` 0.36 ms, exact at unit gain clear of the 2-pixel border; `demosaic_ccm` 0.22 ms, four
+      flat patches exact.
+      4232 runs on group 1 beside live frames on group 0: 0 failed, 0 drops.
+      *Closed 2026-11-06:* the ops run and are measured on the board beside live frames; using them is Eidos's item.
+- [x] **Zero steady-state allocations: what isn't counted, or isn't 0.** *Why:* standing rule for
+      every dependency: a count of 1-3 per frame is a finding; assert 0, or state the physical reason.
+      *Done when:* every per-frame path below asserts 0, or names its reason. *Blocked by:* a device for libcamera. Raze 2026-11-02, `hop_breakdown inproc` (PiSP NV12
+      1280x800 30 fps, whole process, every thread): 0.00 heap allocations per frame in steady
+      state (median of 9 one-second windows), 0.04 over the whole run. *Numbers:* asserted 0 (6a6c40d): PiSP lease with and
+      without a companion, UVC frame lease, GPU ISP frame from memory, PiSP processed path on a host
+      (`pisp_alloc`). Also asserted 0: software ISP output lease and rkisp lease
+      (`frames_allocate_nothing`, `BackingPool`); a `SoftIsp` frame at 1 and 4 threads, plain and post
+      stages, RGB24/NV12/I420, and with statistics when the caller uses `recycle_stats`
+      (`crates/softisp/tests/alloc.rs`), also with white balance, gain, lens shading and tone changing
+      every frame (`swap_params`, Int, IntPolyTone and Half). The software ISP loop (`SoftLoop`, the
+      algorithms included) on a host when its outputs are handed back (`SoftLoop::recycle`): 0.00 per
+      frame over 300 frames, 176 with the algorithms and 124 settled ones without (`soft_alloc`; was
+      129.83). The replay source's software ISP (`replay_isp.rs`): 0, its NV12 frames in pooled
+      buffers (`a_replayed_frame_allocates_nothing_when_warm`; was a new buffer, a copy and the
+      controls' clone per frame). Also asserted 0 (`crates/styx/tests/worker_alloc.rs`): the capture workers on a
+      simulated OV9782 (the real `NativeCamera`, queue, sensor driver and control schedule), raw
+      frames (`styx-native-capture`, its lease records now from a `BackingPool`) and the software
+      ISP worker with its helpers and the 3A, 120 frames each, consumer included (were 5.60 raw and
+      2.02 processed: the lease record, and per `next_blocking` the executor's waker, the timeout's
+      box and the reactor's timer map node; under load, a lease record the warm-up had not made: the
+      pool makes all of them up front now, 0 in 64 runs at load 39). Whole process
+      on the Raze, 2026-11-03, frames 60-300 at 30 fps: UVC MJPG and YUYV 0.000 (was 1.007: the
+      stream's frame list lost its capacity every frame). V4L2 MJPG and YUYV 0.000 (2026-11-05,
+      `uvc_capture` counts and traces them now; were 0.033: the buffer-recycle channel was an
+      unbounded `mpsc`, a block every 31 frames, and a stage's timing window grew by doubling). **Not counted:** libcamera, and the kernel's side of the queue
+      on a board. Also asserted 0: the PiSP raw lease, whole and at a sliced frame's
+      first slice (`a_raw_lease_allocates_nothing`), and the sliced frame's states, reused once
+      their leases return (`slice_states_are_reused_once_free`; were 4 `Arc`s per frame). GPU ISP (`crates/gpuisp/tests/it/
+      alloc.rs`): 0 with statistics handed back (`recycle_stats`) and white balance, gain, lens
+      shading and tone changing every frame (`swap_params`, tables rebuilt in place); was a new
+      `IspStats` and new tables per frame. `Input::Buffer` on Daedalus's device: 0, submitted
+      through Daedalus's `RawSubmitter` (Daedalus fd18808); was 17 per frame in `submit_raw`
+      and wgpu-core's submission.
+      *Closed 2026-11-06:* every native per-frame path asserts 0; libcamera is off the native stack and the kernel's queue is not ours to count.
+- [x] **CM5 HEVC decode check** (`hevc_v4l2request` through FFmpeg). *Why:* HEVC recordings only; Styx
+      records MJPEG and raw. *Done when:* a recording decodes through `rpi-hevc-dec`. *Blocked by:*
+      an Atlas image with that driver; HeliOS says when. *Numbers:* none: the driver is not in the
+      image.
+      *Closed 2026-11-06:* dropped: Styx records MJPEG and raw, not HEVC; the decoder is the image's question (HeliOS).
+- [x] **Runtime follow-ups.** *Why:* the PiSP's external "driven" path still runs the event thread and
+      `serve_sync` directly; `Receiver::poll_sync` on Linux wakes only at stop. *Done when:*
+      `PispFeReceiver` is a `Receiver` (designed in docs/portability-design.md, not written). Static
+      dispatch only if a profile shows it (`dyn` measured free). *Blocked by:* nothing.
+      *Closed 2026-11-06:* dropped: the PiSP receiver moves onto the Lemnos module ([The leap](#the-leap-started-2026-11-06) item 4), which replaces this design.
+- [x] **Reject impossible frame-length reports.** *Why:* a value from embedded data is trusted even when
+      impossible (VTS 4 on an 800-line mode). *Done:* `ControlScheduler::with_frame_lengths` (set from
+      the mode's timing) drops frame lengths outside the mode and exposures past the longest frame,
+      counted in `rejected_reports()`.
 
 - [x] **Row-sliced box2 (Eidos): measured, no gain, not added.** A banded
       `box_downscale_luma_in` that hands over each run of half-level rows (callback after 8, 16 or
@@ -489,7 +474,7 @@ Numbers are as of the commit named.
       and H.264 encoders can run on it (their callers supply the context). `one_device.rs` asserts
       `devices_created() == 1`; on V3D with the validation layer and sync validation, 0 messages.
       Without the feature gpuisp makes its own device; `STYX_GPUISP_DEVICE` does too; the fallback
-      is [Decided](#decided-starts-when-the-user-says) item 5. fp16 pictures stay off on Daedalus's
+      is [The leap](#the-leap-started-2026-11-06) item 5. fp16 pictures stay off on Daedalus's
       device.
 - [x] **Inactive controls and unread frames** (eb27ac1, 1ec5264). `ControlDescriptor::inactive`, and
       `ControlRefusal::Inactive` for a V4L2 control the driver has turned off: written, untested on
@@ -559,6 +544,47 @@ Numbers are as of the commit named.
       the fallback when fewer than two buffers would stay with the driver.
 - [x] **Every pyramid level from the PiSP** (dc570e8), **PiSP focus statistics follow the AF windows**
       (2a5ccda): both written, untested on board. The old "CDAF windows" item was stale.
+
+### Now list of 2026-11-03
+
+- [x] **Push 77e3160 to dev once gated** and send the commit: pushed with this file.
+- [x] **Measure `rp1-cfe`: what sliced frames are worth on the default pipeline.** Raze #1, HeliOS
+      dev.921, the live camera service at 30 fps, a low-priority client, `Frames::gray()` 1280x800,
+      300 frames twice each. Complete frames received p50 8.47-8.48 ms (p90 8.73-8.76, p99
+      10.1-10.6); sliced frames p50 6.14-6.15 ms (p90 6.34, p99 7.7-7.9) with 552 rows final, and
+      complete at p50 8.65-8.66 ms (p90 8.9). The first rows are 2.33 ms earlier and the whole frame
+      0.18 ms later. This is delivery, not detection latency: the detector A/B was not run, since
+      the graph always takes slices and the board's default pipeline was left alone. From the
+      signal side at 120 fps: slicing takes a complete frame from 9.30 to 8.14 ms for 0.03 ms of
+      CPU; stock `FRAME_SYNC` plus a timer at 5.85 ms gives the same 8.14 ms for 0.015 ms, 0 of 1201
+      early at 120, 60 and 30 fps (5.75 ms: 3 early; 6.25 ms: flat; 6.65 ms: 8.48; 7.05 ms: 8.87).
+      Row 599 lands 5.727 ms after frame start. What an own receiver must match: 552 rows by about
+      6.15 ms, the whole frame by 8.1-8.5 ms, a line signal by 5.74 ms.
+- [x] **The bridge from the 2026-10-02 A/B** (kernel 6.12, not re-measured): reported to the
+      coordinator. HeliOS does not need it. It would end the device package's two OV9782 patches
+      only if every variant moved, and the libcamera variants still use the `ov9282` driver.
+- [x] **The timer path replaces the patched line event** (user's go, 2026-11-03; `rp1-cfe` module
+      and package removed). Stock `FRAME_SYNC`, no thread: a 16-byte marker starts the row after
+      the slice line in every raw buffer before it is queued, and at `line × line_time + 0.4 ms`
+      from the sensor's mode a marker gone raises the line event; one still there runs the frame
+      whole. Raze #1, 7.2.9, line 600 of 800 at 9.1 µs lines (delay 5.86 ms), 1200 frames:
+      complete frames 8.14 ms (p95 8.25) at 120 fps against 9.30 whole, 8.15 at 60, 8.08 at 30, 0
+      early in all of them. RAW8 at 7.58 µs lines, line 400 (delay 3.43 ms), through a camera
+      service at 120 fps with a raw client: 962 frames, 0 early. Under load (4 spinning threads on
+      the 4 cores, 120 fps): 0 early; 1171 of 1200 sliced, the other 29 lost to late wake-ups (23
+      replaced by the next frame's start, 6 a frame behind), worst 1.79 ms late; 8.15 ms (p95 9.68)
+      against 9.31 (p95 11.09) whole. Pixels, `--no-tdn`, every 8th frame re-run from its final raw
+      buffer: 729 frames, 282 of them under load, byte-identical to one job with the same stripes,
+      so no job read a row before it landed. Against one stripe, the unsliced path, every frame
+      differs around the stripe's edge (about 28000 of 2.3 M bytes, at most 14 codes): the tiling,
+      not the timing; the old event used the same stripes. Stock node, patched module still in the
+      slot; `FRAME_SYNC` there is the import's, unchanged.
+- [x] **Finish the Raze list.** 2571ba4 gated and pushed. No-reader overflow count: `Drops::unread`,
+      Raze #1 2026-11-03 on a V4L2 camera with `pause_when_idle`: 0 with a client, 13 in 3 s with
+      none, still 13 with the client back, `total` 0 throughout. UVC run: moved to
+      [Done](#done). Sync validation of the 0-message run: Debian's layer 1.4.309 loaded through
+      `LD_LIBRARY_PATH`, the control run reports 1 `SYNC-HAZARD-WRITE-AFTER-WRITE`, `sync_false` and
+      `one_device` 0, exit 0. `Submit::Own` review: item 5 below.
 
 ### Hardware support and mechanics
 - [x] **Typed control-menu entry** (45cb3a3; HeliOS aa44c4d3 shows `MenuEntry` in its API and
