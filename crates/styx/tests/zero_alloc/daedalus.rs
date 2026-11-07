@@ -92,13 +92,13 @@ pub(super) fn camera_service_frame_view() {
         per(counts[Kind::Test] - receive),
     );
     assert_eq!(receive, FRAMES, "receiving allocates {receive} times");
-    // `frame_payload`'s own two (the shared lease and the payload's storage); the provider
-    // retypes the payload in place and the view borrows it (its read maps a new buffer).
+    // `frame_payload`'s one (the shared lease's `Arc`, which `Payload::providing` stores as is);
+    // the view borrows the lent handle (its read maps a new buffer).
     counts.assert_maps_only_new_buffers();
     let payload = counts[Kind::Test] - receive;
     assert_eq!(
         payload,
-        2 * FRAMES + counts.maps,
+        FRAMES + counts.maps,
         "a payload and its view allocate {payload} times for {FRAMES} frames ({} buffers mapped)",
         counts.maps
     );
