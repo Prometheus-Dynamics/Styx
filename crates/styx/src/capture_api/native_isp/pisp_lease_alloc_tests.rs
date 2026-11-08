@@ -179,7 +179,7 @@ fn a_pisp_companion_allocates_nothing() {
         sync: false,
         prefetch: crate::capture_api::NativeCpuPrefetch::Off,
     };
-    let (mut main_allocs, mut with_companion_allocs) = (0u64, 0u64);
+    let (mut main_allocs, mut with_companion_allocs, mut retaken_allocs) = (0u64, 0u64, 0u64);
     for n in 0..FRAMES + 100 {
         while let RecvOutcome::Data(_) = ret_rx.recv() {}
         f.sequence = n;
@@ -204,9 +204,26 @@ fn a_pisp_companion_allocates_nothing() {
                 .expect("a companion");
             drop(frame);
         });
+        // Three levels, taken off and attached again as a frame's preparation does.
+        let (_, retaken) = allocations(|| {
+            let mut frame = make(0, &f);
+            for level in 1..=3u8 {
+                frame = frame
+                    .with_companion(CompanionKind::Pyramid { level }, make(u32::from(level), &f))
+                    .expect("a companion");
+            }
+            let taken = frame.take_companions();
+            for (kind, companion) in taken {
+                frame = frame
+                    .with_companion(kind, companion)
+                    .expect("attached again");
+            }
+            drop(frame);
+        });
         if n >= 100 {
             main_allocs += main;
             with_companion_allocs += both;
+            retaken_allocs += retaken;
         }
     }
     let (main, both) = (
@@ -215,6 +232,10 @@ fn a_pisp_companion_allocates_nothing() {
     );
     assert_eq!(main, 0.0, "allocations per lease");
     assert_eq!(both, 0.0, "allocations with one companion");
+    assert_eq!(
+        retaken_allocs, 0,
+        "allocations with three companions taken off and attached again"
+    );
 }
 
 /// The raw frame's lease (`NativeIspConfig::sensor_raw`), whole or at a sliced frame's first

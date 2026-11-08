@@ -36,7 +36,8 @@ use super::plane::{FrameAllocation, FrameLeaseDescriptor, FrameValidationError, 
 use super::views::{FramePlaneShape, Plane, PlaneMut, VisibleRows, VisibleRowsMut};
 
 pub use companion::{
-    CompanionKind, box_downscale_luma, box_downscale_luma_in, level_meta, luma_level_in,
+    CompanionKind, TakenCompanions, box_downscale_luma, box_downscale_luma_in, level_meta,
+    luma_level_in,
 };
 #[cfg(feature = "std")]
 pub use recycle::BackingPool;

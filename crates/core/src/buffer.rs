@@ -45,7 +45,8 @@ pub use views::{
 pub use frame::BackingPool;
 pub use frame::{
     CompanionKind, ExternalBacking, FrameLease, FrameLeaseParts, MemoryRegion, RegionHooks,
-    box_downscale_luma, box_downscale_luma_in, level_meta, luma_level_in, shared_backing,
+    TakenCompanions, box_downscale_luma, box_downscale_luma_in, level_meta, luma_level_in,
+    shared_backing,
 };
 #[cfg(all(feature = "std", unix))]
 pub use frame::{DmabufPlane, ExportedKind, FrameBackingExport, FrameExportError, FrameFdPlane};

@@ -298,7 +298,7 @@ impl MediaPipeline {
             // A stage that handles companions gets them (e.g. the planner's, which keeps an
             // ISP's pyramid levels instead of computing them again).
             let carried = if dec.handles_companions() {
-                Vec::new()
+                Default::default()
             } else {
                 cur.take_companions()
             };

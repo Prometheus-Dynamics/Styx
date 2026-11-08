@@ -25,7 +25,7 @@ pub(crate) fn consumer_frame(
     mut frame: FrameLease,
     plan: &FramePlan,
 ) -> Result<FrameLease, CodecError> {
-    let companions = frame.take_companions();
+    let mut companions = frame.take_companions();
     if plan.sensor_raw {
         return companions
             .into_iter()
@@ -42,16 +42,14 @@ pub(crate) fn consumer_frame(
     }
     let places = &plan.region.places;
     let index_of = |slot: u8| places.iter().position(|p| *p == Some(IspPlace::Slot(slot)));
-    let mut companions: Vec<_> = companions.into_iter().collect();
     let (mut primary, main_is_primary) = match places.first() {
         Some(Some(IspPlace::Slot(k))) => {
             let slot = CompanionKind::Region { index: k + 1 };
             // A region its pass did not make this frame (unset, or no free buffer): skipped.
-            let at = companions
-                .iter()
-                .position(|(kind, _)| *kind == slot)
+            let region = companions
+                .remove(slot)
                 .ok_or_else(|| codec_err("frame without its region"))?;
-            (companions.swap_remove(at).1, false)
+            (region, false)
         }
         _ => (frame, true),
     };

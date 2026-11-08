@@ -5,14 +5,14 @@
 //! second output from the same request, or a filter applied to the decoded frame.
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use smallvec::{SmallVec, smallvec};
 
 use super::{FrameLease, FrameValidationError, PlaneLayout};
 use crate::buffer::{BufferPool, FrameMeta};
 use crate::format::{FourCc, MediaFormat, Resolution};
 
-pub(super) type Companions = SmallVec<[(CompanionKind, FrameLease); 2]>;
+// Four inline: three pyramid levels and one more (an overview, a raw frame) without a spill.
+pub(super) type Companions = SmallVec<[(CompanionKind, FrameLease); 4]>;
 
 /// Empty companion lists for reuse: a frame with companions then allocates none per frame.
 #[cfg(feature = "std")]
@@ -45,6 +45,54 @@ pub(super) fn recycle(list: Option<Box<Companions>>) {
     }
     if free.len() < KEEP_LISTS {
         free.push(list);
+    }
+}
+
+/// Companions taken off a frame ([`FrameLease::take_companions`]), in the order they were
+/// attached. When this is dropped the list goes back for another frame, so taking companions
+/// and attaching them again allocates nothing per frame.
+#[derive(Default)]
+pub struct TakenCompanions {
+    /// Reversed: the next companion is at the end.
+    list: Option<Box<Companions>>,
+}
+
+impl TakenCompanions {
+    /// Takes the companion of `kind` out of those left, if it is there.
+    pub fn remove(&mut self, kind: CompanionKind) -> Option<FrameLease> {
+        let list = self.list.as_mut()?;
+        let at = list.iter().position(|(existing, _)| *existing == kind)?;
+        Some(list.remove(at).1)
+    }
+}
+
+impl core::fmt::Debug for TakenCompanions {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("TakenCompanions")
+            .field("len", &self.len())
+            .finish()
+    }
+}
+
+impl Iterator for TakenCompanions {
+    type Item = (CompanionKind, FrameLease);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.list.as_mut()?.pop()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let len = self.list.as_ref().map_or(0, |list| list.len());
+        (len, Some(len))
+    }
+}
+
+impl ExactSizeIterator for TakenCompanions {}
+
+#[cfg(feature = "std")]
+impl Drop for TakenCompanions {
+    fn drop(&mut self) {
+        recycle(self.list.take());
     }
 }
 
@@ -140,11 +188,12 @@ impl FrameLease {
     }
 
     /// Detach and return all companions, e.g. to process them separately.
-    pub fn take_companions(&mut self) -> Vec<(CompanionKind, FrameLease)> {
-        self.companions
-            .take()
-            .map(|companions| companions.into_vec())
-            .unwrap_or_default()
+    pub fn take_companions(&mut self) -> TakenCompanions {
+        let mut list = self.companions.take();
+        if let Some(list) = &mut list {
+            list.reverse();
+        }
+        TakenCompanions { list }
     }
 
     /// Attach GREY pyramid levels `1..=levels` computed from this frame's Y plane with 2×2 box
@@ -290,6 +339,7 @@ pub fn level_meta(source: &FrameLease, level: u8, resolution: Resolution) -> Fra
 mod tests {
     use super::*;
     use crate::format::ColorSpace;
+    use alloc::vec::Vec;
 
     fn grey(
         width: u32,
@@ -312,6 +362,24 @@ mod tests {
             stride * height as usize,
             stride,
         )
+    }
+
+    #[test]
+    fn taken_companions_keep_their_order_and_one_can_be_removed() {
+        let frame = |ts| grey(4, 4, 4, ts, |_, _| 0);
+        let level = |level| CompanionKind::Pyramid { level };
+        let mut primary = frame(1);
+        for l in 1..=5 {
+            // Five: past the inline capacity as well.
+            primary = primary.with_companion(level(l), frame(1)).unwrap();
+        }
+        let mut taken = primary.take_companions();
+        assert_eq!(taken.len(), 5);
+        assert!(taken.remove(level(3)).is_some());
+        assert!(taken.remove(level(3)).is_none());
+        let order: Vec<_> = taken.map(|(kind, _)| kind).collect();
+        assert_eq!(order, [level(1), level(2), level(4), level(5)]);
+        assert!(primary.companions().next().is_none());
     }
 
     #[test]

@@ -7,12 +7,13 @@
 
 use styx_core::prelude::{CompanionKind, FrameLease};
 
-pub(super) type Companions = Vec<(CompanionKind, FrameLease)>;
-
 /// Re-attach `companions` to a stage's output unless the stage attached its own or changed the
 /// frame's timestamp.
-pub(super) fn carry_companions(frame: FrameLease, companions: Companions) -> FrameLease {
-    if companions.is_empty() || frame.companions().next().is_some() {
+pub(super) fn carry_companions(
+    frame: FrameLease,
+    companions: impl IntoIterator<Item = (CompanionKind, FrameLease)>,
+) -> FrameLease {
+    if frame.companions().next().is_some() {
         return frame;
     }
     let timestamp = frame.meta().timestamp;
@@ -31,9 +32,9 @@ pub(super) fn carry_companions(frame: FrameLease, companions: Companions) -> Fra
 /// Apply a packed rotate/mirror to each companion, dropping those it cannot handle.
 #[cfg(feature = "hooks")]
 pub(super) fn transform_companions(
-    companions: Companions,
+    companions: impl IntoIterator<Item = (CompanionKind, FrameLease)>,
     transform: styx_core::prelude::FrameTransform,
-) -> Companions {
+) -> Vec<(CompanionKind, FrameLease)> {
     companions
         .into_iter()
         .filter_map(|(kind, companion)| {
