@@ -200,10 +200,17 @@ pub struct LensShading {
 }
 
 impl LensShading {
-    /// A generation no tables have had before in this process (never 0).
+    /// A generation no tables have had before in this process. 0 ("unknown": tables are
+    /// compared instead) on targets without compare-and-swap, and if a 32-bit counter wraps.
     pub fn next_generation() -> u64 {
-        static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        #[cfg(target_has_atomic = "ptr")]
+        {
+            // usize: 32-bit microcontrollers have no 64-bit atomics.
+            static NEXT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(1);
+            NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed) as u64
+        }
+        #[cfg(not(target_has_atomic = "ptr"))]
+        0
     }
 
     fn same_generation(&self, other: &Self) -> bool {
