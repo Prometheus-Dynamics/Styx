@@ -100,10 +100,6 @@ impl Isp {
             .color_filter()
             .and_then(|c| crate::sensor::cfa(c).ok())
             .map_or(order, bayer);
-        let want_slice = options
-            .slice_at
-            .map(|at| at.line_for(info.height))
-            .transpose();
         let mut fe_dev = FrontEndDevice::open(&FrontEndSetup {
             width: info.width,
             height: info.height,
@@ -121,14 +117,7 @@ impl Isp {
         fe.default_stats(level16(info.black_level), 1.0, 1.0);
         fe.set_output_format(0, input);
         // Slicing: line events at the slice line.
-        let slice = match want_slice {
-            Ok(Some(line)) => match fe_dev.enable_line_events(u32::from(line)) {
-                Ok(()) => Ok(Some(line)),
-                Err(e) => Err(format!("no line events from the front end: {e}")),
-            },
-            Ok(None) => Ok(None),
-            Err(why) => Err(why),
-        };
+        let slice = super::pisp_slices::line_events(&mut fe_dev, options.slice_at, info.height);
         fe.enable(fe_enable::OUTPUT0, true);
         if options.compressed_raw() {
             crate::pisp_raw_comp::compress_raw_output(&mut fe);

@@ -41,6 +41,10 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Native raw capture buffers default to 3 (was 4): on Raze #2 no drops and the same latency
+  at 120 fps (PiSP and software ISP) with frames held 3 and 7 ms, for 1.95 MiB less per PiSP
+  camera. `native_raw_buffers(4)` restores the old slack.
+
 - Failure handling never gives up and waits at most 10 s between tries: a USB camera whose
   modes all failed is tried again after 10 s instead of being given up on; `camerad` retries a
   failed device sync after 1 s, doubling to 10 s; the GPU pyramid backend is retried in the

@@ -235,11 +235,13 @@ pub struct NativeIspConfig {
     /// `Some(10)` or `Some(8)` that depth. A depth the
     /// sensor has no mode of fails the open.
     pub raw_bits: Option<u8>,
-    /// Raw capture buffers the receiver cycles through (default 4, at least 2): the frames in
+    /// Raw capture buffers the receiver cycles through (default 3, at least 2): the frames in
     /// flight between the sensor and the ISP, each one raw frame's memory (1 MB for RAW8 at
     /// 1280x800; on a PiSP the front end's 16-bit frames, 2 MB, or 1 MB with
-    /// [`Self::raw_compressed`]). 3, or 2 at 120 fps on the CM5 without loss, save one
-    /// raw frame each on a small device; fewer leave less slack when the ISP falls behind.
+    /// [`Self::raw_compressed`]). Raze #2, 1280x800 gray + 3 levels, holds of 3 and 7 ms: 3
+    /// against 4 dropped nothing and kept latency (PiSP at 120 fps 7.30 / 7.30 ms, software ISP
+    /// at 60 and 120 fps 12.3-12.6 ms either way) for 1.95 MiB less on the PiSP. 4 leaves more
+    /// slack when the ISP falls behind.
     pub raw_buffers: u32,
     /// Keep raw frames between the front and back end in the PiSP's 8-bit compressed form
     /// (half the raw buffers' memory: 1 MB instead of 2 MB per buffer at 1280x800; Raze #1:
@@ -350,7 +352,7 @@ impl Default for NativeIspConfig {
             early_cpu_sync: true,
             cpu_prefetch: NativeCpuPrefetch::Off,
             raw_bits: None,
-            raw_buffers: 4,
+            raw_buffers: 3,
             raw_compressed: false,
             contiguous_output_buffers: Some(0),
             tdn_compressed: true,

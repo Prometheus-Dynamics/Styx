@@ -25,6 +25,21 @@ use crate::error::{PipelineError, Result};
 use crate::isp::IspSettings;
 use crate::pisp_be::BeConfigBuilder;
 
+/// Turns on the front end's line events at `at` of a `height`-row frame: the row, `None` when
+/// not asked for, else why frames run whole.
+pub(super) fn line_events(
+    fe: &mut FrontEndDevice,
+    at: Option<super::SliceAt>,
+    height: u32,
+) -> std::result::Result<Option<u16>, String> {
+    let line = at.map(|at| at.line_for(height)).transpose()?;
+    if let Some(line) = line {
+        fe.enable_line_events(u32::from(line))
+            .map_err(|e| format!("no line events from the front end: {e}"))?;
+    }
+    Ok(line)
+}
+
 /// Rows of a stripe's context the tiler adds below its output: stripes are cut this far above
 /// the line so the first stripe's input ends by it.
 const STRIPE_MARGIN: u16 = 32;
