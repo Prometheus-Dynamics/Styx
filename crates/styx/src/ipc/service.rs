@@ -169,7 +169,7 @@ impl CameraService {
 
     /// Settings for the captures the service starts (default: the defaults), e.g. sliced
     /// frames for clients that take them early ([`ClientOptions::sliced_frames`]):
-    /// `StyxConfig::new().native_slice_line(Some(600)).native_deliver_slices(true)`. Clients
+    /// `StyxConfig::new().native_slice_at(Some(NativeSliceAt::PerMille(750))).native_deliver_slices(true)`. Clients
     /// that do not take sliced frames still get complete frames.
     ///
     /// [`ClientOptions::sliced_frames`]: super::ClientOptions::sliced_frames

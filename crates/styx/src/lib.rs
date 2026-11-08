@@ -635,9 +635,9 @@ pub mod prelude {
         CaptureError, CaptureFrameIter, CaptureHandle, CaptureRequest, CaptureSource,
         CaptureStartPolicy, FileBackendConfig, IdleStop, LibcameraBufferMemory, LibcameraConfig,
         MAX_NATIVE_REGIONS, NativeCpuPrefetch, NativeDeflicker, NativeFlicker, NativeHalfFilter,
-        NativeIspConfig, NativeRegion, NetcamConfig, ReconnectPolicy, SelectedCamera, StyxConfig,
-        TdnOutputMode, TransformPoolConfig, V4l2Config, VirtualSourceConfig, open_best_camera,
-        open_virtual_rgb, start_capture,
+        NativeIspConfig, NativeRegion, NativeSliceAt, NetcamConfig, ReconnectPolicy,
+        SelectedCamera, StyxConfig, TdnOutputMode, TransformPoolConfig, V4l2Config,
+        VirtualSourceConfig, open_best_camera, open_virtual_rgb, start_capture,
     };
     #[cfg(feature = "facade")]
     pub use crate::capture_api::{

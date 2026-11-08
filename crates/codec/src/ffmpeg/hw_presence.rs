@@ -7,15 +7,7 @@ use std::sync::OnceLock;
 
 use styx_core::prelude::FourCc;
 
-const VIDIOC_QUERYCAP: libc::c_ulong = 0x8068_5600;
-const VIDIOC_ENUM_FMT: libc::c_ulong = 0xC040_5602;
-const V4L2_CAP_VIDEO_M2M_MPLANE: u32 = 0x0000_4000;
-const V4L2_CAP_VIDEO_M2M: u32 = 0x0000_8000;
-const V4L2_CAP_DEVICE_CAPS: u32 = 0x8000_0000;
-const BUF_CAPTURE: u32 = 1;
-const BUF_OUTPUT: u32 = 2;
-const BUF_CAPTURE_MPLANE: u32 = 9;
-const BUF_OUTPUT_MPLANE: u32 = 10;
+use lemnos_linux_sys::v4l2::{self as v4l2, BufType};
 
 /// Pixel formats of the V4L2 memory-to-memory devices: compressed formats they accept (decoders)
 /// and produce (encoders).
@@ -48,60 +40,31 @@ fn m2m_formats() -> &'static M2mFormats {
 
 /// Output-queue (accepted) and capture-queue (produced) formats of an M2M device.
 fn query_m2m(path: &std::path::Path) -> Option<M2mFormats> {
-    let cpath = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).ok()?;
-    // SAFETY: open/ioctl/close on a device path with correctly sized structs.
-    unsafe {
-        let fd = libc::open(
-            cpath.as_ptr(),
-            libc::O_RDWR | libc::O_NONBLOCK | libc::O_CLOEXEC,
-        );
-        if fd < 0 {
-            return None;
-        }
-        let mut cap = [0u8; 104];
-        let result = if libc::ioctl(fd, VIDIOC_QUERYCAP as _, cap.as_mut_ptr()) == 0 {
-            let caps = u32::from_ne_bytes(cap[84..88].try_into().unwrap());
-            let device_caps = u32::from_ne_bytes(cap[88..92].try_into().unwrap());
-            let caps = if caps & V4L2_CAP_DEVICE_CAPS != 0 {
-                device_caps
-            } else {
-                caps
-            };
-            if caps & (V4L2_CAP_VIDEO_M2M | V4L2_CAP_VIDEO_M2M_MPLANE) != 0 {
-                let mplane = caps & V4L2_CAP_VIDEO_M2M_MPLANE != 0;
-                let (output, capture) = if mplane {
-                    (BUF_OUTPUT_MPLANE, BUF_CAPTURE_MPLANE)
-                } else {
-                    (BUF_OUTPUT, BUF_CAPTURE)
-                };
-                Some(M2mFormats {
-                    accepted: enum_formats(fd, output),
-                    produced: enum_formats(fd, capture),
-                })
-            } else {
-                None
-            }
-        } else {
-            None
-        };
-        libc::close(fd);
-        result
-    }
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    let fd = std::os::fd::AsFd::as_fd(&file);
+    let cap = v4l2::querycap(fd).ok().filter(v4l2::Capability::is_m2m)?;
+    let (output, capture) = if cap.is_m2m_multiplanar() {
+        (BufType::VideoOutputMplane, BufType::VideoCaptureMplane)
+    } else {
+        (BufType::VideoOutput, BufType::VideoCapture)
+    };
+    Some(M2mFormats {
+        accepted: enum_formats(fd, output),
+        produced: enum_formats(fd, capture),
+    })
 }
 
-unsafe fn enum_formats(fd: libc::c_int, buf_type: u32) -> Vec<[u8; 4]> {
-    let mut formats = Vec::new();
-    for index in 0u32..64 {
-        let mut desc = [0u8; 64];
-        desc[0..4].copy_from_slice(&index.to_ne_bytes());
-        desc[4..8].copy_from_slice(&buf_type.to_ne_bytes());
-        // SAFETY: v4l2_fmtdesc is 64 bytes; the kernel fills pixelformat at offset 44.
-        if unsafe { libc::ioctl(fd, VIDIOC_ENUM_FMT as _, desc.as_mut_ptr()) } != 0 {
-            break;
-        }
-        formats.push(desc[44..48].try_into().unwrap());
-    }
-    formats
+fn enum_formats(fd: std::os::fd::BorrowedFd<'_>, buf_type: BufType) -> Vec<[u8; 4]> {
+    (0u32..64)
+        .map_while(|index| v4l2::enum_fmt(fd, buf_type, index).ok().flatten())
+        .map(|desc| desc.pixelformat.to_le_bytes())
+        .collect()
 }
 
 const JPEG_CODES: &[[u8; 4]] = &[*b"MJPG", *b"JPEG"];

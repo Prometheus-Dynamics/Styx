@@ -7,20 +7,44 @@ use parking_lot::Mutex;
 use styx_core::prelude::*;
 use styx_wgpu::{BoxPyramid, Gpu, GpuError, Level, Luma};
 
-/// The process's GPU, made on first use; `None` (said once) where there is none.
+/// The process's GPU, made on first use (that call waits for it); `None` while there is none.
+/// A failed attempt is tried again in the background, the waits doubling from 1 s up to 10 s
+/// and never stopping, so a GPU that comes up later (a driver loaded late) is taken up then;
+/// meanwhile the levels are the CPU's.
 fn gpu() -> Option<&'static Gpu> {
-    static GPU: OnceLock<Option<Gpu>> = OnceLock::new();
-    GPU.get_or_init(|| match Gpu::new() {
-        Ok(gpu) => {
-            crate::trace::info!(adapter = gpu.name(), "GPU pyramid levels");
-            Some(gpu)
+    static GPU: OnceLock<Gpu> = OnceLock::new();
+    static FIRST: std::sync::Once = std::sync::Once::new();
+    if let Some(gpu) = GPU.get() {
+        return Some(gpu);
+    }
+    FIRST.call_once(|| {
+        if let Err(e) = try_gpu(&GPU) {
+            crate::trace::warn!(error = %e, "no GPU: pyramid levels on the CPU, retrying");
+            let spawned = std::thread::Builder::new()
+                .name("styx-gpu-retry".into())
+                .spawn(|| {
+                    let mut wait = std::time::Duration::from_secs(1);
+                    loop {
+                        std::thread::sleep(wait);
+                        if try_gpu(&GPU).is_ok() {
+                            return;
+                        }
+                        wait = (wait * 2).min(std::time::Duration::from_secs(10));
+                    }
+                });
+            if let Err(e) = spawned {
+                crate::trace::warn!(error = %e, "GPU retry thread did not start");
+            }
         }
-        Err(e) => {
-            crate::trace::warn!(error = %e, "no GPU: pyramid levels on the CPU");
-            None
-        }
-    })
-    .as_ref()
+    });
+    GPU.get()
+}
+
+fn try_gpu(slot: &OnceLock<Gpu>) -> Result<(), GpuError> {
+    let gpu = Gpu::new()?;
+    crate::trace::info!(adapter = gpu.name(), "GPU pyramid levels");
+    let _ = slot.set(gpu);
+    Ok(())
 }
 
 /// The kernel behind a trait object: proving wgpu's types `Send` and `Sync` inside every

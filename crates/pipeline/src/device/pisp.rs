@@ -67,7 +67,7 @@ struct Isp {
     be: BeConfigBuilder,
     /// Why temporal denoise could not be set up, if it was wanted.
     tdn_error: Option<String>,
-    /// The line frames are split at ([`PispOptions::slice_line`]), when the front end reports
+    /// The line frames are split at ([`PispOptions::slice_at`]), when the front end reports
     /// it; else why not.
     slice: std::result::Result<Option<u16>, String>,
     /// The raw buffers for a raw lease: the back end's imports, duplicated (one dma-buf each).
@@ -101,8 +101,9 @@ impl Isp {
             .and_then(|c| crate::sensor::cfa(c).ok())
             .map_or(order, bayer);
         let want_slice = options
-            .slice_line
-            .filter(|l| *l > 0 && u32::from(*l) < info.height);
+            .slice_at
+            .map(|at| at.line_for(info.height))
+            .transpose();
         let mut fe_dev = FrontEndDevice::open(&FrontEndSetup {
             width: info.width,
             height: info.height,
@@ -121,11 +122,12 @@ impl Isp {
         fe.set_output_format(0, input);
         // Slicing: line events at the slice line.
         let slice = match want_slice {
-            Some(line) => match fe_dev.enable_line_events(u32::from(line)) {
+            Ok(Some(line)) => match fe_dev.enable_line_events(u32::from(line)) {
                 Ok(()) => Ok(Some(line)),
                 Err(e) => Err(format!("no line events from the front end: {e}")),
             },
-            None => Ok(None),
+            Ok(None) => Ok(None),
+            Err(why) => Err(why),
         };
         fe.enable(fe_enable::OUTPUT0, true);
         if options.compressed_raw() {
@@ -205,7 +207,7 @@ pub struct PispPipeline {
     algo: Algorithms,
     fe: FrontEnd,
     fe_dev: Option<FrontEndDevice>,
-    /// Frames split into two back end jobs ([`PispOptions::slice_line`]), when on.
+    /// Frames split into two back end jobs ([`PispOptions::slice_at`]), when on.
     slicing: Option<super::pisp_slices::Slicing>,
     /// Why slicing is off although asked for.
     slice_error: Option<String>,
@@ -347,9 +349,9 @@ impl PispPipeline {
         (self.info.camera.temporal_denoise, self.tdn_error.as_deref())
     }
 
-    /// Why frames are not split although [`PispOptions::slice_line`] asked for it (no line
-    /// events: the receiver has no `FRAME_SYNC`, or the mode no line time). They are delivered
-    /// whole.
+    /// Why frames are not split although [`PispOptions::slice_at`] asked for it (no line
+    /// events: the receiver has no `FRAME_SYNC`, or the mode no line time; or the point is
+    /// outside the mode's rows). They are delivered whole.
     pub fn slice_error(&self) -> Option<&str> {
         self.slice_error.as_deref()
     }
@@ -571,7 +573,7 @@ impl PispPipeline {
         }
     }
 
-    /// As [`Self::next`], and with `slices` (while slicing: [`PispOptions::slice_line`]) a
+    /// As [`Self::next`], and with `slices` (while slicing: [`PispOptions::slice_at`]) a
     /// sliced frame's first rows as soon as they are final ([`PispEvent::Slice`]), before the
     /// frame itself.
     pub fn next_event(&mut self, timeout: Duration, slices: bool) -> Result<PispEvent> {

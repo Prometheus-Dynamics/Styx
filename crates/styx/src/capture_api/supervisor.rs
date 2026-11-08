@@ -22,6 +22,9 @@ use crate::metrics::StageMetrics;
 use crate::{BackendKind, DeviceIdentity, ProbedDevice};
 
 const POLL: Duration = Duration::from_millis(100);
+/// How long a USB handle that gave its mode up waits for its consumers to plan another before
+/// it tries the same mode again (the most any failure leaves a camera off between tries).
+const GIVEN_UP_RETRY: Duration = Duration::from_secs(10);
 
 /// State shared between a reconnecting capture handle and its supervisor thread (see
 /// [`ReconnectPolicy`]). Opaque.
@@ -398,10 +401,12 @@ fn run(
     let mut last_sent = tx.stats().sent;
     let mut last_progress = Instant::now();
     let mut restart_error: Option<String> = None;
-    // A USB camera whose mode stalled or was refused by the bus is not restarted in that mode:
-    // the failure is recorded against the mode, and the planner picks another one when the
-    // consumers ask again.
-    let mut given_up = false;
+    // A USB camera whose mode stalled or was refused by the bus is not restarted in that mode
+    // at once: the failure is recorded against the mode, and the planner picks another one when
+    // the consumers ask again.
+    // After giving a USB mode up: until when the consumers have to plan again (another mode)
+    // before this handle tries the same mode once more. Never for good.
+    let mut cooling: Option<Instant> = None;
     // Runs until stopped (or the handle, and with it the stop sender, is dropped).
     while let Err(std::sync::mpsc::RecvTimeoutError::Timeout) = stop_rx.recv_timeout(POLL) {
         // Stopped for lack of consumers: nothing to watch until a pull starts it again.
@@ -426,7 +431,7 @@ fn run(
             }
             continue;
         }
-        if given_up {
+        if cooling.is_some_and(|until| Instant::now() < until) {
             continue;
         }
         let Some(failure) = failure(
@@ -450,7 +455,12 @@ fn run(
         let reason = match &failure {
             Failure::Stalled(reason) | Failure::Lost(reason) => reason.clone(),
         };
-        if usb && let Some(mode) = usb_mode(recipe) {
+        // Back from cooling down: this attempt restarts the mode instead of giving it up again.
+        let cooled = cooling.take().is_some();
+        if usb
+            && !cooled
+            && let Some(mode) = usb_mode(recipe)
+        {
             // The mode delivered nothing, or the bus refused it: remember that for the planner,
             // stop restarting it, and report the failure to the consumers (they plan again).
             let cause = match &failure {
@@ -475,14 +485,14 @@ fn run(
                 Failure::Lost(_) => String::new(),
             };
             if !cause.is_empty() {
-                crate::trace::warn!(backend = %recipe.backend, camera = %recipe.identity.display, reason = %cause, "USB capture gave up in this mode; the planner picks another");
+                crate::trace::warn!(backend = %recipe.backend, camera = %recipe.identity.display, reason = %cause, "USB capture gave up in this mode; the planner picks another (this one is tried again in 10 s)");
                 *worker_error.lock() = Some(CaptureError::Disconnected(cause));
                 retry_metrics.record_disconnected_since(last_progress);
                 if let Some(previous) = shared.inner.lock().take() {
                     shared.retire(&previous);
                     previous.stop();
                 }
-                given_up = true;
+                cooling = Some(Instant::now() + GIVEN_UP_RETRY);
                 continue;
             }
         }

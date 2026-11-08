@@ -126,6 +126,7 @@ impl OutputSpec {
         match self.code {
             FourCc::NV12 => Ok(BeFormat::Nv12),
             FourCc::RG24 => Ok(BeFormat::Rgb24),
+            FourCc::GREY => Ok(BeFormat::Grey),
             c => Err(err(format!("the PiSP back end does not make {c}"))),
         }
     }
@@ -133,10 +134,10 @@ impl OutputSpec {
     /// Bytes of one buffer of this output.
     pub(super) fn bytes(self) -> u64 {
         let px = u64::from(self.width) * u64::from(self.height);
-        if self.code == FourCc::NV12 {
-            px * 3 / 2
-        } else {
-            px * 3
+        match self.code {
+            FourCc::NV12 => px * 3 / 2,
+            FourCc::GREY => px,
+            _ => px * 3,
         }
     }
 

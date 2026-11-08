@@ -405,7 +405,7 @@ fn drm_frame(
 
 #[cfg(test)]
 mod tests {
-    use std::os::fd::{AsFd, FromRawFd};
+    use std::os::fd::AsFd;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -421,77 +421,32 @@ mod tests {
     const W: usize = 1280;
     const H: usize = 720;
 
-    /// An NV12 frame in a dma-buf from the system heap, like a camera buffer.
+    /// An NV12 frame in a dma-buf from the system heap (through Lemnos), like a camera buffer.
     struct DmaBuf {
-        fd: OwnedFd,
-        map: *mut u8,
+        buf: styx_native::dma::DmaBuf,
+        map: lemnos_linux_sys::mmap::Mapping,
         len: usize,
     }
 
-    // SAFETY: a shared read-only mapping of a dma-buf we own.
-    unsafe impl Send for DmaBuf {}
-    // SAFETY: as above.
-    unsafe impl Sync for DmaBuf {}
-
     impl DmaBuf {
         fn allocate(len: usize) -> Option<Self> {
-            #[repr(C)]
-            struct Alloc {
-                len: u64,
-                fd: u32,
-                fd_flags: u32,
-                heap_flags: u64,
-            }
-            const DMA_HEAP_IOCTL_ALLOC: libc::c_ulong = 0xC018_4800;
-            let heap = std::fs::File::open("/dev/dma_heap/system").ok()?;
-            let mut alloc = Alloc {
-                len: len as u64,
-                fd: 0,
-                fd_flags: (libc::O_RDWR | libc::O_CLOEXEC) as u32,
-                heap_flags: 0,
-            };
-            // SAFETY: the heap ioctl with a correctly sized request.
-            if unsafe { libc::ioctl(heap.as_raw_fd(), DMA_HEAP_IOCTL_ALLOC as _, &mut alloc) } != 0
-            {
-                return None;
-            }
-            // SAFETY: the kernel returned a new dma-buf fd.
-            let fd = unsafe { OwnedFd::from_raw_fd(alloc.fd as i32) };
-            // SAFETY: mapping the whole dma-buf.
-            let map = unsafe {
-                libc::mmap(
-                    ptr::null_mut(),
-                    len,
-                    libc::PROT_READ | libc::PROT_WRITE,
-                    libc::MAP_SHARED,
-                    fd.as_raw_fd(),
-                    0,
-                )
-            };
-            (map != libc::MAP_FAILED).then(|| Self {
-                fd,
-                map: map.cast(),
-                len,
-            })
-        }
-    }
-
-    impl Drop for DmaBuf {
-        fn drop(&mut self) {
-            // SAFETY: our mapping.
-            unsafe { libc::munmap(self.map.cast(), self.len) };
+            let buf = styx_native::dma::DmaHeap::open("system")
+                .ok()?
+                .allocate(len)
+                .ok()?;
+            let map = buf.map().ok()?;
+            Some(Self { buf, map, len })
         }
     }
 
     impl ExternalBacking for DmaBuf {
         fn plane_data(&self, _index: usize) -> Option<&[u8]> {
-            // SAFETY: mapped for our lifetime.
-            Some(unsafe { std::slice::from_raw_parts(self.map, self.len) })
+            Some(&self.map.as_slice()[..self.len])
         }
 
         fn export_backing(&self) -> Result<Option<FrameBackingExport>, FrameExportError> {
             let fd = self
-                .fd
+                .buf
                 .as_fd()
                 .try_clone_to_owned()
                 .map_err(|_| FrameExportError::NotExportable)?;
@@ -526,9 +481,8 @@ mod tests {
             },
         ];
         if dmabuf {
-            let buf = DmaBuf::allocate(len)?;
-            // SAFETY: our fresh mapping of `len` bytes.
-            unsafe { std::slice::from_raw_parts_mut(buf.map, len) }.copy_from_slice(&pixels);
+            let mut buf = DmaBuf::allocate(len)?;
+            buf.map.as_mut_slice()[..len].copy_from_slice(&pixels);
             return Some(FrameLease::from_external(meta, layouts, Arc::new(buf)));
         }
         let pool = BufferPool::with_limits(2, W * H, 0);

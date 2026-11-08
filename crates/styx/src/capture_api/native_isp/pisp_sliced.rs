@@ -5,7 +5,6 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
 
 use lemnos_drivers_pisp::device::BeJob;
 use smallvec::SmallVec;
@@ -245,22 +244,27 @@ pub(super) fn slice_leases(
     };
     p.hand_out_passes(s.sequence, sl.passes);
     // The frame as far as it is known: its timestamp (the start of frame), sensor values and
-    // buffers; the back end's times come with the frame.
+    // buffers. Its hops are the first slice's: "dequeued" when the slice's raw rows were in
+    // memory, "isp_done" now, its job done; the whole frame's times come with the frame.
     let mut f = PispFrame {
         sequence: s.sequence,
         timestamp: s.timestamp,
-        dequeued: Instant::now(),
+        dequeued: s.rows_in,
         sensor,
         job: BeJob {
             outputs: s.outputs,
-            elapsed: Duration::ZERO,
+            elapsed: s.job,
         },
         sequence_mismatch: false,
         request_lands: None,
         settings_from: None,
         digital_gain: 1.0,
         flicker: 1.0,
-        times: Default::default(),
+        times: styx_pipeline::device::PispTimes {
+            be_job: s.job,
+            total: s.rows_in.elapsed(),
+            ..Default::default()
+        },
         raw: None,
         raw_image: s.raw_image.filter(|_| sl.raw_room),
         passes: std::mem::take(sl.passes),

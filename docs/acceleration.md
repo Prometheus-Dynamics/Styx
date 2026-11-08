@@ -169,17 +169,20 @@ Notes:
 
 ## Totals
 
-There are 43 stages, each in 6 columns, for 258 cells.
+There are 43 stages, each in 6 columns, for 258 cells. "lib" cells (a library's own SIMD) are
+accelerated but not Styx's leaves, so they are counted apart.
 
-| Column | pass | gap | n/a |
-|---|---|---|---|
-| scalar | 43 | 0 | 0 |
-| x86 | 42 | 1 | 0 |
-| NEON64 | 43 | 0 | 0 |
-| NEON32 | 42 | 0 | 1 |
-| RVV | 40 | 3 | 0 |
-| GPU | 41 | 2 | 0 |
-| **all** | **251** | **6** | **1** |
+| Column | pass | lib | gap | n/a |
+|---|---|---|---|---|
+| scalar | 43 | 0 | 0 | 0 |
+| x86 | 36 | 6 | 1 | 0 |
+| NEON64 | 37 | 6 | 0 | 0 |
+| NEON32 | 39 | 3 | 0 | 1 |
+| RVV | 42 | 0 | 1 | 0 |
+| GPU | 42 | 0 | 1 | 0 |
+| **all** | **239** | **15** | **3** | **1** |
+
+The three gaps: fp16 on x86, and JPEG decode on RVV and on the GPU.
 
 Fixed-function units: 5 pass and 7 gaps, 6 of which need a board. "Written, untested on board"
 rows count as gaps (the MPP, K230D and RGA rows), so the RGA row's change leaves the count as it was.

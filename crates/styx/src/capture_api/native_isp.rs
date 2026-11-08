@@ -44,7 +44,7 @@ use styx_core::prelude::{BackendFrameMeta, ClockConversion, NativeFrameMeta};
 use styx_native::{CameraInfo, NativeCamera, StreamSettings};
 use styx_pipeline::SensorValues;
 use styx_pipeline::device::{
-    IspKind, PispOptions, PispPipeline, SoftPipeline, find_tuning_with, isp_kind,
+    IspKind, PispOptions, PispPipeline, SliceAt, SoftPipeline, find_tuning_with, isp_kind,
     soft_capture_memory,
 };
 use styx_pipeline::pisp_half::HalfFilter;
@@ -130,6 +130,10 @@ fn configured_isp(info: &CameraInfo, config: &StyxConfig) -> Result<IspKind, Cap
                 "native ISP: a hardware ISP required, and this camera has none".into(),
             ))
         }
+        // The K230's frame path waits on Lemnos: its cameras run the software ISP until then,
+        // unless a hardware ISP is required (then the capture says why it cannot start).
+        crate::planner::Hardware::Required => Ok(detected),
+        _ if detected == IspKind::K230 => Ok(IspKind::Software),
         _ => Ok(detected),
     }
 }
@@ -504,7 +508,10 @@ pub(super) fn start_processed(
                     NativeHalfFilter::BoxDownscaler => HalfFilter::BoxDownscaler,
                     NativeHalfFilter::Lanczos3 => HalfFilter::Lanczos3,
                 },
-                slice_line: config.backends.native.slice_line,
+                slice_at: config.backends.native.slice_at.map(|at| match at {
+                    super::tunables::NativeSliceAt::Line(l) => SliceAt::Line(l),
+                    super::tunables::NativeSliceAt::PerMille(p) => SliceAt::PerMille(p),
+                }),
                 spatial_denoise: f64::from(config.backends.native.spatial_denoise_percent) / 100.0,
                 be_buffers,
                 // The base set now, the rest as they are held.
@@ -515,7 +522,7 @@ pub(super) fn start_processed(
                 pass_jobs: usize::from(config.backends.native.pass_jobs),
                 raw_lease: config.backends.native.sensor_raw,
                 raw_compressed: config.backends.native.raw_compressed,
-                fe_buffers: PispOptions::nv12_and_half_rgb(w, h).fe_buffers
+                fe_buffers: config.backends.native.raw_buffers.max(2)
                     + if config.backends.native.sensor_raw {
                         PispOptions::RAW_LEASE_BUFFERS
                     } else {
@@ -572,6 +579,12 @@ pub(super) fn start_processed(
                 },
             )?;
             (controls, worker)
+        }
+        IspKind::K230 => {
+            return Err(err(
+                "the K230D ISP8000's frame path is not available yet (it waits on Lemnos's \
+                 lemnos-drivers-k230isp); set accelerators.isp = Off for the software ISP",
+            ));
         }
         #[cfg(not(feature = "rkisp"))]
         IspKind::Rkisp => {

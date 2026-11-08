@@ -71,7 +71,7 @@ codec-zune = ["zune-jpeg", "zune-core"]
 # compiled out. mozjpeg-sys is still built in that case, so enable only one of the two.
 codec-mozjpeg = ["mozjpeg"]
 codec-turbojpeg = ["turbojpeg"]
-codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc"]
+codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc", "dep:lemnos-linux-sys"]
 # Hardware encoders, scalers and converters on V4L2 memory-to-memory devices, without FFmpeg.
 codec-v4l2m2m = ["dep:lemnos-v4l2", "dep:lemnos-linux", "dep:lemnos-linux-sys"]
 # Hardware encoders on Rockchip VPUs through MPP (librockchip_mpp, opened at run time).

@@ -25,10 +25,19 @@ use styx_native::{CameraControls, FrameControls, NativeCamera, NativeError};
 pub use pisp::{
     PassOutput, PispFrame, PispPipeline, PispStartup, PispTimes, RAW_LEASE_BUFFERS, RawLayout,
 };
-pub use pisp_options::PispOptions;
+pub use pisp_options::{PispOptions, SliceAt};
 pub use pisp_slices::{PispEvent, PispSlice, SliceCounts};
 #[cfg(feature = "rkisp")]
 pub use rkisp::{RKISP_BUFFERS, RkispFrame, RkispPipeline, has_rkisp};
+
+/// Whether the system has the K230D's ISP8000 (the vendor driver's `/dev/vvcam-isp.0`); always
+/// `false` without the `k230isp` feature.
+pub fn has_k230isp() -> bool {
+    cfg!(feature = "k230isp") && std::path::Path::new(K230_ISP_DEVICE).exists()
+}
+
+/// The K230D ISP's register device (the vendor `vvcam-isp` misc device).
+pub const K230_ISP_DEVICE: &str = "/dev/vvcam-isp.0";
 
 /// Built without `rkisp`: no Rockchip ISP is used.
 #[cfg(not(feature = "rkisp"))]
@@ -182,16 +191,21 @@ pub enum IspKind {
     /// The Rockchip ISP30 (RK3588 / RK3588S / RK3582, vendor kernel): an `rkisp` media device
     /// with its ISP subdevice is present.
     Rkisp,
+    /// The Canaan K230D's ISP8000 (vendor kernel, `/dev/vvcam-isp.0`): detected with the
+    /// `k230isp` feature; its frame path waits on Lemnos, so Styx runs these cameras on the
+    /// software ISP unless a hardware ISP is required (written, untested on board).
+    K230,
     /// The software ISP (any raw sensor).
     Software,
 }
 
 impl IspKind {
-    /// For listings: `pisp`, `rkisp` or `software`.
+    /// For listings: `pisp`, `rkisp`, `k230` or `software`.
     pub fn name(self) -> &'static str {
         match self {
             Self::Pisp => "pisp",
             Self::Rkisp => "rkisp",
+            Self::K230 => "k230",
             Self::Software => "software",
         }
     }
@@ -212,6 +226,8 @@ pub fn isp_kind(info: &styx_native::CameraInfo) -> IspKind {
         IspKind::Pisp
     } else if has_rkisp() {
         IspKind::Rkisp
+    } else if has_k230isp() {
+        IspKind::K230
     } else {
         IspKind::Software
     }

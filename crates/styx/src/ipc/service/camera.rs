@@ -59,9 +59,10 @@ struct State {
     retry: Option<(Instant, Duration)>,
 }
 
-/// The first wait after the bus refused a start; doubled on each refusal, up to the maximum.
+/// The first wait after the bus refused a start; doubled on each refusal, up to the maximum
+/// (10 s: a camera is never left off for longer than that between tries).
 const FIRST_RETRY_WAIT: Duration = Duration::from_secs(1);
-const MAX_RETRY_WAIT: Duration = Duration::from_secs(30);
+const MAX_RETRY_WAIT: Duration = Duration::from_secs(10);
 /// Most modes a join tries after a start fails for lack of bus bandwidth or for no frames.
 const MAX_REPLANS: usize = 16;
 /// How long the capture keeps the setup of a client that left before it is planned for the

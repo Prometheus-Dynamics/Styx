@@ -183,6 +183,9 @@ native = [
 # Native cameras on the Rockchip ISP30 (RK3588 family, vendor kernel; styx-rkisp). Opt-in: other
 # SoCs' builds leave it out, and without it such a camera fails to open.
 rkisp = ["native", "styx-pipeline/rkisp"]
+# The K230D's ISP8000 (styx-k230isp): detected, its 3A glue built; a capture on it waits on
+# Lemnos's frame path (written, untested on board). Opt-in.
+k230isp = ["native", "styx-pipeline/k230isp"]
 # Native cameras without a PiSP process on a Vulkan GPU when one exists (styx-gpuisp: Vulkan
 # loaded at run time, the software ISP otherwise; `STYX_GPU_ISP=0` turns it off).
 gpu-isp = ["native", "styx-pipeline/gpu"]

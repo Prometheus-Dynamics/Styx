@@ -41,6 +41,12 @@ processed_format = "raw8"
 # (160 MHz in RAW10, 200 MHz in RAW8), and discovery reads one. RAW8 measured on the CM5 at
 # 192 MHz: frames planned at the driver's 200 MHz came 4.2% long (8.683 ms for 8.335) at the
 # same 1456-pixel line, i.e. 7.58 us lines; the bridge description (../ov9782.toml) has 192 MHz.
+#
+# RAW8 runs above the datasheet on purpose. The driver's RAW8 PLL (0x030d = 0x60, other PLL2
+# dividers at reset) gives a 96 MHz system clock, where the preliminary OV9782 datasheet
+# (v1.23) rates "up to 80 MHz" (RAW10's 0x50 is exactly 80). Measured fine on Raze #1 at
+# 120 fps; kept by decision (2026-11-07). Do not "fix" it to 80 MHz: that is 9.1 us lines and
+# 1.2 ms more readout.
 pixel_rates = { raw10 = 160_000_000, raw8 = 192_000_000 }
 
 # Blanking per mode, as the driver sets it (the bridge description, ov9782.toml, has the same

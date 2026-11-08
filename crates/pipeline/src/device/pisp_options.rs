@@ -77,11 +77,12 @@ pub struct PispOptions {
     pub spatial_denoise: f64,
     /// What extra passes ([`super::PispPipeline::set_pass`]) do with temporal denoise.
     pub pass_tdn: crate::pisp_passes::PassTdn,
-    /// Process each frame in two back end jobs, the first once the raw frame's first `line`
-    /// rows are in, the rest at its end: the frame is ready sooner after its readout. `None`
-    /// (default): one job at the end. A frame whose rows are not in when checked runs whole;
-    /// so does the stream on a receiver without `FRAME_SYNC`.
-    pub slice_line: Option<u16>,
+    /// Process each frame in two back end jobs, the first once the raw frame's rows up to
+    /// this point are in, the rest at its end: the frame is ready sooner after its readout.
+    /// `None` (default): one job at the end. A frame whose rows are not in when checked runs
+    /// whole; so does the stream on a receiver without `FRAME_SYNC`, and a point at or past the
+    /// mode's last row (see [`super::PispPipeline::slice_error`]).
+    pub slice_at: Option<SliceAt>,
     /// Keep each frame's raw front end buffer dequeued after the back end read it, for a
     /// consumer of the raw frame (`PispFrame::raw_image`, [`super::PispPipeline::release_raw`]);
     /// give the front end extra `fe_buffers` for those held. `false` (default): requeued at once.
@@ -157,10 +158,67 @@ impl PispOptions {
             tdn_contiguous: false,
             spatial_denoise: 1.0,
             pass_tdn: Default::default(),
-            slice_line: None,
+            slice_at: None,
             raw_lease: false,
             raw_compressed: false,
             half_filter: Default::default(),
         }
+    }
+}
+
+/// Where a frame is split for sliced processing ([`PispOptions::slice_at`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SliceAt {
+    /// After this many input rows, whatever the mode (for measurements).
+    Line(u16),
+    /// After this many thousandths of the mode's rows (750: three quarters), resolved when
+    /// the pipeline opens, rounded down to an even row.
+    PerMille(u16),
+}
+
+impl SliceAt {
+    /// The row a frame of `height` rows is split at, or why it is not split (a point at
+    /// row 0 or at or past the last row).
+    pub fn line_for(self, height: u32) -> Result<u16, String> {
+        let line = match self {
+            Self::Line(l) => u32::from(l),
+            Self::PerMille(p) => (u64::from(height) * u64::from(p) / 1000) as u32 & !1,
+        };
+        if line == 0 || line >= height {
+            return Err(format!(
+                "slice point {self:?} is row {line}, outside the mode's {height} rows: frames run whole"
+            ));
+        }
+        Ok(line as u16)
+    }
+}
+
+#[cfg(test)]
+mod slice_at_tests {
+    use super::SliceAt;
+
+    #[test]
+    fn per_mille_follows_the_mode() {
+        assert_eq!(SliceAt::PerMille(750).line_for(800), Ok(600));
+        assert_eq!(SliceAt::PerMille(750).line_for(400), Ok(300));
+        assert_eq!(
+            SliceAt::PerMille(750).line_for(721),
+            Ok(540),
+            "rounded down to even"
+        );
+        assert_eq!(SliceAt::Line(600).line_for(800), Ok(600));
+    }
+
+    #[test]
+    fn points_outside_the_frame_say_why() {
+        assert!(
+            SliceAt::Line(600)
+                .line_for(400)
+                .unwrap_err()
+                .contains("400 rows")
+        );
+        assert!(SliceAt::PerMille(1000).line_for(800).is_err());
+        assert!(SliceAt::PerMille(0).line_for(800).is_err());
+        assert!(SliceAt::Line(0).line_for(800).is_err());
     }
 }

@@ -41,6 +41,14 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Changed
 
+- Failure handling never gives up and waits at most 10 s between tries: a USB camera whose
+  modes all failed is tried again after 10 s instead of being given up on; `camerad` retries a
+  failed device sync after 1 s, doubling to 10 s; the GPU pyramid backend is retried in the
+  background (1 s doubling to 10 s) when the first try fails; network camera backoff is capped
+  at 10 s; the camera service retries a start the bus refused at most 10 s apart.
+- `native_raw_buffers` sets the front end's raw buffer count on PiSP too (at least 2, plus the
+  raw-lease buffers when raw frames are handed out).
+
 - Pyramid levels on a native PiSP: the second output makes level 1 and the deeper levels are
   2x2 box-filtered from it on the CPU (`PyramidSource::PreferHardware`, the default). Extra back
   end passes for levels 2-3 remain for `PyramidSource::HardwareOnly`. Raze #1, gray 1280x800 +
@@ -186,6 +194,12 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 - `styx_kernel::poll_into` waits with nanosecond precision (`ppoll`).
 
 ### Added
+
+- `StyxConfig::native_slice_at(Some(NativeSliceAt::PerMille(n)))`: the slice point as
+  thousandths of the chosen mode's rows (750: row 600 of 800, 300 of 400), resolved when the
+  camera opens. `native_slice_line` stays for an absolute row. A point outside the mode's rows
+  turns slicing off with a warning and `PispPipeline::slice_error` saying why (it was dropped
+  silently). `NativeIspConfig::slice_line` and `PispOptions::slice_line` became `slice_at`.
 
 - `native-pipeline be-replay --recording BASE --configs MAIN.bin --out DIR`: every frame of a
   raw10 recording through the PiSP back end with one main-job config (e.g. from
@@ -1261,6 +1275,10 @@ Breaking, for 3.0: the shims deprecated in 2.0 are gone.
 - gst-styx's `priority` property: `queue-depth` (0 or 1 the newest frame, N every frame up to N).
 
 ### Fixed
+
+- Sliced PiSP delivery reported 0.000 ms for the dequeued -> ISP hops: the frame now carries
+  the time its first rows arrived and the back end job time, so the hop lines and ISP metrics
+  are right with `native_deliver_slices`.
 
 - PiSP pyramid levels 2 and 3 from extra back end passes are boxes, as ff18ef7 meant: the
   passes ran on output 0, which has no downscaler, and fell back to the smart resize (corner

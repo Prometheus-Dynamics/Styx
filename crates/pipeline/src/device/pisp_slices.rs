@@ -1,4 +1,4 @@
-//! Processing the top of a frame while the bottom is still being read (`PispOptions::slice_line`).
+//! Processing the top of a frame while the bottom is still being read (`PispOptions::slice_at`).
 //! A line event says the raw output has `line` rows in memory, final: the front end device checks
 //! a marker below them at a time from the sensor's line time ([`line_delay`]). At that event the
 //! back end runs the tiles above the line as one job on the raw
@@ -70,6 +70,8 @@ struct Pending {
     rows_after_first: [u32; 2],
     /// The frame's start (its buffer's timestamp to be).
     frame_start: Duration,
+    /// When the line event found the first slice's rows in memory and queued its job.
+    rows_in: Instant,
 }
 
 /// What [`super::PispPipeline::next_event`] delivers.
@@ -101,6 +103,10 @@ pub struct PispSlice {
     /// [`super::PispFrame::raw_image`] (given back with `release_raw`); a frame that never comes
     /// gives it back to the front end itself.
     pub raw_image: Option<u32>,
+    /// When the line event found the slice's raw rows in memory (the slice's "dequeued").
+    pub rows_in: Instant,
+    /// The first job's back end time ([`BeJob::elapsed`]).
+    pub job: Duration,
 }
 
 /// What slicing has done (for logs and metrics).
@@ -204,6 +210,7 @@ impl Slicing {
             done: None,
             rows_after_first,
             frame_start: ev.frame_start,
+            rows_in: Instant::now(),
         });
         Ok(())
     }
@@ -285,6 +292,8 @@ impl Slicing {
             outputs: done.outputs,
             rows: p.rows_after_first,
             raw_image: Some(p.input),
+            rows_in: p.rows_in,
+            job: done.elapsed,
         };
         p.done = Some(done);
         Ok(Some(slice))

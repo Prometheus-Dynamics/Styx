@@ -24,6 +24,7 @@ std = [
     "styx-dng/std",
     "lemnos-drivers-pisp/std",
     "styx-rkisp?/std",
+    "styx-k230isp?/std",
     "styx-runtime/std",
     "styx-sensor/std",
     "styx-softisp/std",
@@ -48,10 +49,14 @@ device = [
     "dep:lemnos-v4l2",
     "lemnos-drivers-pisp/device",
     "styx-rkisp?/device",
+    "styx-k230isp?/device",
 ]
 # The Rockchip ISP30 (styx-rkisp): its 3A and parameters, and with `device` its pipeline. Opt-in,
 # so builds for other SoCs leave it out.
 rkisp = ["dep:styx-rkisp"]
+# The K230D's ISP8000 (styx-k230isp): its 3A register writes and statistics, and with `device`
+# its detection (written, untested on board; the frame path waits on Lemnos). Opt-in.
+k230isp = ["dep:styx-k230isp"]
 # The software path on a Vulkan GPU (`styx-gpuisp`; loads libvulkan at run time).
 gpu = ["std", "dep:styx-gpuisp"]
 # With `gpu`: `GpuContext::shared`, the ISP on the process's Daedalus device.
@@ -71,6 +76,7 @@ styx-core = { workspace = true, features = ["neon", "x86"] }
 styx-dng = { path = "../dng", version = "2.0.1-dev", default-features = false }
 lemnos-drivers-pisp.workspace = true
 styx-rkisp = { path = "../rkisp", version = "2.0.1-dev", default-features = false, optional = true }
+styx-k230isp = { path = "../k230isp", version = "2.0.1-dev", default-features = false, optional = true }
 styx-runtime = { path = "../runtime", version = "2.0.1-dev", default-features = false }
 styx-sensor = { path = "../sensor", version = "2.0.1-dev", default-features = false }
 styx-softisp = { path = "../softisp", version = "2.0.1-dev", default-features = false, features = ["neon", "x86"] }

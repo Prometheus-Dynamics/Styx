@@ -290,7 +290,7 @@ impl ClientOptions {
     /// their progress ([`FrameLease::progress`]: rows final so far, waits for more), rather
     /// than once complete. The service slices frames when its capture does
     /// ([`CameraService::capture_config`](super::CameraService::capture_config) with
-    /// `native_slice_line` and `native_deliver_slices`). Services that predate this, and
+    /// `native_slice_at` and `native_deliver_slices`). Services that predate this, and
     /// captures that do not slice, send complete frames (`progress()` is `None`).
     pub fn sliced_frames(mut self) -> Self {
         self.slices = true;

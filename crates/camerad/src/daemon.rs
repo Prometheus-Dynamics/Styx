@@ -174,11 +174,13 @@ impl<S: EndpointSink> Daemon<S> {
 
     /// Serve the cameras attached now and as they come and go until `stop` is set: kernel
     /// device events where the platform has them, else a rescan every
-    /// [`Config::rescan_ms`]. Start failures are logged and tried again on the next change.
+    /// [`Config::rescan_ms`]. Start failures are logged and tried again on the next change,
+    /// and without one after a wait doubling from 1 s up to 10 s, for as long as they fail.
     pub fn run(&mut self, stop: &AtomicBool) -> Result<(), styx::watch::WatchError> {
         let mut runtime = styx::watch::WatchRuntime::new();
         runtime.refresh();
-        log(self.sync(runtime.devices()));
+        let mut retry = Retry::default();
+        retry.after(self.sync(runtime.devices()));
         let mut watcher = styx::watch::LinuxVideoFsWatcher::new()?;
         let tick = if watcher.uses_uevents() {
             Duration::from_millis(100)
@@ -187,7 +189,11 @@ impl<S: EndpointSink> Daemon<S> {
         };
         while !stop.load(Ordering::Acquire) {
             match runtime.poll_watcher_and_refresh(&mut watcher) {
-                Ok(Some(_)) => log(self.sync(runtime.devices())),
+                Ok(Some(_)) => retry.after(self.sync(runtime.devices())),
+                Ok(None) if retry.due() => {
+                    runtime.refresh();
+                    retry.after(self.sync(runtime.devices()));
+                }
                 Ok(None) => {}
                 Err(e) => eprintln!("styx-camerad: device watch: {e}"),
             }
@@ -201,6 +207,34 @@ impl<S: EndpointSink> Daemon<S> {
 fn log(errors: Vec<StartError>) {
     for e in errors {
         eprintln!("styx-camerad: {}: {}", e.camera, e.error);
+    }
+}
+
+/// When to try the cameras that failed to start again: after a wait doubling from 1 s up to
+/// 10 s while starts keep failing, never giving up; none pending once every camera runs.
+#[derive(Default)]
+struct Retry {
+    next: Option<(std::time::Instant, Duration)>,
+}
+
+impl Retry {
+    const FIRST: Duration = Duration::from_secs(1);
+    const MAX: Duration = Duration::from_secs(10);
+
+    /// Logs a sync's failures and schedules the next try if there were any.
+    fn after(&mut self, errors: Vec<StartError>) {
+        self.next = (!errors.is_empty()).then(|| {
+            let wait = self
+                .next
+                .map_or(Self::FIRST, |(_, w)| (w * 2).min(Self::MAX));
+            (std::time::Instant::now() + wait, wait)
+        });
+        log(errors);
+    }
+
+    fn due(&self) -> bool {
+        self.next
+            .is_some_and(|(at, _)| std::time::Instant::now() >= at)
     }
 }
 

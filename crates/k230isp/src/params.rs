@@ -89,6 +89,14 @@ impl Params {
         Self::default()
     }
 
+    /// The same `Params` with no writes, its list's capacity kept: one value reused frame to
+    /// frame builds each frame's writes without allocating once the list has grown.
+    pub fn reset(mut self) -> Self {
+        self.writes.clear();
+        self.ctrl = 0;
+        self
+    }
+
     /// The writes, in the order they are applied.
     pub fn writes(&self) -> &[RegWrite] {
         &self.writes

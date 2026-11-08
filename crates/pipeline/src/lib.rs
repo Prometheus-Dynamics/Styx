@@ -53,6 +53,8 @@ mod error;
 #[cfg(feature = "all-algorithms")]
 mod focus_grid;
 pub mod isp;
+#[cfg(feature = "k230isp")]
+pub mod k230isp;
 #[cfg(feature = "std")]
 pub mod measure;
 pub mod pisp_be;

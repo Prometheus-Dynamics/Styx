@@ -6,10 +6,13 @@ underneath. No libcamera, no `v4l` crate, no per-sensor kernel driver. Design an
 
 No patches on other people's code; our own kernel modules are fine. The stock V4L2 path stays
 working in Styx everywhere: SystemCore and other kernels we don't control depend on it. The
-sensor bridge in `kernel-modules/` is not the plan: the kernel module is happening in Lemnos, with the drivers in Rust in userspace
-([The leap](#the-leap-started-2026-11-06), item 4).
+Styx sensor bridge is gone; the kernel module is Lemnos's, with the drivers in Rust in userspace
+([The leap](#the-leap-started-2026-11-06), item 4). The OV9782 driver (upstream `ov9282` plus our
+patch) becomes one Lemnos-owned sensor module with its mode and register data, and Styx's
+`crates/sensor` copy of that data goes (user decision, 2026-11-07).
 
-Audited against the code at 475e07a (2026-11-01). Numbers are from the CM5 / Raze with the OV9782
+Audited against the code at 475e07a (2026-11-01); re-checked at 673ade94 (2026-11-07) for device
+access, the acceleration counts, K230 wiring and the retired crates. Numbers are from the CM5 / Raze with the OV9782
 at 1280x800 unless stated. Every open item has *what* (its bold title), *why*, *done when*,
 *blocked by* and *numbers*; "written, untested on board" means the code exists and only unit
 tests or QEMU have run it. Done items move to [Done](#done) with their commit.
@@ -269,14 +272,9 @@ memory when it runs.
       GPU and each board's fixed-function units; losing variants stay behind knobs. *Done when:* the
       matrix has no gap cells; each leaf conformance-tested against scalar (guard bytes, odd widths)
       in the gate, on hardware or QEMU. *Blocked by:* nothing for the CPU and GPU columns; boards
-      for the fixed-function rows. *Numbers:* recounted from the matrix: **230 pass, 27
-      gaps, 1 n/a of 258 cells** (43 stages). Gaps by column: x86 1, NEON64 0, NEON32 0, RVV 2, GPU 24.
-      The CPU gaps: fp16 on x86 and RVV, and JPEG decode on RVV (JPEG and H.264 encode: Styx's
-      own encoders with RVV leaves, written, untested on board). The GPU gaps: every
-      stage of `post.rs` (5), the packed conversions (11), YUYV → NV12 chroma, NV12/YUYV/I420 → RGB
-      (3), the edge-directed demosaic, the polynomial tone curve, fp16, and JPEG decode. Fixed-function:
-      5 pass, 7 gaps, 6 of which need a board. armv7 and RVV leaves now cover every kernel in
-      `styx_core::simd` and every integer kernel of `styx_softisp::simd`.
+      for the fixed-function rows. *Numbers:* recounted from the matrix (2026-11-07): **239 pass, 15 lib, 3
+      gaps, 1 n/a of 258 cells** (43 stages). The gaps: fp16 on x86, and JPEG decode on RVV and on
+      the GPU. Fixed-function: 5 pass, 7 gaps, 6 of which need a board.
 - [ ] **Software ISP: AVX-512 VBMI exact tone table: correct under Intel SDE, never timed.**
       `simd/x86/tone512.rs`: both 256-entry node lookups as two `vpermi2b` and a blend, 64
       pixels at a time; dispatched where AVX-512 F, BW and VBMI are detected
@@ -477,7 +475,7 @@ Numbers are as of the commit named.
       level stays in the A76's 512 KB L2 between being made and read, and the time is the cold 1 MB
       source. Prototype not kept (no API without a gain).
 - [x] **UVC onto Lemnos's one USB transport.** `styx-uvc` claims, controls and streams through
-      `lemnos-usb` (`UrbRing`, Lemnos d190650); `styx-kernel` has no usbfs module. Three USB stacks
+      `lemnos-usb` (`UrbRing`, Lemnos d190650); Styx has no usbfs code. Three USB stacks
       (Lemnos rusb, Atlas nusb, Styx usbfs) become one. Raze #1, 2026-11-03, webcam 1bcf:0050
       (isochronous), MJPG 1280x720 and YUYV 640x480 at 30 fps, 300 frames each: 0 sequence gaps, 0
       damaged, 300 of 300 timestamps from PTS, interval sd under 0.001 ms against 1.494 for V4L2 on
@@ -496,19 +494,24 @@ Numbers are as of the commit named.
       with no reader apart from `total`.
 - [x] **Uevent hotplug on Lemnos's.** Already done: `styx::watch` (`watch/linux.rs`) and
       `styx-uvc`'s `Hotplug` both use `lemnos_linux::uevent`. Styx has no netlink code of its
-      own; I²C, GPIO and embedded-hal are Lemnos's as well (`styx-kernel/src/bus.rs`). The
+      own; I²C, GPIO and embedded-hal are Lemnos's as well. The
       HeliOS item "Styx's uevent watcher moves onto Lemnos's" has nothing left to do.
-- [x] **dma-heap and dma-buf basics onto Lemnos.** The heap open and allocate, CPU-access syncs,
-      `dmabuf_id` and the dma-buf length are Lemnos's (`lemnos_linux::dma`, `lemnos_linux_sys::dma_buf`,
-      9b3e835). `styx_kernel::dma_heap` stays as a thin layer for what is Styx's: the allocation
-      padding (`TAIL_SLACK`), the sync counters (`sync_stats`) and the memfd stand-in. Owed: the
-      Raze run of the allocations and syncs was done on the software-ISP path only.
-- [x] **V4L2 M2M session onto Lemnos.** `styx_kernel::v4l2::M2mSession` keeps its API (copy,
+- [ ] **dma-heap, dma-buf and V4L2 probing all on Lemnos.** The heap open and allocate, CPU-access
+      syncs, `dmabuf_id` and the dma-buf length are Lemnos's (`lemnos_linux::dma`,
+      `lemnos_linux_sys::dma_buf`, 9b3e835); `styx_native::dma` keeps only what is Styx's (the
+      allocation padding `TAIL_SLACK`, the memfd stand-in). The audit of 6a6f848b found three
+      raw calls left: the FFmpeg codec probe's `VIDIOC_QUERYCAP`/`ENUM_FMT` and the VA-API test's
+      dma-heap allocation now go through Lemnos (2026-11-07); `pipewire-styx`'s `UDMABUF_CREATE`
+      waits on a Lemnos udmabuf API (asked 2026-11-07). *Done when:* no `libc::ioctl` on a device
+      outside Lemnos in Styx (`grep -rn "libc::ioctl" crates` empty). *Blocked by:* Lemnos's
+      udmabuf call. Owed: the Raze run of the allocations and syncs was done on the software-ISP
+      path only.
+- [x] **V4L2 M2M session onto Lemnos.** `styx_codec::m2m::M2mSession` keeps its API (copy,
       row-by-row and dma-buf import pushes, held frames, pull, drain) over Lemnos's
       `v4l2::m2m::M2mSession` (Lemnos c546b44): the source format is set first, then the
       destination's, read back before the buffers (vicodec sized its coded buffers from the old
       order). Controls go through `device()`, a duplicate of the session's open file. vim2m and
-      vicodec tests pass. RGA is Daedalus's (`daedalus-rga`); Styx's M2M is for codecs.
+      vicodec tests pass. RGA is Lemnos's (`lemnos-drivers-rga`); Styx's M2M is for codecs.
       Decoders (Lemnos 771217a's source-change flow) are not on M2M in Styx yet.
 
 - [x] **ov9282 and pisp_be patches dropped** (user decision, 2026-11-03): `kernel-modules/ov9282`,
@@ -621,15 +624,15 @@ Numbers are as of the commit named.
       removed: done; only trait-impl repetition remains. *Blocked by:* nothing.
 
 ### Foundations and stand-alone
-- [x] Pure-Rust kernel interfaces (`styx-kernel`): V4L2, media controller, subdevs, events,
-      dma-heaps (I²C, GPIO and uevents moved to Lemnos 2.0, `lemnos-linux`). (df84c54, 7fe3448, 6d1d4a0)
-- [x] V4L2 backend on `styx-kernel`; the `v4l` crate is gone everywhere. (d23196a)
+- [x] Pure-Rust kernel interfaces: V4L2, media controller, subdevs, events, dma-heaps; first in
+      Styx, now Lemnos's (`lemnos-v4l2`, `lemnos-linux`). (df84c54, 7fe3448, 6d1d4a0, 4dceae2)
+- [x] V4L2 backend in pure Rust; the `v4l` crate is gone everywhere. (d23196a)
 - [x] libcamera fully optional: no default build pulls it, CI job without it, checks in
       `scripts/check-feature-combinations.sh`. (97aac59)
 
 ### Sensors
-- [x] Sensors as data (`styx-sensor`, TOML descriptions) driven from Rust through one generic
-      kernel module, `styx-sensor-bridge`. (31bacba, 9c4f745)
+- [x] Sensors as data (`styx-sensor`, TOML descriptions). (31bacba, 9c4f745) The data moves to
+      Lemnos with its sensor modules (OV9782 first).
 - [x] Sensors with an upstream kernel driver run natively too (subdev controls, DelayedControls-style
       scheduling); data files for ov9281/ov9782 (verified), imx219, imx477, imx708, ov5647
       (unverified). See [adding-a-camera.md](docs/native-stack/adding-a-camera.md). (c76a6aa)

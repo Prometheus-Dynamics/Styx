@@ -298,10 +298,14 @@ impl Default for NetcamConfig {
     }
 }
 
+/// The longest wait between netcam reconnect attempts, whatever the configuration asks.
+const NETCAM_BACKOFF_CAP_MS: u64 = 10_000;
+
 impl NetcamConfig {
     pub(crate) fn sanitized(self) -> Self {
-        let start = self.backoff_start_ms.max(100);
-        let max = self.backoff_max_ms.max(start);
+        // Retries never stop and never wait more than 10 s between tries.
+        let start = self.backoff_start_ms.clamp(100, NETCAM_BACKOFF_CAP_MS);
+        let max = self.backoff_max_ms.clamp(start, NETCAM_BACKOFF_CAP_MS);
         Self {
             request_timeout_secs: self.request_timeout_secs.max(1),
             connect_timeout_ms: self.connect_timeout_ms.max(1),
@@ -628,7 +632,7 @@ impl StyxConfig {
         self
     }
 
-    /// Override netcam backoff timings.
+    /// Override netcam backoff timings (both capped at 10 s: reconnecting never waits longer).
     pub fn netcam_backoff(mut self, start_ms: u64, max_ms: u64) -> Self {
         self.backends.netcam.backoff_start_ms = start_ms;
         self.backends.netcam.backoff_max_ms = max_ms;

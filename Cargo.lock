@@ -5744,6 +5744,7 @@ dependencies = [
  "styx-core-rs",
  "styx-dng",
  "styx-gpuisp",
+ "styx-k230isp",
  "styx-native",
  "styx-rkisp",
  "styx-runtime",

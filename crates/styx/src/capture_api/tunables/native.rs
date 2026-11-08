@@ -21,6 +21,18 @@ pub enum NativeHalfFilter {
     Lanczos3,
 }
 
+/// Where a native frame is split for sliced processing ([`NativeIspConfig::slice_at`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
+pub enum NativeSliceAt {
+    /// After this many input rows, whatever the mode (for measurements).
+    Line(u16),
+    /// After this many thousandths of the chosen mode's rows (750: three quarters; row 600 of
+    /// 800, 300 of 400), resolved when the camera opens and rounded down to an even row.
+    PerMille(u16),
+}
+
 /// Prefetch of a native processed frame's pixels by the capture thread, before the frame is
 /// handed over (see [`NativeIspConfig::cpu_prefetch`]).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -225,7 +237,8 @@ pub struct NativeIspConfig {
     pub raw_bits: Option<u8>,
     /// Raw capture buffers the receiver cycles through (default 4, at least 2): the frames in
     /// flight between the sensor and the ISP, each one raw frame's memory (1 MB for RAW8 at
-    /// 1280x800). 3, or 2 at 120 fps on the CM5 without loss, save one
+    /// 1280x800; on a PiSP the front end's 16-bit frames, 2 MB, or 1 MB with
+    /// [`Self::raw_compressed`]). 3, or 2 at 120 fps on the CM5 without loss, save one
     /// raw frame each on a small device; fewer leave less slack when the ISP falls behind.
     pub raw_buffers: u32,
     /// Keep raw frames between the front and back end in the PiSP's 8-bit compressed form
@@ -253,12 +266,13 @@ pub struct NativeIspConfig {
     /// pyramid level 1, a half-size second output): [`NativeHalfFilter::Box`] by default.
     /// Other sizes use the smart resize.
     pub half_filter: NativeHalfFilter,
-    /// Process each frame in two back end jobs, the first once the raw frame's first
-    /// `slice_line` rows are in (a frame whose rows are not in when checked runs whole): the frame is ready sooner after its readout (1280x800@120 on the
-    /// OV9782: 7.80 → 6.85 ms at line 640). `None` (default): off. The algorithms' settings
-    /// then apply one frame later.
-    pub slice_line: Option<u16>,
-    /// With [`Self::slice_line`], hand each frame out at its first slice: its leases carry a
+    /// Process each frame in two back end jobs, the first once the raw frame's rows up to
+    /// this point are in (a frame whose rows are not in when checked runs whole): the frame is
+    /// ready sooner after its readout (1280x800@120 on the OV9782: 7.80 → 6.85 ms at line 640).
+    /// `None` (default): off. A point outside the mode's rows turns slicing off for that
+    /// camera, with a warning saying why. The algorithms' settings then apply one frame later.
+    pub slice_at: Option<NativeSliceAt>,
+    /// With [`Self::slice_at`], hand each frame out at its first slice: its leases carry a
     /// `FrameLease::progress` saying how many rows are final, and complete on the same leases
     /// (default `false`: frames are handed out complete). Its companions go out with it: the
     /// second output's follow the frame's progress, the extra passes' (regions, pyramid levels
@@ -342,7 +356,7 @@ impl Default for NativeIspConfig {
             tdn_compressed: true,
             tdn_contiguous: false,
             half_filter: NativeHalfFilter::Box,
-            slice_line: None,
+            slice_at: None,
             deliver_slices: false,
             soft_threads: None,
             soft_post_stages: false,
@@ -536,10 +550,18 @@ impl StyxConfig {
         self
     }
 
-    /// Process native frames in two back end jobs from input row `line` (see
-    /// [`NativeIspConfig::slice_line`]).
+    /// Process native frames in two back end jobs from input row `line`, whatever the mode
+    /// (see [`NativeIspConfig::slice_at`]; [`Self::native_slice_at`] follows the mode).
     pub fn native_slice_line(mut self, line: Option<u16>) -> Self {
-        self.backends.native.slice_line = line;
+        self.backends.native.slice_at = line.map(NativeSliceAt::Line);
+        self
+    }
+
+    /// Process native frames in two back end jobs from a point of the frame, e.g.
+    /// `Some(NativeSliceAt::PerMille(750))` for three quarters of whatever mode the camera
+    /// runs (see [`NativeIspConfig::slice_at`]).
+    pub fn native_slice_at(mut self, at: Option<NativeSliceAt>) -> Self {
+        self.backends.native.slice_at = at;
         self
     }
 
