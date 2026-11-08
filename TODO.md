@@ -502,9 +502,9 @@ Numbers are as of the commit named.
       allocation padding `TAIL_SLACK`, the memfd stand-in). The audit of 6a6f848b found three
       raw calls left: the FFmpeg codec probe's `VIDIOC_QUERYCAP`/`ENUM_FMT` and the VA-API test's
       dma-heap allocation now go through Lemnos (2026-11-07); `pipewire-styx`'s `UDMABUF_CREATE`
-      waits on a Lemnos udmabuf API (asked 2026-11-07). *Done when:* no `libc::ioctl` on a device
-      outside Lemnos in Styx (`grep -rn "libc::ioctl" crates` empty). *Blocked by:* Lemnos's
-      udmabuf call. Owed: the Raze run of the allocations and syncs was done on the software-ISP
+      went through Lemnos's `udmabuf_from_memfd` too (06b1aa1, written, untested on board).
+      *Done when:* no `libc::ioctl` on a device outside Lemnos in Styx
+      (`grep -rn "libc::ioctl" crates` empty). Owed: the Raze run of the allocations and syncs was done on the software-ISP
       path only.
 - [x] **V4L2 M2M session onto Lemnos.** `styx_codec::m2m::M2mSession` keeps its API (copy,
       row-by-row and dma-buf import pushes, held frames, pull, drain) over Lemnos's

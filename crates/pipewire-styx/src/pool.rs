@@ -4,7 +4,7 @@
 //! No PipeWire types here, so this is tested without the PipeWire libraries.
 
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 
 use styx::capture_api::{CaptureBuffer, CaptureBuffers};
@@ -63,7 +63,9 @@ impl Slot {
         }
         let map = NonNull::new(ptr.cast::<u8>()).ok_or_else(|| io::Error::other("mmap"))?;
         let dmabuf = if dmabuf {
-            udmabuf(&memfd, len).ok()
+            lemnos_linux::dma::udmabuf_from_memfd(memfd.as_fd(), 0, len)
+                .ok()
+                .map(lemnos_linux::dma::DmaBuf::into_fd)
         } else {
             None
         };
@@ -100,41 +102,6 @@ fn page_size() -> usize {
     // SAFETY: sysconf has no preconditions.
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
     usize::try_from(page).unwrap_or(4096).max(1)
-}
-
-/// `struct udmabuf_create` from `<linux/udmabuf.h>`.
-#[repr(C)]
-struct UdmabufCreate {
-    memfd: u32,
-    flags: u32,
-    offset: u64,
-    size: u64,
-}
-
-/// `UDMABUF_CREATE`: `_IOW('u', 0x42, struct udmabuf_create)`.
-const UDMABUF_CREATE: libc::c_ulong =
-    (1 << 30) | (24 << 16) | ((b'u' as libc::c_ulong) << 8) | 0x42;
-const UDMABUF_FLAGS_CLOEXEC: u32 = 1;
-
-/// A dma-buf of the (sealed, page-sized) memfd's pages.
-fn udmabuf(memfd: &OwnedFd, len: usize) -> io::Result<OwnedFd> {
-    let dev = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open("/dev/udmabuf")?;
-    let create = UdmabufCreate {
-        memfd: memfd.as_raw_fd() as u32,
-        flags: UDMABUF_FLAGS_CLOEXEC,
-        offset: 0,
-        size: len as u64,
-    };
-    // SAFETY: UDMABUF_CREATE reads the struct and returns a new descriptor or -1 (checked).
-    let fd = unsafe { libc::ioctl(dev.as_raw_fd(), UDMABUF_CREATE as _, &create) };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: a fresh descriptor we own.
-    Ok(unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
 /// Whether slots can be dma-bufs here (`/dev/udmabuf` usable).
