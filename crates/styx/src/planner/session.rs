@@ -508,6 +508,7 @@ pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
         && a.route.same_as(&b.route)
         && a.decode_scale == b.decode_scale
         && a.isp_output == b.isp_output
+        && a.m2m_scale == b.m2m_scale
         && a.isp_format == b.isp_format
         && a.sensor_raw == b.sensor_raw
         && a.isp_second_output == b.isp_second_output

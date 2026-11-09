@@ -6,9 +6,9 @@ written from vendor sources and marked written, untested on board, or says what 
 
 | Chip | Boards | ISP | Encoder | 2D scaler |
 |---|---|---|---|---|
-| RK3588S | ROCK 5C (RK3588S2) | ISP30, written | MPP, written | RGA3, convert written, scaling not |
-| RK3566 | ZERO 3E | ISP21, written | MPP, written | RGA2, convert written, scaling not |
-| RV1126B | Luckfox Aura | ISP35, **missing** (software ISP) | MPP, written | RGA, convert written, scaling not |
+| RK3588S | ROCK 5C (RK3588S2) | ISP30, written | MPP, written | RGA3, convert and scaling written |
+| RK3566 | ZERO 3E | ISP21, written | MPP, written | RGA2, convert and scaling written |
+| RV1126B | Luckfox Aura | ISP35, **missing** (software ISP) | MPP, written | RGA, convert and scaling written |
 | A733 | Cubie A7A, A7S, A7Z | ISP600, **missing** | Cedar VE, **missing** | G2D, **missing** |
 | K230D | K230D AI-CAM | ISP8000 registers written, frame path **missing** (software ISP) | V4L2 M2M, written | V4L2 M2M, written |
 
@@ -29,7 +29,6 @@ A Rockchip chip whose ISP generation Styx does not know runs on the software ISP
 
 **Styx:**
 
-- The planner's M2M scaling stage (RGA and the K230 2D unit).
 - A733 capture: the V4L2 backend's multi-planar path for `sunxi-vin`, after `S_INPUT`.
 - A733 ISP: 3A is the closed `AWIspApi` library, or raw frames through the software ISP.
 - A733 encode: the Cedar VE has no V4L2 device; the vendor `libcedarc`, or a driver.

@@ -181,6 +181,13 @@ pub(crate) const GPU_LEVEL_MS_PER_MP: f32 = 1.25;
 pub(crate) const GPU_COPY_MS_PER_MP: f32 = 0.28;
 /// Copying a frame to realign its rows (kernel 0.12 ms/MP).
 pub(crate) const REALIGN_MS_PER_MP: f32 = 0.2;
+
+/// A 2D scaler's cost for a frame of `mp` megapixels: the block's time, and the CPU's ioctl
+/// and queue work. An estimate from the blocks' rated throughput (RGA2's is the lower), not
+/// measured on a board yet.
+pub(crate) fn m2m_scale(mp: f32) -> StepCost {
+    StepCost::offloaded(4.0 * mp, 0.1)
+}
 /// libx264 low latency (`superfast`, `zerolatency`) on a Cortex-A76: 14.5 ms per 720p frame.
 pub(crate) const SW_H26X_ENCODE_MS_PER_MP: f32 = 16.0;
 /// JPEG encoding of YUV/RGB frames on a Cortex-A76.

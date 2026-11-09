@@ -28,7 +28,7 @@ pub enum EncoderSupport {
 /// The chip's 2D scaler.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScalerSupport {
-    /// Rockchip RGA (`codec-rga`): format conversion; scaling waits on the planner's stage.
+    /// Rockchip RGA (`codec-rga`): format conversion and the planner's scaling stage.
     Rga,
     /// A V4L2 M2M scaler (`V4l2M2mConverter`).
     V4l2M2m,
@@ -111,6 +111,13 @@ pub fn detect() -> Option<&'static Chip> {
         .split(|&b| b == 0)
         .filter_map(|s| core::str::from_utf8(s).ok())
         .find_map(from_compatible)
+        .or_else(|| {
+            // The K230D's compatible strings are not known: its ISP's node names it.
+            std::path::Path::new("/dev/vvcam-isp.0")
+                .exists()
+                .then(|| CHIPS.iter().find(|c| c.isp == IspSupport::K230))
+                .flatten()
+        })
 }
 
 #[cfg(test)]

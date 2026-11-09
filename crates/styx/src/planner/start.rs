@@ -112,6 +112,8 @@ pub(crate) struct FramePreparer {
     view_regions: Vec<u8>,
     pyramid_levels: u8,
     alignment: Option<usize>,
+    /// A 2D scaler brings the route's frames to the size asked.
+    m2m_scale: Option<Arc<dyn Codec>>,
     /// Frames are decoded at 1/`decode_scale` size.
     #[cfg(feature = "codec-turbojpeg")]
     decode_scale: u32,
@@ -204,6 +206,7 @@ impl FramePreparer {
                 .collect(),
             pyramid_levels: plan.request.pyramid.map_or(0, |p| p.levels),
             alignment: plan.request.row_alignment,
+            m2m_scale: plan.m2m_scale.and_then(|m2m| m2m.converter()),
             #[cfg(feature = "codec-turbojpeg")]
             decode_scale: u32::from(plan.decode_scale.max(1)),
             roi_scale: (
@@ -272,7 +275,7 @@ impl FramePreparer {
     /// Whether frames leave this stage as the camera delivered them (no decode, view or copy).
     #[cfg(target_os = "linux")]
     fn passes_through(&self) -> bool {
-        matches!(self.route, Route::Direct) && !self.luma
+        matches!(self.route, Route::Direct) && !self.luma && self.m2m_scale.is_none()
     }
 
     /// Make the next encoded frame a keyframe (plans that encode).
@@ -605,7 +608,10 @@ impl Codec for FramePreparer {
             return self.decode_jpeg(input, roi);
         }
         let frame = match &self.route {
-            Route::Decode { decoder, .. } => self.decode(decoder.as_ref(), input)?,
+            Route::Decode { decoder, .. } => {
+                let frame = self.decode(decoder.as_ref(), input)?;
+                self.scaled(frame)?
+            }
             Route::Encode {
                 decoder, encoder, ..
             } => {
@@ -620,10 +626,11 @@ impl Codec for FramePreparer {
                     }
                     None => input,
                 };
+                let raw = self.scaled(raw)?;
                 return self.decode(encoder.as_ref(), raw);
             }
-            Route::LumaView if self.luma => luma_view(input)?,
-            _ => input,
+            Route::LumaView if self.luma => luma_view(self.scaled(input)?)?,
+            _ => self.scaled(input)?,
         };
         if !self.luma {
             // NV12 and the like get the planned CPU levels from their Y plane too.
@@ -639,6 +646,14 @@ impl Codec for FramePreparer {
 }
 
 impl FramePreparer {
+    /// `frame` at the size asked, when the plan scales it here.
+    fn scaled(&self, frame: FrameLease) -> Result<FrameLease, CodecError> {
+        match &self.m2m_scale {
+            Some(scaler) => self.decode(scaler.as_ref(), frame),
+            None => Ok(frame),
+        }
+    }
+
     /// A luma frame prepared without its region: with the uncropped frame as its overview when
     /// the plan attaches it here, cropped to `roi` (unless the ISP cropped it already),
     /// realigned, with its pyramid.

@@ -349,11 +349,7 @@ fn shared_rank(
             candidates
                 .iter()
                 .map(|c| {
-                    let scale = u32::from(c.decode_scale.max(1));
-                    let (w, h) = c.isp_output.unwrap_or((
-                        res.width.get().div_ceil(scale),
-                        res.height.get().div_ceil(scale),
-                    ));
+                    let (w, h) = c.delivered_size();
                     f64::from(w) * f64::from(h)
                 })
                 .sum()

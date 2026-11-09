@@ -40,6 +40,7 @@ mod region_soft;
 mod request;
 mod roi;
 mod routes;
+mod scaling;
 mod sensor_raw;
 mod session;
 pub(crate) use session::{SharedSession, same_plan};
@@ -159,6 +160,8 @@ pub struct FramePlan {
     /// On a shared capture: the ISP output this consumer takes is in this format, not the
     /// capture mode's (native PiSP).
     pub(crate) isp_format: Option<FourCc>,
+    /// A memory-to-memory scaler brings the frames to the size asked.
+    pub(crate) m2m_scale: Option<scaling::M2mScale>,
     /// On a shared capture: frames come from the ISP's second output (at `isp_output`).
     pub(crate) isp_second_output: bool,
     /// The raw frames of a native PiSP's processed capture (`sensor_raw`).
@@ -412,6 +415,7 @@ pub(crate) fn plan_from(
         decode_scale: chosen.decode_scale,
         isp_output: chosen.isp_output,
         isp_format: chosen.isp_format,
+        m2m_scale: chosen.m2m_scale,
         sensor_raw: chosen.sensor_raw,
         region: chosen.region,
         isp_second_output: false,
@@ -485,11 +489,7 @@ fn rank_key(
         .size
         .map(|(w, h)| res.width.get() >= w && res.height.get() >= h);
     // Size of the frames the route delivers, after the ISP or the decoder scales them.
-    let scale = u32::from(candidate.decode_scale.max(1));
-    let (dw, dh) = candidate.isp_output.unwrap_or((
-        res.width.get().div_ceil(scale),
-        res.height.get().div_ceil(scale),
-    ));
+    let (dw, dh) = candidate.delivered_size();
     RankKey {
         shared_bus_uncompressed: u8::from(shared_bus_uncompressed(
             candidate.backend,
@@ -632,9 +632,9 @@ impl FramePlan {
     }
 
     /// Size of the frames delivered (before any region of interest): the capture size, or
-    /// smaller when the ISP or the decoder scales toward [`FrameRequest::size`].
+    /// smaller when the ISP, the decoder or a 2D scaler scales toward [`FrameRequest::size`].
     pub fn output_resolution(&self) -> (u32, u32) {
-        if let Some(size) = self.isp_output {
+        if let Some(size) = self.m2m_scale.map(|m2m| m2m.size).or(self.isp_output) {
             return size;
         }
         let res = self.mode.format.resolution;

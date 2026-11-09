@@ -199,8 +199,8 @@ memory when it runs.
       M2M scaler or converter, `nonai-2d` included, with the same dma-buf import. *Why:* preview
       frames and levels without the CPU. *Done when:* `/dev/video5` (`nonai-2d`) scales the
       capture's NV12 through the M2M backend within a stated tolerance of the box filter.
-      *Blocked by:* a K230D board; the planner has no M2M scaling stage yet (see the RGA item),
-      so nothing picks the converter for pyramid levels or preview on its own.
+      *Blocked by:* a K230D board. The planner's scaling stage (`planner/scaling.rs`) picks the
+      converter for a request's frame size; pyramid levels and the preview still scale on the CPU.
 - [ ] **RK3588S: ISP30 bring-up** (written, untested on board). *Why:* the Rockchip HVS boards. *Done
       when:* the OV9782 through rkcif and the ISP streams NV12 at 120 fps with 3A converged; entity
       names (`media-ctl -p`) and the fixed-point constants (gains, CCM, LSC, statistics bit
@@ -246,10 +246,11 @@ memory when it runs.
       (identity and channel swap exact). Format conversion is hooked up: `CodecKind::Converter`, the
       registry offers RGA conversions between NV12, NV21, YU12, RG24, BG24, BGRA and GREY when a
       `rockchip-rga` node exists, the planner takes them where it takes a raw decoder (hardware first,
-      `Hardware::Off` falls back to the CPU), and encoder lookups never take them. Not written: an M2M
-      scaling stage in the planner (registry converters keep the frame's size). *Done when:* the
-      planner scales through RGA within a stated tolerance, CPU fallback without it; then the board
-      run. *Blocked by:* the scaling stage; the board run needs a Rockchip board.
+      `Hardware::Off` falls back to the CPU), and encoder lookups never take them. The planner's
+      scaling stage (`planner/scaling.rs`) scales to a request's frame size through RGA, or a V4L2
+      M2M scaler on chips listed with one; written, untested on board, its cost an estimate. Pyramid
+      levels and the preview still scale on the CPU. *Done when:* the planner scales through RGA
+      within a stated tolerance on a board. *Blocked by:* a Rockchip board.
 - [ ] **Rockchip: MPP / rkvenc H.264/H.265 and the JPEG encoder** (written, untested on board:
       `styx_codec::rkmpp::RkMppEncoder`, feature `codec-rkmpp`, MPP opened with `dlopen`). NV12 or
       YUYV in; the ISP's NV12 in one dma-buf is imported and encoded in place, other frames are

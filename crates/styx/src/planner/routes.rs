@@ -8,6 +8,7 @@ use styx_core::prelude::*;
 use super::cost::{self, StepCost, megapixels};
 use super::native::{self, has_processed_luma, native_isp, raw_bayer, raw_sensor_stream};
 use super::request::{FrameRequest, Hardware};
+use super::scaling::M2mScale;
 use super::{PlanRejection, PlanStep, StepExecution, StepKind, rate};
 #[cfg(feature = "libcamera")]
 use crate::BackendHandle;
@@ -95,6 +96,8 @@ pub(crate) struct Candidate<'a> {
     /// The ISP delivers this processed format instead of the capture mode's (a native camera's
     /// PiSP on a shared capture; `mode` is then this consumer's view of the capture).
     pub isp_format: Option<FourCc>,
+    /// A memory-to-memory scaler brings the frames to the size asked.
+    pub m2m_scale: Option<M2mScale>,
     /// The raw frames of a native PiSP's processed capture, not an ISP output
     /// (`super::sensor_raw`; `isp_format` is then their format, `mode` the processed one).
     pub sensor_raw: bool,
@@ -108,10 +111,13 @@ impl Candidate<'_> {
     pub(crate) fn delivered_size(&self) -> (u32, u32) {
         let res = self.mode.format.resolution;
         let scale = u32::from(self.decode_scale.max(1));
-        self.isp_output.unwrap_or((
-            res.width.get().div_ceil(scale),
-            res.height.get().div_ceil(scale),
-        ))
+        self.m2m_scale
+            .map(|m2m| m2m.size)
+            .or(self.isp_output)
+            .unwrap_or((
+                res.width.get().div_ceil(scale),
+                res.height.get().div_ceil(scale),
+            ))
     }
 }
 
@@ -414,8 +420,12 @@ fn finish<'a>(
         let factor = cost::scaled_decode_factor(decode_scale);
         step.cost = StepCost::offloaded(step.cost.latency_ms * factor, step.cost.cpu_ms * factor);
     }
-    let isp_output = isp_output(backend, &route, req, mode.format.code, (width, height));
-    super::accelerators::check_scaler(req, isp_output, (width, height))?;
+    let isp_output =
+        super::scaling::isp_output(backend, &route, req, mode.format.code, (width, height));
+    let m2m_scale =
+        super::scaling::m2m_scale(&route, req, mode, (width, height), decode_scale, isp_output);
+    let scaled = isp_output.or(m2m_scale.map(|m2m| m2m.size));
+    super::accelerators::check_scaler(req, scaled, (width, height))?;
     if let Some((w, h)) = isp_output {
         steps.push(PlanStep {
             kind: StepKind::Scale,
@@ -423,6 +433,8 @@ fn finish<'a>(
             detail: format!("{w}x{h} from the ISP (the mode's field of view)"),
             cost: StepCost::ZERO,
         });
+    } else if let Some(m2m) = m2m_scale {
+        steps.push(m2m.step((width, height)));
     } else if decode_scale == 1
         && let Some((tw, th)) = req.size
         && (tw < width || th < height)
@@ -431,7 +443,7 @@ fn finish<'a>(
             "frames are {width}x{height}: this route cannot scale to {tw}x{th}"
         ));
     }
-    let (width, height) = isp_output.unwrap_or((
+    let (width, height) = scaled.unwrap_or((
         width.div_ceil(decode_scale.into()),
         height.div_ceil(decode_scale.into()),
     ));
@@ -496,49 +508,11 @@ fn finish<'a>(
         decode_scale,
         isp_output,
         isp_format: None,
+        m2m_scale,
         sensor_raw: false,
         region,
         notes,
     })
-}
-
-/// Size the ISP should deliver for `req.size`: the smallest even size with the
-/// mode's aspect ratio (so its field of view) that covers it. Only for cameras behind a
-/// scaling ISP, on routes that pass frames through without decoding.
-fn isp_output(
-    backend: &ProbedBackend,
-    route: &Route,
-    req: &FrameRequest,
-    code: FourCc,
-    mode: (u32, u32),
-) -> Option<(u32, u32)> {
-    let (tw, th) = req.size?;
-    // Routes that pass frames through, or decode uncompressed ones (any size the ISP makes).
-    let scalable = match route {
-        Route::Direct | Route::LumaView => true,
-        Route::Decode { .. } => !code.is_compressed(),
-        // The encoder takes any size the ISP makes.
-        Route::Encode { decoder, .. } => decoder.is_none() && !code.is_compressed(),
-    };
-    let scaling_isp = has_isp_second_output(backend)
-        || (backend.kind == BackendKind::Native
-            && native_isp(backend) == Some("pisp")
-            && !raw_bayer(code));
-    if !scaling_isp
-        || !scalable
-        || matches!(req.hardware, Hardware::Off)
-        || matches!(req.accelerators.scaler, Hardware::Off)
-        || (tw >= mode.0 && th >= mode.1)
-    {
-        return None;
-    }
-    let scale = (f64::from(tw) / f64::from(mode.0)).max(f64::from(th) / f64::from(mode.1));
-    let even = |v: f64| ((v.ceil() as u32).next_multiple_of(2)).max(2);
-    let (w, h) = (
-        even(f64::from(mode.0) * scale),
-        even(f64::from(mode.1) * scale),
-    );
-    (w < mode.0 || h < mode.1).then_some((w.min(mode.0), h.min(mode.1)))
 }
 
 /// 1/N size the decoder produces for `req.size`: turbojpeg scales MJPEG in the DCT
