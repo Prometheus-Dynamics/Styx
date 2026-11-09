@@ -80,9 +80,10 @@ impl std::fmt::Debug for RkispPipeline {
     }
 }
 
-/// Whether the system has a Rockchip ISP (its media device, from the vendor driver).
+/// Whether the system has a Rockchip ISP Styx can drive: its media device, from the vendor
+/// driver, on a chip whose generation Styx knows. Others (RV1126B's ISP35) are software ISP.
 pub fn has_rkisp() -> bool {
-    !find_isps().is_empty()
+    !find_isps().is_empty() && Isp::detect().is_some()
 }
 
 impl RkispPipeline {

@@ -230,6 +230,13 @@ memory when it runs.
 - [ ] **RK3576: rkisp, its generation.** Not written: the docs list it as a fallback, its generation
       is unconfirmed. *Why:* a supported chip. *Done when:* the generation is confirmed from the
       BSP's rkisp hardware table, then as RK3566. *Blocked by:* an RK3576 board and BSP.
+- [ ] **RV1126B: rkisp ISP35.** Not written. *Why:* Luckfox Aura. Its cameras run the software ISP
+      until then (`has_rkisp`, written, untested on board). *Done when:* as RK3566. *Blocked by:*
+      the ISP35 layouts and detection in Lemnos (see docs/boards.md), then an RV1126B board.
+- [ ] **A733: capture, ISP, encode, scaler.** Not written; docs/boards.md has what each needs.
+      *Why:* Cubie A7A, A7S, A7Z. *Done when:* a camera streams through `sunxi-vin` with 3A
+      converged and encodes without the CPU. *Blocked by:* `VIDIOC_S_INPUT` in Lemnos's
+      `VideoDevice`, then an A733 board.
 - [ ] **Rockchip: RGA scale, crop and convert** (RGA3 on RK3588S, RGA2 on the others). *Why:* deeper
       pyramid levels and preview frames without the CPU. RGA moves to Lemnos on V4L2 M2M with
       [The leap](#the-leap-started-2026-11-06) item 3, no librga; until then the binding is

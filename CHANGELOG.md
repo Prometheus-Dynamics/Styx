@@ -6,9 +6,15 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ## [Unreleased]
 
+### Added
+
+- `styx_pipeline::chips`: what each chip family on the board list has, as data (docs/boards.md).
+
 ### Fixed
 
 - A low-priority client given a share of another client's frames keeps its own `deliver_at_most` rate; a preview at 10 fps was sent every frame.
+- A Rockchip ISP of a generation Styx does not know (RV1126B, RK3576) runs on the software ISP
+  instead of failing when the capture opens.
 - Frames with more than two companions, or whose companions are taken off and attached again
   (every frame with a pyramid), no longer allocate per frame: 4 allocations and 6.5 KB per frame on
   the PiSP path at 3 levels. `FrameLease::take_companions` returns `TakenCompanions`, an iterator

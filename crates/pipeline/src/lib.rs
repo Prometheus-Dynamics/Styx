@@ -45,6 +45,7 @@
 
 extern crate alloc;
 
+pub mod chips;
 pub mod controller;
 #[cfg(feature = "device")]
 pub mod device;
