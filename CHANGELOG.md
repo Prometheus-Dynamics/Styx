@@ -8,6 +8,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 
 ### Fixed
 
+- A low-priority client given a share of another client's frames keeps its own `deliver_at_most` rate; a preview at 10 fps was sent every frame.
 - Frames with more than two companions, or whose companions are taken off and attached again
   (every frame with a pyramid), no longer allocate per frame: 4 allocations and 6.5 KB per frame on
   the PiSP path at 3 levels. `FrameLease::take_companions` returns `TakenCompanions`, an iterator

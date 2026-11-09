@@ -186,6 +186,8 @@ pub(super) fn shared_request(plan: &SharedFramePlan, own: &FrameRequest) -> Opti
             request.roi = None;
             request.extra_regions.clear();
             request.skip_stale_regions = false;
+            // The frames are the other client's, how often it takes them is its own.
+            request.min_interval = own.min_interval;
             request
         })
 }
@@ -247,6 +249,22 @@ mod tests {
         assert_eq!(planned.consumers, vec![Some(0), Some(1)]);
         assert_eq!(planned.requests[1], vision);
         assert_eq!(planned.plan.setup_key(), alone.plan.setup_key());
+        // A share keeps the client's own delivery rate.
+        let paced = camera
+            .plan_clients(
+                &[
+                    (vision.clone(), false),
+                    (preview.clone().deliver_at_most(10.0), true),
+                ],
+                None,
+                None,
+                &config,
+            )
+            .unwrap();
+        assert_eq!(
+            paced.requests[1].min_interval,
+            Some(std::time::Duration::from_millis(100))
+        );
         // As a normal client it would have changed the vision client's mode.
         let normal = camera
             .plan_clients(

@@ -77,12 +77,8 @@ impl Fanout {
         }
     }
 
-    /// A new receiver; returns its index.
-    pub(crate) fn add(&self, tx: BoundedTx<FrameLease>) -> usize {
-        self.add_limited(tx, None)
-    }
-
-    /// A new receiver taking at most one frame per `min_interval`; returns its index.
+    /// A new receiver taking at most one frame per `min_interval` (none: every frame); returns
+    /// its index.
     pub(crate) fn add_limited(
         &self,
         tx: BoundedTx<FrameLease>,
@@ -497,14 +493,15 @@ impl Drop for Branch {
 }
 
 /// Whether two consumers' frames are prepared the same way: the same request apart from the
-/// region of interest (applied per consumer, as a crop of the shared frame) and the frame rate
-/// (the capture has one), on the same route.
+/// region of interest (applied per consumer, as a crop of the shared frame), the frame rate
+/// (the capture has one) and how often it takes frames, on the same route.
 pub(crate) fn same_preparation(a: &FramePlan, b: &FramePlan) -> bool {
     let key = |plan: &FramePlan| {
         let mut req = plan.request.clone();
         req.roi = None;
         req.extra_regions.fill(FrameRect::new(0, 0, 0, 0));
         req.fps = Default::default();
+        req.min_interval = None;
         req
     };
     key(a) == key(b)
@@ -583,7 +580,8 @@ impl SharedSession {
                 groups.iter().filter_map(Weak::upgrade).find(|g| {
                     g.open
                         && same_preparation(&g.plan, plan)
-                        && g.plan.request.min_interval == plan.request.min_interval
+                        && (g.plan.request.min_interval.is_none()
+                            || g.plan.request.min_interval == plan.request.min_interval)
                 })
             })
             .flatten();
@@ -591,7 +589,7 @@ impl SharedSession {
         let group = joined.unwrap_or_else(|| {
             let (raw_tx, raw_rx) = bounded_with(depth, QueueOverflow::DropOldest);
             // A group takes frames as often as its request asks (`deliver_at_most`): members
-            // join only a group asking the same.
+            // join a group asking the same, or one taking every frame and skip their share.
             let index = self
                 .shared
                 .fanout
@@ -617,7 +615,12 @@ impl SharedSession {
             group
         });
         let (tx, rx) = bounded_with(depth, QueueOverflow::DropOldest);
-        let member = group.fanout.add(tx);
+        let member = group.fanout.add_limited(
+            tx,
+            plan.request
+                .min_interval
+                .filter(|_| group.plan.request.min_interval.is_none()),
+        );
         let inter_coded = plan.inter_coded();
         if inter_coded && joined_running {
             // It joins a running stream: its first packets need a keyframe.
