@@ -160,8 +160,14 @@ pub(super) fn start_v4l2(
     let backend_err = |e: lemnos_v4l2::Error| CaptureError::Backend(e.to_string());
     let dev = VideoDevice::open(&path).map_err(backend_err)?;
 
-    let fmt = negotiate_format(&dev, &mode, config.capture_tunables().gpu_import_pad)
-        .map_err(backend_err)?;
+    let buf_type = styx_v4l2::capture_buf_type(&dev.capabilities().driver);
+    let fmt = negotiate_format(
+        &dev,
+        buf_type,
+        &mode,
+        config.capture_tunables().gpu_import_pad,
+    )
+    .map_err(backend_err)?;
     let negotiated_code = FourCc::from(fmt.fourcc.to_u32());
     let negotiated_resolution = Resolution::new(fmt.width, fmt.height)
         .ok_or_else(|| CaptureError::Backend("v4l2 negotiated zero-sized frame".into()))?;
@@ -176,7 +182,7 @@ pub(super) fn start_v4l2(
 
     if let Some(iv) = interval {
         let interval = lemnos_v4l2::Fraction::new(iv.numerator.get(), iv.denominator.get());
-        dev.set_frame_interval(BufType::VideoCapture, interval)
+        dev.set_frame_interval(buf_type, interval)
             .map_err(backend_err)?;
     }
 
@@ -232,23 +238,21 @@ pub(super) fn start_v4l2(
         .as_ref()
         .filter(|buffers| import_fits(buffers, &mode, negotiated_stride_bytes, negotiated_size))
     {
-        Some(buffers) => {
-            match V4l2MmapManager::new_imported(dev, BufType::VideoCapture, buffers, poll) {
-                Ok(manager) => Ok(manager),
-                Err(refused) => {
-                    let (dev, why) = *refused;
-                    crate::trace::debug!(backend = "v4l2", path = %path, %why, "capturing into own buffers");
-                    Err(dev)
-                }
+        Some(buffers) => match V4l2MmapManager::new_imported(dev, buf_type, buffers, poll) {
+            Ok(manager) => Ok(manager),
+            Err(refused) => {
+                let (dev, why) = *refused;
+                crate::trace::debug!(backend = "v4l2", path = %path, %why, "capturing into own buffers");
+                Err(dev)
             }
-        }
+        },
         None => Err(dev),
     };
     let manager = match dev {
         Ok(manager) => manager,
         Err(dev) => V4l2MmapManager::new(
             dev,
-            BufType::VideoCapture,
+            buf_type,
             u32::try_from(capture_tunables.queue_depth + capture_tunables.extra_buffers)
                 .unwrap_or(4)
                 .clamp(3, 16),
@@ -484,9 +488,13 @@ fn import_fits(buffers: &CaptureBuffers, mode: &Mode, stride: usize, size: usize
 /// format fields; returns the format the driver chose.
 fn negotiate_format(
     dev: &VideoDevice,
+    buf_type: BufType,
     mode: &Mode,
     gpu_pad: u32,
 ) -> lemnos_v4l2::Result<PixFormat> {
+    if buf_type == BufType::VideoCaptureMplane {
+        return negotiate_mplane(dev, mode);
+    }
     const PIX_FMT_FLAG_PREMUL_ALPHA: u32 = 1;
     let Format::Single(mut pix) = dev.format(BufType::VideoCapture)? else {
         return Err(lemnos_v4l2::Error::Invalid(
@@ -521,13 +529,53 @@ fn negotiate_format(
     Ok(got)
 }
 
+/// [`negotiate_format`] on a multi-planar queue (written, untested on board; `sunxi-vin` also
+/// needs `VIDIOC_S_INPUT` first, which Lemnos's `VideoDevice` does not have yet).
+fn negotiate_mplane(dev: &VideoDevice, mode: &Mode) -> lemnos_v4l2::Result<PixFormat> {
+    let not_mplane =
+        || lemnos_v4l2::Error::Invalid("v4l2 capture node has no multi-planar format".into());
+    let Format::Multi(mut pix) = dev.format(BufType::VideoCaptureMplane)? else {
+        return Err(not_mplane());
+    };
+    pix.width = mode.format.resolution.width.get();
+    pix.height = mode.format.resolution.height.get();
+    pix.fourcc = lemnos_v4l2::FourCc(mode.format.code.to_u32());
+    pix.ycbcr_enc = 0;
+    dev.set_format(BufType::VideoCaptureMplane, &Format::Multi(pix))?;
+    match dev.format(BufType::VideoCaptureMplane)? {
+        Format::Multi(got) => one_buffer(&got),
+        _ => Err(not_mplane()),
+    }
+}
+
+/// A multi-planar format held in one buffer (NV12, not NM12), as the single-planar format the
+/// rest of the backend works with.
+fn one_buffer(got: &PixFormatMplane) -> lemnos_v4l2::Result<PixFormat> {
+    let [plane] = got.planes.as_slice() else {
+        return Err(lemnos_v4l2::Error::Invalid(format!(
+            "v4l2 format with {} buffers per frame; one is supported",
+            got.planes.len()
+        )));
+    };
+    Ok(PixFormat {
+        width: got.width,
+        height: got.height,
+        fourcc: got.fourcc,
+        field: got.field,
+        colorspace: got.colorspace,
+        bytes_per_line: plane.bytes_per_line,
+        size_image: plane.size_image,
+        ..PixFormat::default()
+    })
+}
+
 mod layout;
 mod mmap;
 #[cfg(test)]
 mod tests;
 mod yuv_layout;
 
-use lemnos_v4l2::v4l2::PixFormat;
+use lemnos_v4l2::v4l2::{PixFormat, PixFormatMplane};
 use mmap::{V4l2MmapManager, to_io};
 
 use layout::{

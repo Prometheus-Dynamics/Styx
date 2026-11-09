@@ -25,11 +25,10 @@ A Rockchip chip whose ISP generation Styx does not know runs on the software ISP
 - K230D: the frame path behind the ISP8000.
 - Rockchip: the rkcif sensor-to-ISP media graph per chip (`IspSetup`).
 - A733: `VIDIOC_S_INPUT` on `VideoDevice` (sunxi-vin powers and selects the sensor there, before
-  `S_FMT`); access to `/dev/cedar_dev` and `/dev/g2d` if those are driven directly.
+  `S_FMT`; Styx's multi-planar capture for `sunxi-vin` is written and waits on it); access to `/dev/cedar_dev` and `/dev/g2d` if those are driven directly.
 
 **Styx:**
 
-- A733 capture: the V4L2 backend's multi-planar path for `sunxi-vin`, after `S_INPUT`.
 - A733 ISP: 3A is the closed `AWIspApi` library, or raw frames through the software ISP.
 - A733 encode: the Cedar VE has no V4L2 device; the vendor `libcedarc`, or a driver.
 

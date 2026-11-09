@@ -98,6 +98,19 @@ enum Probed {
     Skipped(String),
 }
 
+/// Drivers whose multi-planar capture nodes are cameras. Other multi-planar nodes (ISP and
+/// back-end outputs) belong to their own stacks and are not offered.
+const MPLANE_CAMERA_DRIVERS: &[&str] = &["sunxi-vin"];
+
+/// The queue type a camera of `driver` captures on.
+pub fn capture_buf_type(driver: &str) -> BufType {
+    if MPLANE_CAMERA_DRIVERS.contains(&driver) {
+        BufType::VideoCaptureMplane
+    } else {
+        BufType::VideoCapture
+    }
+}
+
 /// Why a node that opened is not a camera Styx offers, if it is not.
 fn skip_reason(
     device_caps: CapabilityFlags,
@@ -166,11 +179,13 @@ fn build_info(path: &std::path::Path) -> Result<Probed, Box<dyn std::error::Erro
 
     // Be tolerant of quirky drivers: if formats or frame sizes fail, keep probing
     // whatever we can instead of dropping the device entirely.
-    let default_color = match dev.format(BufType::VideoCapture) {
+    let buf_type = capture_buf_type(&driver);
+    let default_color = match dev.format(buf_type) {
         Ok(Format::Single(pix)) => map_color_space(pix.colorspace),
+        Ok(Format::Multi(pix)) => map_color_space(pix.colorspace),
         _ => ColorSpace::Unknown,
     };
-    let modes = probe_modes(&dev, default_color);
+    let modes = probe_modes(&dev, buf_type, default_color);
 
     // If controls cannot be queried (ENOTTY), ignore them rather than skipping the device.
     // Controls of types Styx does not model are left out one by one.
@@ -225,9 +240,9 @@ fn build_info(path: &std::path::Path) -> Result<Probed, Box<dyn std::error::Erro
 }
 
 /// One mode per advertised format and discrete size, with its discrete frame intervals.
-fn probe_modes(dev: &VideoDevice, default_color: ColorSpace) -> Vec<Mode> {
+fn probe_modes(dev: &VideoDevice, buf_type: BufType, default_color: ColorSpace) -> Vec<Mode> {
     let mut modes = Vec::new();
-    let formats = dev.formats(BufType::VideoCapture).unwrap_or_default();
+    let formats = dev.formats(buf_type).unwrap_or_default();
     for fmt in formats {
         let fourcc = FourCc::from(fmt.fourcc.to_u32());
         let color = if default_color != ColorSpace::Unknown {
@@ -379,6 +394,14 @@ fn guess_color_space(fcc: FourCc) -> ColorSpace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_listed_drivers_capture_on_multi_planar_queues() {
+        assert_eq!(capture_buf_type("sunxi-vin"), BufType::VideoCaptureMplane);
+        assert_eq!(capture_buf_type("uvcvideo"), BufType::VideoCapture);
+        // A Raspberry Pi's ISP back end has multi-planar capture nodes that are no cameras.
+        assert_eq!(capture_buf_type("pispbe"), BufType::VideoCapture);
+    }
 
     #[test]
     fn colorspaces_map_like_the_kernel_enum() {

@@ -233,7 +233,8 @@ memory when it runs.
 - [ ] **RV1126B: rkisp ISP35.** Not written. *Why:* Luckfox Aura. Its cameras run the software ISP
       until then (`has_rkisp`, written, untested on board). *Done when:* as RK3566. *Blocked by:*
       the ISP35 layouts and detection in Lemnos (see docs/boards.md), then an RV1126B board.
-- [ ] **A733: capture, ISP, encode, scaler.** Not written; docs/boards.md has what each needs.
+- [ ] **A733: capture, ISP, encode, scaler.** Multi-planar capture for `sunxi-vin` is written, untested
+      on board; the ISP, encoder and scaler are not. docs/boards.md has what each needs.
       *Why:* Cubie A7A, A7S, A7Z. *Done when:* a camera streams through `sunxi-vin` with 3A
       converged and encodes without the CPU. *Blocked by:* `VIDIOC_S_INPUT` in Lemnos's
       `VideoDevice`, then an A733 board.

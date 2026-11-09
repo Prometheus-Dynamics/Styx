@@ -147,3 +147,24 @@ fn imports_only_buffers_laid_out_as_the_driver_writes() {
     assert!(!fits(&b, FourCc::YUYV, 4, 2, 8, 16), "another size");
     assert!(!fits(&b, FourCc::UYVY, 8, 2, 16, 32), "another format");
 }
+
+#[test]
+fn a_multi_planar_format_in_one_buffer_reads_as_single_planar() {
+    use lemnos_v4l2::v4l2::{PixFormatMplane, PlaneFormat};
+    let plane = PlaneFormat {
+        bytes_per_line: 1280,
+        size_image: 1_382_400,
+    };
+    let mut format = PixFormatMplane {
+        width: 1280,
+        height: 720,
+        planes: vec![plane],
+        ..PixFormatMplane::default()
+    };
+    let single = super::one_buffer(&format).unwrap();
+    assert_eq!((single.width, single.height), (1280, 720));
+    assert_eq!(single.bytes_per_line, 1280);
+    assert_eq!(single.size_image, 1_382_400);
+    format.planes.push(plane);
+    assert!(super::one_buffer(&format).is_err());
+}
