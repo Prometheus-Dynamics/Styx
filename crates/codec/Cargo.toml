@@ -76,6 +76,7 @@ codec-ffmpeg = ["dep:ffmpeg-sys-next", "dep:libc", "dep:lemnos-linux-sys"]
 codec-v4l2m2m = ["dep:lemnos-v4l2", "dep:lemnos-linux", "dep:lemnos-linux-sys"]
 # Hardware encoders on Rockchip VPUs through MPP (librockchip_mpp, opened at run time).
 codec-rkmpp = ["dep:lemnos-v4l2", "dep:styx-native", "dep:libc"]
+codec-cedar = ["dep:libc"]
 # Scalers and converters on the Rockchip RGA through Lemnos's `lemnos-drivers-rga` (Linux only).
 codec-rga = ["dep:lemnos-v4l2", "dep:lemnos-drivers-rga", "dep:styx-native"]
 # `styx_jpeg::GpuStyxJpeg` (Linux): Styx's JPEG encoder with colour and DCT on a Vulkan device

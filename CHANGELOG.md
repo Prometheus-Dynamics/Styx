@@ -9,6 +9,7 @@ The format is based on Keep a Changelog and this project follows Semantic Versio
 ### Added
 
 - `styx_pipeline::chips`: what each chip family on the board list has, as data (docs/boards.md).
+- `styx_codec::cedar::CedarEncoder` (feature `codec-cedar`): H.264 on the Allwinner A733 through the vendor's CedarC libraries, opened with `dlopen`. Written, untested on board.
 - V4L2 capture on multi-planar queues for `sunxi-vin` (A733), formats held in one buffer. Written, untested on board; the driver also needs `VIDIOC_S_INPUT`, which Lemnos does not have yet.
 - The planner scales frames to a request's size on the chip's 2D scaler (RGA, or a V4L2 M2M scaler on chips listed with one) when the route delivers them larger. Written, untested on board.
 

@@ -9,7 +9,7 @@ written from vendor sources and marked written, untested on board, or says what 
 | RK3588S | ROCK 5C (RK3588S2) | ISP30, written | MPP, written | RGA3, convert and scaling written |
 | RK3566 | ZERO 3E | ISP21, written | MPP, written | RGA2, convert and scaling written |
 | RV1126B | Luckfox Aura | ISP35, **missing** (software ISP) | MPP, written | RGA, convert and scaling written |
-| A733 | Cubie A7A, A7S, A7Z | ISP600, **missing** | Cedar VE, **missing** | G2D, **missing** |
+| A733 | Cubie A7A, A7S, A7Z | ISP600, **missing** | Cedar VE, H.264 written (vendor libraries) | G2D, **missing** |
 | K230D | K230D AI-CAM | ISP8000 registers written, frame path **missing** (software ISP) | V4L2 M2M, written | V4L2 M2M, written |
 
 A Rockchip chip whose ISP generation Styx does not know runs on the software ISP
@@ -30,7 +30,9 @@ A Rockchip chip whose ISP generation Styx does not know runs on the software ISP
 **Styx:**
 
 - A733 ISP: 3A is the closed `AWIspApi` library, or raw frames through the software ISP.
-- A733 encode: the Cedar VE has no V4L2 device; the vendor `libcedarc`, or a driver.
+- A733 encode: H.264 through the vendor CedarC libraries is written (`codec-cedar`, loaded with
+  `dlopen`, not shipped by Styx). The board needs those libraries, `/etc/cedarc.conf` and
+  `/dev/cedar_dev_ve2`. H.265 and encoding a dma-buf in place are not written.
 
 Sources for the A733: `radxa/allwinner-bsp` (`drivers/vin`, `isp600`, `drivers/ve`,
 `drivers/g2d`); `sun60iw2` is the A733.

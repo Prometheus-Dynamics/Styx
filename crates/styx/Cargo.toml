@@ -214,6 +214,8 @@ codec-mozjpeg = ["facade", "styx-codec/codec-mozjpeg"]
 codec-turbojpeg = ["facade", "styx-codec/codec-turbojpeg"]
 codec-v4l2m2m = ["facade", "styx-codec/codec-v4l2m2m"]
 codec-rkmpp = ["facade", "styx-codec/codec-rkmpp"]
+# H.264 on the Allwinner A733 through the vendor's CedarC libraries, opened with dlopen.
+codec-cedar = ["facade", "styx-codec/codec-cedar"]
 codec-rga = ["facade", "styx-codec/codec-rga"]
 raw-decoders = ["facade", "styx-codec/raw-decoders"]
 netcam = ["facade", "dep:reqwest", "reqwest/blocking", "reqwest/rustls"]

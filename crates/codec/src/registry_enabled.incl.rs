@@ -562,6 +562,20 @@ impl CodecRegistry {
             );
         }
 
+        // H.264 on the A733's video engine through CedarC, looked for when first asked for.
+        #[cfg(all(feature = "codec-cedar", target_os = "linux"))]
+        self.register_deferred(
+            FourCc::NV12,
+            Box::new(|| {
+                use crate::cedar::{CedarEncoder, CedarOptions};
+                if CedarEncoder::available() {
+                    vec![Arc::new(CedarEncoder::new(CedarOptions::default())) as Arc<dyn crate::Codec>]
+                } else {
+                    Vec::new()
+                }
+            }),
+        );
+
         // Format conversions on the Rockchip RGA, looked for when first asked for. Converters:
         // the planner takes them for raw-to-raw steps, encoder lookups never do.
         #[cfg(all(feature = "codec-rga", target_os = "linux"))]

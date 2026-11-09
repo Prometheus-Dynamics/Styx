@@ -21,6 +21,8 @@ pub enum EncoderSupport {
     Mpp,
     /// A stateful V4L2 encoder (`V4l2M2mEncoder`).
     V4l2M2m,
+    /// Allwinner CedarC (`codec-cedar`), when the vendor libraries are present.
+    Cedar,
     /// Not written.
     Missing(&'static str),
 }
@@ -85,7 +87,7 @@ pub const CHIPS: &[Chip] = &[
         compatibles: &["allwinner,a733"],
         boards: &["Cubie A7A", "Cubie A7S", "Cubie A7Z"],
         isp: IspSupport::Missing("ISP600 behind sunxi-vin, 3A in a closed library"),
-        encoder: EncoderSupport::Missing("cedar VE: no V4L2 device"),
+        encoder: EncoderSupport::Cedar,
         scaler: ScalerSupport::Missing("G2D: not a V4L2 device"),
     },
     Chip {

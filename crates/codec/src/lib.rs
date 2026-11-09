@@ -185,6 +185,7 @@ pub fn is_hardware_implementation_name(value: &str) -> bool {
         "videotoolbox",
         "v4l2m2m",
         "rkmpp",
+        "cedar",
         "rga",
         "nvv4l2",
         "nvmpi",
@@ -373,6 +374,8 @@ pub mod encoder;
 pub mod ffmpeg;
 pub mod frame_image;
 // Row-parallel loops of the CPU converters (a persistent helper pool).
+#[cfg(all(feature = "codec-cedar", target_os = "linux"))]
+pub mod cedar;
 #[cfg(feature = "dynamic-image")]
 pub mod image_any;
 #[cfg(feature = "dynamic-image")]
