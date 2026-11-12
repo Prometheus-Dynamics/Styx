@@ -1,0 +1,9 @@
+# Ignored until H6, so parallel PRs cannot conflict on it.
+Cargo.lock
+target/
+**/__pycache__/
+*.py[cod]
+.DS_Store
+.idea/
+.vscode/
+.claude/
