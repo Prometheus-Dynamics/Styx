@@ -6,8 +6,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{
-    AcquireError, BufferMemory, COPY_INTO, CpuAccess, FrameEntry, FramePool, HostMemory, Layouts,
-    MemoryKind, PlaneLayout, SetError, packed_layouts,
+    AcquireError, BufferMemory, BufferSize, COPY_INTO, CpuAccess, FrameEntry, FramePool,
+    HostMemory, Layouts, MemoryKind, PlaneLayout, PoolError, SetError, packed_layouts,
 };
 
 fn grey(id: u64, width: u32, height: u32) -> FrameEntry {
@@ -18,7 +18,7 @@ fn grey(id: u64, width: u32, height: u32) -> FrameEntry {
 
 #[test]
 fn a_buffer_comes_back_only_when_its_last_holder_releases() {
-    let pool: FramePool = FramePool::host(2, 64);
+    let pool: FramePool = FramePool::host(2, BufferSize::new(64, 0)).unwrap();
     let first = pool.acquire(grey(1, 8, 8)).unwrap();
     assert_eq!(first.holders(), 1);
     let hold_a = first.share();
@@ -50,7 +50,7 @@ fn a_buffer_comes_back_only_when_its_last_holder_releases() {
 
 #[test]
 fn writes_only_while_sole_owner_and_shares_see_them() {
-    let pool: FramePool<u32> = FramePool::host(1, 64);
+    let pool: FramePool<u32> = FramePool::host(1, BufferSize::new(64, 0)).unwrap();
     let mut frame = pool.acquire(grey(7, 8, 8)).unwrap();
     frame.write().unwrap().plane(0).unwrap().data[5] = 42;
     *frame.meta_mut().unwrap() = 9;
@@ -69,7 +69,7 @@ fn writes_only_while_sole_owner_and_shares_see_them() {
 
 #[test]
 fn reused_buffers_are_not_cleared() {
-    let pool: FramePool = FramePool::host(1, 64);
+    let pool: FramePool = FramePool::host(1, BufferSize::new(64, 0)).unwrap();
     let mut frame = pool.acquire(grey(1, 8, 8)).unwrap();
     frame.write().unwrap().bytes()[..3].copy_from_slice(&[1, 2, 3]);
     drop(frame);
@@ -79,7 +79,7 @@ fn reused_buffers_are_not_cleared() {
 
 #[test]
 fn a_frame_larger_than_its_buffer_is_refused() {
-    let pool: FramePool = FramePool::host(1, 63);
+    let pool: FramePool = FramePool::host(1, BufferSize::new(63, 0)).unwrap();
     assert_eq!(
         pool.acquire(grey(1, 8, 8)).unwrap_err(),
         AcquireError::TooSmall {
@@ -130,7 +130,8 @@ fn cpu_access_is_bracketed_once_per_window() {
         ..Default::default()
     });
     let log: *const Recording = &*memory;
-    let pool: FramePool = FramePool::new([memory as Box<dyn BufferMemory>]);
+    let pool: FramePool =
+        FramePool::new(BufferSize::new(64, 0), [memory as Box<dyn BufferMemory>]).unwrap();
     // SAFETY: the pool owns the box and outlives every use of `log` below.
     let recording = unsafe { &*log };
 
@@ -171,7 +172,11 @@ unsafe impl BufferMemory for Gpu {
 
 #[test]
 fn unmapped_memory_is_handed_on_but_not_read() {
-    let pool: FramePool = FramePool::new([Box::new(Gpu) as Box<dyn BufferMemory>]);
+    let pool: FramePool = FramePool::new(
+        BufferSize::new(1 << 20, 0),
+        [Box::new(Gpu) as Box<dyn BufferMemory>],
+    )
+    .unwrap();
     let mut frame = pool.acquire(grey(1, 64, 64)).unwrap();
     assert_eq!(frame.memory_kind(), MemoryKind::Gpu);
     assert!(frame.read().is_none());
@@ -187,7 +192,7 @@ fn copy_into_copies_visible_rows_and_counts_it() {
     let height = 4u32;
     let src_layouts = packed_layouts(FourCc::GREY, width, height, Some(16), None).unwrap();
     let format = MediaFormat::with_defaults(FourCc::GREY, Resolution::new(width, height).unwrap());
-    let pool: FramePool = FramePool::host(2, 64);
+    let pool: FramePool = FramePool::host(2, BufferSize::new(64, 0)).unwrap();
     let mut src = pool
         .acquire(FrameEntry::new(5, 50, format, src_layouts))
         .unwrap();
@@ -220,7 +225,7 @@ fn copy_into_copies_visible_rows_and_counts_it() {
 
 #[test]
 fn leases_move_between_threads() {
-    let pool: FramePool<u64> = FramePool::host(2, 64);
+    let pool: FramePool<u64> = FramePool::host(2, BufferSize::new(64, 0)).unwrap();
     let mut frame = pool.acquire(grey(1, 8, 8)).unwrap();
     *frame.meta_mut().unwrap() = 77;
     let shares: Vec<_> = (0..4).map(|_| frame.share()).collect();
@@ -235,4 +240,32 @@ fn leases_move_between_threads() {
         assert_eq!(handle.join().unwrap(), (77, 64));
     }
     assert_eq!(pool.stats().in_use, 0);
+}
+
+#[test]
+fn buffers_carry_gpu_slack_that_frames_never_use() {
+    // 64 bytes of payload, 256 of slack past it: each buffer is 320 bytes.
+    let size = BufferSize::new(64, 256);
+    let pool: FramePool = FramePool::host(2, size).unwrap();
+    assert_eq!(pool.buffer_size().allocation(), Some(320));
+    assert_eq!(pool.memory(0).unwrap().len(), 320);
+    // A frame filling the payload fits; one reaching into the slack is refused.
+    assert!(pool.acquire(grey(1, 8, 8)).is_ok());
+    assert_eq!(
+        pool.acquire(grey(2, 8, 9)).unwrap_err(),
+        AcquireError::TooSmall {
+            needed: 72,
+            len: 64
+        }
+    );
+    // Buffers made without the slack are refused when the pool is built.
+    let short = [Box::new(HostMemory::new(64)) as Box<dyn BufferMemory>];
+    assert_eq!(
+        FramePool::<()>::new(size, short).unwrap_err(),
+        PoolError::BufferTooShort {
+            index: 0,
+            len: 64,
+            needed: 320
+        }
+    );
 }

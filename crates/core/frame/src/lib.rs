@@ -16,6 +16,8 @@
 //! - CPU access is bracketed ([`BufferMemory::begin_cpu`] / [`BufferMemory::end_cpu`]): a dma-buf
 //!   gets `DMA_BUF_IOCTL_SYNC` START when its first reader opens and END when its last closes, and
 //!   the same around a write.
+//! - Every buffer carries the slack a GPU reads past its end ([`BufferSize`]), asked for once when
+//!   the buffers are made, so importing one into a GPU is never refused for length.
 //! - Every copy goes through a [`CopyCounter`] at the place it happens, so a test can assert none.
 //!
 //! `no_std` + `alloc`; the `std` feature adds error traits and file descriptors, `linux` adds
@@ -43,5 +45,5 @@ pub use fd::FdMemory;
 pub use layout::{Layouts, PlaneLayout, packed_layouts};
 pub use lease::{CopyError, CpuRead, FrameLease, Plane, PlaneMut, PlanesMut, SetError};
 pub use memory::{BufferMemory, CpuAccess, HostMemory, MemoryKind};
-pub use pool::{AcquireError, FramePool, PoolStats};
+pub use pool::{AcquireError, BufferSize, FramePool, PoolError, PoolStats};
 pub use styx_format::{MAX_PLANES, MediaFormat};

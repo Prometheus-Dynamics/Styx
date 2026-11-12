@@ -16,7 +16,7 @@ use crate::memory::{BufferMemory, CpuAccess, HostMemory};
 pub enum AcquireError {
     /// Every buffer is held. Nothing was allocated; drop the frame.
     Exhausted,
-    /// A plane of the entry ends past the end of the buffer (or its end overflows).
+    /// A plane of the entry ends past the buffer's payload (or its end overflows).
     TooSmall { needed: usize, len: usize },
 }
 
@@ -33,6 +33,59 @@ impl fmt::Display for AcquireError {
 
 #[cfg(feature = "std")]
 impl std::error::Error for AcquireError {}
+
+/// How big a pool's buffers are: the bytes frames may use, and the slack after them.
+///
+/// The slack is room past the payload that a GPU reads when it imports the buffer (some GPUs
+/// fetch up to a few hundred bytes past the last row, and refuse a dma-buf without it). The pool
+/// asks for `payload + gpu_slack` once, when its buffers are made, so a GPU import of any buffer
+/// in it is never refused for length. Frames never use the slack.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct BufferSize {
+    /// Bytes a frame may use, from offset 0.
+    pub payload: usize,
+    /// Bytes past the payload left for a GPU import.
+    pub gpu_slack: usize,
+}
+
+impl BufferSize {
+    pub const fn new(payload: usize, gpu_slack: usize) -> Self {
+        Self { payload, gpu_slack }
+    }
+
+    /// The bytes each buffer has: payload and slack. `None` on overflow.
+    pub const fn allocation(&self) -> Option<usize> {
+        self.payload.checked_add(self.gpu_slack)
+    }
+}
+
+/// Why [`FramePool::new`] refused its buffers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolError {
+    /// Buffer `index` is shorter than [`BufferSize::allocation`].
+    BufferTooShort {
+        index: usize,
+        len: usize,
+        needed: usize,
+    },
+    /// Payload plus slack overflows.
+    SizeOverflow,
+}
+
+impl fmt::Display for PoolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BufferTooShort { index, len, needed } => write!(
+                f,
+                "buffer {index} has {len} bytes, the pool needs {needed} (payload and GPU slack)"
+            ),
+            Self::SizeOverflow => f.write_str("buffer payload plus GPU slack overflows"),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::error::Error for PoolError {}
 
 /// Counts for a pool.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -55,6 +108,7 @@ pub struct FramePool<M = ()> {
 
 pub(crate) struct Shared<M> {
     pub(crate) slots: Box<[Slot<M>]>,
+    pub(crate) size: BufferSize,
     next: AtomicUsize,
     acquired: AtomicUsize,
     misses: AtomicUsize,
@@ -78,8 +132,25 @@ pub(crate) struct Slot<M> {
 unsafe impl<M: Send + Sync> Sync for Slot<M> {}
 
 impl<M: Default> FramePool<M> {
-    /// A pool over `memories`, one buffer each. The only allocation the pool makes.
-    pub fn new(memories: impl IntoIterator<Item = Box<dyn BufferMemory>>) -> Self {
+    /// A pool over `memories`, one buffer each, every one at least [`BufferSize::allocation`]
+    /// bytes (made by the caller from that size, once). The only allocation the pool makes.
+    pub fn new(
+        size: BufferSize,
+        memories: impl IntoIterator<Item = Box<dyn BufferMemory>>,
+    ) -> Result<Self, PoolError> {
+        let needed = size.allocation().ok_or(PoolError::SizeOverflow)?;
+        let memories: Vec<Box<dyn BufferMemory>> = memories.into_iter().collect();
+        if let Some((index, memory)) = memories
+            .iter()
+            .enumerate()
+            .find(|(_, memory)| memory.len() < needed)
+        {
+            return Err(PoolError::BufferTooShort {
+                index,
+                len: memory.len(),
+                needed,
+            });
+        }
         let slots: Vec<Slot<M>> = memories
             .into_iter()
             .map(|memory| Slot {
@@ -91,19 +162,24 @@ impl<M: Default> FramePool<M> {
                 meta: UnsafeCell::new(M::default()),
             })
             .collect();
-        Self {
+        Ok(Self {
             shared: Arc::new(Shared {
                 slots: slots.into_boxed_slice(),
+                size,
                 next: AtomicUsize::new(0),
                 acquired: AtomicUsize::new(0),
                 misses: AtomicUsize::new(0),
             }),
-        }
+        })
     }
 
-    /// `count` heap buffers of `len` bytes.
-    pub fn host(count: usize, len: usize) -> Self {
-        Self::new((0..count).map(|_| Box::new(HostMemory::new(len)) as Box<dyn BufferMemory>))
+    /// `count` heap buffers of `size`, payload and slack.
+    pub fn host(count: usize, size: BufferSize) -> Result<Self, PoolError> {
+        let len = size.allocation().ok_or(PoolError::SizeOverflow)?;
+        Self::new(
+            size,
+            (0..count).map(|_| Box::new(HostMemory::new(len)) as Box<dyn BufferMemory>),
+        )
     }
 }
 
@@ -125,7 +201,7 @@ impl<M> FramePool<M> {
             {
                 continue;
             }
-            let len = slot.memory.len();
+            let len = self.shared.size.payload;
             let fits = entry.layouts.span().filter(|&needed| needed <= len);
             if fits.is_none() {
                 slot.refs.store(0, Ordering::Release);
@@ -145,6 +221,12 @@ impl<M> FramePool<M> {
         }
         self.shared.misses.fetch_add(1, Ordering::Relaxed);
         Err(AcquireError::Exhausted)
+    }
+
+    /// Payload and slack of every buffer: what a GPU import is told the buffer's length is
+    /// ([`BufferSize::allocation`]).
+    pub fn buffer_size(&self) -> BufferSize {
+        self.shared.size
     }
 
     pub fn buffers(&self) -> usize {

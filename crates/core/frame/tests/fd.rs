@@ -6,9 +6,13 @@ use std::os::fd::AsFd;
 
 use lemnos_linux_sys::{dma_buf, udmabuf};
 use styx_format::{FourCc, MediaFormat, Resolution};
-use styx_frame::{BufferMemory, FdMemory, FrameEntry, FramePool, MemoryKind, packed_layouts};
+use styx_frame::{
+    BufferMemory, BufferSize, FdMemory, FrameEntry, FramePool, MemoryKind, packed_layouts,
+};
 
-const LEN: usize = 4096;
+/// 4096 bytes of frame and 256 of GPU slack, in a page-aligned buffer.
+const LEN: usize = 8192;
+const SIZE: BufferSize = BufferSize::new(4096, 256);
 
 fn entry(id: u64) -> FrameEntry {
     let layouts = packed_layouts(FourCc::GREY, 64, 64, None, None).unwrap();
@@ -21,7 +25,8 @@ fn memfd_frames_are_written_and_read_through_the_mapping() {
     let fd = dma_buf::sealed_memfd(c"styx-frame-test", LEN as u64).unwrap();
     let other = fd.try_clone().unwrap();
     let memory = FdMemory::memfd(fd, LEN, true).unwrap();
-    let pool: FramePool = FramePool::new([Box::new(memory) as Box<dyn BufferMemory>]);
+    let pool: FramePool =
+        FramePool::new(SIZE, [Box::new(memory) as Box<dyn BufferMemory>]).unwrap();
     let mut frame = pool.acquire(entry(1)).unwrap();
     assert_eq!(frame.memory_kind(), MemoryKind::Memfd);
     frame.write().unwrap().bytes()[100] = 0xab;
@@ -50,7 +55,7 @@ fn dmabuf_frames_sync_around_cpu_access() {
     let dmabuf = udmabuf::create(dev.as_fd(), memfd.as_fd(), 0, LEN as u64).unwrap();
     let memory = Box::new(FdMemory::dmabuf(dmabuf, LEN, true).unwrap());
     let counted: *const FdMemory = &*memory;
-    let pool: FramePool = FramePool::new([memory as Box<dyn BufferMemory>]);
+    let pool: FramePool = FramePool::new(SIZE, [memory as Box<dyn BufferMemory>]).unwrap();
     // SAFETY: the pool owns the box and outlives every use of `counted` below.
     let counted = unsafe { &*counted };
     let mut frame = pool.acquire(entry(1)).unwrap();

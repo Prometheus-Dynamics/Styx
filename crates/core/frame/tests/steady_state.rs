@@ -5,7 +5,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use styx_format::{FourCc, MediaFormat, Resolution};
-use styx_frame::{FrameEntry, FramePool, copy_counters, packed_layouts};
+use styx_frame::{BufferSize, FrameEntry, FramePool, copy_counters, packed_layouts};
 
 struct Counting;
 
@@ -60,7 +60,8 @@ fn ten_thousand_frames_allocate_and_copy_nothing_after_warm_up() {
     let (width, height) = (64u32, 48u32);
     let layouts = packed_layouts(FourCc::NV12, width, height, Some(16), None).unwrap();
     let format = MediaFormat::with_defaults(FourCc::NV12, Resolution::new(width, height).unwrap());
-    let pool: FramePool<Meta> = FramePool::host(4, layouts.span().unwrap());
+    let pool: FramePool<Meta> =
+        FramePool::host(4, BufferSize::new(layouts.span().unwrap(), 256)).unwrap();
 
     // Consumers holding frames for a while, released out of order: kept in a fixed ring so the
     // test itself allocates nothing per frame.

@@ -23,8 +23,7 @@ linux = ["std", "dep:lemnos-linux-sys"]
 styx-format = { path = "../format", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Same commit as the Lemnos lock in the root `Cargo.toml`.
-lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", optional = true }
+lemnos-linux-sys = { workspace = true, optional = true }
 
 [lints]
 workspace = true

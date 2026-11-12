@@ -98,12 +98,12 @@ impl<M> FrameLease<M> {
         }
     }
 
-    /// Replaces the entry, while this is the only lease. The planes must fit the buffer.
+    /// Replaces the entry, while this is the only lease. The planes must fit the buffer's payload.
     pub fn set_entry(&mut self, entry: FrameEntry) -> Result<(), SetError> {
         if !self.is_sole_owner() {
             return Err(SetError::Shared);
         }
-        let len = self.slot().memory.len();
+        let len = self.shared.size.payload;
         match entry.layouts.span() {
             Some(needed) if needed <= len => {}
             needed => {
