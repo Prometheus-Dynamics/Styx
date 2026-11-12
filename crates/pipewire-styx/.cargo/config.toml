@@ -1,3 +1,0 @@
-# Build into the repository's target directory (this crate is its own workspace).
-[build]
-target-dir = "../../target"
