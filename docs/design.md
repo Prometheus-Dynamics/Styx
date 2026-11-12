@@ -136,8 +136,8 @@ Asked of those repos on 2026-11-11. A PR that needs one waits for it; don't work
 |---|---|---|
 | X1 | Lemnos `next` stays buildable at the locked commit | native path; locked by commit |
 | X2 | The PiSP front end has never run through the Lemnos module (Lemnos design says so) | H1's native run on the Raze |
-| X3 | Daedalus `next` lists/structs as graph constants (Gaia's X7) | Styx node config in graphs; scalars until then |
+| X3 | Daedalus `next` lists/structs as graph constants (Gaia's X7; Daedalus J3) | Styx node config in graphs; scalars until then |
 | X4 | Consumers (HeliOS, Eidos) move to `next`'s frame type | nothing in Styx |
 | X5 | The shared ring: a standalone leaf crate family with neutral names, hosted in the Lemnos repository, depending on nothing of Lemnos or Orion (Orion's ring, ring-buffers, -holds, -doorbell, -latest, -time, fdpass and the sample time type move there) | F2, F3, F4 |
 | X6 | Lemnos library halves build without lemnosd and without `device`: lemnos-v4l2, ISP layouts and tiling (pisp, rkisp, k230isp, isp600), netlink hotplug | B6, B8, D2, D4, D5, D6 |
-| X7 | A Daedalus dma-buf memory location (location only, no type) | F4 |
+| X7 | A Daedalus dma-buf memory location (location only, no type): Daedalus J6 | F4 |
