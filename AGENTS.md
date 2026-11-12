@@ -24,7 +24,7 @@ The work is a pre-planned list of PRs into `next`.
 - Read Lemnos, Daedalus and Orion `next` the same way, at the commits locked in the root
   `Cargo.toml`. Lemnos `docs/design.md` (Cameras, The frame stream) and its `contracts/camera-*`
   set the native path's order and types. Daedalus `docs/foreign-values.md` says how Styx's frame
-  becomes a graph value. Orion `docs/design.md` (topics, buffers) says how frames go out.
+  becomes a graph value. Orion `docs/design.md` (topics, buffers) says how a ring becomes a topic.
 - Stay inside the paths your PR creates. Don't edit the root `Cargo.toml`, `TODO.md`, or a changelog.
   `Cargo.lock` is ignored.
 - Add a crate by creating its directory under `crates/<folder>/`. Name it `styx-<directory>`.
@@ -40,6 +40,11 @@ The work is a pre-planned list of PRs into `next`.
 - Native first, coverage second. A camera with a native chain runs native; otherwise libcamera;
   otherwise V4L2. One backend owns a camera at a time, and the choice is logged with its reason.
 - Every backend gives the same `FrameLease`, controls and metadata.
+- Movers don't know what they move. Lemnos, Orion and Daedalus carry opaque bytes with an id, a
+  time and a memory location. Never ask them for a frame type, a frame route or a frame special case.
+- Hardware facts are Lemnos's: V4L2 bindings, ISP layouts and tiling, hotplug, the shared ring.
+  Use its library crates; don't write a second copy in Styx.
+- Frame times are `CLOCK_MONOTONIC` nanoseconds.
 - No library needs another to work. Orion, Daedalus, libcamera and FFmpeg are optional features.
   Default features build and run without any of them.
 - Steady-state paths allocate nothing and copy nothing they don't have to. Count copies where they

@@ -24,9 +24,9 @@ Every way a camera comes up: native on Lemnos, libcamera, V4L2, and the choice b
 - [ ] [B3](docs/prs/B3.md) Native: controls on frame identities (wave 5; needs B2, A4)
 - [ ] [B4](docs/prs/B4.md) Native USB cameras (wave 3; needs A5)
 - [ ] [B5](docs/prs/B5.md) libcamera backend (wave 3; needs A1, A4)
-- [ ] [B6](docs/prs/B6.md) V4L2 backend (wave 3; needs A1, A4)
+- [ ] [B6](docs/prs/B6.md) V4L2 backend, on lemnos-v4l2 (wave 3; needs A1, A4, X6)
 - [ ] [B7](docs/prs/B7.md) Choosing a backend (wave 4; needs B1, B5, B6)
-- [ ] [B8](docs/prs/B8.md) Hotplug (wave 5; needs B7)
+- [ ] [B8](docs/prs/B8.md) Hotplug (wave 5; needs B7, X6)
 
 ## C. 3A and tuning
 
@@ -42,10 +42,10 @@ Making the image good on the native path. Tuning ships with Styx.
 Turning 3A results into ISP jobs, and the software and GPU ISPs for chips without one.
 
 - [ ] [D1](docs/prs/D1.md) Neutral ISP settings (wave 5; needs C2)
-- [ ] [D2](docs/prs/D2.md) PiSP (wave 6; needs D1, A5)
-- [ ] [D3](docs/prs/D3.md) PiSP slices (wave 7; needs D2)
-- [ ] [D4](docs/prs/D4.md) rkisp (wave 6; needs D1, A5)
-- [ ] [D5](docs/prs/D5.md) K230 ISP (wave 6; needs D1, A5)
+- [ ] [D2](docs/prs/D2.md) PiSP, slices included (wave 6; needs D1, A5, X6)
+- [ ] [D3](docs/prs/D3.md) rkisp (wave 6; needs D1, A5, X6)
+- [ ] [D4](docs/prs/D4.md) K230 ISP (wave 6; needs D1, A5, X6)
+- [ ] [D5](docs/prs/D5.md) ISP600 (wave 6; needs D1, A5, X6)
 - [ ] [D6](docs/prs/D6.md) Software ISP (wave 6; needs D1, A3)
 - [ ] [D7](docs/prs/D7.md) GPU ISP (wave 7; needs D6)
 - [ ] [D8](docs/prs/D8.md) Stills and DNG (wave 7; needs D6, B2)
@@ -68,13 +68,12 @@ Own encoders and Lemnos codec blocks first, FFmpeg for coverage.
 The camera service and every way a frame leaves it.
 
 - [ ] [F1](docs/prs/F1.md) The camera service (wave 5; needs B7, A4)
-- [ ] [F2](docs/prs/F2.md) Styx socket (wave 2; needs A1)
-- [ ] [F3](docs/prs/F3.md) Orion topic (wave 2; needs A1)
-- [ ] [F4](docs/prs/F4.md) Daedalus value (wave 2; needs A1)
-- [ ] [F5](docs/prs/F5.md) Frame age (wave 3; needs F2)
-- [ ] [F6](docs/prs/F6.md) Multi-camera grouping (wave 2; needs A1)
-- [ ] [F7](docs/prs/F7.md) C API (wave 6; needs F1, F2)
-- [ ] [F8](docs/prs/F8.md) GStreamer and PipeWire (wave 3; needs F2)
+- [ ] [F2](docs/prs/F2.md) The shared ring, without Orion (wave 2; needs A1, X5)
+- [ ] [F3](docs/prs/F3.md) Orion: the ring as a topic (wave 3; needs F2)
+- [ ] [F4](docs/prs/F4.md) Daedalus value (wave 2; needs A1, X7)
+- [ ] [F5](docs/prs/F5.md) Multi-camera grouping (wave 2; needs A1)
+- [ ] [F6](docs/prs/F6.md) C API (wave 6; needs F1, F2)
+- [ ] [F7](docs/prs/F7.md) GStreamer and PipeWire (wave 3; needs F2)
 
 ## G. Tools
 
@@ -90,10 +89,10 @@ Recording, replay, calibration, counters, preview, examples.
 
 Real hardware, then the lock and the docs.
 
-- [ ] [H1](docs/prs/H1.md) Raze CM5: OV9782 native (wave 8; needs D3, F1, F3, C3, X2; board run)
-- [ ] [H2](docs/prs/H2.md) ZERO 3E: rkcif and ISP21 (wave 7; needs D4, F1; board run)
-- [ ] [H3](docs/prs/H3.md) K230D (wave 7; needs D5, F1; board run)
-- [ ] [H4](docs/prs/H4.md) Cubie A7 (wave 6; needs E5, F1; board run)
+- [ ] [H1](docs/prs/H1.md) Raze CM5: OV9782 native (wave 7; needs D2, F1, F3, C3, X2; board run)
+- [ ] [H2](docs/prs/H2.md) ZERO 3E: rkcif and ISP21 (wave 7; needs D3, F1; board run)
+- [ ] [H3](docs/prs/H3.md) K230D (wave 7; needs D4, F1; board run)
+- [ ] [H4](docs/prs/H4.md) Cubie A7 (wave 7; needs E5, F1, D5; board run)
 - [ ] [H5](docs/prs/H5.md) USB camera (wave 6; needs B4, B6, E4, F1; board run)
 - [ ] [H6](docs/prs/H6.md) libcamera camera on a Pi (wave 6; needs B5, F1; board run)
-- [ ] [H7](docs/prs/H7.md) Docs, lock, hand-over (wave 9; needs H1, H5, G5, F7, F8, G4)
+- [ ] [H7](docs/prs/H7.md) Docs, lock, hand-over (wave 8; needs H1, H5, G5, F6, F7, G4)
