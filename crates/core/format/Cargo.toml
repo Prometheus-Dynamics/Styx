@@ -1,0 +1,28 @@
+[package]
+name = "styx-format"
+description = "Pixel and stream formats for Styx: one FourCC type, format facts, colour, plane geometry and DRM codes."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[features]
+default = ["std"]
+# `std::error::Error` for the error types. Everything else is `core` only: no allocation.
+std = []
+# FourCC as a four-character string, the other types as plain data.
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
