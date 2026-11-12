@@ -70,7 +70,7 @@ The camera service and every way a frame leaves it.
 - [ ] [F1](docs/prs/F1.md) The camera service (wave 5; needs B7, A4)
 - [ ] [F2](docs/prs/F2.md) The shared ring, without Orion (wave 2; needs A1, X5)
 - [ ] [F3](docs/prs/F3.md) Orion: the ring as a topic (wave 3; needs F2)
-- [ ] [F4](docs/prs/F4.md) Daedalus value (wave 2; needs A1, X7)
+- [ ] [F4](docs/prs/F4.md) Daedalus value (wave 3; needs F2, X7)
 - [ ] [F5](docs/prs/F5.md) Multi-camera grouping (wave 2; needs A1)
 - [ ] [F6](docs/prs/F6.md) C API (wave 6; needs F1, F2)
 - [ ] [F7](docs/prs/F7.md) GStreamer and PipeWire (wave 3; needs F2)

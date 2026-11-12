@@ -98,7 +98,7 @@ camera service all use it.
 | In process | apps and tools | a call returning a `FrameLease` |
 | Shared ring | other processes, with or without Orion | the camera service hands each reader the buffers, the ring and a doorbell once over a Unix socket; one entry per frame; readers hold by marks; Styx drops, never waits. No Orion needed |
 | Orion (feature `orion`) | other boards, browsers, graphs elsewhere | the same ring, registered as an Orion buffer topic. Orion adds discovery and reach, never a second path |
-| Daedalus (feature `daedalus`) | graphs | Styx registers `FrameLease` as its own value (`#[derive(Type)]`, `styx:frame`) in a plain dma-buf memory location, per Daedalus `docs/foreign-values.md`. Frames reach a graph in process or through Orion's bridge; Styx has no source node |
+| Daedalus (feature `daedalus`) | graphs | Styx registers `FrameLease` as its own value (`#[derive(Type)]`, `styx:frame`) in a plain dma-buf memory location, per Daedalus `docs/foreign-values.md`. In process, frames are handed in directly; out of process, a Styx ring reader node takes them from the shared ring (Orion has no Daedalus bridge) |
 
 The camera service is its own process, one per board, holding every camera. Preview, counters and
 recording are consumers of frames, published as topics, not parts of the library. The GPU ISP takes
@@ -138,6 +138,6 @@ Asked of those repos on 2026-11-11. A PR that needs one waits for it; don't work
 | X2 | The PiSP front end has never run through the Lemnos module (Lemnos design says so) | H1's native run on the Raze |
 | X3 | Daedalus `next` lists/structs as graph constants (Gaia's X7) | Styx node config in graphs; scalars until then |
 | X4 | Consumers (HeliOS, Eidos) move to `next`'s frame type | nothing in Styx |
-| X5 | Lemnos owns the shared ring as leaf crates (Orion's ring, buffers, holds, doorbell, fdpass move there) | F2, F3 |
+| X5 | The shared ring: a standalone leaf crate family with neutral names, hosted in the Lemnos repository, depending on nothing of Lemnos or Orion (Orion's ring, ring-buffers, -holds, -doorbell, -latest, -time, fdpass and the sample time type move there) | F2, F3, F4 |
 | X6 | Lemnos library halves build without lemnosd and without `device`: lemnos-v4l2, ISP layouts and tiling (pisp, rkisp, k230isp, isp600), netlink hotplug | B6, B8, D2, D4, D5, D6 |
 | X7 | A Daedalus dma-buf memory location (location only, no type) | F4 |
