@@ -1,0 +1,35 @@
+[package]
+name = "styx-gst"
+description = "GStreamer source element (styxsrc) for Styx frames: frames read from the shared ring become GstBuffers whose memory is the frame's own memfd or dma-buf, never copied. Off by default; built only when pkg-config finds GStreamer."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+# The plugin is a shared object GStreamer loads with GST_PLUGIN_PATH (gst-launch-1.0 styxsrc ...),
+# so the crate also builds as a cdylib. The rlib is what other Rust code links.
+[lib]
+crate-type = ["rlib", "cdylib"]
+
+[features]
+default = []
+# The GStreamer element. Off by default. Without the libraries (pkg-config finds no gstreamer-1.0,
+# gstreamer-base-1.0 and gstreamer-video-1.0) the crate builds with the element left out.
+gstreamer = []
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame", features = ["std", "linux"] }
+styx-socket = { path = "../../out/socket" }
+
+[dev-dependencies]
+shm-ring = { workspace = true }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[lints]
+workspace = true

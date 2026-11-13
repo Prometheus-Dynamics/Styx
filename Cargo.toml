@@ -25,15 +25,16 @@ lemnos-contract-codec-block = { git = "https://github.com/Prometheus-Dynamics/Le
 lemnos-contract-image-scaler = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
 lemnos-contract-lens = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
 # The shared ring: a standalone family hosted in the Lemnos repository (X5).
-shm-sample-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-shm-ring = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-shm-ring-latest = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-shm-ring-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-shm-ring-doorbell = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-shm-ring-buffers = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-shm-ring-holds = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-shm-fdpass = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "6c28d722dcce061ab2a5d67d29ebbc4f9ca702ad" }
-daedalus = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "9d8ed1369e4e236f343668bcf718713476fd7def" }
+shm-sample-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+shm-ring = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+shm-ring-latest = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+shm-ring-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+shm-ring-doorbell = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+shm-ring-buffers = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+shm-ring-holds = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+shm-fdpass = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "b48efaf1af90c52e35b6be27427a93e3d2996f1d" }
+daedalus = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-dmabuf = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
 orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "ae4d6bcd71066c9c17e7c22df994a654573a7d65", default-features = false }
 
 [workspace.lints.rust]
