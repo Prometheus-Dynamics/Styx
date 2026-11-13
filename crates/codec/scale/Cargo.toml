@@ -1,0 +1,30 @@
+[package]
+name = "styx-scale"
+description = "Scalers and format converters for Styx: resize and channel or chroma-order conversion through Lemnos's image.scaler/1 contract when the chip has one, and a software path (SIMD rows where they fit, scalar elsewhere) otherwise, behind styx-codec-api's Converter trait."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+styx-codec-api = { path = "../codec-api" }
+styx-simd = { path = "../../core/simd" }
+styx-lemnos = { path = "../../core/lemnos" }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-contract-image-scaler = { workspace = true }
+# The stream platform for mapping a Lemnos stream's buffers on Linux (the same rev as styx-lemnos).
+lemnos-linux-stream = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+
+[dev-dependencies]
+# The simulated backend: lemnosd in this process, with a simulated image.scaler driver (test only).
+lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+
+[lints]
+workspace = true
