@@ -13,7 +13,7 @@ styx-settings = { path = "../settings" }
 styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["std-core"] }
 # The PiSP library (`pisp` feature): front and back end builders, tiling and statistics layouts.
 styx-lemnos = { path = "../../core/lemnos", features = ["pisp"] }
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-core = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }
 lemnos-contract-isp-pisp = { workspace = true }
 
