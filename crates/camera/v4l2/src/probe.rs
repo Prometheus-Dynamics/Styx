@@ -2,15 +2,15 @@
 
 use std::path::{Path, PathBuf};
 
-use styx_controls::Control;
+use styx_controls::{Control, DeviceControl, DeviceKind, DeviceName};
 use styx_format::{FourCc, Interval};
 use styx_lemnos::v4l2::v4l2::{
-    BufType, CapabilityFlags, ControlFlags, ControlType, Controls, FrameIntervals, FrameSizes,
-    VideoDevice, list_video_nodes,
+    BufType, CapabilityFlags, ControlFlags, ControlInfo, ControlType, Controls, FrameIntervals,
+    FrameSizes, MenuValue, VideoDevice, list_video_nodes,
 };
 
 use crate::Error;
-use crate::controls::Table;
+use crate::controls::{Table, control_of};
 
 /// Every capture node on this machine, and the nodes that failed to answer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -66,23 +66,12 @@ pub fn probe_node(path: &Path) -> Result<Option<Device>, Error> {
             Vec::new()
         }
     };
-    let table = Table::build(&dev, buf_type);
-    let raw_controls = match dev.query_controls() {
-        Ok(infos) => infos
-            .iter()
-            .map(|info| RawControl {
-                id: info.id,
-                name: info.name.clone(),
-                control_type: info.control_type,
-                min: info.minimum,
-                max: info.maximum,
-                default: info.default,
-                read_only: info.flags.contains(ControlFlags::READ_ONLY),
-                mapped: mapped_control(info.id),
-            })
-            .collect(),
-        Err(_) => Vec::new(),
-    };
+    let infos = dev.query_controls().unwrap_or_default();
+    let table = Table::from_infos(&dev, &infos, buf_type);
+    let raw_controls = infos
+        .iter()
+        .map(|info| RawControl::from_info(&dev, info))
+        .collect::<Vec<_>>();
     let virtual_node =
         caps.driver.contains("loopback") || caps.card.to_ascii_lowercase().contains("virtual");
     Ok(Some(Device {
@@ -178,7 +167,8 @@ pub enum Intervals {
     Unknown,
 }
 
-/// A control the node reports, as the driver describes it.
+/// A control the node reports, as the driver describes it. Every control a node offers is listed,
+/// mapped or not: a control with no Styx control is a passthrough, read and set by its `id`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawControl {
     pub id: u32,
@@ -186,10 +176,75 @@ pub struct RawControl {
     pub control_type: ControlType,
     pub min: i64,
     pub max: i64,
+    /// The step between valid values (0 when the driver does not say).
+    pub step: u64,
     pub default: i64,
     pub read_only: bool,
+    /// The items of a menu control, in index order; empty for other types.
+    pub menu: Vec<DeviceMenuItem>,
     /// The Styx control this one maps to, when this crate maps it.
     pub mapped: Option<Control>,
+}
+
+/// One item of a menu control: the value that selects it and its name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceMenuItem {
+    pub value: i64,
+    pub name: String,
+}
+
+impl RawControl {
+    pub(crate) fn from_info(dev: &VideoDevice, info: &ControlInfo) -> RawControl {
+        let menu = if info.is_menu() {
+            dev.query_menu(info)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| DeviceMenuItem {
+                    value: i64::from(item.index),
+                    name: match item.value {
+                        MenuValue::Name(name) => name,
+                        MenuValue::Integer(value) => value.to_string(),
+                    },
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        RawControl {
+            id: info.id,
+            name: info.name.clone(),
+            control_type: info.control_type,
+            min: info.minimum,
+            max: info.maximum,
+            step: info.step,
+            default: info.default,
+            read_only: info.flags.contains(ControlFlags::READ_ONLY),
+            menu,
+            mapped: control_of(info.id),
+        }
+    }
+
+    /// The control as a [`DeviceControl`]: its id, name, kind and bounds, for a passthrough.
+    pub fn device_control(&self) -> DeviceControl {
+        DeviceControl {
+            id: self.id,
+            name: DeviceName::new(&self.name),
+            kind: match self.control_type {
+                ControlType::Integer => DeviceKind::Integer,
+                ControlType::Integer64 => DeviceKind::Integer64,
+                ControlType::Boolean => DeviceKind::Boolean,
+                ControlType::Menu | ControlType::IntegerMenu => DeviceKind::Menu,
+                ControlType::Bitmask => DeviceKind::Bitmask,
+                ControlType::Button => DeviceKind::Button,
+                _ => DeviceKind::Other,
+            },
+            min: self.min,
+            max: self.max,
+            step: self.step,
+            default: self.default,
+            read_only: self.read_only,
+        }
+    }
 }
 
 /// The capture queue of a node: the single-planar one if it has it, else the multi-planar.
@@ -258,15 +313,4 @@ fn intervals_of(
 /// A driver's interval as a format-crate interval; a zero numerator or denominator is no interval.
 fn interval_opt(f: styx_lemnos::v4l2::Fraction) -> Option<Interval> {
     Interval::new(f.numerator, f.denominator)
-}
-
-fn mapped_control(id: u32) -> Option<Control> {
-    Control::ALL.into_iter().find(|&control| match control {
-        Control::Exposure => id == styx_lemnos::v4l2::v4l2::cid::EXPOSURE_ABSOLUTE,
-        Control::WhiteBalance => id == styx_lemnos::v4l2::v4l2::cid::WHITE_BALANCE_TEMPERATURE,
-        Control::Focus => id == styx_lemnos::v4l2::v4l2::cid::FOCUS_ABSOLUTE,
-        Control::HFlip => id == styx_lemnos::v4l2::v4l2::cid::HFLIP,
-        Control::VFlip => id == styx_lemnos::v4l2::v4l2::cid::VFLIP,
-        Control::FrameRate | Control::Gain | Control::Crop => false,
-    })
 }

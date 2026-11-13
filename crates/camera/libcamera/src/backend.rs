@@ -21,16 +21,17 @@ use styx_frame::{
     AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool,
 };
 
+use crate::controls::{self as map, TYPE_BOOL, TYPE_FLOAT, TYPE_INT32, TYPE_INT64, TYPE_RECTANGLE};
 use crate::planes;
 use crate::sys;
-use crate::{CameraInfo, CaptureConfig, CaptureStats, Error, FrameSink, StreamFormat};
+use crate::{CameraInfo, CaptureConfig, CaptureStats, DeviceEntry, Error, FrameSink, StreamFormat};
+use styx_controls::{DeviceControl, DeviceKind, Rect};
 
 /// The shim's control ids (`styx_control_id`).
 const CTRL_EXPOSURE_TIME: c_int = 0;
 const CTRL_ANALOGUE_GAIN: c_int = 1;
 const CTRL_DIGITAL_GAIN: c_int = 2;
 const CTRL_SENSOR_TIMESTAMP: c_int = 3;
-const CTRL_AE_ENABLE: c_int = 4;
 
 fn control_id(which: c_int) -> u32 {
     // SAFETY: a pure accessor over libcamera's static control ids; no state is touched.
@@ -222,13 +223,19 @@ fn to_monotonic(boot_ns: i128) -> u64 {
     (boot_ns - offset).clamp(0, u64::MAX as i128) as u64
 }
 
-/// Control values the backend applies to every request it queues.
-#[derive(Default)]
-struct Requested {
-    exposure_us: Option<i32>,
-    gain: Option<f32>,
-    auto_exposure: Option<bool>,
+/// Control values the backend applies to every request it queues, by libcamera control id.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Value {
+    Bool(bool),
+    I32(i32),
+    I64(i64),
+    F32(f32),
+    /// `libcamera::Rectangle`: x, y, width, height.
+    Rect([i32; 4]),
 }
+
+/// The values requested from now on: one entry per control id, replaced when set again.
+type Requested = Vec<(u32, Value)>;
 
 /// Everything the completion callback and the requeue thread share. Boxed so its address is
 /// stable while libcamera holds the callback's pointer.
@@ -358,30 +365,15 @@ impl Inner {
     }
 }
 
-fn set_controls(list: *mut sys::ControlList, requested: &Requested) {
-    if let Some(exposure) = requested.exposure_us {
-        set_value(
-            list,
-            control_id(CTRL_EXPOSURE_TIME),
-            sys::CONTROL_TYPE_INT32,
-            &exposure as *const i32 as *const c_void,
-        );
-    }
-    if let Some(gain) = requested.gain {
-        set_value(
-            list,
-            control_id(CTRL_ANALOGUE_GAIN),
-            sys::CONTROL_TYPE_FLOAT,
-            &gain as *const f32 as *const c_void,
-        );
-    }
-    if let Some(auto) = requested.auto_exposure {
-        set_value(
-            list,
-            control_id(CTRL_AE_ENABLE),
-            sys::CONTROL_TYPE_BOOL,
-            &auto as *const bool as *const c_void,
-        );
+fn set_controls(list: *mut sys::ControlList, requested: &[(u32, Value)]) {
+    for &(id, value) in requested {
+        match value {
+            Value::Bool(v) => set_value(list, id, TYPE_BOOL, &v as *const bool as *const c_void),
+            Value::I32(v) => set_value(list, id, TYPE_INT32, &v as *const i32 as *const c_void),
+            Value::I64(v) => set_value(list, id, TYPE_INT64, &v as *const i64 as *const c_void),
+            Value::F32(v) => set_value(list, id, TYPE_FLOAT, &v as *const f32 as *const c_void),
+            Value::Rect(v) => set_value(list, id, TYPE_RECTANGLE, v.as_ptr() as *const c_void),
+        }
     }
 }
 
@@ -467,6 +459,23 @@ extern "C" fn on_request_completed(data: *mut c_void, request: *mut sys::Request
     inner.complete(request);
 }
 
+/// The public listing of one registered control.
+fn entry_of(listed: &Listed) -> DeviceEntry {
+    DeviceEntry {
+        control: DeviceControl {
+            id: listed.id,
+            name: styx_controls::DeviceName::new(&listed.name),
+            kind: listed.kind(),
+            min: listed.min as i64,
+            max: listed.max as i64,
+            step: 0,
+            default: listed.default as i64,
+            read_only: !listed.input,
+        },
+        mapped: map::mapped_control(&listed.name),
+    }
+}
+
 /// A capture: a started camera whose frames reach the sink as leases.
 pub struct Capture {
     camera: Camera,
@@ -475,6 +484,153 @@ pub struct Capture {
     inner: Box<Inner>,
     thread: Option<JoinHandle<()>>,
     format: MediaFormat,
+    /// Every control the camera registers, as read at open.
+    listed: Vec<Listed>,
+    /// The same controls, as the public listing reports them.
+    entries: Vec<DeviceEntry>,
+    /// The camera's maximum crop (`ScalerCropMaximum`), when it reports one: zoom is set from it.
+    crop_max: Option<Rect>,
+}
+
+/// One control of the camera's registry, as read at open. Numbers are `f64`: a float control's
+/// range is kept whole, and an integer's is exact in it.
+#[derive(Debug, Clone)]
+struct Listed {
+    id: u32,
+    name: String,
+    ty: u32,
+    menu: bool,
+    input: bool,
+    min: f64,
+    max: f64,
+    default: f64,
+}
+
+impl Listed {
+    fn kind(&self) -> DeviceKind {
+        map::device_kind(self.ty, self.menu)
+    }
+}
+
+/// Reads every control of `camera`'s registry: its id, name, type, whether it is a menu, whether
+/// it is settable (an input), and its range and default.
+fn list_controls(camera: &Camera) -> Vec<Listed> {
+    let mut out = Vec::new();
+    // SAFETY: the camera is acquired and live. The map is the camera's own, read while it lives;
+    // the iterator is created here and destroyed below. Each control id is looked up in libcamera's
+    // registry, which holds static controls for the process; the pointers read from it are not owned.
+    unsafe {
+        let map = sys::libcamera_camera_controls(camera.0.as_ptr());
+        if map.is_null() {
+            return out;
+        }
+        let iter = sys::libcamera_control_info_map_iter_create(map);
+        if iter.is_null() {
+            return out;
+        }
+        while sys::libcamera_control_info_map_iter_has_next(iter) {
+            let id = sys::libcamera_control_info_map_iter_key(iter);
+            let info = sys::libcamera_control_info_map_iter_value(iter) as *mut sys::ControlInfo;
+            sys::libcamera_control_info_map_iter_next(iter);
+            let control = sys::libcamera_control_from_id(id);
+            if control.is_null() || info.is_null() {
+                continue;
+            }
+            let name = CStr::from_ptr(sys::libcamera_control_name(control))
+                .to_string_lossy()
+                .into_owned();
+            let ty = sys::libcamera_control_id_type(control);
+            let input = sys::libcamera_control_id_is_input(control);
+            let enumerators = sys::libcamera_control_id_enumerators_iter_create(control);
+            let menu = !enumerators.is_null()
+                && sys::libcamera_control_id_enumerators_iter_has_next(enumerators);
+            if !enumerators.is_null() {
+                sys::libcamera_control_id_enumerators_iter_destroy(enumerators);
+            }
+            out.push(Listed {
+                id,
+                name,
+                ty,
+                menu,
+                input,
+                min: number(sys::libcamera_control_info_min(info), ty),
+                max: number(sys::libcamera_control_info_max(info), ty),
+                default: number(sys::libcamera_control_info_def(info), ty),
+            });
+        }
+        sys::libcamera_control_info_map_iter_destroy(iter);
+    }
+    out
+}
+
+/// A control value's first element as a number, for the types a passthrough carries.
+fn number(value: *const sys::ControlValue, ty: u32) -> f64 {
+    if value.is_null() {
+        return 0.0;
+    }
+    // SAFETY: the value is a live control value of the camera; its first element is read only
+    // when it has one, as the type `ty` says it is.
+    unsafe {
+        if sys::libcamera_control_value_num_elements(value) == 0 {
+            return 0.0;
+        }
+        let data = sys::libcamera_control_value_get(value);
+        if data.is_null() {
+            return 0.0;
+        }
+        match ty {
+            TYPE_BOOL => f64::from(u8::from(*(data as *const bool))),
+            TYPE_INT32 => f64::from(*(data as *const i32)),
+            TYPE_INT64 => *(data as *const i64) as f64,
+            TYPE_FLOAT => f64::from(*(data as *const f32)),
+            _ => 0.0,
+        }
+    }
+}
+
+/// The camera's `ScalerCropMaximum`, when it reports one.
+fn crop_maximum(camera: &Camera) -> Option<Rect> {
+    // SAFETY: the camera is live; its property list is read while it lives, and the id is the
+    // one the shim names for `ScalerCropMaximum`.
+    unsafe {
+        let properties = sys::libcamera_camera_properties(camera.0.as_ptr());
+        if properties.is_null() {
+            return None;
+        }
+        let value = sys::libcamera_control_list_get(properties, sys::styx_property_id(0));
+        if value.is_null() || sys::libcamera_control_value_num_elements(value) == 0 {
+            return None;
+        }
+        let data = sys::libcamera_control_value_get(value) as *const [i32; 4];
+        if data.is_null() {
+            return None;
+        }
+        let [x, y, width, height] = *data;
+        (width > 0 && height > 0).then(|| Rect {
+            x: x.max(0) as u32,
+            y: y.max(0) as u32,
+            width: width as u32,
+            height: height as u32,
+        })
+    }
+}
+
+/// A Styx rectangle as libcamera's, all four values as the camera takes them.
+fn rect_raw(rect: Rect) -> [i32; 4] {
+    [
+        rect.x as i32,
+        rect.y as i32,
+        rect.width as i32,
+        rect.height as i32,
+    ]
+}
+
+/// Sets `id` to `value` in `requested`, replacing an earlier value for the same id.
+fn upsert(requested: &mut Requested, id: u32, value: Value) {
+    match requested.iter_mut().find(|(known, _)| *known == id) {
+        Some(slot) => slot.1 = value,
+        None => requested.push((id, value)),
+    }
 }
 
 // SAFETY: the raw handles are owned by this value and used only under `&self`/`&mut self`, from
@@ -492,7 +648,12 @@ impl Capture {
         if unsafe { sys::libcamera_camera_acquire(camera.0.as_ptr()) } != 0 {
             return Err(Error::Camera(format!("camera {id} is busy")));
         }
+        let listed = list_controls(&camera);
+        let crop_max = crop_maximum(&camera);
         let mut capture = Self::configure(camera, config, sink)?;
+        capture.entries = listed.iter().map(entry_of).collect();
+        capture.listed = listed;
+        capture.crop_max = crop_max;
         capture.start()?;
         Ok(capture)
     }
@@ -656,7 +817,7 @@ impl Capture {
             templates,
             requests,
             buffers,
-            requested: Mutex::new(Requested::default()),
+            requested: Mutex::new(Requested::new()),
             parked: Mutex::new(Vec::new()),
             sink: Mutex::new(sink),
             stopping: AtomicBool::new(false),
@@ -680,6 +841,9 @@ impl Capture {
             inner,
             thread: None,
             format,
+            listed: Vec::new(),
+            entries: Vec::new(),
+            crop_max: None,
         })
     }
 
@@ -715,25 +879,202 @@ impl Capture {
         Ok(())
     }
 
-    /// Sets an exposure, gain or auto-exposure control for the requests queued from now on.
-    pub fn set_control(&self, update: Update) -> Result<(), Error> {
-        let mut requested = self.inner.requested.lock().unwrap();
-        match (update.control, update.value) {
-            (Control::Exposure, ControlValue::Manual(us)) => {
-                requested.exposure_us = Some(i32::try_from(us).unwrap_or(i32::MAX))
+    /// The control with `name` in the camera's registry, when the camera has it.
+    fn named(&self, name: &str) -> Option<&Listed> {
+        self.listed.iter().find(|listed| listed.name == name)
+    }
+
+    /// The id of the control `name`, or a refusal when the camera does not register it.
+    fn id_of(&self, name: &str) -> Result<u32, Error> {
+        self.named(name)
+            .map(|listed| listed.id)
+            .ok_or_else(|| Error::Refused(format!("the camera has no {name} control")))
+    }
+
+    /// The range of the float control `name`, as `f32`.
+    fn float_range(&self, name: &str) -> Result<(f32, f32), Error> {
+        let listed = self
+            .named(name)
+            .ok_or_else(|| Error::Refused(format!("the camera has no {name} control")))?;
+        Ok((listed.min as f32, listed.max as f32))
+    }
+
+    /// The values a Styx control's value asks of the camera, by libcamera id. A value the camera
+    /// has no control for is refused; a value libcamera cannot take this way is unsupported.
+    fn plan(&self, control: Control, value: ControlValue) -> Result<Vec<(u32, Value)>, Error> {
+        Ok(match (control, value) {
+            (Control::Exposure, ControlValue::Manual(us)) => vec![
+                (self.id_of("AeEnable")?, Value::Bool(false)),
+                (
+                    self.id_of("ExposureTime")?,
+                    Value::I32(i32::try_from(us).unwrap_or(i32::MAX)),
+                ),
+            ],
+            (Control::Exposure, ControlValue::Auto) => {
+                vec![(self.id_of("AeEnable")?, Value::Bool(true))]
             }
             (Control::Gain, ControlValue::Manual(milli)) => {
-                requested.gain = Some(milli as f32 / 1000.0)
+                vec![(
+                    self.id_of("AnalogueGain")?,
+                    Value::F32(milli as f32 / 1_000.0),
+                )]
             }
-            (Control::Exposure, ControlValue::Auto) => requested.auto_exposure = Some(true),
-            (Control::Exposure, ControlValue::Flag(on)) => requested.auto_exposure = Some(on),
-            _ => {
+            (Control::WhiteBalance, ControlValue::Auto) => {
+                vec![(self.id_of("AwbEnable")?, Value::Bool(true))]
+            }
+            (Control::WhiteBalance, ControlValue::Manual(_)) => {
                 return Err(Error::Unsupported(
-                    "control not implemented by the libcamera backend",
+                    "libcamera takes white balance as colour gains, which Styx does not model; use Auto",
                 ));
             }
+            (Control::Focus, ControlValue::Auto) => {
+                vec![(self.id_of("AfMode")?, Value::I32(map::AF_MODE_CONTINUOUS))]
+            }
+            (Control::Focus, ControlValue::Manual(position)) => {
+                let (min, max) = self.float_range("LensPosition")?;
+                vec![
+                    (self.id_of("AfMode")?, Value::I32(map::AF_MODE_MANUAL)),
+                    (
+                        self.id_of("LensPosition")?,
+                        Value::F32(map::lens_position(position, min, max)),
+                    ),
+                ]
+            }
+            (
+                Control::Brightness | Control::Contrast | Control::Saturation | Control::Sharpness,
+                ControlValue::Manual(v),
+            ) => {
+                let name = match control {
+                    Control::Brightness => "Brightness",
+                    Control::Contrast => "Contrast",
+                    Control::Saturation => "Saturation",
+                    _ => "Sharpness",
+                };
+                let (min, max) = self.float_range(name)?;
+                vec![(
+                    self.id_of(name)?,
+                    Value::F32(map::normalised_to_float(v, min, max)),
+                )]
+            }
+            (Control::Gamma, ControlValue::Manual(v)) => {
+                vec![(self.id_of("Gamma")?, Value::F32(map::gamma_to_float(v)))]
+            }
+            (Control::Crop, ControlValue::Crop(Some(rect))) => {
+                vec![(self.id_of("ScalerCrop")?, Value::Rect(rect_raw(rect)))]
+            }
+            (Control::Crop, ControlValue::Crop(None)) => {
+                let whole = self.crop_max.ok_or_else(|| {
+                    Error::Refused("the camera reports no ScalerCropMaximum".into())
+                })?;
+                vec![(self.id_of("ScalerCrop")?, Value::Rect(rect_raw(whole)))]
+            }
+            (Control::Zoom, ControlValue::Manual(zoom)) => {
+                let full = self.crop_max.ok_or_else(|| {
+                    Error::Refused("the camera reports no ScalerCropMaximum; zoom needs it".into())
+                })?;
+                let crop = map::zoom_crop(full, zoom);
+                vec![(self.id_of("ScalerCrop")?, Value::Rect(rect_raw(crop)))]
+            }
+            _ => {
+                return Err(Error::Unsupported(
+                    "the libcamera backend has no control for this Styx control",
+                ));
+            }
+        })
+    }
+
+    /// Sets a Styx control for the requests queued from now on.
+    pub fn set_control(&self, update: Update) -> Result<(), Error> {
+        update.control.validate(update.value)?;
+        let writes = self.plan(update.control, update.value)?;
+        let mut requested = self.inner.requested.lock().unwrap();
+        for (id, value) in writes {
+            upsert(&mut requested, id, value);
         }
         Ok(())
+    }
+
+    /// Every control the camera registers, mapped to a Styx control or a passthrough.
+    pub fn device_controls(&self) -> &[DeviceEntry] {
+        &self.entries
+    }
+
+    /// The value of a passthrough control by its libcamera id: the last value set for it, or the
+    /// camera's default. libcamera reports what a camera did in each frame's metadata, not through
+    /// this call, so this is what was asked, not what the sensor reports.
+    pub fn get_device_control(&self, id: u32) -> Result<i64, Error> {
+        let listed = self.listed_by_id(id)?;
+        let requested = self.inner.requested.lock().unwrap();
+        let value = requested
+            .iter()
+            .find(|(known, _)| *known == id)
+            .map(|(_, v)| *v);
+        match value {
+            Some(Value::Bool(v)) => Ok(i64::from(v)),
+            Some(Value::I32(v)) => Ok(i64::from(v)),
+            Some(Value::I64(v)) => Ok(v),
+            _ => match listed.kind() {
+                DeviceKind::Boolean
+                | DeviceKind::Integer
+                | DeviceKind::Integer64
+                | DeviceKind::Menu => Ok(listed.default as i64),
+                _ => Err(Error::Refused(format!(
+                    "{} has no integer value",
+                    listed.name
+                ))),
+            },
+        }
+    }
+
+    /// Sets a passthrough control by its libcamera id, for the requests queued from now on.
+    pub fn set_device_control(&self, id: u32, value: i64) -> Result<(), Error> {
+        let listed = self.listed_by_id(id)?;
+        if map::mapped_control(&listed.name).is_some() {
+            return Err(Error::Refused(format!(
+                "{} is mapped to a Styx control: set that one",
+                listed.name
+            )));
+        }
+        if !listed.input {
+            return Err(Error::Refused(format!("{} is read-only", listed.name)));
+        }
+        let (min, max) = (listed.min as i64, listed.max as i64);
+        let stored =
+            match listed.kind() {
+                DeviceKind::Boolean => match value {
+                    0 => Value::Bool(false),
+                    1 => Value::Bool(true),
+                    _ => return Err(Error::Refused(format!("{} takes 0 or 1", listed.name))),
+                },
+                DeviceKind::Integer | DeviceKind::Menu => {
+                    if !(min..=max).contains(&value) {
+                        return Err(Error::Refused(format!(
+                            "{} takes {min}..={max}, not {value}",
+                            listed.name
+                        )));
+                    }
+                    Value::I32(i32::try_from(value).map_err(|_| {
+                        Error::Refused(format!("{} takes 32-bit values", listed.name))
+                    })?)
+                }
+                DeviceKind::Integer64 => Value::I64(value),
+                _ => {
+                    return Err(Error::Refused(format!(
+                        "{} is not an integer control; it is listed, not settable",
+                        listed.name
+                    )));
+                }
+            };
+        let mut requested = self.inner.requested.lock().unwrap();
+        upsert(&mut requested, id, stored);
+        Ok(())
+    }
+
+    fn listed_by_id(&self, id: u32) -> Result<&Listed, Error> {
+        self.listed
+            .iter()
+            .find(|listed| listed.id == id)
+            .ok_or_else(|| Error::Refused(format!("the camera has no control with id {id}")))
     }
 
     /// Counts since the capture started.
