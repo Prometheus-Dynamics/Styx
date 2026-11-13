@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
+use styx_native_run::Selection;
 use styx_select::{Backend, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
 
@@ -224,6 +225,9 @@ pub struct CameraStatus {
     pub keep: KeepWindow,
     /// The capture timestamps the measured rate is taken over.
     pub rate_window: RateWindow,
+    /// The sensor mode a native camera runs in, and why it was chosen (`None` for the other
+    /// backends, and before a native camera starts).
+    pub mode: Option<Selection>,
 }
 
 impl CameraStatus {
@@ -314,6 +318,7 @@ impl Slot {
             measured_milli: None,
             keep: KeepWindow::default(),
             rate_window: RateWindow::new(),
+            mode: None,
         };
         Self {
             id,
@@ -432,6 +437,11 @@ impl Slot {
         let mut status = lock(&self.status);
         status.achieved_milli = rate.achieved_milli;
         status.rate_clamped = rate.clamped;
+    }
+
+    /// The mode choice a native camera started with.
+    pub(crate) fn set_mode(&self, mode: Selection) {
+        lock(&self.status).mode = Some(mode);
     }
 
     pub(crate) fn set_keep(&self, keep: KeepWindow) {
