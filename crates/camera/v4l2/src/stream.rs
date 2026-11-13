@@ -21,12 +21,13 @@ use styx_frame::{
     BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, HostMemory, Layouts, PlaneLayout,
 };
 use styx_lemnos::v4l2::v4l2::{
-    BufType, DequeuedBuffer, DmaBufAccess, Format, Memory, QueueBuffer, VideoDevice,
+    BufType, ControlType, ControlValue as Raw, Controls, DequeuedBuffer, DmaBufAccess, Format,
+    Memory, QueueBuffer, VideoDevice,
 };
 use styx_lemnos::v4l2::{Fraction, Mapping, monotonic_now};
 
 use crate::controls::Table;
-use crate::{Error, layout, probe, record_mmap_copy};
+use crate::{Error, RawControl, layout, probe, record_mmap_copy};
 
 /// How long the worker waits for a frame before it looks at its commands again.
 const POLL: Duration = Duration::from_millis(50);
@@ -57,6 +58,10 @@ pub struct StreamConfig {
     /// The failure policy. `None` (the default) retries forever. `Some(n)` stops the stream after
     /// `n` failed reconnects in a row, a policy the caller chose.
     pub give_up_after: Option<u32>,
+    /// Copy every frame out of the mapped driver buffers, never exporting them as dma-bufs (no
+    /// `VIDIOC_EXPBUF`). Off by default: a node whose buffers export is then zero-copy. Used to
+    /// exercise the copy path on a node that exports.
+    pub copy_mapped: bool,
 }
 
 impl StreamConfig {
@@ -71,6 +76,7 @@ impl StreamConfig {
             buffers: 4,
             controls: Vec::new(),
             give_up_after: None,
+            copy_mapped: false,
         }
     }
 }
@@ -130,6 +136,7 @@ pub struct Stream {
     frames: Receiver<FrameLease<FrameMetadata>>,
     commands: mpsc::Sender<Command>,
     shared: Arc<Shared>,
+    devices: Vec<RawControl>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -151,6 +158,7 @@ impl Stream {
             wanted[control.index()] = value;
         }
         let format = session.media;
+        let devices = session.devices.clone();
         let (frames_tx, frames_rx) = mpsc::sync_channel(session.queued.len().max(1));
         let (commands_tx, commands_rx) = mpsc::channel();
         let shared = Arc::new(Shared::new(session.delivery, session.note.clone()));
@@ -162,6 +170,7 @@ impl Stream {
             frames: frames_tx,
             wanted,
             table,
+            devices: devices.clone(),
             attempt: 0,
             last_error: String::new(),
         };
@@ -173,6 +182,7 @@ impl Stream {
             frames: frames_rx,
             commands: commands_tx,
             shared,
+            devices,
             worker: Some(worker),
         })
     }
@@ -221,8 +231,55 @@ impl Stream {
         answer.recv().map_err(|_| Error::Stopped)?
     }
 
+    /// Every control the node offers, as probed when the stream started: mapped to a Styx control
+    /// or not. Nothing is left out; see [`RawControl::mapped`].
+    pub fn device_controls(&self) -> &[RawControl] {
+        &self.devices
+    }
+
+    /// The controls with no Styx control: read and set by id with [`Stream::get_device_control`]
+    /// and [`Stream::set_device_control`]. Their values are not in the frame metadata.
+    pub fn passthrough(&self) -> impl Iterator<Item = &RawControl> {
+        self.devices
+            .iter()
+            .filter(|control| control.mapped.is_none())
+    }
+
+    /// The value of a control by its id, read from the device now. A passthrough control, or a
+    /// mapped one (its Styx control reports it in the frame metadata). Refused while the device is
+    /// lost, since there is no device to ask.
+    pub fn get_device_control(&self, id: u32) -> Result<i64, Error> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::GetDevice { id, reply })
+            .map_err(|_| Error::Stopped)?;
+        answer.recv().map_err(|_| Error::Stopped)?
+    }
+
+    /// Sets a passthrough control by its id on the device now. Mapped controls are set with
+    /// [`Stream::set_control`] instead, so that the frame metadata stays true. Passthrough values
+    /// are not replayed after a reconnect: the caller sets them again if the device forgot them.
+    pub fn set_device_control(&self, id: u32, value: i64) -> Result<(), Error> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.commands
+            .send(Command::SetDevice { id, value, reply })
+            .map_err(|_| Error::Stopped)?;
+        answer.recv().map_err(|_| Error::Stopped)?
+    }
+
     /// Stops the stream and waits for its thread. Same as dropping it.
     pub fn stop(self) {}
+
+    /// Stops the stream, waits for its thread, and returns its final status. After this the
+    /// counts are settled: no frame is copied or delivered later, so counters read afterwards
+    /// (the copy counters, for one) match the status exactly.
+    pub fn finish(mut self) -> Status {
+        let _ = self.commands.send(Command::Stop);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+        self.status()
+    }
 }
 
 impl Drop for Stream {
@@ -247,6 +304,15 @@ enum Command {
     Set {
         control: Control,
         value: ControlValue,
+        reply: SyncSender<Result<(), Error>>,
+    },
+    GetDevice {
+        id: u32,
+        reply: SyncSender<Result<i64, Error>>,
+    },
+    SetDevice {
+        id: u32,
+        value: i64,
         reply: SyncSender<Result<(), Error>>,
     },
     Stop,
@@ -308,6 +374,8 @@ struct Session {
     dev: VideoDevice,
     buf_type: BufType,
     table: Table,
+    /// Every control the node offers, probed when the session opened.
+    devices: Vec<RawControl>,
     media: MediaFormat,
     /// The layout of an uncompressed frame; `None` for compressed frames.
     layouts: Option<Layouts>,
@@ -391,7 +459,12 @@ impl Session {
                 Fraction::new(interval.numerator.get(), interval.denominator.get()),
             )?;
         }
-        let table = Table::build(&dev, buf_type);
+        let infos = dev.query_controls().unwrap_or_default();
+        let table = Table::from_infos(&dev, &infos, buf_type);
+        let devices = infos
+            .iter()
+            .map(|info| RawControl::from_info(&dev, info))
+            .collect::<Vec<_>>();
         let count = dev
             .request_buffers(buf_type, Memory::Mmap, config.buffers.clamp(2, 16))?
             .count as usize;
@@ -410,28 +483,33 @@ impl Session {
             }
             lengths.push(length);
         }
-        let (delivery, note, pool, maps) =
-            match export_pool(&dev, buf_type, &lengths, shape.payload) {
-                Ok(pool) => (
-                    Delivery::Dmabuf,
-                    "every buffer exports as a dma-buf; frames are not copied".to_string(),
+        let exported = if config.copy_mapped {
+            Err("copying is forced by the stream's configuration".to_string())
+        } else {
+            export_pool(&dev, buf_type, &lengths, shape.payload)
+        };
+        let (delivery, note, pool, maps) = match exported {
+            Ok(pool) => (
+                Delivery::Dmabuf,
+                "every buffer exports as a dma-buf; frames are not copied".to_string(),
+                pool,
+                Vec::new(),
+            ),
+            Err(why) => {
+                let (pool, maps) = copied_pool(&dev, buf_type, count, shape.payload)?;
+                (
+                    Delivery::Copied,
+                    format!("buffers do not export as dma-bufs ({why}); frames are copied"),
                     pool,
-                    Vec::new(),
-                ),
-                Err(why) => {
-                    let (pool, maps) = copied_pool(&dev, buf_type, count, shape.payload)?;
-                    (
-                        Delivery::Copied,
-                        format!("buffers do not export as dma-bufs ({why}); frames are copied"),
-                        pool,
-                        maps,
-                    )
-                }
-            };
+                    maps,
+                )
+            }
+        };
         let mut session = Session {
             dev,
             buf_type,
             table,
+            devices,
             media: shape.media,
             layouts: shape.layouts,
             span: shape.span,
@@ -680,6 +758,7 @@ struct Env {
     frames: SyncSender<FrameLease<FrameMetadata>>,
     wanted: [ControlValue; Control::COUNT],
     table: Table,
+    devices: Vec<RawControl>,
     attempt: u32,
     last_error: String,
 }
@@ -731,6 +810,7 @@ impl Env {
             match Session::open(&self.path, &self.config) {
                 Ok(session) => {
                     self.table = session.table;
+                    self.devices = session.devices.clone();
                     self.reapply(&session);
                     self.attempt = 0;
                     self.shared.reconnects.fetch_add(1, Ordering::Relaxed);
@@ -793,7 +873,87 @@ impl Env {
                 let _ = reply.send(result);
                 false
             }
+            Command::GetDevice { id, reply } => {
+                let _ = reply.send(self.get_device(session, id));
+                false
+            }
+            Command::SetDevice { id, value, reply } => {
+                let _ = reply.send(self.set_device(session, id, value));
+                false
+            }
         }
+    }
+
+    /// Reads a control by id from the open device.
+    fn get_device(&self, session: Option<&Session>, id: u32) -> Result<i64, Error> {
+        let control = self.device(id)?;
+        if matches!(
+            control.control_type,
+            ControlType::Button | ControlType::CtrlClass
+        ) {
+            return Err(Error::DeviceValue(format!("{} has no value", control.name)));
+        }
+        let session = session.ok_or_else(|| Error::Lost("the device is not open".into()))?;
+        session
+            .dev
+            .control(id)?
+            .as_i64()
+            .ok_or_else(|| Error::DeviceValue(format!("{} has no integer value", control.name)))
+    }
+
+    /// Sets a passthrough control by id on the open device, after checking it can take the value.
+    fn set_device(&self, session: Option<&Session>, id: u32, value: i64) -> Result<(), Error> {
+        let control = self.device(id)?;
+        if let Some(mapped) = control.mapped {
+            return Err(Error::DeviceValue(format!(
+                "{} is mapped to the Styx control {}: set that one",
+                control.name,
+                mapped.name()
+            )));
+        }
+        if control.read_only {
+            return Err(Error::DeviceValue(format!("{} is read-only", control.name)));
+        }
+        let raw = match control.control_type {
+            ControlType::Button => Raw::Integer(0),
+            ControlType::Boolean if value == 0 || value == 1 => Raw::Integer(value as i32),
+            ControlType::Boolean => {
+                return Err(Error::DeviceValue(format!("{} takes 0 or 1", control.name)));
+            }
+            ControlType::Integer64 => Raw::Integer64(value),
+            ControlType::Integer
+            | ControlType::Menu
+            | ControlType::IntegerMenu
+            | ControlType::Bitmask => {
+                let in_range = (control.min..=control.max).contains(&value)
+                    || matches!(control.control_type, ControlType::Bitmask);
+                if !in_range {
+                    return Err(Error::DeviceValue(format!(
+                        "{} takes {}..={}, not {value}",
+                        control.name, control.min, control.max
+                    )));
+                }
+                Raw::Integer(i32::try_from(value).map_err(|_| {
+                    Error::DeviceValue(format!("{} takes 32-bit values", control.name))
+                })?)
+            }
+            _ => {
+                return Err(Error::DeviceValue(format!(
+                    "{} is a compound control; it is listed, not settable",
+                    control.name
+                )));
+            }
+        };
+        let session = session.ok_or_else(|| Error::Lost("the device is not open".into()))?;
+        session.dev.set_control(id, raw)?;
+        Ok(())
+    }
+
+    fn device(&self, id: u32) -> Result<&RawControl, Error> {
+        self.devices
+            .iter()
+            .find(|control| control.id == id)
+            .ok_or(Error::NoDeviceControl(id))
     }
 
     /// Sets a control on the open device, or only remembers it while the device is lost.
