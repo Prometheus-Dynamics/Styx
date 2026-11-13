@@ -3,8 +3,9 @@
 //! (8.2.5). Frames only.
 //!
 //! The tracker keeps at most [`DPB_SIZE`] reference frames, each in a slot. A slot number is what
-//! the lists hold, and [`RefFrame::buffer`] is the picture buffer the frame was decoded into, so
-//! the decoder can name the references of a job by their buffers.
+//! the lists hold. [`RefFrame::stamp_ns`] is the stamp of the decode job that produced the
+//! frame: a stateless decoder names a reference picture in its controls by that stamp, and the
+//! kernel finds the capture buffer that carries it.
 //!
 //! Output order and the bumping of non-reference pictures are not handled here: a stateless
 //! decoder's caller gets each picture when it is decoded.
@@ -26,8 +27,9 @@ pub struct RefFrame {
     pub frame_num: u32,
     /// The frame's order counts, as stored.
     pub poc: Poc,
-    /// The picture buffer the frame was decoded into.
-    pub buffer: u32,
+    /// The stamp of the job that decoded the frame (its last slice's, for a frame of several
+    /// slices): a whole number of microseconds, in nanoseconds, unique per job.
+    pub stamp_ns: u64,
     /// `LongTermFrameIdx`, for a long-term frame.
     pub long_term: Option<u32>,
 }
@@ -115,6 +117,17 @@ impl Dpb {
         } else {
             Err(Error::Unsupported("a gap in frame_num"))
         }
+    }
+
+    /// The picture number of the frame in `slot` for the picture numbered `cur` (`frame_num`
+    /// `cur`, with `max` as `MaxFrameNum`): its `FrameNumWrap` when short-term, or its
+    /// `LongTermPicNum` (`LongTermFrameIdx`) when long-term. `None` for an empty slot.
+    pub fn pic_num(&self, slot: u8, cur: u32, max: u32) -> Option<i64> {
+        let f = self.get(usize::from(slot))?;
+        Some(match f.long_term {
+            Some(idx) => i64::from(idx),
+            None => wrap(f.frame_num, cur, max),
+        })
     }
 
     /// Finds the short-term frame with `PicNum` `pic_num` (its `FrameNumWrap`).
@@ -293,10 +306,10 @@ impl Dpb {
         Ok(out)
     }
 
-    /// The marking after the reference picture of header `h` is decoded into `buffer`, with
-    /// the order counts it keeps (8.2.5). A non-reference picture is not kept. A memory
-    /// management operation that names a frame the tracker does not hold does nothing.
-    pub fn mark(&mut self, h: &SliceHeader, sps: &Sps, buffer: u32, poc: Poc) {
+    /// The marking after the reference picture of header `h`, decoded by the job stamped
+    /// `stamp_ns`, with the order counts it keeps (8.2.5). A non-reference picture is not kept.
+    /// A memory management operation that names a frame the tracker does not hold does nothing.
+    pub fn mark(&mut self, h: &SliceHeader, sps: &Sps, stamp_ns: u64, poc: Poc) {
         if h.nal_ref_idc == 0 {
             return;
         }
@@ -367,7 +380,7 @@ impl Dpb {
         let frame = RefFrame {
             frame_num,
             poc,
-            buffer,
+            stamp_ns,
             long_term: long,
         };
         let slot = match self.slots.iter().position(Option::is_none) {

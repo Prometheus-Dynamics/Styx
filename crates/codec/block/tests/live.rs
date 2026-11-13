@@ -107,11 +107,19 @@ fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_cop
             .decode(&input, &mut output)
             .expect("decode through the live session");
 
+        // The job's stamp is the decoder's, read back from what the block was given.
+        let job_stamp = {
+            let jobs = sim::JOBS.lock().unwrap();
+            let bytes = &jobs.last().expect("the job").items[1].1;
+            u64::from_le_bytes(bytes[..8].try_into().expect("a stamp"))
+        };
+        assert_eq!(job_stamp % 1_000, 0);
+
         // The picture is the block's: the pattern of this job's stamp, over the whole frame.
         let read = output.read().expect("mapped for the CPU");
         let y = read.plane(0).expect("luma").data;
         let uv = read.plane(1).expect("chroma").data;
-        let expected: Vec<u8> = (0..total).map(|i| sim::pattern(i, stamp)).collect();
+        let expected: Vec<u8> = (0..total).map(|i| sim::pattern(i, job_stamp)).collect();
         assert_eq!(&y[..width * height], &expected[..width * height]);
         assert_eq!(&uv[..width * height / 2], &expected[width * height..]);
         assert_ne!(output.buffer_index(), input.buffer_index());

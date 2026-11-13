@@ -5,12 +5,17 @@
 //!
 //! - Item [`TAG_SETUP`]: five `u32`s, the coded format (`S265`), the picture's width and height,
 //!   the picture format (`NV12`), and its memory plane count.
-//! - Item [`TAG_STAMP`]: a `u64` of nanoseconds the picture is known by.
+//! - Item [`TAG_STAMP`]: a `u64` of nanoseconds the job is known by: a whole number of
+//!   microseconds, unique per job (see [`Stamps`]).
 //! - Items whose tag is a control id ([`FIRST_CONTROL`] and up): the control's bytes, as the
 //!   kernel's `struct` layout (see [`crate::hevc::controls`]).
 //! - Reference [`SLOT_SOURCE`]: the bitstream, from its first byte at the start of a stream
 //!   buffer (`offset` 0, `length` the bytes of the slice with its start code).
 //! - Reference [`SLOT_PICTURE`]: the buffer the picture is decoded into (one memory plane).
+//!
+//! A reference picture is not a slot. A decoder names it inside its controls, by the stamp of
+//! the job that decoded it (H.264's `reference_ts`), and the block finds that capture buffer
+//! itself. So the only references a job carries are the two above.
 //!
 //! Styx decides what the work says; the block checks it and runs it. Nothing here touches a
 //! device.
@@ -26,6 +31,26 @@ pub const TAG_SETUP: u32 = 1;
 pub const TAG_STAMP: u32 = 2;
 /// The lowest tag that is a control id (`V4L2_CTRL_CLASS_USER`).
 pub const FIRST_CONTROL: u32 = 0x0098_0000;
+/// The stamps of one decoder's jobs. A stamp is a whole number of microseconds, in nanoseconds
+/// (`v4l2_timeval_to_ns`), and no two jobs of a decoder share one: the block refuses a finer
+/// stamp, and a reference names its picture by the stamp of the job that decoded it. So a
+/// decoder numbers its jobs itself, rather than taking the input frame's timestamp.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Stamps {
+    last_us: u64,
+}
+
+impl Stamps {
+    /// The next stamp: the microseconds after the last, in nanoseconds. `None` only when the
+    /// count runs out, which a decoder reports as a refused frame.
+    pub fn advance(&mut self) -> Option<u64> {
+        let us = self.last_us.checked_add(1)?;
+        let ns = us.checked_mul(1_000)?;
+        self.last_us = us;
+        Some(ns)
+    }
+}
+
 /// Bytes of a [`TAG_SETUP`] item.
 pub const SETUP_BYTES: usize = 5 * 4;
 /// The reference slot of the bitstream.
@@ -118,4 +143,26 @@ pub fn build(out: &mut [u8], job: &Job<'_>) -> Result<usize, DoesNotFit> {
         work.item(*tag, bytes).ok_or(DoesNotFit)?;
     }
     Ok(work.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stamps_are_whole_microseconds_and_never_repeat() {
+        let mut stamps = Stamps::default();
+        let first: Vec<u64> = (0..1000).map(|_| stamps.advance().unwrap()).collect();
+        assert_eq!(first[0], 1_000);
+        assert!(first.iter().all(|ns| ns % 1_000 == 0));
+        assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
+    }
+
+    #[test]
+    fn a_stamp_sequence_that_runs_out_says_so() {
+        let mut stamps = Stamps {
+            last_us: u64::MAX / 1_000,
+        };
+        assert_eq!(stamps.advance(), None);
+    }
 }

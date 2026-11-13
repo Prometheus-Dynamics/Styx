@@ -7,6 +7,9 @@
 //! The session is the block: the live one posts the job on Lemnos's `codec.block/1` job stream
 //! and waits for its completion; a test runs a simulated one.
 //!
+//! Each job is stamped by the decoder ([`crate::work::Stamps`]), not by the input's timestamp: the
+//! block takes only whole microseconds, and a reference names its picture by stamp.
+//!
 //! Recovery is the block link's ([`crate::link`]): a failed session is reopened after a backoff
 //! that starts at 250 ms and doubles to 8 s, and the decoder never gives up and never turns
 //! itself off. A job the block refuses ([`CodecError::Rejected`]) leaves the session open and
@@ -25,7 +28,7 @@ use styx_codec_api::{
 use crate::hevc;
 use crate::hevc::controls::{START_CODE_LEN, idr_slice, pps_control, sps_control};
 use crate::link::Link;
-use crate::work::{self, Job, Setup};
+use crate::work::{self, Job, Setup, Stamps};
 
 /// The name the decoder registers under.
 pub const NAME: &str = "hevc-v4l2-stateless";
@@ -56,6 +59,8 @@ pub struct HevcDecoder {
     scratch: Vec<u8>,
     /// The work of one job, allocated once.
     work: Box<[u8]>,
+    /// The stamps of this decoder's jobs.
+    stamps: Stamps,
 }
 
 impl HevcDecoder {
@@ -69,6 +74,7 @@ impl HevcDecoder {
             sets: None,
             scratch: Vec::new(),
             work: vec![0; work::WORK_BYTES].into_boxed_slice(),
+            stamps: Stamps::default(),
         }
     }
 
@@ -157,7 +163,6 @@ impl<M> Decoder<M> for HevcDecoder {
         );
         let picture =
             u32::try_from(output.buffer_index()).map_err(|_| rejected("picture buffer number"))?;
-        let stamp_ns = input.timestamp_ns();
 
         // The slice: the input's first NAL unit, with its start code, at the buffer's start.
         let au = input
@@ -211,6 +216,10 @@ impl<M> Decoder<M> for HevcDecoder {
             ),
             (sys::CID_START_CODE, &sys::START_CODE_ANNEX_B.to_le_bytes()),
         ];
+        let stamp_ns = self
+            .stamps
+            .advance()
+            .ok_or_else(|| rejected("this decoder has no stamps left"))?;
         let job = Job {
             setup: Setup {
                 coded: sys::PIX_FMT_HEVC_SLICE,
