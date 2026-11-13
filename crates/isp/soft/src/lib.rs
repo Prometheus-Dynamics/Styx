@@ -34,12 +34,12 @@
 //!
 //! # Arithmetic
 //!
-//! Two implementations of the per-pixel stages ([`Arithmetic`]): 12-bit fixed point, the
-//! reference, on every CPU; and fp16 on CPUs with FP16 arithmetic (Cortex-A55/A76 and later),
-//! where the front end, the bilinear demosaic with the colour matrix folded in, and the tone
-//! curve (48 segments indexed by the fp16 exponent) run at about twice the speed, within a
-//! code or two of the reference. [`Arithmetic::Auto`] (the default) picks fp16 there when the
-//! parameters have a colour matrix or a tone curve.
+//! The per-pixel stages run in one of three arithmetics ([`Arithmetic`]). [`Arithmetic::Auto`]
+//! (the default) is the integer arithmetic with the exact tone table, on every host: the same
+//! bits on a PC and on a board, and on the GPU ISP (`styx-gpu`). [`Arithmetic::Half`] (fp16,
+//! within a code or two of the integer one, a different arithmetic with its own bits) and
+//! [`Arithmetic::ApproxTone`] (quadratic tone curve, within one code of the table, excluded from
+//! every bit-for-bit claim) are chosen only by name. No CPU feature changes the result.
 //!
 //! # Frames
 //!

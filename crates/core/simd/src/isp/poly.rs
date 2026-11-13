@@ -1,5 +1,5 @@
 //! The tone table as a quadratic per half octave in 16-bit fixed point
-//! (`Arithmetic::IntPolyTone`).
+//! (`Arithmetic::ApproxTone`, approximate: within one code of the table, never the default).
 //!
 //! A table lookup per sample is all scalar loads (AVX2 has no byte table lookup wider than
 //! 16 entries and its gathers are slower than scalar loads on Zen 3; NEON's widest `tbl`
