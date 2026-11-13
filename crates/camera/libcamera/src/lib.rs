@@ -5,6 +5,14 @@
 //! libcamera dma-buf handed out as a [`FrameLease`] with no copy. Without the library, or
 //! without the feature, every call reports [`Error::Unavailable`] and the build still passes.
 //!
+//! Multi-plane formats (NV12, I420 and the like) are handed out when a buffer's planes sit in one
+//! dma-buf, which is libcamera's usual layout; the plane placement is in `planes`. Planes in
+//! several dma-bufs are refused with the format's name, since a styx-frame buffer is one memory.
+//!
+//! Zero-copy is the design, but it is not yet run on a camera: the proof (a real camera's frames
+//! with zero copies, counted) runs later, on a board, in PR H6. Until then the copy counters
+//! prove nothing about a camera, and the test in `tests/capture.rs` skips where there is none.
+//!
 //! Frame times are `CLOCK_MONOTONIC` nanoseconds: libcamera stamps `CLOCK_BOOTTIME`, converted per
 //! frame (see the backend's `to_monotonic`).
 
@@ -15,6 +23,10 @@ use std::fmt;
 use styx_controls::FrameMetadata;
 use styx_format::FourCc;
 use styx_frame::FrameLease;
+
+// Plane placement is plain arithmetic: it builds and is tested with or without libcamera.
+#[cfg_attr(not(has_libcamera), allow(dead_code))]
+mod planes;
 
 #[cfg(has_libcamera)]
 mod backend;

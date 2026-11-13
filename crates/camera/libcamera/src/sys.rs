@@ -151,6 +151,7 @@ unsafe extern "C" {
     pub fn libcamera_framebuffer_plane_fd(plane: *mut FrameBufferPlane) -> c_int;
     pub fn libcamera_framebuffer_plane_offset(plane: *const FrameBufferPlane) -> usize;
     pub fn libcamera_framebuffer_plane_length(plane: *const FrameBufferPlane) -> usize;
+    pub fn libcamera_framebuffer_plane_offset_valid(plane: *const FrameBufferPlane) -> bool;
 
     // Requests.
     pub fn libcamera_request_destroy(request: *mut Request);
