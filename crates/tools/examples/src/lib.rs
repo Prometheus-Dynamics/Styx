@@ -186,7 +186,8 @@ pub fn with_first_camera<R>(
             let request = Request {
                 width: 0,
                 height: 0,
-                min_fps_milli: FPS_MILLI,
+                fps_milli: FPS_MILLI,
+                format: None,
                 bit_depth: None,
                 bayer: None,
             };
