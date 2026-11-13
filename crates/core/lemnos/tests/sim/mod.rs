@@ -230,7 +230,9 @@ impl Lifecycle for SimReceiver {
                         buffer,
                         bytes: frame_bytes(size, run.sequence),
                         sequence: run.sequence,
-                        identity: run.sequence,
+                        // Nothing posts on a receiver's frame stream, so Lemnos's identity is 0 on
+                        // every frame, as on a board.
+                        identity: 0,
                         timestamp_ns: next,
                     };
                     match self.frames.publish(frame) {
