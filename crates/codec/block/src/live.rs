@@ -228,7 +228,8 @@ impl Session for LiveSession {
                 "refused: no free buffer for the job's work".into(),
             ));
         };
-        let Some(result_index) = (0..count).find(|&index| index != work_index && free(index)) else {
+        let Some(result_index) = (0..count).find(|&index| index != work_index && free(index))
+        else {
             self.refused += 1;
             return Err(CodecError::Failed(
                 "refused: no free buffer for the job's result".into(),

@@ -82,14 +82,14 @@ impl Isp {
             Generation::Isp32Lite,
             Generation::Isp39,
         ]
-            .into_iter()
-            .find(|g| g.statistics_layout().layout == info.statistics_layout)
-            .ok_or_else(|| {
-                Error::Device(format!(
-                    "{}: statistics layout {:#x} is not one of the library's",
-                    device.name, info.statistics_layout
-                ))
-            })?;
+        .into_iter()
+        .find(|g| g.statistics_layout().layout == info.statistics_layout)
+        .ok_or_else(|| {
+            Error::Device(format!(
+                "{}: statistics layout {:#x} is not one of the library's",
+                device.name, info.statistics_layout
+            ))
+        })?;
         let config = generation.config_layout();
         let want = ConfigLayout {
             layout: config.layout,

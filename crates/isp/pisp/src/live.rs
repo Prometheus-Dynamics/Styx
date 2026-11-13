@@ -256,7 +256,8 @@ impl LiveIsp {
             this.refused += 1;
             PispError::Busy(why)
         };
-        let Some(config) = (0..CONFIG_BUFFERS).find(|c| !self.flights.iter().any(|f| f.config == *c))
+        let Some(config) =
+            (0..CONFIG_BUFFERS).find(|c| !self.flights.iter().any(|f| f.config == *c))
         else {
             return Err(refuse(self, "both config buffers are in flight"));
         };
