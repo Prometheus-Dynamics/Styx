@@ -21,7 +21,7 @@ use lemnos_contract_camera_receiver::{
     BayerOrder, CameraReceiver, Counters, FrameLayout, Limits, LinkConfig, MAX_STREAM_NAME, Packing,
 };
 use lemnos_contract_camera_sensor::{
-    CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
+    CameraSensor, Controls, EmbeddedData, FrameValues, GainLaw, GainRange, Mode, Rect, SensorInfo,
 };
 use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
 use lemnos_hal::blocks::StreamFrame;
@@ -84,6 +84,7 @@ pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
             max: 255,
             unity: silicon::GAIN_UNITY,
             step: 1,
+            law: GainLaw::Linear,
         },
         digital_gain: GainRange::default(),
         exposure_delay: timing.exposure_delay,
@@ -133,7 +134,13 @@ impl CameraSensor for SimSensor {
             array_width: 1280,
             array_height: 800,
             test_patterns: 0,
+            embedded_data: EmbeddedData::None,
         })
+    }
+
+    fn identity(&mut self, _into: &mut [u8]) -> Result<usize> {
+        // No kernel names the simulated sensor, so its name is unknown and matches nothing.
+        Err(Status::NOT_SUPPORTED)
     }
 
     fn mode(&mut self, index: u16) -> Result<Mode> {
@@ -378,6 +385,20 @@ impl CameraReceiver for SimReceiver {
 
     fn feeds(&mut self, _into: &mut [u8]) -> Result<usize> {
         Ok(0)
+    }
+
+    fn embedded_stream(&mut self, _into: &mut [u8]) -> Result<usize> {
+        // The simulated receiver captures no embedded lines.
+        Ok(0)
+    }
+
+    fn source(&mut self, _into: &mut [u8]) -> Result<usize> {
+        // No kernel describes the simulated input, so what is wired to it is unknown.
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn layout(&mut self) -> Result<Option<FrameLayout>> {
+        Ok(self.layout)
     }
 }
 

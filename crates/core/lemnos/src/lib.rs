@@ -233,7 +233,7 @@ impl StreamPlatform for MappingPlatform {
     }
 
     fn map_ring(&self, fd: BorrowedFd<'_>, bytes: usize) -> io::Result<Arc<dyn WordMemory>> {
-        self.inner.map_ring(fd, bytes)
+        Ok(Arc::new(self.inner.map_ring(fd, bytes)?))
     }
 
     fn map_buffers(
@@ -244,7 +244,7 @@ impl StreamPlatform for MappingPlatform {
     ) -> io::Result<Box<dyn ByteMemory>> {
         let mine = FdMemory::memfd(fd.try_clone_to_owned()?, bytes, writable)?;
         self.lock().whole = Some(Arc::new(mine));
-        self.inner.map_buffers(fd, bytes, writable)
+        Ok(Box::new(self.inner.map_buffers(fd, bytes, writable)?))
     }
 
     fn map_buffer(
@@ -255,7 +255,7 @@ impl StreamPlatform for MappingPlatform {
     ) -> io::Result<Box<dyn ByteMemory>> {
         let mine = FdMemory::dmabuf(fd.try_clone_to_owned()?, bytes, writable)?;
         self.lock().each.push(Arc::new(mine));
-        self.inner.map_buffer(fd, bytes, writable)
+        Ok(Box::new(self.inner.map_buffer(fd, bytes, writable)?))
     }
 
     fn wait_doorbell(&self, fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {

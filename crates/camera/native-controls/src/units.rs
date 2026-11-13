@@ -103,6 +103,7 @@ mod tests {
             max: 255,
             unity: 16,
             step: 1,
+            law: lemnos_contract_camera_sensor::GainLaw::Linear,
         };
         assert_eq!(gain_code(1_000, &g), Some(16));
         assert_eq!(gain_code(2_000, &g), Some(32));
@@ -120,6 +121,7 @@ mod tests {
             max: 200,
             unity: 8,
             step: 4,
+            law: lemnos_contract_camera_sensor::GainLaw::Linear,
         };
         // Raw code 14 is 6 above the lowest code 8; 6 rounds to the step 8 (4 * 2), giving 16.
         assert_eq!(gain_code(1_750, &g), Some(8 + (6 + 2) / 4 * 4));
