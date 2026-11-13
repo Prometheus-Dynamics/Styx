@@ -13,7 +13,7 @@ use styx_format::FourCc;
 pub struct Request {
     pub width: u32,
     pub height: u32,
-    /// Frames per second in thousandths (60 fps is 60_000). 0 accepts any rate.
+    /// Frames per second in thousandths (a rate of n frames a second is n * 1000). 0 accepts any rate.
     pub min_fps_milli: u32,
     /// Bits per pixel on the link, if it matters.
     pub bit_depth: Option<u8>,
@@ -54,10 +54,23 @@ impl fmt::Display for ModeError {
 
 impl std::error::Error for ModeError {}
 
+/// The fastest rate a mode runs at, in thousandths of a frame per second: its shortest frame
+/// (`frame_length_min` lines) over its line time. `0` for a mode with no line time or no frame.
+pub fn fastest_fps_milli(mode: &Mode) -> u32 {
+    let period = u64::from(mode.frame_length_min) * u64::from(mode.line_time_ps);
+    if period == 0 {
+        return 0;
+    }
+    u32::try_from((FPS_MILLI_PS + period / 2) / period).unwrap_or(u32::MAX)
+}
+
+/// Thousandths of a frame per second times picoseconds per line times lines: `1e15`.
+const FPS_MILLI_PS: u64 = 1_000_000_000_000_000;
+
 fn fits(mode: &Mode, request: &Request) -> bool {
     mode.link.width >= request.width
         && mode.link.height >= request.height
-        && mode.max_fps_milli >= request.min_fps_milli
+        && fastest_fps_milli(mode) >= request.min_fps_milli
         && request.bit_depth.is_none_or(|b| mode.link.bit_depth == b)
         && request.bayer.is_none_or(|b| mode.bayer == b)
 }
@@ -75,7 +88,7 @@ pub fn select_mode(modes: &[Mode], request: &Request) -> Result<u16, ModeError> 
         .filter(|(_, mode)| fits(mode, request))
         .min_by_key(|(index, mode)| {
             let area = u64::from(mode.link.width) * u64::from(mode.link.height);
-            (area, Reverse(mode.max_fps_milli), *index)
+            (area, Reverse(fastest_fps_milli(mode)), *index)
         })
         .and_then(|(index, _)| u16::try_from(index).ok())
         .ok_or(ModeError::NoMode(*request))
@@ -107,7 +120,13 @@ mod tests {
     use super::*;
     use lemnos_contract_camera_receiver::LinkConfig;
 
+    /// A mode whose shortest frame gives `fps` frames a second at 9.1 us a line, to the nearest
+    /// whole line.
     fn mode(width: u32, height: u32, fps: u32, bayer: BayerOrder, bits: u8) -> Mode {
+        let line_time_ps = 9_100_000;
+        let frame_length_min = (1_000_000_000_000_000u64
+            + u64::from(fps) * 1_000 * line_time_ps / 2)
+            / (u64::from(fps) * 1_000 * line_time_ps);
         Mode {
             link: LinkConfig {
                 width,
@@ -116,9 +135,50 @@ mod tests {
                 ..LinkConfig::default()
             },
             bayer,
-            max_fps_milli: fps * 1000,
+            line_time_ps: line_time_ps as u32,
+            frame_length_min: frame_length_min as u32,
             ..Mode::default()
         }
+    }
+
+    #[test]
+    fn the_fastest_rate_is_the_shortest_frame_over_the_line_time() {
+        // 1832 lines of 9.1 us is 59.984 fps: the mode's own numbers, not a nominal rate.
+        let m = Mode {
+            line_time_ps: 9_100_000,
+            frame_length_min: 1832,
+            ..Mode::default()
+        };
+        assert_eq!(fastest_fps_milli(&m), 59_984);
+        assert_eq!(fastest_fps_milli(&Mode::default()), 0);
+    }
+
+    #[test]
+    fn a_mode_whose_shortest_frame_is_under_the_request_does_not_fit() {
+        // Shortest frame 114.80 fps: a request for 120 fps does not fit this mode.
+        let slow = Mode {
+            line_time_ps: 8_710_801,
+            frame_length_min: 1000,
+            link: LinkConfig {
+                width: 320,
+                height: 240,
+                bit_depth: 10,
+                ..LinkConfig::default()
+            },
+            bayer: BayerOrder::Rggb,
+            ..Mode::default()
+        };
+        assert_eq!(fastest_fps_milli(&slow), 114_800);
+        let request = Request {
+            width: 320,
+            height: 240,
+            min_fps_milli: 120_000,
+            ..Request::default()
+        };
+        assert_eq!(
+            select_mode(&[slow], &request),
+            Err(ModeError::NoMode(request))
+        );
     }
 
     fn modes() -> Vec<Mode> {

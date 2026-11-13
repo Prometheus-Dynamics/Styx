@@ -58,11 +58,16 @@ pub fn connect(path: impl AsRef<std::path::Path>, name: &str) -> Result<Client, 
 }
 
 /// A camera's devices, found by tag and link.
+///
+/// The sensor's `link` names its receiver. The receiver's `link` names its first ISP, and each ISP's
+/// `link` the next, so `isps` is the ordered list of ISPs the frames pass through. A receiver with
+/// no link is a camera with no ISP, which is valid.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chain {
     pub sensor: DeviceEntry,
     pub receiver: DeviceEntry,
-    pub isp: Option<DeviceEntry>,
+    /// The ISPs after the receiver, in link order. Empty when the receiver links to none.
+    pub isps: Vec<DeviceEntry>,
 }
 
 /// Why no camera chain was found.
@@ -74,10 +79,17 @@ pub enum ChainError {
     SensorCount(usize),
     /// The sensor's `link` is empty or names no device.
     NotLinked(String),
-    /// The sensor's link does not name a device with `camera.receiver/1`.
+    /// The sensor's link does not name a device with `camera.receiver/1` (an ISP linked straight
+    /// from a sensor is this too), or a link after the receiver names something that is not an
+    /// ISP.
     NotReceiver { device: String, tags: Vec<String> },
-    /// The receiver's link names a device that is not `camera.isp/1`.
+    /// A link after the receiver names a device that is not `camera.isp/1`.
     NotIsp { device: String, tags: Vec<String> },
+    /// A device's `link` names no device on the board.
+    Dangling { from: String, to: String },
+    /// The links go round in a circle: `path` is the devices from the first one repeated, in link
+    /// order, ending with the one that closes the circle.
+    Cycle { path: Vec<String> },
 }
 
 impl fmt::Display for ChainError {
@@ -92,6 +104,10 @@ impl fmt::Display for ChainError {
             Self::NotIsp { device, tags } => {
                 write!(f, "{device}: not a {ISP_TAG} device (tags {tags:?})")
             }
+            Self::Dangling { from, to } => {
+                write!(f, "{from}: links to {to}, which is not on the board")
+            }
+            Self::Cycle { path } => write!(f, "links go round in a circle: {}", path.join(" -> ")),
         }
     }
 }
@@ -107,34 +123,55 @@ fn sensors<'a>(devices: &'a [DeviceEntry]) -> impl Iterator<Item = &'a DeviceEnt
     devices.iter().filter(|d| has_tag(d, SENSOR_TAG))
 }
 
-/// The chain that starts at `sensor`, following `link` through `devices`.
+fn named<'a>(devices: &'a [DeviceEntry], name: &str) -> Option<&'a DeviceEntry> {
+    devices.iter().find(|d| d.name == name)
+}
+
+/// The chain that starts at `sensor`, following `link` through `devices` until a device has none.
+///
+/// Every hop is checked against its contract tag: the sensor's link must reach a receiver, and each
+/// link after the receiver must reach an ISP. A link that names no device, or that comes back to a
+/// device already passed, is an error that names the devices.
 fn chain_from(devices: &[DeviceEntry], sensor: &DeviceEntry) -> Result<Chain, ChainError> {
-    let path = follow(devices, &sensor.name);
-    let receiver = match path.get(1) {
-        Some(device) => (*device).clone(),
+    let receiver = match sensor.link.as_deref().and_then(|to| named(devices, to)) {
+        Some(device) => device,
         None => return Err(ChainError::NotLinked(sensor.name.clone())),
     };
-    if !has_tag(&receiver, RECEIVER_TAG) {
+    if !has_tag(receiver, RECEIVER_TAG) {
         return Err(ChainError::NotReceiver {
             device: receiver.name.clone(),
             tags: receiver.tags.clone(),
         });
     }
-    let path = follow(devices, &receiver.name);
-    let isp = match path.get(1) {
-        Some(device) if has_tag(device, ISP_TAG) => Some((*device).clone()),
-        Some(device) => {
+    let mut path: Vec<&DeviceEntry> = vec![sensor, receiver];
+    let mut isps = Vec::new();
+    let mut at = receiver;
+    while let Some(to) = at.link.as_deref() {
+        let Some(next) = named(devices, to) else {
+            return Err(ChainError::Dangling {
+                from: at.name.clone(),
+                to: to.to_string(),
+            });
+        };
+        if let Some(start) = path.iter().position(|seen| seen.name == next.name) {
+            let mut cycle: Vec<String> = path[start..].iter().map(|d| d.name.clone()).collect();
+            cycle.push(next.name.clone());
+            return Err(ChainError::Cycle { path: cycle });
+        }
+        if !has_tag(next, ISP_TAG) {
             return Err(ChainError::NotIsp {
-                device: device.name.clone(),
-                tags: device.tags.clone(),
+                device: next.name.clone(),
+                tags: next.tags.clone(),
             });
         }
-        None => None,
-    };
+        isps.push(next.clone());
+        path.push(next);
+        at = next;
+    }
     Ok(Chain {
         sensor: sensor.clone(),
-        receiver,
-        isp,
+        receiver: receiver.clone(),
+        isps,
     })
 }
 
@@ -182,6 +219,19 @@ pub enum Error {
     Pool(PoolError),
     Acquire(AcquireError),
     Layout(styx_format::LayoutError),
+    /// The stride the geometry names is shorter than one row of pixels.
+    Stride {
+        stride: u32,
+        min: usize,
+    },
+    /// The geometry's frame (`stride` times `height`) is larger than a buffer's payload.
+    FrameTooLarge {
+        size: usize,
+        payload: usize,
+    },
+    /// The geometry names a format that is not one plane of raw pixels (a compressed or
+    /// multi-plane format needs its own layout).
+    NotSinglePlane(FourCc),
 }
 
 impl fmt::Display for Error {
@@ -199,6 +249,13 @@ impl fmt::Display for Error {
             Self::Pool(e) => write!(f, "frame pool: {e:?}"),
             Self::Acquire(e) => write!(f, "frame acquire: {e:?}"),
             Self::Layout(e) => write!(f, "frame layout: {e:?}"),
+            Self::Stride { stride, min } => {
+                write!(f, "stride {stride} is shorter than a row of {min} bytes")
+            }
+            Self::FrameTooLarge { size, payload } => {
+                write!(f, "frame of {size} bytes; buffers hold {payload}")
+            }
+            Self::NotSinglePlane(code) => write!(f, "{code:?} is not one plane of raw pixels"),
         }
     }
 }
@@ -430,8 +487,76 @@ fn open_mapped<M: Default + Send + Sync>(
     Ok((taken, pool))
 }
 
+/// A frame stream's geometry: its format, its size, and the bytes per line the receiver writes
+/// (padding included). The receiver's `layout` gives all of it; `stride` is ignored for a
+/// compressed format.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Geometry {
+    pub code: FourCc,
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+}
+
+impl Geometry {
+    /// The geometry of a packed frame of `code` at `width` x `height`: rows as tight as the format
+    /// allows. For streams whose rows nobody pads (statistics, a producer's own packing).
+    pub fn packed(code: FourCc, width: u32, height: u32) -> Result<Self, Error> {
+        if code.is_compressed() {
+            return Ok(Self {
+                code,
+                width,
+                height,
+                stride: 0,
+            });
+        }
+        let row = styx_format::plane_sizes(code, width, height, None, None)
+            .map_err(Error::Layout)?
+            .first()
+            .map(|plane| plane.stride)
+            .ok_or(Error::NotSinglePlane(code))?;
+        let stride =
+            u32::try_from(row).map_err(|_| Error::Layout(styx_format::LayoutError::Overflow))?;
+        Ok(Self {
+            code,
+            width,
+            height,
+            stride,
+        })
+    }
+}
+
+/// The plane layout of a geometry: one plane of `stride` bytes per line, `height` lines. Refused
+/// for a stride shorter than a row, and for a format that is not one plane of raw pixels.
+fn geometry_layouts(geometry: Geometry) -> Result<Option<Layouts>, Error> {
+    if geometry.code.is_compressed() {
+        return Ok(None);
+    }
+    let planes =
+        styx_format::plane_sizes(geometry.code, geometry.width, geometry.height, None, None)
+            .map_err(Error::Layout)?;
+    if planes.len() != 1 {
+        return Err(Error::NotSinglePlane(geometry.code));
+    }
+    let min = planes[0].stride;
+    let stride = geometry.stride as usize;
+    if stride < min {
+        return Err(Error::Stride {
+            stride: geometry.stride,
+            min,
+        });
+    }
+    let len = stride
+        .checked_mul(geometry.height as usize)
+        .ok_or(Error::Layout(styx_format::LayoutError::Overflow))?;
+    Layouts::new(&[PlaneLayout::new(0, stride, len)])
+        .map(Some)
+        .ok_or(Error::Layout(styx_format::LayoutError::Overflow))
+}
+
 /// Opens `stream` on `device` and maps its buffers, as one pool. Frames are `code` at `width` x
-/// `height`. Each buffer's metadata is `M`, made once by the pool (`M::default()`).
+/// `height`, packed (see [`Geometry::packed`]). Each buffer's metadata is `M`, made once by the pool
+/// (`M::default()`).
 ///
 /// The buffer count and size are the stream's own, from the open reply ([`FrameStream::layout`]).
 /// Dropping the returned [`Frames`] gives the stream back to the daemon.
@@ -443,11 +568,33 @@ pub fn open_frames<M: Default + Send + Sync>(
     width: u32,
     height: u32,
 ) -> Result<Frames<M>, Error> {
-    open_frames_with(client, device, stream, code, width, height, false)
+    let geometry = Geometry::packed(code, width, height)?;
+    open_frames_at(client, device, stream, geometry)
 }
 
-/// [`open_frames`] with the buffers mapped for writing too: for a producer in this process that
+/// [`open_frames`] for a stream whose geometry the receiver gives: each lease's plane is
+/// `geometry.stride` bytes per line, so row `r` starts at `r * stride` in the buffer.
+pub fn open_frames_at<M: Default + Send + Sync>(
+    client: &Client,
+    device: u32,
+    stream: &str,
+    geometry: Geometry,
+) -> Result<Frames<M>, Error> {
+    open_frames_with(client, device, stream, geometry, false)
+}
+
+/// [`open_frames_at`] with the buffers mapped for writing too: for a producer in this process that
 /// fills the stream's buffers (a simulated camera, a software stage writing in place).
+pub fn open_frames_writable_at<M: Default + Send + Sync>(
+    client: &Client,
+    device: u32,
+    stream: &str,
+    geometry: Geometry,
+) -> Result<Frames<M>, Error> {
+    open_frames_with(client, device, stream, geometry, true)
+}
+
+/// [`open_frames`] with the buffers mapped for writing too (see [`open_frames_writable_at`]).
 pub fn open_frames_writable<M: Default + Send + Sync>(
     client: &Client,
     device: u32,
@@ -456,29 +603,31 @@ pub fn open_frames_writable<M: Default + Send + Sync>(
     width: u32,
     height: u32,
 ) -> Result<Frames<M>, Error> {
-    open_frames_with(client, device, stream, code, width, height, true)
+    let geometry = Geometry::packed(code, width, height)?;
+    open_frames_writable_at(client, device, stream, geometry)
 }
 
 fn open_frames_with<M: Default + Send + Sync>(
     client: &Client,
     device: u32,
     stream: &str,
-    code: FourCc,
-    width: u32,
-    height: u32,
+    geometry: Geometry,
     writable: bool,
 ) -> Result<Frames<M>, Error> {
     let (taken, pool) = open_mapped::<M>(client, device, stream, writable)?;
     let format = MediaFormat::with_defaults(
-        code,
-        styx_format::Resolution::new(width, height).ok_or(Error::NoBuffers)?,
+        geometry.code,
+        styx_format::Resolution::new(geometry.width, geometry.height).ok_or(Error::NoBuffers)?,
     );
     // A compressed stream's frames are one plane each, sized per frame (see `lease_for`).
-    let layouts = if code.is_compressed() {
-        None
-    } else {
-        Some(styx_frame::packed_layouts(code, width, height, None, None).map_err(Error::Layout)?)
-    };
+    let layouts = geometry_layouts(geometry)?;
+    if let Some(layouts) = layouts {
+        let size = layouts.span().unwrap_or(0);
+        let payload = pool.buffer_size().payload;
+        if size > payload {
+            return Err(Error::FrameTooLarge { size, payload });
+        }
+    }
     let count = pool.buffers();
     Ok(Frames {
         taken,

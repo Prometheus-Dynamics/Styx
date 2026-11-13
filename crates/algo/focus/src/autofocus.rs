@@ -25,7 +25,8 @@ use styx_aaa::{
 use styx_controls::{Control, ControlValue, FrameMetadata};
 use styx_lemnos::Client;
 
-use crate::lens::{Direction, Error, FocusScale, LensDevice};
+use crate::lens::{Direction, Error, FocusScale, LensDevice, resolve_direction};
+use lemnos_contract_lens::FocusDirection;
 
 /// What the loop is configured with.
 #[derive(Debug, Clone, PartialEq)]
@@ -73,12 +74,13 @@ impl Focus {
     }
 }
 
-/// A move on the lens's schedule: the code it went to, and the first frame exposed with the lens
-/// there.
+/// A move on the lens's schedule: the code it went to, the first frame exposed with the lens there,
+/// and the frames it takes to settle.
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct Move {
     frame: u64,
     position: u16,
+    settle_frames: u64,
 }
 
 /// A move AF asked for that the device has not taken yet.
@@ -99,7 +101,12 @@ pub struct Autofocus {
     scale: FocusScale,
     af: Af,
     params: Params,
-    settle_frames: u64,
+    /// The configured settle time in frames, for a move the lens cannot say a settle for.
+    settle_fallback: u64,
+    /// The frame duration the settle times are counted in.
+    frame: Duration,
+    /// Where the device last took a move to (`None` before its first).
+    last_taken: Option<u16>,
     /// Moves the device has taken, oldest first. The front is the one in force once no later move
     /// is due.
     schedule: VecDeque<Move>,
@@ -124,7 +131,7 @@ impl Autofocus {
     /// Opens the lens device `name` on `client`, sets AF up for the lens's range, and writes
     /// AF's start-up move. A chip that is still powering up takes it on a later frame.
     pub fn open(client: &Client, name: &str, config: AutofocusConfig) -> Result<Self, Error> {
-        let lens = LensDevice::open(client, name)?;
+        let mut lens = LensDevice::open(client, name)?;
         let range = lens.range();
         let lens_config = LensConfig {
             range: (i32::from(range.min), i32::from(range.max)),
@@ -132,7 +139,13 @@ impl Autofocus {
             map: None,
         };
         let map = Af::lens_map(&config.tuning, &lens_config);
-        let scale = FocusScale::new(range, Direction::of_map(&map))?;
+        // The lens's own direction when it has one; the AF map's otherwise (never a guess).
+        let answer = match lens.direction() {
+            Ok(answer) => answer,
+            Err(Status::NOT_SUPPORTED) => FocusDirection::Unknown,
+            Err(status) => return Err(Error::Call(status)),
+        };
+        let scale = FocusScale::new(range, resolve_direction(answer, Direction::of_map(&map)))?;
         let mut af = Af::new(config.tuning)?;
         let camera = CameraConfig {
             lens: Some(lens_config),
@@ -146,7 +159,9 @@ impl Autofocus {
             scale,
             af,
             params,
-            settle_frames: settle_frames(config.settle, config.frame_duration),
+            settle_fallback: settle_frames(config.settle, config.frame_duration),
+            frame: config.frame_duration,
+            last_taken: None,
             schedule: VecDeque::new(),
             last_request: None,
             pending: None,
@@ -201,6 +216,13 @@ impl Autofocus {
         self.scale
     }
 
+    /// Frames the settle time of the last move the device took spans: the lens's own figure for
+    /// that move when it has one, the configured settle time when it has not. `None` before the
+    /// device has taken a move.
+    pub fn last_settle_frames(&self) -> Option<u64> {
+        self.schedule.back().map(|m| m.settle_frames)
+    }
+
     /// Moves the device has taken since the loop started.
     pub fn moves_taken(&self) -> u32 {
         self.taken
@@ -253,9 +275,11 @@ impl Autofocus {
                 self.waited = Duration::ZERO;
                 self.delay = BACKOFF_START;
                 self.retry_at = None;
+                let settle_frames = self.settle_for(pending.position);
                 self.schedule.push_back(Move {
                     frame: pending.frame.max(frame),
                     position: pending.position,
+                    settle_frames,
                 });
             }
             // Powering up: the same move, on the next frame.
@@ -266,6 +290,19 @@ impl Autofocus {
                 self.retry_at = Some(now + self.delay);
                 self.delay = (self.delay * 2).min(BACKOFF_CAP);
             }
+        }
+    }
+
+    /// Frames the lens takes to settle after a move to `position`: the lens's own figure for the
+    /// move's distance, from the last move the device took (or the near end before the first), or
+    /// the configured settle time when the lens has none.
+    fn settle_for(&mut self, position: u16) -> u64 {
+        let from = self.last_taken.unwrap_or(self.lens.range().min);
+        self.last_taken = Some(position);
+        let distance = position.abs_diff(from);
+        match self.lens.settle_us(distance) {
+            Some(us) => settle_frames_of_us(us, self.frame),
+            None => self.settle_fallback,
         }
     }
 
@@ -280,7 +317,7 @@ impl Autofocus {
         }
         Some(LensState {
             position: f64::from(m.position),
-            settled: frame >= m.frame + self.settle_frames,
+            settled: frame >= m.frame + m.settle_frames,
         })
     }
 }
@@ -291,4 +328,9 @@ fn settle_frames(settle: Duration, frame: Duration) -> u64 {
     u64::try_from(settle.as_nanos().div_ceil(frame_ns))
         .unwrap_or(u64::MAX)
         .max(1)
+}
+
+/// Frames a settle time in microseconds spans, rounded up (at least one).
+fn settle_frames_of_us(us: u32, frame: Duration) -> u64 {
+    settle_frames(Duration::from_micros(u64::from(us)), frame)
 }

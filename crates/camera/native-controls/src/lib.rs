@@ -19,14 +19,16 @@
 //!   in force, its gain codes, its frame lengths) is [`Error::Limit`], which names the limit.
 //!
 //! Units: exposure in microseconds becomes lines times `2^exposure_fraction_bits` with the mode's
-//! line time; gain in thousandths becomes the sensor's code by the caller's [`GainLaw`]
-//! (`camera.sensor/1` has no gain law at the lock, so [`GainLaw::Unknown`] is refused, never
-//! assumed); frame rate in millihertz becomes the frame length in lines. The chip facts are the
-//! mode's, from Lemnos.
+//! line time; gain in thousandths becomes the sensor's code by the mode's gain law
+//! (`GainRange::law`, the contract's, in `gain.rs`); frame rate in millihertz becomes the frame
+//! length in whole lines, the frame length over the line time, clamped to the mode's
+//! `frame_length_min`..=`frame_length_max` with the rate it achieves reported ([`FrameRate`]). No
+//! nominal rate is kept anywhere: the mode's line time and frame lengths are the facts.
 //!
 //! [`NativeControls::metadata`] reports the values in force on a frame, from what was posted and
 //! the delays. `camera.sensor/1` at the lock has no per-frame read-back, so nothing is read back
-//! from the frame itself; Lemnos J4 will add embedded-data read-back to verify the schedule.
+//! from the frame itself: reading the sensor's embedded data back, to verify the schedule, is not
+//! wired yet.
 //!
 //! No register access, I2C or ioctls: the only calls are the sensor contract's.
 
@@ -36,6 +38,6 @@ mod gain;
 mod schedule;
 mod units;
 
-pub use controls::{Initial, Landing, Landings, NativeControls};
+pub use controls::{FrameRate, Initial, Landing, Landings, NativeControls};
 pub use error::{Error, Limit};
-pub use gain::{GainLaw, code_to_gain, gain_to_code};
+pub use gain::{code_to_gain, gain_to_code};

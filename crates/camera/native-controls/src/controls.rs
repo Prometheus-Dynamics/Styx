@@ -4,7 +4,7 @@ use lemnos_contract_camera_sensor::{CameraSensor, Controls, FrameValues, GainRan
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 
 use crate::error::{Error, Limit};
-use crate::gain::{self, GainLaw};
+use crate::gain;
 use crate::schedule::Lane;
 use crate::units;
 
@@ -28,6 +28,19 @@ pub struct Initial {
     pub frame_rate_milli: u32,
 }
 
+/// A frame rate as the sensor takes it: the frame length in lines, and the rate that length gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FrameRate {
+    /// The frame length, in whole lines.
+    pub lines: u32,
+    /// The rate the frame length gives, in millihertz: the rate asked for to the nearest whole
+    /// line, or the nearest rate the sensor's frame lengths reach when the ask is outside them.
+    pub achieved_milli: u32,
+    /// The rate asked for is outside the sensor's frame-length limits, so the frame length is the
+    /// nearest limit. The achieved rate says what the sensor runs at.
+    pub clamped: bool,
+}
+
 /// Where a value was asked to land, and where it is predicted to land.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Landing {
@@ -37,6 +50,11 @@ pub struct Landing {
     pub requested: u64,
     /// The first frame predicted to show it. Equal to `requested` when the request was on time.
     pub frame: u64,
+    /// For a frame rate: the rate the frame length gives, in millihertz, which is what the frames
+    /// will run at. `None` for other controls.
+    pub achieved_milli: Option<u32>,
+    /// For a frame rate: the request was clamped to the sensor's frame-length limits.
+    pub clamped: bool,
 }
 
 impl Landing {
@@ -76,6 +94,7 @@ pub struct NativeControls {
     limits: Limits,
     lanes: [Lane; LANES],
     frame: Option<u64>,
+    initial_rate: FrameRate,
 }
 
 /// The sensor's limits for one mode: what the contract's mode says, in the sensor's own codes.
@@ -85,8 +104,8 @@ struct Limits {
     fraction_bits: u8,
     exposure_min: u32,
     exposure_margin: u32,
+    /// The analogue gain's codes and law (the contract's `GainRange`).
     gain: GainRange,
-    law: GainLaw,
     fl_min: u32,
     fl_max: u32,
 }
@@ -105,31 +124,38 @@ impl Limits {
         units::exposure_us(u64::from(code), self.line_time_ps, self.fraction_bits)
     }
 
-    /// Thousandths of gain for a code. Only called with a code this crate made, under a law that
-    /// [`NativeControls::new`] has already accepted, so the conversion cannot be refused.
+    /// Thousandths of gain for a code. Only called with a code this crate made, under the range's
+    /// law that [`NativeControls::new`] has already converted, so the conversion cannot be refused.
     fn gain_milli(&self, code: u32) -> u32 {
-        gain::code_to_gain(self.law, &self.gain, code).unwrap_or(0)
+        gain::code_to_gain(&self.gain, code).unwrap_or(0)
     }
 
-    fn frame_rate(&self, lines: u32) -> u32 {
+    /// The rate a frame of `lines` lines runs at, in millihertz.
+    fn rate_of(&self, lines: u32) -> u32 {
         units::frame_rate_milli(u64::from(lines), self.line_time_ps)
     }
 
-    /// The frame length in lines for a frame rate, if the sensor takes it.
-    fn frame_length(&self, mhz: u32) -> Result<u32, Error> {
-        let limit = || Limit {
-            control: Control::FrameRate,
-            requested: mhz,
-            min: self.frame_rate(self.fl_max),
-            max: self.frame_rate(self.fl_min),
-            frame_lines: None,
-        };
-        let lines =
-            units::frame_length(mhz, self.line_time_ps).ok_or_else(|| Error::Limit(limit()))?;
-        if lines < u64::from(self.fl_min) || lines > u64::from(self.fl_max) {
-            return Err(Error::Limit(limit()));
-        }
-        Ok(lines as u32)
+    /// The frame length for a frame rate, in the sensor's frame lengths. The length is the nearest
+    /// whole line to the rate; a rate outside the sensor's frame lengths is clamped to the nearest
+    /// one, and the rate it runs at is reported. Only a rate of zero is refused.
+    fn frame_rate(&self, mhz: u32) -> Result<FrameRate, Error> {
+        let lines = units::frame_length(mhz, self.line_time_ps).ok_or_else(|| {
+            Error::Limit(Limit {
+                control: Control::FrameRate,
+                requested: mhz,
+                min: self.rate_of(self.fl_max),
+                max: self.rate_of(self.fl_min),
+                frame_lines: None,
+            })
+        })?;
+        let (min, max) = (u64::from(self.fl_min), u64::from(self.fl_max));
+        let clamped = lines < min || lines > max;
+        let lines = lines.clamp(min, max) as u32;
+        Ok(FrameRate {
+            lines,
+            achieved_milli: self.rate_of(lines),
+            clamped,
+        })
     }
 
     /// The exposure code for `us` at a frame of `fl` lines, if the sensor takes it there.
@@ -156,7 +182,7 @@ impl Limits {
 
     /// The gain code for `milli`, if the sensor has that code.
     fn gain(&self, milli: u32) -> Result<u32, Error> {
-        let code = gain::gain_to_code(self.law, &self.gain, milli)?;
+        let code = gain::gain_to_code(&self.gain, milli)?;
         if code < self.gain.min || code > self.gain.max {
             return Err(Error::Limit(Limit {
                 control: Control::Gain,
@@ -171,10 +197,11 @@ impl Limits {
 }
 
 impl NativeControls {
-    /// The controls of a sensor in `mode`, starting at `initial`, with gain converted by `law`.
-    /// Refuses an initial value the sensor cannot take, a mode with no line time or no gain unity
-    /// code, and [`GainLaw::Unknown`] ([`Error::GainLaw`]): no gain code is assumed.
-    pub fn new(mode: &Mode, initial: Initial, law: GainLaw) -> Result<Self, Error> {
+    /// The controls of a sensor in `mode`, starting at `initial`. Gain converts by the mode's own
+    /// gain law (the contract's `GainRange::law`). A frame rate outside the sensor's frame lengths
+    /// is clamped and reported ([`NativeControls::initial_rate`]). Refuses an initial value the
+    /// sensor cannot take, and a mode with no line time or no gain unity code.
+    pub fn new(mode: &Mode, initial: Initial) -> Result<Self, Error> {
         if mode.line_time_ps == 0 {
             return Err(Error::Mode("line_time_ps is zero"));
         }
@@ -187,7 +214,6 @@ impl NativeControls {
             exposure_min: mode.exposure_min,
             exposure_margin: mode.exposure_margin,
             gain: mode.analogue_gain,
-            law,
             fl_min: mode.frame_length_min,
             fl_max: mode.frame_length_max,
         };
@@ -198,7 +224,8 @@ impl NativeControls {
         ] {
             control.validate(ControlValue::Manual(value))?;
         }
-        let fl = limits.frame_length(initial.frame_rate_milli)?;
+        let rate = limits.frame_rate(initial.frame_rate_milli)?;
+        let fl = rate.lines;
         let exposure = limits.exposure(initial.exposure_us, fl)?;
         let gain = limits.gain(initial.gain_milli)?;
         Ok(Self {
@@ -209,7 +236,14 @@ impl NativeControls {
                 Lane::new(mode.frame_length_delay.into(), fl),
             ],
             frame: None,
+            initial_rate: rate,
         })
+    }
+
+    /// The frame rate the initial value gave: the frame length and the rate it runs at, and whether
+    /// the sensor's limits clamped the ask.
+    pub fn initial_rate(&self) -> FrameRate {
+        self.initial_rate
     }
 
     /// Writes the initial values with `set_controls`, before the sensor starts. Frame 0 shows them.
@@ -254,6 +288,7 @@ impl NativeControls {
         for update in updates {
             let control = update.control;
             let lane = lane_of(control).ok_or(Error::Unsupported(control))?;
+            let mut rate = None;
             if update.value == ControlValue::Auto {
                 return Err(Error::Auto(control));
             }
@@ -268,7 +303,11 @@ impl NativeControls {
             match lane {
                 EXPOSURE => exposure_us = Some((frame, value)),
                 GAIN => asked[GAIN] = Some((frame, self.limits.gain(value)?)),
-                _ => asked[FRAME_LENGTH] = Some((frame, self.limits.frame_length(value)?)),
+                _ => {
+                    let frame_rate = self.limits.frame_rate(value)?;
+                    asked[FRAME_LENGTH] = Some((frame, frame_rate.lines));
+                    rate = Some(frame_rate);
+                }
             }
             // Posted now when its post frame has come; otherwise in the frame `delay` before it.
             let delay = u64::from(self.lanes[lane].delay);
@@ -281,6 +320,8 @@ impl NativeControls {
                 control,
                 requested: frame,
                 frame: landing,
+                achieved_milli: rate.map(|r| r.achieved_milli),
+                clamped: rate.is_some_and(|r| r.clamped),
             });
             landings.len += 1;
         }
@@ -370,7 +411,7 @@ impl NativeControls {
 
     /// The controls in force on `frame`, and what the frame measured. Timestamp is the frame's
     /// `CLOCK_MONOTONIC` nanoseconds. Values come from what was posted and the delays, not from the
-    /// frame: `camera.sensor/1` has no per-frame read-back at the lock (Lemnos J4 adds it).
+    /// frame: the sensor's embedded data (`SensorInfo::embedded_data`) is not read back here yet.
     ///
     /// On a free-running sensor a value may land one frame later than recorded here: the write
     /// frame is taken as the last frame delivered, and the sensor may already be exposing the
@@ -387,7 +428,7 @@ impl NativeControls {
         }
         controls[Control::Exposure.index()] = ControlValue::Manual(exposure_us);
         controls[Control::Gain.index()] = ControlValue::Manual(gain_milli);
-        controls[Control::FrameRate.index()] = ControlValue::Manual(self.limits.frame_rate(fl));
+        controls[Control::FrameRate.index()] = ControlValue::Manual(self.limits.rate_of(fl));
         FrameMetadata {
             controls,
             sensor_timestamp_ns,

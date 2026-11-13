@@ -10,9 +10,9 @@ use lemnos_contract_camera_receiver::{CameraReceiver, MAX_STREAM_NAME, Packing};
 use lemnos_contract_camera_sensor::{CameraSensor, Mode};
 use lemnos_core::Bound;
 use styx_controls::{FrameMetadata, Update};
-use styx_lemnos::open_frames;
+use styx_lemnos::{Geometry, open_frames_at};
 use styx_native::Camera;
-use styx_native_controls::{GainLaw, Initial, Landings, NativeControls};
+use styx_native_controls::{Initial, Landings, NativeControls};
 
 use crate::backoff::{AutoOff, Policy};
 use crate::clock::Clock;
@@ -85,11 +85,10 @@ pub enum Error {
     /// A device refused to stop. Both were asked to stop.
     Device(String),
     /// The session has no controls configured: [`Session::with_controls`] gives the sensor's
-    /// initial values and its gain law. Retrying cannot fix this, so [`Session::start`] returns it
-    /// at once.
+    /// initial values. Retrying cannot fix this, so [`Session::start`] returns it at once.
     NoControls,
-    /// The native controls refused: the mode cannot take them (for example a gain law that is
-    /// [`GainLaw::Unknown`]), or a request was refused (see `styx_native_controls::Error`).
+    /// The native controls refused: the mode cannot take them (for example a gain range with no
+    /// unity code), or a request was refused (see `styx_native_controls::Error`).
     Controls(styx_native_controls::Error),
 }
 
@@ -109,7 +108,7 @@ impl fmt::Display for Error {
             Self::Device(text) => write!(f, "{text}"),
             Self::NoControls => write!(
                 f,
-                "no controls configured: call with_controls with the sensor's initial values and gain law"
+                "no controls configured: call with_controls with the sensor's initial values"
             ),
             Self::Controls(e) => write!(f, "controls: {e}"),
         }
@@ -224,8 +223,8 @@ pub struct Session<'a, C: Clock> {
     running: Option<Running>,
     stalls: u32,
     status: Status,
-    /// The sensor's initial values and gain law, for each run's native controls.
-    settings: Option<(Initial, GainLaw)>,
+    /// The sensor's initial values, for each run's native controls.
+    settings: Option<Initial>,
 }
 
 /// A dropped session stops its devices. Its frames are released with the stream.
@@ -269,12 +268,13 @@ impl<'a, C: Clock> Session<'a, C> {
         }
     }
 
-    /// Sets the sensor's initial values and gain law for the native controls of each run. Every
-    /// frame the session delivers then carries its [`FrameMetadata`], and
-    /// [`Session::request_controls`] posts changes. Without it the session does not start.
+    /// Sets the sensor's initial values for the native controls of each run. Every frame the
+    /// session delivers then carries its [`FrameMetadata`], and [`Session::request_controls`] posts
+    /// changes. Without it the session does not start. Gain converts by the sensor's own gain law
+    /// (the contract's), and a frame rate the sensor cannot take is clamped and reported.
     #[must_use]
-    pub fn with_controls(mut self, initial: Initial, law: GainLaw) -> Self {
-        self.settings = Some((initial, law));
+    pub fn with_controls(mut self, initial: Initial) -> Self {
+        self.settings = Some(initial);
         self
     }
 
@@ -473,9 +473,9 @@ impl<'a, C: Clock> Session<'a, C> {
         let index = select_mode(&modes, &self.request).map_err(Fault::Permanent)?;
         let mode = modes[usize::from(index)];
         let code = fourcc_for(&mode).map_err(Fault::Permanent)?;
-        let (initial, law) = self.settings.ok_or(Fault::Config(Error::NoControls))?;
-        let controls = NativeControls::new(&mode, initial, law)
-            .map_err(|e| Fault::Config(Error::Controls(e)))?;
+        let initial = self.settings.ok_or(Fault::Config(Error::NoControls))?;
+        let controls =
+            NativeControls::new(&mode, initial).map_err(|e| Fault::Config(Error::Controls(e)))?;
 
         refused(sensor.select_mode(index), "sensor.select_mode")?;
         let layout = refused(
@@ -488,15 +488,15 @@ impl<'a, C: Clock> Session<'a, C> {
             .get(..len)
             .and_then(|bytes| std::str::from_utf8(bytes).ok())
             .ok_or_else(|| Fault::Retry("receiver.frame_stream: name is not UTF-8".to_string()))?;
-        let frames = open_frames(
-            self.client,
-            self.camera.receiver().index,
-            stream,
+        // The receiver's own layout: its stride is what each frame's rows take in the buffer.
+        let geometry = Geometry {
             code,
-            layout.width,
-            layout.height,
-        )
-        .map_err(|e| Fault::Retry(format!("frame stream {stream}: {e}")))?;
+            width: layout.width,
+            height: layout.height,
+            stride: layout.stride,
+        };
+        let frames = open_frames_at(self.client, self.camera.receiver().index, stream, geometry)
+            .map_err(|e| Fault::Retry(format!("frame stream {stream}: {e}")))?;
 
         let mut running = Running {
             sensor,

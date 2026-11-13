@@ -43,32 +43,42 @@ pub fn call_log() -> Vec<String> {
     LOG.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-/// Modes as (width, height, frames per second). Every mode has the same pixel rate, so frame time
-/// follows from the link alone.
-pub(crate) const MODES: [(u32, u32, u32); 2] = [(320, 40, 120), (640, 40, 60)];
+/// Modes as (width, height). Every mode has the same pixel rate, so a mode's frame time follows
+/// from its link alone, and its frame length is that time over the line time. No rate is listed:
+/// the mode's frame length and line time give it.
+pub(crate) const MODES: [(u32, u32); 2] = [(320, 40), (640, 40)];
 const PIXEL_RATE_HZ: u64 = 1_536_000;
 /// How often the receiver looks for a granted frame while it waits (nanoseconds).
 const POLL_NS: u64 = 200_000;
 
 pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
-    let (width, height, fps) = *MODES.get(index)?;
+    let (width, height) = *MODES.get(index)?;
+    let link = LinkConfig {
+        lanes: 2,
+        virtual_channel: 0,
+        data_type: 0x2b,
+        bit_depth: 10,
+        continuous_clock: false,
+        width,
+        height,
+        pixel_rate_hz: PIXEL_RATE_HZ,
+        link_rate_mbps: 1000,
+    };
+    // The shortest frame the mode runs: the frame time the link implies, in whole lines (rounded
+    // down, so the frame never runs slower than the link carries it).
+    let line_time_ps = u64::from(silicon::LINE_TIME_PS as u32);
+    let frame_length_min = frame_interval_ns(&link) * 1_000 / line_time_ps;
+    let frame_length_min = u32::try_from(frame_length_min).ok()?;
+    let max_fps_milli =
+        u32::try_from(1_000_000_000_000_000u64 / (u64::from(frame_length_min) * line_time_ps))
+            .ok()?;
     Some(Mode {
-        link: LinkConfig {
-            lanes: 2,
-            virtual_channel: 0,
-            data_type: 0x2b,
-            bit_depth: 10,
-            continuous_clock: false,
-            width,
-            height,
-            pixel_rate_hz: PIXEL_RATE_HZ,
-            link_rate_mbps: 1000,
-        },
+        link,
         bayer: BayerOrder::Rggb,
-        max_fps_milli: fps * 1000,
-        line_time_ps: silicon::LINE_TIME_PS as u32,
+        max_fps_milli,
+        line_time_ps: line_time_ps as u32,
         line_length: 1456,
-        frame_length_min: 900,
+        frame_length_min,
         frame_length_max: 52_000,
         exposure_min: 16,
         exposure_margin: 25,

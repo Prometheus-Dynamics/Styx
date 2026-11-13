@@ -16,7 +16,7 @@ use lemnos_sim::SimBoard;
 use lemnosd::{Config, Service};
 use styx_controls::{Control, ControlValue, Update};
 use styx_lemnos::Client;
-use styx_native_run::{Error, GainLaw, Initial, Policy, Request, Session, State, SystemClock};
+use styx_native_run::{Error, Initial, Policy, Request, Session, State, SystemClock};
 
 const START: Initial = Initial {
     exposure_us: 8_000,
@@ -69,8 +69,8 @@ fn a_value_posted_to_a_running_camera_lands_on_its_frame_and_each_frame_carries_
     let found = styx_native::discover(&client).expect("discover");
     let camera = &found.cameras[0];
     let clock = SystemClock::default();
-    let mut session = Session::new(&client, camera, request(), Policy::default(), &clock)
-        .with_controls(START, GainLaw::Linear);
+    let mut session =
+        Session::new(&client, camera, request(), Policy::default(), &clock).with_controls(START);
 
     // Before the session streams there is no frame to land on.
     assert!(matches!(
@@ -147,7 +147,7 @@ fn a_value_posted_to_a_running_camera_lands_on_its_frame_and_each_frame_carries_
 }
 
 #[test]
-fn controls_must_be_configured_and_the_gain_law_must_be_known() {
+fn controls_must_be_configured() {
     let (service, socket) = start("refuse");
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
@@ -157,15 +157,7 @@ fn controls_must_be_configured_and_the_gain_law_must_be_known() {
     let mut none = Session::new(&client, camera, request(), Policy::default(), &clock);
     assert_eq!(none.start(), Err(Error::NoControls));
     assert_eq!(none.status().state, State::Stopped);
-
-    let mut unknown = Session::new(&client, camera, request(), Policy::default(), &clock)
-        .with_controls(START, GainLaw::Unknown);
-    match unknown.start() {
-        Err(Error::Controls(e)) => assert!(e.to_string().starts_with("gain law unknown"), "{e}"),
-        other => panic!("expected the gain law refusal, got {other:?}"),
-    }
     drop(none);
-    drop(unknown);
     drop(client);
     service.stop();
 }
