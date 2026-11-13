@@ -39,6 +39,7 @@ fn every_entry_point_survives_null_and_garbage_arguments() {
         exposure_us: 0,
         analogue_gain_milli: 0,
         memory_kind: 0,
+        achieved_fps_milli: 0,
     };
     let mut plane = PlaneOut {
         data: std::ptr::null(),
@@ -258,6 +259,28 @@ fn every_entry_point_survives_null_and_garbage_arguments() {
         );
         assert_eq!(styx_copies(&mut copies, &mut bytes), OK);
         assert_eq!(copies, 0);
+
+        // The metadata size, and the counters decoder.
+        assert_eq!(styx_frame_metadata_size(std::ptr::null_mut()), E_INVALID);
+        assert_eq!(styx_frame_metadata_size(&mut len), OK);
+        assert_eq!(len, styx_controls::WIRE_BYTES);
+        assert_eq!(
+            styx_counters_read(std::ptr::null(), 0, std::ptr::null_mut()),
+            E_INVALID
+        );
+        let mut counters = CounterSnapshot::default();
+        assert_eq!(
+            styx_counters_read(std::ptr::null(), 4, &mut counters),
+            E_INVALID
+        );
+        assert_eq!(
+            styx_counters_read(garbage.as_ptr(), garbage.len(), &mut counters),
+            E_INVALID
+        );
+        assert_eq!(
+            styx_counters_read(garbage.as_ptr(), garbage.len(), std::ptr::null_mut()),
+            E_INVALID
+        );
     }
     // Every status has a name; a status that is not one has none.
     assert!(!styx_status_name(E_PANIC).is_null());
@@ -365,8 +388,8 @@ fn the_header_declares_exactly_the_functions_the_library_exports() {
     }
     assert_eq!(
         declared.len(),
-        19,
-        "the header declares 19 functions: {declared:?}"
+        21,
+        "the header declares 21 functions: {declared:?}"
     );
     assert_eq!(declared, exported, "the header and the exports agree");
 }

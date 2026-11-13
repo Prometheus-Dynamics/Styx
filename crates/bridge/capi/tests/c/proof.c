@@ -24,6 +24,7 @@ _Static_assert(sizeof(styx_control_value) == STYX_EXPECT_CONTROL_VALUE, "styx_co
 _Static_assert(sizeof(styx_open_options) == STYX_EXPECT_OPEN_OPTIONS, "styx_open_options size");
 _Static_assert(sizeof(styx_frame_info) == STYX_EXPECT_FRAME_INFO, "styx_frame_info size");
 _Static_assert(sizeof(styx_plane) == STYX_EXPECT_PLANE, "styx_plane size");
+_Static_assert(sizeof(styx_counter_snapshot) == STYX_EXPECT_COUNTER_SNAPSHOT, "styx_counter_snapshot size");
 
 #define FRAMES 200
 #define WAIT_MS 5000
@@ -157,6 +158,7 @@ int main(int argc, char **argv) {
     uint32_t fps = 0;
     uint32_t fourcc = 0, width = 0, height = 0, planes = 0;
     size_t plane0_bytes = 0, meta_len = 0;
+    uint32_t meta_fps = 0;
     for (int i = 0; i < FRAMES; i++) {
         styx_frame *frame = next_frame(camera, WAIT_MS);
         check(frame != NULL, "a frame arrives");
@@ -199,18 +201,33 @@ int main(int argc, char **argv) {
 
         /* The record whole in a buffer of exactly its length, and again in a larger one: the two
          * must agree (a buffer that holds it whole is not cut). */
-        uint8_t blob[STYX_METADATA_BYTES];
+        /* The record's size comes from the library; a buffer of that size holds it whole, and a
+         * buffer one byte short is refused with its length still reported. */
+        size_t need = 0;
+        must(styx_frame_metadata_size(&need), "styx_frame_metadata_size");
+        check(need == STYX_METADATA_BYTES, "the header's metadata length is the library's");
+        uint8_t *blob = malloc(need);
+        check(blob != NULL, "a buffer for the metadata record");
         size_t blen = 0;
-        must(styx_frame_metadata(frame, blob, sizeof blob, &blen), "styx_frame_metadata");
-        check(blen == STYX_METADATA_BYTES, "the metadata record is the wire length");
-        uint8_t wide[STYX_METADATA_BYTES + 16];
-        size_t wlen = 0;
-        must(styx_frame_metadata(frame, wide, sizeof wide, &wlen), "styx_frame_metadata (wide)");
-        check(wlen == blen && memcmp(blob, wide, blen) == 0, "the record is the same in both buffers");
+        must(styx_frame_metadata(frame, blob, need, &blen), "styx_frame_metadata");
+        check(blen == need, "the metadata record is the library's length");
+        size_t short_len = 0;
+        check(styx_frame_metadata(frame, blob, need - 1, &short_len) == STYX_E_INVALID && short_len == need,
+              "a short buffer is refused and the length reported");
         meta_len = blen;
+        meta_fps = info.achieved_fps_milli;
+        free(blob);
         styx_frame_release(frame);
     }
     check(prev > first, "the ids moved on");
+
+    /* The counters decoder: a short record and a record that is not this layout are refused by
+     * status (a valid record is in the Rust tests). */
+    styx_counter_snapshot counters;
+    check(styx_counters_read((const uint8_t *)"short", 5, &counters) == STYX_E_INVALID, "a short counters record is invalid");
+    uint8_t junk[714];
+    memset(junk, 0xab, sizeof junk);
+    check(styx_counters_read(junk, sizeof junk, &counters) == STYX_E_PROTOCOL, "a counters record of another layout is refused");
 
     uint64_t copies = 0, copy_bytes = 0;
     must(styx_copies(&copies, &copy_bytes), "styx_copies");
@@ -219,9 +236,9 @@ int main(int argc, char **argv) {
     printf("PROOF %s frames=%d first_id=%" PRIu64 " last_id=%" PRIu64 " ordered=1 gaps=%" PRIu64
            " exposure_set_from=%" PRIu64 " exposure_seen_from=%" PRIu64 " exposure_read_back=%u"
            " fps_milli=%u fourcc=0x%08x size=%ux%u planes=%u plane0_bytes=%zu meta_bytes=%zu"
-           " memory_kind=%u descriptor=%d copies=%" PRIu64 " copy_bytes=%" PRIu64 "\n",
+           " memory_kind=%u descriptor=%d meta_fps_milli=%u copies=%" PRIu64 " copy_bytes=%" PRIu64 "\n",
            mode, FRAMES, first, prev, gaps, target, seen_from, read_back.value, fps, fourcc, width, height,
-           planes, plane0_bytes, meta_len, memory_kind, descriptor, copies, copy_bytes);
+           planes, plane0_bytes, meta_len, memory_kind, descriptor, meta_fps, copies, copy_bytes);
 
     styx_camera_close(camera);
     styx_source_close(source);

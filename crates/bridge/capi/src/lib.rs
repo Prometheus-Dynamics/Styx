@@ -26,6 +26,7 @@
 #![cfg(target_os = "linux")]
 
 mod camera;
+mod counters;
 mod frame;
 mod source;
 mod status;
@@ -33,6 +34,7 @@ mod surface;
 mod wire;
 
 pub use camera::{Camera, OpenOptions};
+pub use counters::CounterSnapshot;
 pub use frame::{
     DmaView, Frame, FrameInfo, MEMORY_DMABUF, MEMORY_GPU, MEMORY_HOST, MEMORY_MEMFD, PlaneOut,
 };

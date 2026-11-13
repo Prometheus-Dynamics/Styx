@@ -13,6 +13,7 @@ use std::time::Duration;
 use styx_controls::{Control, ControlValue};
 
 use crate::camera::{Camera, OpenOptions};
+use crate::counters::{self, CounterSnapshot};
 use crate::frame::{Frame, FrameInfo, PlaneOut};
 use crate::source::Source;
 use crate::status::{
@@ -517,6 +518,40 @@ pub unsafe extern "C" fn styx_frame_release(frame: *mut Frame) {
         }
         Ok(())
     });
+}
+
+/// The size of the metadata record, in bytes: what `styx_frame_metadata` writes into a buffer.
+///
+/// # Safety
+///
+/// `len` is NULL or writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_frame_metadata_size(len: *mut usize) -> i32 {
+    guard(|| {
+        // SAFETY: len is NULL or writable, per the contract; put refuses NULL.
+        unsafe { put(len, styx_controls::WIRE_BYTES) }
+    })
+}
+
+/// Decodes a camera's counters record (`styx-counters`' snapshot, as the counters ring or a file
+/// holds it) into `out`.
+///
+/// # Safety
+///
+/// `bytes` has `len` readable bytes (NULL only when `len` is zero); `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_counters_read(
+    bytes_ptr: *const u8,
+    len: usize,
+    out: *mut CounterSnapshot,
+) -> i32 {
+    guard(|| {
+        // SAFETY: the bytes are as the contract says (bytes refuses NULL with a length).
+        let raw = unsafe { bytes(bytes_ptr, len)? };
+        let record = counters::read(raw)?;
+        // SAFETY: out is NULL or writable, per the contract.
+        unsafe { put(out, record) }
+    })
 }
 
 /// The copies the library's frame paths have made in this process, and their bytes: zero on the

@@ -378,7 +378,7 @@ impl RemoteLink {
         let mut control = ControlLink::connect(control_path)?;
         let deadline = Instant::now() + OPEN_WAIT;
         loop {
-            let entries = wire::parse_list(&control.ask("list")?)?;
+            let entries = wire::entries(&control.ask("list")?);
             let entry = entries
                 .into_iter()
                 .find(|e| e.name == name)

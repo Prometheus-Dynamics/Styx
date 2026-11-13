@@ -81,8 +81,9 @@ typedef struct styx_open_options {
     uint32_t gain_milli;
 } styx_open_options;
 
-/* The metadata record's length in version 1 (styx-controls WIRE_BYTES). */
-#define STYX_METADATA_BYTES 374
+/* The metadata record's length in this library (styx-controls WIRE_BYTES). styx_frame_metadata_size
+ * reports the same number at run time: allocate from that, not from this define. */
+#define STYX_METADATA_BYTES 378
 
 /* Memory kinds, as styx_frame_info.memory_kind and styx_frame_fd's kind. */
 #define STYX_MEMORY_HOST 0
@@ -105,6 +106,7 @@ typedef struct styx_frame_info {
     uint32_t exposure_us;
     uint32_t analogue_gain_milli;
     uint32_t memory_kind;
+    uint32_t achieved_fps_milli; /* the producer's achieved rate from the metadata (0 if unknown) */
 } styx_frame_info;
 
 /* One plane: its bytes, length and row stride, valid until the frame is released. */
@@ -180,8 +182,12 @@ styx_status styx_frame_describe(const styx_frame *frame, styx_frame_info *out);
  * mapped for the CPU. Thread-safe with other frames. */
 styx_status styx_frame_plane(const styx_frame *frame, uint32_t index, styx_plane *out);
 
-/* The metadata record in styx-controls' wire form (version 1, STYX_METADATA_BYTES long). buf must
- * hold it whole; *len receives its length in any case. Thread-safe with other frames. */
+/* The size of the metadata record: what styx_frame_metadata writes. Thread-safe. */
+styx_status styx_frame_metadata_size(size_t *len);
+
+/* The metadata record in styx-controls' wire form (STYX_METADATA_BYTES long, version 2). buf must
+ * hold it whole, or the call is STYX_E_INVALID; *len receives the record's length in any case.
+ * Thread-safe with other frames. */
 styx_status styx_frame_metadata(const styx_frame *frame, uint8_t *buf, size_t cap, size_t *len);
 
 /* The frame's descriptor, for a zero-copy import elsewhere: fd (borrowed, valid until the frame
@@ -192,6 +198,49 @@ styx_status styx_frame_fd(const styx_frame *frame, int32_t *fd, uint64_t *offset
 
 /* Gives the frame back (NULL is a no-op). Its planes and descriptor are invalid after this. */
 void styx_frame_release(styx_frame *frame);
+
+/* ---- Counters -------------------------------------------------------------------------- */
+
+/* One camera's counters, decoded from styx-counters' record. Codes (plain integers):
+ *   owner:   0 none, 1 native, 2 libcamera, 3 v4l2
+ *   state:   0 absent, 1 streaming, 2 retrying, 3 backoff, 4 stopped, 5 off
+ *   health:  0 unknown, 1 healthy, 2 degraded, 3 failed
+ *   publish: 0 waiting, 1 publishing, 2 not publishable
+ * drops[i] is the count for drop reason i: 0 pool_exhausted, 1 held_buffer, 2 ring_full,
+ * 3 backend_error, 4 unattributed. The record's text fields (names and reasons) are not here. */
+typedef struct styx_counter_snapshot {
+    uint64_t seq;
+    uint64_t taken_ns;
+    uint32_t owner;
+    uint32_t state;
+    uint32_t health;
+    uint32_t publish;
+    uint64_t frames;
+    uint64_t last_id;
+    uint64_t last_timestamp_ns;
+    uint64_t published;
+    uint64_t ring_full;
+    uint32_t readers;
+    uint64_t drops[5];
+    uint64_t copies;
+    uint64_t copy_bytes;
+    uint64_t age_count;
+    uint64_t age_min_ns;
+    uint64_t age_median_ns;
+    uint64_t age_max_ns;
+    uint32_t achieved_fps_milli;
+    uint64_t window_span_ns;
+    uint32_t window_frames;
+    uint32_t requested_fps_milli;
+    uint32_t next_delay_ms;
+    uint32_t failures;
+    uint64_t total_failures;
+} styx_counter_snapshot;
+
+/* Decodes one counters record of `len` bytes into out. STYX_E_INVALID for a NULL buffer, a
+ * short record, or a NULL out; STYX_E_PROTOCOL for bytes that are not this layout (magic,
+ * version, length, an unknown code). Thread-safe. */
+styx_status styx_counters_read(const uint8_t *bytes, size_t len, styx_counter_snapshot *out);
 
 /* ---- Copies --------------------------------------------------------------------------- */
 

@@ -133,6 +133,10 @@ fn build_proof(dir: &Path, cc: &str, lib: &Path) -> PathBuf {
             "-DSTYX_EXPECT_PLANE={}",
             std::mem::size_of::<styx_capi::PlaneOut>()
         ),
+        format!(
+            "-DSTYX_EXPECT_COUNTER_SNAPSHOT={}",
+            std::mem::size_of::<styx_capi::CounterSnapshot>()
+        ),
     ];
     let output = Command::new(cc)
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1"])

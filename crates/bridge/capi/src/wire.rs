@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use styx_controls::{Control, ControlValue};
+use styx_service::control::Shown;
 
 use crate::status::{
     E_INVALID, E_IO, E_NOT_FOUND, E_PROTOCOL, E_STOPPED, E_UNSUPPORTED, Fail, Res,
@@ -18,7 +19,7 @@ pub(crate) const IO_WAIT: Duration = Duration::from_secs(5);
 /// The most answer lines one request may have (a controls answer has one line per control).
 const MAX_ANSWER: usize = 256;
 
-/// One camera as the service's `list` line names it.
+/// One camera as a `list` answer names it: the id, its owner and its frame socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Entry {
     pub(crate) name: String,
@@ -88,43 +89,18 @@ fn service_error(why: &str) -> Fail {
     Fail::new(status, format!("control socket: {why}"))
 }
 
-/// The cameras of a `list` answer.
-pub(crate) fn parse_list(lines: &[String]) -> Res<Vec<Entry>> {
-    lines.iter().map(|line| parse_camera(line)).collect()
-}
-
-/// One `camera <id> key=value ...` line. The id is the second word; the free text `last_error`
-/// comes last and is not read.
-pub(crate) fn parse_camera(line: &str) -> Res<Entry> {
-    let mut words = line.split_ascii_whitespace();
-    if words.next() != Some("camera") {
-        return Err(Fail::new(
-            E_PROTOCOL,
-            format!("not a camera line: {line:.80}"),
-        ));
-    }
-    let name = words
-        .next()
-        .ok_or_else(|| Fail::new(E_PROTOCOL, "a camera line with no id"))?;
-    let mut owner = String::from("-");
-    let mut socket = None;
-    for word in words {
-        if word.starts_with("last_error=") {
-            break;
-        }
-        if let Some(value) = word.strip_prefix("owner=") {
-            owner = value.to_string();
-        } else if let Some(value) = word.strip_prefix("socket=")
-            && value != "-"
-        {
-            socket = Some(PathBuf::from(value));
-        }
-    }
-    Ok(Entry {
-        name: name.to_string(),
-        owner,
-        socket,
-    })
+/// The cameras of a `list` answer, read by the service's own reader (unknown lines and fields are
+/// skipped there).
+pub(crate) fn entries(lines: &[String]) -> Vec<Entry> {
+    styx_service::control::parse_list(lines)
+        .cameras
+        .into_iter()
+        .map(|cam| Entry {
+            name: cam.id,
+            owner: cam.owner.unwrap_or_else(|| "-".to_string()),
+            socket: cam.socket,
+        })
+        .collect()
 }
 
 /// The wire text of a control value, as `set` takes it.
@@ -141,30 +117,19 @@ pub(crate) fn value_text(value: ControlValue) -> Res<String> {
     }
 }
 
-/// The value in a `controls` answer's `value=` for `control`.
+/// The value in a `controls` answer for `control`, as the service's reader gives it.
 pub(crate) fn value_of(lines: &[String], control: Control) -> Res<ControlValue> {
-    let prefix = format!("control {} ", control.name());
-    let line = lines
-        .iter()
-        .find(|l| l.starts_with(&prefix))
+    let line = styx_service::control::parse_controls(lines)
+        .into_iter()
+        .find(|line| line.name == control.name())
         .ok_or_else(|| Fail::new(E_NOT_FOUND, "the service lists no such control"))?;
-    let text = line
-        .split_ascii_whitespace()
-        .find_map(|word| word.strip_prefix("value="))
-        .ok_or_else(|| Fail::new(E_PROTOCOL, "a control line with no value"))?;
-    match text {
-        "auto" => Ok(ControlValue::Auto),
-        "on" => Ok(ControlValue::Flag(true)),
-        "off" => Ok(ControlValue::Flag(false)),
-        "-" => Err(Fail::new(E_NOT_FOUND, "no frame yet, so no value")),
-        "rect" => Err(Fail::new(
+    match line.value {
+        Shown::Value(value) => Ok(value),
+        Shown::NoFrame => Err(Fail::new(E_NOT_FOUND, "no frame yet, so no value")),
+        Shown::Rect => Err(Fail::new(
             E_UNSUPPORTED,
             "a crop is not read through the C surface",
         )),
-        number => number
-            .parse::<u32>()
-            .map(ControlValue::Manual)
-            .map_err(|_| Fail::new(E_PROTOCOL, "a control value that is not a number")),
     }
 }
 
@@ -173,29 +138,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_camera_line_gives_its_id_owner_and_socket_and_stops_at_last_error() {
-        let line = "camera lemnos:cam0-sensor state=streaming owner=native starts=1 failures=0 \
-                    total_failures=0 frames=5 skipped=0 last_id=5 next_delay_ms=- \
-                    socket=/tmp/s/cameras/a-1.sock publish=publishing readers=0 published=5 \
-                    publish_dropped=0 health=healthy last_error=- socket=/wrong";
-        let entry = parse_camera(line).expect("parse");
-        assert_eq!(entry.name, "lemnos:cam0-sensor");
-        assert_eq!(entry.owner, "native");
-        assert_eq!(entry.socket, Some(PathBuf::from("/tmp/s/cameras/a-1.sock")));
-        let unpublished = parse_camera("camera x state=absent owner=- socket=-").expect("parse");
-        assert_eq!(unpublished.socket, None);
+    fn cameras_come_from_the_services_reader_with_their_socket_and_owner() {
+        let lines = vec![
+            "camera lemnos:cam0 state=streaming owner=native frames=5 socket=/tmp/s/a-1.sock \
+             publish=publishing health=healthy last_error=-"
+                .to_string(),
+            "camera x state=absent owner=- socket=-".to_string(),
+            "copy copies=0 bytes=0 site=styx_frame".to_string(),
+            "future kind of line".to_string(),
+        ];
+        let found = entries(&lines);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].name, "lemnos:cam0");
+        assert_eq!(found[0].owner, "native");
+        assert_eq!(found[0].socket, Some(PathBuf::from("/tmp/s/a-1.sock")));
+        assert_eq!(found[1].socket, None);
     }
 
     #[test]
     fn a_value_is_read_from_its_control_line_and_refusals_are_mapped() {
         let lines = vec![
             "control exposure unit=us range=1..9 default=10000 auto=true value=5000".to_string(),
+            "control gain unit=- range=1..9 default=1 auto=false value=-".to_string(),
         ];
         assert_eq!(
             value_of(&lines, Control::Exposure),
             Ok(ControlValue::Manual(5000))
         );
-        assert!(value_of(&lines, Control::Gain).is_err());
+        assert_eq!(
+            value_of(&lines, Control::Gain).map_err(|f| f.status),
+            Err(E_NOT_FOUND)
+        );
+        assert!(value_of(&lines, Control::FrameRate).is_err());
         assert_eq!(service_error("no camera x").status, E_NOT_FOUND);
         assert_eq!(
             service_error("camera is absent, not streaming").status,

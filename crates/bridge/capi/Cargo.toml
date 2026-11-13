@@ -19,12 +19,13 @@ styx-lemnos = { path = "../../core/lemnos" }
 styx-native = { path = "../../camera/native" }
 styx-native-run = { path = "../../camera/native-run" }
 styx-select = { path = "../../camera/select" }
+styx-service = { path = "../../out/service" }
 styx-socket = { path = "../../out/socket" }
+styx-counters = { path = "../../tools/counters" }
 
 [dev-dependencies]
 # The simulated backend, as the camera service's tests run it: lemnosd in this process on
 # lemnos-sim (test code only, see tests/sim), and the service itself for the socket path.
-styx-service = { path = "../../out/service" }
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }

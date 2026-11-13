@@ -58,7 +58,7 @@ impl Source {
                 .collect()),
             Kind::Service { control } => {
                 let mut link = ControlLink::connect(control)?;
-                wire::parse_list(&link.ask("list")?)
+                Ok(wire::entries(&link.ask("list")?))
             }
         }
     }

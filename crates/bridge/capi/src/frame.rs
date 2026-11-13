@@ -32,6 +32,8 @@ pub struct FrameInfo {
     pub exposure_us: u32,
     pub analogue_gain_milli: u32,
     pub memory_kind: u32,
+    /// The producer's achieved frame rate, from the metadata (0 when unknown or a version 1 record).
+    pub achieved_fps_milli: u32,
 }
 
 /// One plane's bytes, as the header's `styx_plane`.
@@ -152,6 +154,7 @@ impl Frame {
                 MemoryKind::Dmabuf => MEMORY_DMABUF,
                 MemoryKind::Gpu => MEMORY_GPU,
             },
+            achieved_fps_milli: self.meta.achieved_fps_milli,
         }
     }
 
