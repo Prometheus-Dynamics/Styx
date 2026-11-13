@@ -3,8 +3,8 @@
 //! [`find_chain`] finds the `camera.sensor/1` device by tag and follows `link` to its receiver and,
 //! when it has one, its ISP; [`find_chains`] does that for every sensor on the board. [`Frames`]
 //! opens the receiver's frame stream and turns each of its buffers into [`styx_frame`] buffers,
-//! once, so that every frame is a [`FrameLease`] over the memory Lemnos filled: no copy. Lemnos
-//! carries the frame identity and timestamp as opaque values; both reach the lease unchanged.
+//! once, so that every frame is a [`FrameLease`] over the memory Lemnos filled: no copy. A lease's
+//! id is the frame's sequence in its stream; its timestamp is the frame's timestamp, unchanged.
 //! [`open_job_stream`] is the writable form, for a job stream the consumer fills and posts on.
 //!
 //! A `Frames` or `JobStream` that drops closes its stream on the daemon, so the stream opens again.
@@ -818,7 +818,10 @@ impl<M> Frames<M> {
                     .ok_or(Error::Layout(styx_format::LayoutError::Overflow))?
             }
         };
-        let entry = FrameEntry::new(frame.identity(), frame.timestamp_ns(), self.format, layouts);
+        // The frame's number in its stream. Lemnos's `identity` is the consumer's own tag for the
+        // values it posted, and is 0 on every frame until something posts one, so it cannot
+        // number frames.
+        let entry = FrameEntry::new(frame.sequence(), frame.timestamp_ns(), self.format, layouts);
         match self.pool.acquire_at(index, entry) {
             Ok(lease) => {
                 self.pending[index] = Some(frame);
