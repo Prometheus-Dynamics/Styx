@@ -58,7 +58,6 @@ fn mode(index: usize) -> Option<Mode> {
             link_rate_mbps: 1000,
         },
         bayer: BayerOrder::Rggb,
-        max_fps_milli: fps * 1000,
         crop: Rect {
             x: 0,
             y: 0,
@@ -67,7 +66,8 @@ fn mode(index: usize) -> Option<Mode> {
         },
         line_time_ps: 9_100_000,
         line_length: 1456,
-        frame_length_min: 900,
+        // The shortest frame at this rate: 1e15 / (fps * 1000 * line time), to the nearest line.
+        frame_length_min: (1_000_000_000_000_000 / (u64::from(fps) * 1_000 * 9_100_000)) as u32,
         frame_length_max: 52_000,
         exposure_min: 16,
         exposure_margin: 25,

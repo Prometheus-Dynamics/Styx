@@ -3,7 +3,7 @@
 
 use lemnos_contract_camera_sensor::{GainRange, Mode};
 use styx_controls::{Control, ControlValue, Update, ValueError};
-use styx_native_controls::{Error, GainLaw, Initial, Limit, NativeControls};
+use styx_native_controls::{Error, Initial, Limit, NativeControls};
 
 mod common;
 
@@ -49,7 +49,7 @@ fn manual(control: Control, value: u32, frame: u64) -> Update {
 /// A controls and sensor that are streaming, at frame 10 (the frame the test asks in).
 fn streaming() -> (NativeControls, Sensor) {
     let mode = mode();
-    let mut controls = NativeControls::new(&mode, START, GainLaw::Linear).unwrap();
+    let mut controls = NativeControls::new(&mode, START).unwrap();
     let mut sensor = Sensor::new(&mode);
     controls.prepare(&mut sensor).unwrap();
     for k in 0..=10 {
@@ -117,16 +117,41 @@ fn a_value_outside_the_generic_range_is_a_value_error() {
 }
 
 #[test]
-fn a_frame_rate_the_frame_length_cannot_reach_is_refused() {
+fn a_frame_rate_the_frame_length_cannot_reach_is_clamped_and_reported() {
+    // 150 fps is a frame of 733 lines; the shortest frame here is 900 lines, which runs at
+    // 1e15 / (900 * 9.1e6) = 122.100 fps. The ask is clamped to it, and the landing says so.
+    // The exposure in force (8 ms) would not fit the clamped frame, so this asks for a shorter one
+    // too: a clamp that cuts the exposure in force is refused, as the next test says.
     let (mut controls, mut sensor) = streaming();
-    match controls.request(&mut sensor, &[manual(Control::FrameRate, 150_000, 12)]) {
-        Err(Error::Limit(Limit {
-            control: Control::FrameRate,
-            requested: 150_000,
-            ..
-        })) => {}
-        other => panic!("expected a frame rate limit, got {other:?}"),
-    }
+    let landings = controls
+        .request(
+            &mut sensor,
+            &[
+                manual(Control::FrameRate, 150_000, 12),
+                manual(Control::Exposure, 5_000, 12),
+            ],
+        )
+        .expect("clamped, not refused");
+    let landing = landings
+        .iter()
+        .find(|l| l.control == Control::FrameRate)
+        .expect("a frame rate landing");
+    assert!(landing.clamped);
+    assert_eq!(landing.achieved_milli, Some(122_100));
+    assert_eq!(sensor.frame_length.last().map(|&(_, fl)| fl), Some(900));
+}
+
+#[test]
+fn a_frame_rate_the_frame_length_reaches_is_not_clamped() {
+    // 120 fps at 9.1 us a line: 916 lines, which is in the frame lengths (900 to 52000).
+    let (mut controls, mut sensor) = streaming();
+    let landings = controls
+        .request(&mut sensor, &[manual(Control::FrameRate, 120_000, 12)])
+        .expect("in limits");
+    let landing = landings.iter().next().expect("one landing");
+    assert!(!landing.clamped);
+    // 916 lines at 9.1 us is 119.967 fps: within 0.06% of 120.
+    assert_eq!(landing.achieved_milli, Some(119_967));
 }
 
 #[test]
@@ -170,7 +195,7 @@ fn auto_unsupported_and_duplicate_requests_are_refused() {
 #[test]
 fn a_request_before_the_first_frame_is_refused() {
     let mode = mode();
-    let mut controls = NativeControls::new(&mode, START, GainLaw::Linear).unwrap();
+    let mut controls = NativeControls::new(&mode, START).unwrap();
     let mut sensor = Sensor::new(&mode);
     assert_eq!(
         controls.request(&mut sensor, &[manual(Control::Exposure, 9_000, 1)]),
@@ -181,7 +206,7 @@ fn a_request_before_the_first_frame_is_refused() {
 #[test]
 fn a_frame_rate_that_cuts_the_exposure_in_force_is_refused() {
     let mode = mode();
-    let mut controls = NativeControls::new(&mode, START, GainLaw::Linear).unwrap();
+    let mut controls = NativeControls::new(&mode, START).unwrap();
     let mut sensor = Sensor::new(&mode);
     controls.prepare(&mut sensor).unwrap();
     for k in 0..=9 {
@@ -218,7 +243,6 @@ fn an_initial_value_the_sensor_cannot_take_is_refused_at_setup() {
             exposure_us: 17_000,
             ..START
         },
-        GainLaw::Linear,
     )
     .unwrap_err();
     assert!(matches!(

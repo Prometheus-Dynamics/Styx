@@ -16,7 +16,6 @@ use lemnos_contract_camera_sensor::{
 };
 use lemnos_core::{Result, Status};
 use styx_controls::{Control, ControlValue, Update};
-pub use styx_native_controls::GainLaw;
 use styx_native_controls::{Error, Initial, NativeControls};
 
 /// Picoseconds per line: an a 728-clock line at 80 MHz.
@@ -213,7 +212,7 @@ pub fn run(
     updates: &[Update],
     end: u64,
 ) -> std::result::Result<Run, Error> {
-    let mut controls = NativeControls::new(mode, START, GainLaw::Linear)?;
+    let mut controls = NativeControls::new(mode, START)?;
     let mut sensor = Sensor::new(mode);
     controls.prepare(&mut sensor)?;
     let mut landings = Vec::new();

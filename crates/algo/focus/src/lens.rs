@@ -2,7 +2,7 @@
 //! position moved to), and the map from its codes to the normalised Focus control.
 
 use lemnos_client::RemoteCaller;
-use lemnos_contract_lens::{Lens, Range};
+use lemnos_contract_lens::{FocusDirection, Lens, Range};
 use lemnos_core::{Bound, Status};
 use styx_aaa::Pwl;
 use styx_lemnos::Client;
@@ -164,6 +164,30 @@ impl LensDevice {
             Err(status) => Err(status),
         }
     }
+
+    /// Which way focus moves as the position goes up, as the lens answers it. `NOT_SUPPORTED` is
+    /// read as [`FocusDirection::Unknown`] by the caller; other statuses are errors.
+    pub fn direction(&mut self) -> Result<FocusDirection, Status> {
+        self.lens.direction()
+    }
+
+    /// Microseconds the lens takes to settle after a move of `distance` codes, or `None` when the
+    /// lens and the board have no figure for it (or the lens cannot say: the caller falls back to
+    /// its configured settle time).
+    pub fn settle_us(&mut self, distance: u16) -> Option<u32> {
+        self.lens.settle_us(distance).ok().flatten()
+    }
+}
+
+/// The direction a focus scale runs in: the lens's own answer, or `from_map` (the AF map's, from
+/// the tuning or the board) when the lens says `Unknown`. The lens's answers are about the codes:
+/// `TowardNear` is nearer focus at higher codes, which is the rising direction.
+pub fn resolve_direction(answer: FocusDirection, from_map: Direction) -> Direction {
+    match answer {
+        FocusDirection::TowardNear => Direction::Rising,
+        FocusDirection::TowardFar => Direction::Falling,
+        FocusDirection::Unknown => from_map,
+    }
 }
 
 #[cfg(test)]
@@ -195,6 +219,23 @@ mod tests {
         // Off the range, clamped.
         assert_eq!(rising.value(2000.0), 0);
         assert_eq!(rising.value(-5.0), 1000);
+    }
+
+    #[test]
+    fn the_lens_answer_wins_and_unknown_keeps_the_map() {
+        use lemnos_contract_lens::FocusDirection;
+        assert_eq!(
+            resolve_direction(FocusDirection::TowardNear, Direction::Falling),
+            Direction::Rising
+        );
+        assert_eq!(
+            resolve_direction(FocusDirection::TowardFar, Direction::Rising),
+            Direction::Falling
+        );
+        assert_eq!(
+            resolve_direction(FocusDirection::Unknown, Direction::Falling),
+            Direction::Falling
+        );
     }
 
     #[test]

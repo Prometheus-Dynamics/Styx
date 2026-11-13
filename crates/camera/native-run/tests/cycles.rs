@@ -16,7 +16,7 @@ use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
 use lemnosd::{Config, Service};
 use styx_lemnos::Client;
-use styx_native_run::{GainLaw, Initial, Policy, Request, Session, State, SystemClock};
+use styx_native_run::{Initial, Policy, Request, Session, State, SystemClock};
 
 /// The sensor's initial values: exposure 8 ms, gain 1.0x, 60 fps.
 const CONTROLS: Initial = Initial {
@@ -70,8 +70,8 @@ fn start_and_stop_100_times_on_the_simulated_backend() {
         bayer: Some(BayerOrder::Rggb),
     };
     let clock = SystemClock::default();
-    let mut session = Session::new(&client, camera, request, Policy::default(), &clock)
-        .with_controls(CONTROLS, GainLaw::Linear);
+    let mut session =
+        Session::new(&client, camera, request, Policy::default(), &clock).with_controls(CONTROLS);
     let order = [
         "sensor.select_mode",
         "receiver.configure",

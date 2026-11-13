@@ -77,23 +77,28 @@ pub struct SimSensor {
     selected: Option<u16>,
     streaming: bool,
     applied: Option<FrameValues>,
+    /// The name the kernel gives this sensor (`identity`), from the board's `config`. Absent: no
+    /// kernel names it, so `identity` is `NOT_SUPPORTED`.
+    identity: Option<String>,
 }
 
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
 
-    fn start(_needs: SimSensorNeeds, _cfg: &Config<'_>) -> Result<Self> {
+    fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
             selected: None,
             streaming: false,
             applied: None,
+            identity: cfg.str("identity").map(str::to_string),
         })
     }
 }
 
 impl CameraSensor for SimSensor {
-    fn identity(&mut self, _into: &mut [u8]) -> Result<usize> {
-        Err(Status::NOT_SUPPORTED)
+    fn identity(&mut self, into: &mut [u8]) -> Result<usize> {
+        let name = self.identity.as_deref().ok_or(Status::NOT_SUPPORTED)?;
+        write_name(name, into)
     }
     fn info(&mut self) -> Result<SensorInfo> {
         Ok(SensorInfo {
@@ -186,19 +191,32 @@ pub struct SimReceiver {
     layout: Option<FrameLayout>,
     run: Option<Run>,
     counters: Counters,
+    /// The name of the sensor wired to this receiver's input (`source`), from the board's
+    /// `config`. Absent: the kernel does not describe the input, so `source` is `NOT_SUPPORTED`.
+    /// Present but empty: nothing is wired.
+    source: Option<String>,
+}
+
+/// Writes `name` into `into`, returning its length; `BUFFER_TOO_SMALL` when it does not fit.
+fn write_name(name: &str, into: &mut [u8]) -> Result<usize> {
+    into.get_mut(..name.len())
+        .ok_or(Status::BUFFER_TOO_SMALL)?
+        .copy_from_slice(name.as_bytes());
+    Ok(name.len())
 }
 
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
     const TICKS: bool = true;
 
-    fn start(needs: SimReceiverNeeds, _cfg: &Config<'_>) -> Result<Self> {
+    fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
             frames: needs.frames,
             configured: None,
             layout: None,
             run: None,
             counters: Counters::default(),
+            source: cfg.str("source").map(str::to_string),
         })
     }
 
@@ -245,8 +263,9 @@ impl CameraReceiver for SimReceiver {
         Ok(0)
     }
 
-    fn source(&mut self, _into: &mut [u8]) -> Result<usize> {
-        Err(Status::NOT_SUPPORTED)
+    fn source(&mut self, into: &mut [u8]) -> Result<usize> {
+        let name = self.source.as_deref().ok_or(Status::NOT_SUPPORTED)?;
+        write_name(name, into)
     }
 
     fn layout(&mut self) -> Result<Option<lemnos_contract_camera_receiver::FrameLayout>> {
@@ -427,8 +446,26 @@ impl CameraIsp for SimIsp {
 /// receiver with no link is listed before the real one, so a tool that takes the first receiver
 /// fails. `sensor_link` replaces the sensor's link when given.
 pub fn board(sensor_link: Option<&str>) -> String {
+    board_with(sensor_link, None, None)
+}
+
+/// [`board`] with the sensor's `identity` and the receiver's `source` set in their `config`, when
+/// given (see [`SimSensor`] and [`SimReceiver`]).
+pub fn board_with(
+    sensor_link: Option<&str>,
+    identity: Option<&str>,
+    source: Option<&str>,
+) -> String {
     let link = match sensor_link {
         Some(target) => format!("link = \"{target}\""),
+        None => String::new(),
+    };
+    let identity = match identity {
+        Some(name) => format!("config = {{ identity = \"{name}\" }}"),
+        None => String::new(),
+    };
+    let source = match source {
+        Some(name) => format!("config = {{ source = \"{name}\" }}\n"),
         None => String::new(),
     };
     format!(
@@ -437,8 +474,9 @@ pub fn board(sensor_link: Option<&str>) -> String {
          [[devices]]\nid = \"csi-spare\"\ndriver = \"sim-receiver\"\n\
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
          [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+         {source}\
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}\n"
+         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}\n{identity}\n"
     )
 }
 

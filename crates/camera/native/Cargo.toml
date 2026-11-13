@@ -10,9 +10,12 @@ homepage.workspace = true
 
 [dependencies]
 styx-lemnos = { path = "../../core/lemnos" }
+lemnos-client = { workspace = true }
+lemnos-core = { workspace = true, features = ["std"] }
+lemnos-contract-camera-sensor = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
 
 [dev-dependencies]
-lemnos-client = { workspace = true }
 # The simulated backend: lemnosd in this process, its drivers and board (test only). Same pins as
 # styx-lemnos's dev-dependencies.
 lemnosd = { workspace = true }

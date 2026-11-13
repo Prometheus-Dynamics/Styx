@@ -32,7 +32,7 @@ use lemnosd::{Config, Service};
 use styx_controls::{Control, ControlValue, FrameMetadata, Update, ValueError};
 use styx_format::FourCc;
 use styx_frame::FrameLease;
-use styx_lemnos::{ChainError, Frames, find_chain, open_frames_writable};
+use styx_lemnos::{ChainError, Frames, Geometry, find_chain, open_frames_writable_at};
 
 use crate::drivers::{self, SimIsp, SimReceiver, SimSensor};
 use crate::scene::{self, Scene};
@@ -198,9 +198,8 @@ fn unique_dir() -> PathBuf {
 }
 
 impl SimCamera {
-    /// Starts the simulated camera in `mode` (0 is 320 by 40 at 120 frames a second, 1 is 640 by
-    /// 40 at 60), showing `scene`, with the default sensor timing: exposure two frames on, gain
-    /// one, frame length two.
+    /// Starts the simulated camera in `mode` (0 is 320 by 40, 1 is 640 by 40), showing `scene`,
+    /// with the default sensor timing: exposure two frames on, gain one, frame length two.
     pub fn start(scene: Scene, mode: u16) -> Result<Self, Error> {
         Self::start_with(scene, mode, SensorTiming::default())
     }
@@ -260,7 +259,7 @@ impl SimCamera {
         let mut receiver = client
             .open::<dyn CameraReceiver>(&chain.receiver.name)
             .map_err(Error::Client)?;
-        let isp_device = chain.isp.as_ref().ok_or(Error::NoIsp)?;
+        let isp_device = chain.isps.first().ok_or(Error::NoIsp)?;
         let mut isp = client
             .open::<dyn CameraIsp>(&isp_device.name)
             .map_err(Error::Client)?;
@@ -286,15 +285,14 @@ impl SimCamera {
                 )));
             }
         }
-        let frames = open_frames_writable(
-            &client,
-            chain.receiver.index,
-            "frames",
-            FourCc::RGGB10P,
-            layout.width,
-            layout.height,
-        )
-        .map_err(Error::Stream)?;
+        let geometry = Geometry {
+            code: FourCc::RGGB10P,
+            width: layout.width,
+            height: layout.height,
+            stride: layout.stride,
+        };
+        let frames = open_frames_writable_at(&client, chain.receiver.index, "frames", geometry)
+            .map_err(Error::Stream)?;
         receiver.start().map_err(Error::Contract)?;
         sensor.start().map_err(Error::Contract)?;
 

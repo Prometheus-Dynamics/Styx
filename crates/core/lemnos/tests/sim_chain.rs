@@ -68,7 +68,14 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
     let chain = find_chain(&devices).expect("chain by tag and link");
     assert_eq!(chain.sensor.name, "cam0-sensor");
     assert_eq!(chain.receiver.name, "csi0");
-    assert_eq!(chain.isp.as_ref().map(|d| d.name.as_str()), Some("isp0"));
+    assert_eq!(
+        chain
+            .isps
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>(),
+        ["isp0"]
+    );
 
     // Sensor and receiver contract calls, in the order the Lemnos contracts set.
     let mut sensor = client
@@ -78,7 +85,7 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
         .open::<dyn CameraReceiver>(&chain.receiver.name)
         .expect("receiver contract");
     let mut isp = client
-        .open::<dyn CameraIsp>(&chain.isp.as_ref().unwrap().name)
+        .open::<dyn CameraIsp>(&chain.isps[0].name)
         .expect("isp contract");
     let mode = sensor.mode(0).expect("mode 0");
     sensor.select_mode(0).expect("select_mode");
