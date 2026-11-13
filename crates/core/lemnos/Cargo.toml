@@ -13,6 +13,9 @@ default = []
 # Lemnos library halves, built without lemnosd and without the `device` feature (X6).
 v4l2 = ["dep:lemnos-v4l2"]
 pisp = ["dep:lemnos-driver-pisp"]
+rkisp = ["dep:lemnos-driver-rkisp"]
+k230isp = ["dep:lemnos-driver-k230isp"]
+isp600 = ["dep:lemnos-driver-isp600"]
 
 [dependencies]
 styx-format = { path = "../format" }
@@ -30,6 +33,17 @@ lemnos-linux-stream = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git
 # Library halves (X6): optional, each built only with its feature.
 lemnos-v4l2 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", optional = true }
 lemnos-driver-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", default-features = false, optional = true }
+lemnos-driver-rkisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", optional = true }
+lemnos-driver-k230isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", optional = true }
+lemnos-driver-isp600 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", optional = true }
+
+[dev-dependencies]
+# The simulated backend: lemnosd in this process, its drivers and board (test only).
+lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
 
 [lints]
 workspace = true

@@ -24,6 +24,22 @@ use styx_frame::{
     Layouts, MemoryKind, PoolError,
 };
 
+/// ISP600 layouts through the vendor vin driver (feature `isp600`).
+#[cfg(feature = "isp600")]
+pub use lemnos_driver_isp600 as isp600;
+/// ISP8000 layouts behind the vendor vvcam device (feature `k230isp`).
+#[cfg(feature = "k230isp")]
+pub use lemnos_driver_k230isp as k230isp;
+/// PiSP layouts and tiling, without the `device` feature (feature `pisp`).
+#[cfg(feature = "pisp")]
+pub use lemnos_driver_pisp as pisp;
+/// Rockchip ISP layouts, the vendor kernel driver's stock nodes (feature `rkisp`).
+#[cfg(feature = "rkisp")]
+pub use lemnos_driver_rkisp as rkisp;
+/// Lemnos's V4L2 library: nodes, subdevices, the media controller (feature `v4l2`).
+#[cfg(feature = "v4l2")]
+pub use lemnos_v4l2 as v4l2;
+
 /// The tag of a sensor device.
 pub const SENSOR_TAG: &str = "camera.sensor/1";
 /// The tag of a receiver device.
@@ -132,8 +148,10 @@ pub enum Error {
     Map(io::Error),
     /// The stream has no buffers this crate can map (neither one memfd nor one dma-buf each).
     NoBuffers,
-    /// A frame names a buffer outside the stream, or one whose previous frame is not yet released.
+    /// A frame names a buffer outside the stream.
     BadBuffer(u32),
+    /// A frame named a buffer whose lease is still out; the frame was given back to Lemnos.
+    Held(u32),
     Pool(PoolError),
     Acquire(AcquireError),
     Layout(styx_format::LayoutError),
@@ -146,10 +164,8 @@ impl fmt::Display for Error {
             Self::Chain(e) => write!(f, "{e}"),
             Self::Map(e) => write!(f, "mapping stream buffers: {e}"),
             Self::NoBuffers => write!(f, "stream has no mappable buffers"),
-            Self::BadBuffer(b) => write!(
-                f,
-                "frame names buffer {b}, which is out of range or still held"
-            ),
+            Self::BadBuffer(b) => write!(f, "frame names buffer {b}, which is out of range"),
+            Self::Held(b) => write!(f, "buffer {b} still held; frame dropped"),
             Self::Pool(e) => write!(f, "frame pool: {e:?}"),
             Self::Acquire(e) => write!(f, "frame acquire: {e:?}"),
             Self::Layout(e) => write!(f, "frame layout: {e:?}"),
@@ -307,28 +323,8 @@ fn slice(base: &Arc<FdMemory>, offset: usize, len: usize) -> Result<Slice, Error
     })
 }
 
-/// A frame stream's buffers as frame pools, and the stream it came from. Each buffer has its own
-/// pool (see [`pools_over`]); [`Frames::next`] and [`Frames::release`] keep each frame with its
-/// buffer.
-pub struct Frames {
-    stream: FrameStream,
-    pools: Vec<FramePool<usize>>,
-    /// The Lemnos frame held for each buffer, until its lease is released.
-    held: Vec<Option<HeldFrame>>,
-    format: MediaFormat,
-    layouts: Layouts,
-}
-
-impl fmt::Debug for Frames {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Frames")
-            .field("stream", &self.stream.name())
-            .field("buffers", &self.pools.len())
-            .finish()
-    }
-}
-
-/// Opens `stream` on `device` and maps its buffers. Frames are `code` at `width` x `height`.
+/// Opens `stream` on `device` and maps its buffers, as one pool. Frames are `code` at `width` x
+/// `height`.
 pub fn open_frames(
     client: &Client,
     device: u32,
@@ -359,14 +355,15 @@ pub fn open_frames(
     if memories.is_empty() {
         return Err(Error::NoBuffers);
     }
-    let pools = pools_over(memories, buffer_bytes)?;
-    let held = pools.iter().map(|_| None).collect();
+    let pool = pool_over(memories, buffer_bytes)?;
+    let count = pool.buffers();
     Ok(Frames {
         stream: opened,
-        pools,
-        held,
+        pool,
+        pending: (0..count).map(|_| None).collect(),
         format,
         layouts,
+        held_drops: 0,
     })
 }
 
@@ -395,30 +392,76 @@ pub fn each_memories(
         .collect()
 }
 
-/// One pool per buffer, each holding exactly that buffer's memory: `FramePool::acquire` picks its
-/// own slot and cannot be told which buffer to use, so the buffer's index and its pool stay tied.
-pub fn pools_over(
+/// One pool over all of a stream's buffers. Frames are acquired with
+/// [`FramePool::acquire_at`], at the buffer index the ring names.
+pub fn pool_over(
     memories: Vec<Box<dyn BufferMemory>>,
     buffer_bytes: usize,
-) -> Result<Vec<FramePool<usize>>, Error> {
+) -> Result<FramePool<usize>, Error> {
     let size = BufferSize {
         payload: buffer_bytes,
         gpu_slack: 0,
     };
-    memories
-        .into_iter()
-        .map(|memory| FramePool::new(size, [memory]).map_err(Error::Pool))
-        .collect()
+    FramePool::new(size, memories).map_err(Error::Pool)
+}
+
+/// A frame stream's buffers as one frame pool, and the stream it came from.
+///
+/// A buffer goes back to Lemnos only when no lease on it is out: [`Frames::next`] first gives back
+/// every buffer whose lease has dropped, then waits for a frame. A frame that names a buffer whose
+/// lease is still out is counted in [`Frames::held_drops`] and given back at once, never waited on.
+pub struct Frames {
+    stream: FrameStream,
+    pool: FramePool<usize>,
+    /// The Lemnos frame of each buffer, until its lease has dropped.
+    pending: Vec<Option<HeldFrame>>,
+    format: MediaFormat,
+    layouts: Layouts,
+    held_drops: u64,
+}
+
+impl fmt::Debug for Frames {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Frames")
+            .field("stream", &self.stream.name())
+            .field("buffers", &self.pool.buffers())
+            .field("held_drops", &self.held_drops)
+            .finish()
+    }
 }
 
 impl Frames {
     /// Buffers in the stream.
     pub fn buffers(&self) -> usize {
-        self.pools.len()
+        self.pool.buffers()
+    }
+
+    /// Frames dropped because their buffer's previous lease was still out.
+    pub fn held_drops(&self) -> u64 {
+        self.held_drops
+    }
+
+    /// Gives back to Lemnos every buffer whose lease has dropped. A buffer is free when a probe
+    /// lease can be taken on it; the probe is dropped at once.
+    fn sweep(&mut self) -> Result<(), Error> {
+        for index in 0..self.pending.len() {
+            if self.pending[index].is_none() {
+                continue;
+            }
+            let probe = FrameEntry::new(0, 0, self.format, self.layouts);
+            if let Ok(lease) = self.pool.acquire_at(index, probe) {
+                drop(lease);
+                if let Some(frame) = self.pending[index].take() {
+                    self.stream.release(frame).map_err(Error::Client)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Waits up to `timeout` for a frame and returns it as a lease over its buffer.
     pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<usize>>, Error> {
+        self.sweep()?;
         let Some(frame) = self.stream.next_frame(timeout).map_err(Error::Client)? else {
             return Ok(None);
         };
@@ -427,6 +470,7 @@ impl Frames {
 
     /// Takes a frame if one is ready, without waiting.
     pub fn try_next(&mut self) -> Result<Option<FrameLease<usize>>, Error> {
+        self.sweep()?;
         let Some(frame) = self.stream.try_next().map_err(Error::Client)? else {
             return Ok(None);
         };
@@ -435,43 +479,38 @@ impl Frames {
 
     fn lease_for(&mut self, frame: HeldFrame) -> Result<FrameLease<usize>, Error> {
         let index = frame.buffer() as usize;
-        let free = self.held.get(index).is_some_and(Option::is_none);
-        if !free {
-            let buffer = frame.buffer();
-            self.stream.release(frame).map_err(Error::Client)?;
-            return Err(Error::BadBuffer(buffer));
-        }
         let entry = FrameEntry::new(
             frame.identity(),
             frame.timestamp_ns(),
             self.format,
             self.layouts,
         );
-        let mut lease = match self.pools[index].acquire(entry) {
-            Ok(lease) => lease,
+        match self.pool.acquire_at(index, entry) {
+            Ok(mut lease) => {
+                if let Some(meta) = lease.meta_mut() {
+                    *meta = index;
+                }
+                self.pending[index] = Some(frame);
+                Ok(lease)
+            }
+            Err(AcquireError::Held { .. }) => {
+                self.held_drops += 1;
+                self.stream.release(frame).map_err(Error::Client)?;
+                Err(Error::Held(index as u32))
+            }
             Err(e) => {
                 self.stream.release(frame).map_err(Error::Client)?;
-                return Err(Error::Acquire(e));
+                Err(Error::Acquire(e))
             }
-        };
-        if let Some(meta) = lease.meta_mut() {
-            *meta = index;
         }
-        self.held[index] = Some(frame);
-        Ok(lease)
     }
 
-    /// Gives a lease's buffer back to the stream. Drop every share of the lease first.
-    pub fn release(&mut self, lease: FrameLease<usize>) -> Result<(), Error> {
-        let index = *lease.meta();
+    /// Ends a lease. The buffer goes back to Lemnos on a later call, once the lease has dropped.
+    pub fn release(&mut self, lease: FrameLease<usize>) {
         drop(lease);
-        let Some(frame) = self.held.get_mut(index).and_then(Option::take) else {
-            return Err(Error::BadBuffer(index as u32));
-        };
-        self.stream.release(frame).map_err(Error::Client)
     }
 
-    /// Closes the stream; the consumer's end of it is given back to the daemon.
+    /// Closes the stream; its frames are given back to the daemon.
     pub fn into_stream(self) -> FrameStream {
         self.stream
     }
