@@ -144,7 +144,7 @@ fn describe(delivered: &Delivered, token: *mut c_void) -> GstFrame {
         data: delivered
             .data()
             .map_or(std::ptr::null(), |bytes| bytes.as_ptr()),
-        len: delivered.buffer_len(),
+        len: delivered.payload_len(),
         fd: delivered.raw_fd().unwrap_or(-1),
         format: delivered.format().as_ptr(),
         width: delivered.width(),

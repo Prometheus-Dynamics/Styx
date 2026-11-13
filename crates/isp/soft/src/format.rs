@@ -15,6 +15,17 @@ pub enum CfaPattern {
     Gbrg,
 }
 
+impl From<CfaPattern> for styx_format::CfaOrder {
+    fn from(pattern: CfaPattern) -> Self {
+        match pattern {
+            CfaPattern::Rggb => Self::Rggb,
+            CfaPattern::Bggr => Self::Bggr,
+            CfaPattern::Grbg => Self::Grbg,
+            CfaPattern::Gbrg => Self::Gbrg,
+        }
+    }
+}
+
 /// A colour channel of the mosaic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Channel {

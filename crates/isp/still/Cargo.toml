@@ -1,0 +1,25 @@
+[package]
+name = "styx-still"
+description = "Still images from a running camera: a raw frame as a DNG with its metadata and tuning colour matrices, and the same frame processed at full size by the software ISP."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-aaa = { path = "../../algo/aaa" }
+styx-controls = { path = "../../core/controls" }
+styx-dng = { path = "../../media/dng" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+styx-settings = { path = "../settings" }
+styx-soft = { path = "../soft" }
+
+[dev-dependencies]
+# The simulated camera a still is taken from in the tests (lemnosd in this process).
+styx-sim = { path = "../../camera/sim" }
+
+[lints]
+workspace = true

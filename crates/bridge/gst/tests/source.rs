@@ -128,6 +128,7 @@ fn frames_arrive_as_the_producers_bytes_with_their_planes_and_no_copy() {
 
 #[test]
 fn a_frame_in_a_format_gstreamer_cannot_name_is_dropped_not_handed_on() {
-    // MJPG has no raw GStreamer name: the source drops it and counts it.
-    assert!(styx_gst::gst_format(FourCc::MJPG).is_none());
+    // H.264 has no caps name here: the source drops it and counts it. MJPG is image/jpeg.
+    assert!(styx_gst::gst_format(FourCc::H264).is_none());
+    assert_eq!(styx_gst::gst_format(FourCc::MJPG), Some(c"image/jpeg"));
 }

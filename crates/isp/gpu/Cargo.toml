@@ -1,0 +1,33 @@
+[package]
+name = "styx-gpu"
+description = "The software ISP's pipeline (styx-soft) as Vulkan compute shaders: the same parameters, outputs and 3A statistics, bit for bit, with dma-buf import and a GPU lease hook. Behind the `vulkan` feature; Vulkan is loaded at run time."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+# Thin Vulkan bindings; `libvulkan.so.1` is loaded at run time (no link-time dependency, no C
+# build), so a binary with this crate starts on systems without Vulkan and CI without it builds.
+ash = { version = "0.38", default-features = false, features = ["loaded", "std"], optional = true }
+styx-aaa = { path = "../../algo/aaa", optional = true }
+styx-format = { path = "../../core/format", optional = true }
+styx-frame = { path = "../../core/frame", features = ["linux"], optional = true }
+styx-settings = { path = "../settings", optional = true }
+styx-soft = { path = "../soft", optional = true }
+styx-simd = { path = "../../core/simd", optional = true }
+thiserror = { version = "2.0.21", optional = true }
+
+[features]
+default = []
+# The GPU ISP. Off, the crate is empty and needs none of the above.
+vulkan = ["dep:ash", "dep:styx-aaa", "dep:styx-format", "dep:styx-frame", "dep:styx-settings", "dep:styx-simd", "dep:styx-soft", "dep:thiserror"]
+
+[dev-dependencies]
+# `tests/dmabuf.rs`: a dma-buf from the system heap (Lemnos's dma-heap allocation).
+lemnos-linux-sys.workspace = true
+
+[lints]
+workspace = true

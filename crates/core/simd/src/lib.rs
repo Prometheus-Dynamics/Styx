@@ -13,10 +13,16 @@
 //! Whether the vector leaves run at all is one process-wide [`SimdPolicy`] (`Auto` by default,
 //! `Scalar` to run the oracle everywhere); the output is the same either way.
 //!
-//! The crate is `no_std` and allocates nothing. `std` adds run-time detection and the 32-bit
-//! Arm leaves; the tests use `std`.
+//! The crate is `no_std` + `alloc`. The row kernels of the kernels above allocate nothing; the
+//! soft ISP's tables ([`isp::ToneLut`], the fp16 tables) own their memory. `std` adds run-time
+//! detection and the 32-bit Arm leaves; the tests use `std`.
+//!
+//! [`isp`] holds the software ISP's row kernels (the per-pixel stages of `styx-soft`): the same
+//! layout as the kernels here, a scalar oracle with x86, NEON and RISC-V leaves under the same
+//! [`SimdPolicy`].
 
 #![no_std]
+extern crate alloc;
 #[cfg(any(feature = "std", test))]
 #[macro_use]
 extern crate std;
@@ -26,6 +32,7 @@ use std::{boxed::Box, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 pub mod h264;
+pub mod isp;
 pub mod jpeg;
 pub mod scalar;
 

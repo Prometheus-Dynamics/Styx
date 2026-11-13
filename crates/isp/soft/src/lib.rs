@@ -52,10 +52,10 @@
 //!
 //! # Kernels
 //!
-//! Every per-pixel stage is a row kernel in [`simd`], following `styx_simd`: a scalar
+//! Every per-pixel stage is a row kernel in `styx_simd::isp`, following `styx_simd`: a scalar
 //! oracle, x86 SSE2/SSSE3/AVX2 leaves chosen at run time, AArch64 NEON leaves, each tested for
-//! exact equality with the oracle. The fp16 kernels ([`simd::half`]) have an exact software
-//! fp16 oracle ([`simd::f16`](mod@simd::f16)).
+//! exact equality with the oracle. The fp16 kernels (`styx_simd::isp::half`) have an exact
+//! software fp16 oracle (`styx_simd::isp::f16`).
 //!
 //!
 //! # `no_std`
@@ -80,7 +80,6 @@ mod post;
 mod prepare;
 mod prepare_half;
 pub mod settings;
-pub mod simd;
 mod stage;
 /// Fixed-point helpers `styx-gpuisp` shares with this crate (its shaders take the same tables).
 /// Not a stable API.
@@ -91,6 +90,9 @@ pub mod shared {
     pub use crate::prepare::{grid_map, grid_map_into, q12};
 }
 mod stats;
+
+/// The row kernels (`styx-simd`'s `isp` module), under their old name.
+use styx_simd::isp as simd;
 
 pub use format::{BAYER_FOURCCS, CfaPattern, Channel, RawFormat, RawPacking, bayer_fourcc};
 pub use isp::{IspError, SoftIsp, Window, process};
