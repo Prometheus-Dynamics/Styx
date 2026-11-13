@@ -1,5 +1,4 @@
-//! Copy of styx-native-run's test simulator (test code only): the sensor, receiver and ISP drivers the
-//! simulated lemnosd runs. Kept in step with that file by hand; it is not a library.
+//! Copy of styx-native-run's test simulator (test code only), on the current contract shape.
 //! Simulated camera drivers, copied from styx-native's test simulator (test code, not a library): a
 //! sensor, a receiver and an ISP, each speaking its contract. Two additions for B2: the mode drops
 //! two frames, and the receiver has fault switches (`FAIL_STARTS`, `STALL_NOW`) that the tests set.
@@ -60,7 +59,6 @@ fn mode(index: usize) -> Option<Mode> {
             link_rate_mbps: 1000,
         },
         bayer: BayerOrder::Rggb,
-        max_fps_milli: fps * 1000,
         crop: Rect {
             x: 0,
             y: 0,
@@ -69,7 +67,8 @@ fn mode(index: usize) -> Option<Mode> {
         },
         line_time_ps: 9_100_000,
         line_length: 1456,
-        frame_length_min: 900,
+        // The shortest frame at this rate: 1e15 / (fps * 1000 * line time), to the nearest line.
+        frame_length_min: (1_000_000_000_000_000 / (u64::from(fps) * 1_000 * 9_100_000)) as u32,
         frame_length_max: 52_000,
         exposure_min: 16,
         exposure_margin: 25,
@@ -79,6 +78,7 @@ fn mode(index: usize) -> Option<Mode> {
             max: 255,
             unity: 16,
             step: 1,
+            law: lemnos_contract_camera_sensor::GainLaw::Linear,
         },
         digital_gain: GainRange::default(),
         exposure_delay: 2,
@@ -118,12 +118,16 @@ impl Lifecycle for SimSensor {
 }
 
 impl CameraSensor for SimSensor {
+    fn identity(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Err(Status::NOT_SUPPORTED)
+    }
     fn info(&mut self) -> Result<SensorInfo> {
         Ok(SensorInfo {
             modes: MODES.len() as u16,
             array_width: 1280,
             array_height: 800,
             test_patterns: 0,
+            embedded_data: lemnos_contract_camera_sensor::EmbeddedData::None,
         })
     }
 
@@ -269,6 +273,17 @@ impl Lifecycle for SimReceiver {
 }
 
 impl CameraReceiver for SimReceiver {
+    fn embedded_stream(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Ok(0)
+    }
+
+    fn source(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn layout(&mut self) -> Result<Option<lemnos_contract_camera_receiver::FrameLayout>> {
+        Ok(None)
+    }
     fn limits(&mut self) -> Result<Limits> {
         Ok(Limits {
             max_lanes: 2,

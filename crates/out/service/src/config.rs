@@ -43,7 +43,6 @@
 //!                        # (native: required, it is the mode's floor and the initial rate)
 //! exposure_us = 10000    # native: the sensor's initial exposure
 //! gain_milli = 1000      # native: the sensor's initial analogue gain (1000 is 1.0x)
-//! gain_law = "linear"    # native: "linear" or "unknown" (unknown refuses gain)
 //! # force = "native"
 //!
 //! [camera."/dev/video2"]
@@ -62,7 +61,7 @@ use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
-use styx_native_run::{Backoff, BackoffError, GainLaw};
+use styx_native_run::{Backoff, BackoffError};
 use styx_select::Backend;
 
 /// The backend a camera may be forced to, as the config names it.
@@ -81,24 +80,6 @@ impl Force {
             Force::Native => Backend::Native,
             Force::Libcamera => Backend::Libcamera,
             Force::V4l2 => Backend::V4l2,
-        }
-    }
-}
-
-/// The gain law the config names for the native controls.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum GainLawName {
-    #[default]
-    Linear,
-    Unknown,
-}
-
-impl GainLawName {
-    pub const fn law(self) -> GainLaw {
-        match self {
-            GainLawName::Linear => GainLaw::Linear,
-            GainLawName::Unknown => GainLaw::Unknown,
         }
     }
 }
@@ -128,9 +109,6 @@ pub struct CameraConfig {
     /// Native: the sensor's initial analogue gain in thousandths (1000 is 1.0x).
     #[serde(default)]
     pub gain_milli: Option<u32>,
-    /// Native: the gain law the sensor's gain codes follow.
-    #[serde(default)]
-    pub gain_law: Option<GainLawName>,
     /// V4L2 and libcamera: buffers requested from the driver.
     #[serde(default)]
     pub buffers: Option<u32>,
@@ -296,14 +274,13 @@ mod tests {
     #[test]
     fn per_camera_settings_parse() {
         let config = Config::parse(
-            "socket_dir = \"/x\"\nforce = \"v4l2\"\n[camera.\"lemnos:cam0\"]\nforce = \"native\"\nwidth = 320\nfps_milli = 60000\ngain_law = \"unknown\"\n",
+            "socket_dir = \"/x\"\nforce = \"v4l2\"\n[camera.\"lemnos:cam0\"]\nforce = \"native\"\nwidth = 320\nfps_milli = 60000\n",
         )
         .expect("parses");
         let cam = &config.camera["lemnos:cam0"];
         assert_eq!(cam.force, Some(Force::Native));
         assert_eq!(cam.width, Some(320));
         assert_eq!(cam.fps_milli, Some(60_000));
-        assert_eq!(cam.gain_law, Some(GainLawName::Unknown));
         assert_eq!(config.force, Some(Force::V4l2));
     }
 }

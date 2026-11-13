@@ -48,7 +48,7 @@ pub mod service;
 pub mod slot;
 pub mod worker;
 
-pub use config::{CameraConfig, Config, ConfigError, Force, GainLawName};
+pub use config::{CameraConfig, Config, ConfigError, Force};
 pub use outlet::{Discard, Outlet, Outlets};
 pub use service::camera_socket;
 pub use service::{Daemon, Deps, Error, Listers, Nothing, Service};

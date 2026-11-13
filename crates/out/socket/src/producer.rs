@@ -23,7 +23,115 @@ use crate::wire::{
 };
 
 /// How long a reader has to answer the handshake.
-const ANSWER_WITHIN: Duration = Duration::from_secs(5);
+/// How long a reader has to answer a handshake, from its connection, before it is dropped.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// A reader's handshake, half done: the slot it will hold, and the owned descriptors and records
+/// the handshake sends. See [`Producer::handshake_plan`].
+#[derive(Debug)]
+pub struct HandshakePlan {
+    slot: u32,
+    geometry: Geometry,
+    ring_fd: OwnedFd,
+    page_fd: OwnedFd,
+    descriptors: Vec<OwnedFd>,
+    buffers: Vec<Record>,
+}
+
+/// A reader that answered its handshake: its socket and the reader's marks and doorbell, ready for
+/// [`Producer::attach`].
+#[derive(Debug)]
+pub struct Accepted {
+    slot: u32,
+    socket: UnixStream,
+    marks: OwnedFd,
+    limits: Limits,
+    eventfd: OwnedFd,
+    bell_page: OwnedFd,
+}
+
+impl HandshakePlan {
+    /// The reader slot this handshake offers.
+    pub const fn slot(&self) -> u32 {
+        self.slot
+    }
+
+    /// Runs the handshake on `socket`: the offer, the records, then the reader's answer. Blocks
+    /// for the reader, at most `within` for each message. Does not touch the producer, so it may
+    /// run on any thread. A reader that does not answer in time gets an error, and its socket is
+    /// dropped with the plan's result.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError`] when the reader does not answer as asked, or does not answer in time.
+    pub fn run(
+        &self,
+        socket: UnixStream,
+        limits: Limits,
+        within: Duration,
+    ) -> Result<Accepted, SocketError> {
+        let slot = self.slot;
+        socket.set_read_timeout(Some(within))?;
+        socket.set_write_timeout(Some(within))?;
+        let offer = encode_offer(&Offer {
+            slot,
+            max_held: limits.max_held,
+            geometry: self.geometry,
+            descriptors: self.descriptors.len() as u32,
+        });
+        let fds = [self.ring_fd.as_fd(), self.page_fd.as_fd()];
+        fdpass::send_on(&socket, &[&offer], &fds)?;
+
+        let mut named = 0_usize;
+        for record in &self.buffers {
+            let bytes = encode_record(record).ok_or(SocketError::Protocol(
+                "a buffer's kind does not cross processes",
+            ))?;
+            if record.descriptor as usize == named {
+                let fd = self.descriptors.get(named).ok_or(SocketError::Protocol(
+                    "a buffer names a descriptor that is not there",
+                ))?;
+                fdpass::send_on(&socket, &[&bytes], &[fd.as_fd()])?;
+                named += 1;
+            } else {
+                fdpass::send_on(&socket, &[&bytes], &[])?;
+            }
+        }
+        if named != self.descriptors.len() {
+            return Err(SocketError::Protocol("a descriptor no buffer names"));
+        }
+
+        let mut ack = [0_u8; ACK_LEN];
+        let received = fdpass::recv(socket.as_fd(), &mut ack, 3, false)?.ok_or(
+            SocketError::Protocol("the reader closed before it answered"),
+        )?;
+        if received.len != ACK_LEN
+            || ack[0..4] != VERSION.to_le_bytes()
+            || ack[4..8] != slot.to_le_bytes()
+        {
+            return Err(SocketError::Protocol(
+                "the reader's answer is not the one asked for",
+            ));
+        }
+        let mut fds = received.fds;
+        let (Some(marks), Some(eventfd), Some(bell_page)) = (fds.take(0), fds.take(1), fds.take(2))
+        else {
+            return Err(SocketError::Protocol(
+                "the reader's answer lacks a marks page or doorbell",
+            ));
+        };
+        socket.set_read_timeout(None)?;
+        socket.set_write_timeout(None)?;
+        Ok(Accepted {
+            slot,
+            socket,
+            marks,
+            limits,
+            eventfd,
+            bell_page,
+        })
+    }
+}
 /// The ring's field carrying the frames.
 const FIELD: FieldId = FieldId(0);
 /// Doorbells a producer can ring besides its socket readers' (see [`Producer::add_bell`]). Its
@@ -272,23 +380,32 @@ impl<M> Producer<M> {
     ///
     /// [`SocketError`] if the reader does not answer as expected or every slot is taken.
     pub fn accept(&mut self, socket: UnixStream, limits: Limits) -> Result<u32, SocketError> {
+        let plan = self.handshake_plan()?;
+        let accepted = plan.run(socket, limits, HANDSHAKE_TIMEOUT)?;
+        self.attach(accepted)
+    }
+
+    /// The first half of a handshake, made on the producer's thread: reserves a reader slot and
+    /// copies out, as owned descriptors, what the reader is sent. The plan owns no reference into
+    /// the producer, so [`HandshakePlan::run`] can be run on another thread while frames keep
+    /// being published. A plan is for one reader: give it to [`HandshakePlan::run`], then the
+    /// result to [`Producer::attach`]. No other reader is attached in between.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::NoReaderSlot`] when every slot is taken; [`SocketError`] when a descriptor
+    /// cannot be duplicated.
+    pub fn handshake_plan(&self) -> Result<HandshakePlan, SocketError> {
         let slot = self.holds.free_slot().ok_or(SocketError::NoReaderSlot)?;
-        socket.set_read_timeout(Some(ANSWER_WITHIN))?;
-        socket.set_write_timeout(Some(ANSWER_WITHIN))?;
-        let ring_fd = self.ring.read_fd()?;
-        let page_fd = self.writer.pool().page_fd()?;
-        let descriptors: Vec<BorrowedFd<'_>> = self.writer.pool().descriptors().collect();
-
-        let offer = encode_offer(&Offer {
-            slot,
-            max_held: limits.max_held,
-            geometry: self.geometry,
-            descriptors: descriptors.len() as u32,
-        });
-        let fds = [ring_fd.as_fd(), page_fd.as_fd()];
-        fdpass::send_on(&socket, &[&offer], &fds)?;
-
-        let mut named = 0_usize;
+        let ring_fd = self.ring.read_fd()?.try_clone()?;
+        let page_fd = self.writer.pool().page_fd()?.try_clone()?;
+        let descriptors: Vec<OwnedFd> = self
+            .writer
+            .pool()
+            .descriptors()
+            .map(|fd| fd.try_clone_to_owned())
+            .collect::<io::Result<_>>()?;
+        let mut buffers = Vec::with_capacity(self.kinds.len());
         for (index, (desc, kind)) in self
             .writer
             .pool()
@@ -297,53 +414,43 @@ impl<M> Producer<M> {
             .zip(&self.kinds)
             .enumerate()
         {
-            let record = encode_record(&Record {
+            buffers.push(Record {
                 index: index as u32,
                 descriptor: u32::from(desc.descriptor),
                 kind: *kind,
                 offset: desc.offset,
                 len: desc.size,
-            })
-            .ok_or(SocketError::Protocol(
-                "a buffer's kind does not cross processes",
-            ))?;
-            if usize::from(desc.descriptor) == named {
-                let fd = descriptors.get(named).ok_or(SocketError::Protocol(
-                    "a buffer names a descriptor that is not there",
-                ))?;
-                fdpass::send_on(&socket, &[&record], &[*fd])?;
-                named += 1;
-            } else {
-                fdpass::send_on(&socket, &[&record], &[])?;
-            }
+            });
         }
-        if named != descriptors.len() {
-            return Err(SocketError::Protocol("a descriptor no buffer names"));
-        }
+        Ok(HandshakePlan {
+            slot,
+            geometry: self.geometry,
+            ring_fd,
+            page_fd,
+            descriptors,
+            buffers,
+        })
+    }
 
-        let mut ack = [0_u8; ACK_LEN];
-        let received = fdpass::recv(socket.as_fd(), &mut ack, 3, false)?.ok_or(
-            SocketError::Protocol("the reader closed before it answered"),
-        )?;
-        if received.len != ACK_LEN
-            || ack[0..4] != VERSION.to_le_bytes()
-            || ack[4..8] != slot.to_le_bytes()
-        {
-            return Err(SocketError::Protocol(
-                "the reader's answer is not the one asked for",
-            ));
-        }
-        let mut fds = received.fds;
-        let (Some(marks), Some(eventfd), Some(bell_page)) = (fds.take(0), fds.take(1), fds.take(2))
-        else {
-            return Err(SocketError::Protocol(
-                "the reader's answer lacks a marks page or doorbell",
-            ));
-        };
+    /// The second half of a handshake: the reader's marks and doorbell go into the hold table,
+    /// and the reader is linked, so the next frame can be published to it. Quick and
+    /// non-blocking; call it on the producer's thread between frames.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError`] if the reader's marks or doorbell cannot be mapped. The reader is then
+    /// dropped (its socket closes).
+    pub fn attach(&mut self, accepted: Accepted) -> Result<u32, SocketError> {
+        let Accepted {
+            slot,
+            socket,
+            marks,
+            limits,
+            eventfd,
+            bell_page,
+        } = accepted;
         self.holds.add(slot, marks, limits)?;
         let bell = Bell::attach(eventfd, bell_page)?;
-        socket.set_read_timeout(None)?;
-        socket.set_write_timeout(None)?;
         self.links.push(Link { slot, socket, bell });
         Ok(slot)
     }

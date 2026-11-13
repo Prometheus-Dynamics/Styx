@@ -9,7 +9,7 @@
 //! camera until a manual `start`.
 
 use std::num::NonZeroU32;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
@@ -18,16 +18,17 @@ use styx_format::{FourCc, Interval};
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
 use styx_native::discover;
-use styx_native_run::{AutoOff, Clock, GainLaw, Initial, Policy, Request, Session};
+use styx_native_run::{AutoOff, Clock, Initial, Policy, Request, Session};
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
 use styx_select::{Capture, CaptureError, Selected, Status};
-use styx_socket::{Limits, Producer};
+use styx_socket::Producer;
 use styx_v4l2::StreamConfig;
 
 use crate::config::CameraConfig;
 use crate::outlet::Outlet;
 use crate::service::Shared;
-use crate::slot::{Command, Publish, Slot, State};
+use crate::slot::{Command, Health, Publish, Slot, State};
+use lemnos_client::DeviceHealth;
 
 /// The client name the service gives the Lemnos daemon.
 pub const CLIENT_NAME: &str = "styx-service";
@@ -35,11 +36,11 @@ pub const CLIENT_NAME: &str = "styx-service";
 const FRAME_WAIT: Duration = Duration::from_millis(100);
 /// How long an idle, stopped or turned-off worker waits for a command before it looks again.
 const IDLE_WAIT: Duration = Duration::from_millis(100);
+/// Publishers made so far, in this process. A handshake plan is attached only to the publisher it
+/// was made by.
+static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The ring's history, in entries, for each camera's socket.
 const HISTORY: u32 = 8;
-/// What one reader may hold of a camera's buffers at once. A reader over this is cut off by the
-/// producer (it reconnects). No time limit.
-const READER_HOLDS: u32 = 4;
 /// The sensor's exposure when the config does not give one (native cameras).
 const DEFAULT_EXPOSURE_US: u32 = 10_000;
 /// The sensor's analogue gain when the config does not give one (native cameras).
@@ -71,8 +72,11 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                 Ok(Command::Set { reply, .. }) => {
                     let _ = reply.send(Err(format!("camera is {state}, not streaming")));
                 }
-                // Closed: the reader connects again later.
-                Ok(Command::Reader(stream)) => drop(stream),
+                // Not publishing: the reader is closed and connects again later.
+                Ok(Command::Handshake(reply)) => {
+                    let _ = reply.send(None);
+                }
+                Ok(Command::Attach(..)) => {}
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -104,7 +108,10 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                 Ok(Command::Set { reply, .. }) => {
                     let _ = reply.send(Err("camera is absent, not streaming".to_string()));
                 }
-                Ok(Command::Reader(stream)) => drop(stream),
+                Ok(Command::Handshake(reply)) => {
+                    let _ = reply.send(None);
+                }
+                Ok(Command::Attach(..)) => {}
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -168,7 +175,10 @@ fn drain(commands: &Receiver<Command>, slot: &Slot) -> Drained {
                     slot.snapshot().state
                 )));
             }
-            Ok(Command::Reader(stream)) => drop(stream),
+            Ok(Command::Handshake(reply)) => {
+                let _ = reply.send(None);
+            }
+            Ok(Command::Attach(..)) => {}
             Err(TryRecvError::Empty) => return Drained::Idle,
             Err(TryRecvError::Disconnected) => return Drained::Gone,
         }
@@ -183,7 +193,7 @@ fn attempt(
     outlet: &mut dyn Outlet,
     selection: &Selected,
 ) -> Ended {
-    let opened = open(selection, &slot.settings, shared, |capture| {
+    let opened = open(selection, slot, shared, |capture| {
         pump(capture, slot, commands, shared, outlet)
     });
     match opened {
@@ -199,11 +209,12 @@ fn attempt(
 /// client and camera it borrows) live for the call. Any error is text for the status.
 fn open<R>(
     selection: &Selected,
-    settings: &CameraConfig,
+    slot: &Slot,
     shared: &Shared,
     run: impl FnOnce(&mut dyn Capture) -> R,
 ) -> Result<R, String> {
     use styx_select::Backend;
+    let settings = &slot.settings;
     match selection.owner {
         Backend::Native => {
             let socket = shared
@@ -218,6 +229,7 @@ fn open<R>(
                 .iter()
                 .find(|c| c.name() == selection.key)
                 .ok_or_else(|| format!("native camera {} is not on the daemon", selection.key))?;
+            slot.set_health(native_health(camera.health(), camera.reason()));
             // The rate is the request as given: it is the sensor mode's floor and the initial
             // frame rate. The native controls refuse a rate outside the sensor's range, so the
             // config must give one.
@@ -239,10 +251,9 @@ fn open<R>(
                 gain_milli: settings.gain_milli.unwrap_or(DEFAULT_GAIN_MILLI),
                 frame_rate_milli: fps,
             };
-            let law: GainLaw = settings.gain_law.unwrap_or_default().law();
             let clock: &dyn Clock = &*shared.clock;
             let session = Session::new(&client, camera, request, native_policy(shared), clock)
-                .with_controls(initial, law);
+                .with_controls(initial);
             let mut capture = NativeCapture::start(session).map_err(|e| e.to_string())?;
             Ok(run(&mut capture))
         }
@@ -271,6 +282,20 @@ fn open<R>(
                 V4l2Capture::start(&selection.key, config).map_err(|e| e.to_string())?;
             Ok(run(&mut capture))
         }
+    }
+}
+
+/// The health a native camera reports, as the service shows it.
+fn native_health(health: DeviceHealth, reason: &str) -> Health {
+    let reason = if reason.is_empty() {
+        "no reason given".to_string()
+    } else {
+        reason.to_string()
+    };
+    match health {
+        DeviceHealth::Ok => Health::Healthy,
+        DeviceHealth::Degraded => Health::Degraded(reason),
+        DeviceHealth::Failed => Health::Failed(reason),
     }
 }
 
@@ -328,6 +353,7 @@ fn pump(
     slot.started();
     let mut delivered = false;
     let mut publisher: Option<Producer<FrameMetadata>> = None;
+    let mut generation = 0_u64;
     let mut unpublishable = false;
     let ended = loop {
         if shared.shutdown.load(Ordering::Acquire) {
@@ -339,6 +365,7 @@ fn pump(
                 if publisher.is_none() && !unpublishable {
                     match Producer::with_pool(lease.pool(), HISTORY) {
                         Ok(producer) => {
+                            generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
                             publisher = Some(producer);
                             slot.set_publish(Publish::Publishing);
                         }
@@ -394,23 +421,22 @@ fn pump(
                 Ok(Command::Set { updates, reply }) => {
                     let _ = reply.send(set(capture, &updates));
                 }
-                Ok(Command::Reader(stream)) => match publisher.as_mut() {
-                    Some(producer) => {
-                        if producer
-                            .accept(
-                                stream,
-                                Limits {
-                                    max_held: READER_HOLDS,
-                                    max_hold: None,
-                                },
-                            )
-                            .is_ok()
-                        {
-                            slot.set_readers(producer.stats().readers);
-                        }
+                Ok(Command::Handshake(reply)) => {
+                    // The plan is made here, on the producer's thread; it is run elsewhere.
+                    let plan = publisher
+                        .as_ref()
+                        .and_then(|producer| producer.handshake_plan().ok());
+                    let _ = reply.send(plan.map(|plan| (generation, plan)));
+                }
+                Ok(Command::Attach(planned, accepted)) => {
+                    // Attached between frames: a table entry and a doorbell, nothing more.
+                    if let Some(producer) = publisher.as_mut()
+                        && planned == generation
+                        && producer.attach(accepted).is_ok()
+                    {
+                        slot.set_readers(producer.stats().readers);
                     }
-                    None => drop(stream),
-                },
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
                     stop = Some(Ended::Stopped);
@@ -439,5 +465,23 @@ fn describe(error: &CaptureError) -> String {
     match error {
         CaptureError::Stopped => "the camera stopped".to_string(),
         other => other.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_native_cameras_health_and_reason_are_shown_and_a_degraded_one_is_usable() {
+        assert_eq!(native_health(DeviceHealth::Ok, "x"), Health::Healthy);
+        assert_eq!(
+            native_health(DeviceHealth::Degraded, "link not confirmed"),
+            Health::Degraded("link not confirmed".to_string())
+        );
+        assert_eq!(
+            native_health(DeviceHealth::Failed, ""),
+            Health::Failed("no reason given".to_string())
+        );
     }
 }

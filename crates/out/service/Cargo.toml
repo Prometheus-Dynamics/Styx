@@ -18,19 +18,19 @@ styx-native-controls = { path = "../../camera/native-controls" }
 styx-native-run = { path = "../../camera/native-run" }
 styx-select = { path = "../../camera/select" }
 styx-socket = { path = "../socket" }
+lemnos-client = { workspace = true }
 styx-libcamera = { path = "../../camera/libcamera" }
 styx-v4l2 = { path = "../../camera/v4l2" }
 serde = { version = "1.0.229", features = ["derive"] }
 toml = { version = "1.1", default-features = false, features = ["serde", "parse"] }
 
 [dev-dependencies]
-# The simulated backend: lemnosd in this process, its drivers and board (test only). The same pins
-# as styx-native-run's dev-dependencies.
-lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+# The simulated backend: lemnosd in this process, its drivers and board (test only).
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-hal = { workspace = true, features = ["std"] }
+lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-camera-sensor = { workspace = true }
 lemnos-contract-camera-receiver = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }

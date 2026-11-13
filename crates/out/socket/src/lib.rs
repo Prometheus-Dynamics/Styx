@@ -50,7 +50,8 @@ use core::fmt;
 
 pub use geometry::Geometry;
 pub use producer::{
-    BeginError, BellId, OUTSIDE_BELLS, Producer, ProducerConfig, ProducerStats, ReaderInfo,
+    Accepted, BeginError, BellId, HANDSHAKE_TIMEOUT, HandshakePlan, OUTSIDE_BELLS, Producer,
+    ProducerConfig, ProducerStats, ReaderInfo,
 };
 pub use reader::{Frame, ReadError, Reader, ReaderStats};
 pub use shm_ring_holds::Limits;

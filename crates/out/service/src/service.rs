@@ -15,6 +15,7 @@ use std::time::Duration;
 use styx_native_run::Backoff;
 use styx_select::listing::{LibcameraLister, ListError, Listed, NativeLister, V4l2Lister};
 use styx_select::{Backend, Config as SelectConfig};
+use styx_socket::{HANDSHAKE_TIMEOUT, Limits};
 
 use crate::config::{CameraConfig, Config, ConfigError};
 use crate::outlet::Outlets;
@@ -369,8 +370,12 @@ pub fn camera_socket(socket_dir: &Path, id: &str) -> PathBuf {
         .join(format!("{name}-{hash:016x}.sock"))
 }
 
-/// Accepts readers on a camera's socket until shutdown, and hands each to the camera's worker.
-/// A reader the worker cannot serve right now is closed by the worker, and connects again.
+/// Accepts readers on a camera's socket until shutdown. Each reader's handshake runs here, on the
+/// socket's thread, never on the camera's: the camera's worker only makes the plan and attaches
+/// the finished reader, both quick. A reader that does not answer within the handshake timeout is
+/// dropped; a reader that connects while the camera is not publishing is closed, and connects
+/// again. One handshake runs at a time per camera, so a stuck reader delays only the readers
+/// behind it on this camera's socket.
 fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, shared: &Shared) {
     if let Some(dir) = path.parent()
         && let Err(e) = std::fs::create_dir_all(dir)
@@ -401,19 +406,38 @@ fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, sha
     }
     slot.set_socket(Some(path.to_path_buf()), Publish::Waiting);
     while !shared.shutdown.load(Ordering::Acquire) {
-        match listener.accept() {
-            Ok((stream, _)) => {
-                if stream.set_nonblocking(false).is_err()
-                    || tx.send(Command::Reader(stream)).is_err()
-                {
-                    break;
-                }
+        let stream = match listener.accept() {
+            Ok((stream, _)) => stream,
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        };
+        if stream.set_nonblocking(false).is_err() {
+            continue;
+        }
+        let (reply_tx, reply_rx) = mpsc::channel();
+        if tx.send(Command::Handshake(reply_tx)).is_err() {
+            break;
+        }
+        let Ok(Some((planned, plan))) = reply_rx.recv_timeout(Duration::from_secs(2)) else {
+            continue;
+        };
+        if let Ok(accepted) = plan.run(stream, READER_LIMITS, HANDSHAKE_TIMEOUT)
+            && tx.send(Command::Attach(planned, accepted)).is_err()
+        {
+            break;
         }
     }
     let _ = std::fs::remove_file(path);
 }
+
+/// What each reader may hold of a camera's buffers at once. A reader over this is cut off by the
+/// producer (it reconnects). No time limit.
+const READER_LIMITS: Limits = Limits {
+    max_held: 4,
+    max_hold: None,
+};
 
 /// The Lemnos daemon as a native lister: connects, lists, and disconnects on each scan.
 #[derive(Debug, Clone)]

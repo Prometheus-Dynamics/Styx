@@ -1,7 +1,6 @@
 //! One camera's shared state: what the worker thread reports and what the control socket reads.
 
 use std::fmt;
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
@@ -11,6 +10,7 @@ use std::time::Duration;
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
 use styx_select::{Backend, Selected};
+use styx_socket::{Accepted, HandshakePlan};
 
 use crate::config::CameraConfig;
 
@@ -36,17 +36,19 @@ impl fmt::Display for Publish {
     }
 }
 
-/// A camera's health as its backend reports it. No backend reports health through the `Capture`
-/// trait yet, so every camera is `Unknown`. A device-health PR adds the reports; `Degraded` is a
-/// usable camera with a reason, never a refusal.
+/// A camera's health as its backend reports it. Native cameras report it (the sensor's health
+/// and reason, read when the camera is opened); the other backends do not yet, so theirs stays
+/// `Unknown`. `Degraded` is a usable camera with a reason, never a refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Health {
     /// No backend has reported health for this camera.
     Unknown,
     /// The backend reports the camera fine.
     Healthy,
-    /// The backend reports the camera working with a reason it is not fully healthy.
+    /// The backend reports the camera working, with a reason it is not fully healthy. Served.
     Degraded(String),
+    /// The backend reports the device failed, with its reason. The service keeps trying.
+    Failed(String),
 }
 
 impl fmt::Display for Health {
@@ -55,6 +57,7 @@ impl fmt::Display for Health {
             Health::Unknown => f.write_str("unknown"),
             Health::Healthy => f.write_str("healthy"),
             Health::Degraded(why) => write!(f, "degraded ({why})"),
+            Health::Failed(why) => write!(f, "failed ({why})"),
         }
     }
 }
@@ -164,9 +167,13 @@ pub enum Command {
         updates: Vec<Update>,
         reply: Sender<Result<(), String>>,
     },
-    /// A reader connected to the camera's socket. Served while the camera streams; closed
-    /// otherwise, so the reader connects again.
-    Reader(UnixStream),
+    /// A reader connected to the camera's socket asks for its handshake plan. The reply is the
+    /// publisher's generation and the plan, or `None` when the camera is not publishing right now
+    /// (the reader is closed, and connects again).
+    Handshake(Sender<Option<(u64, HandshakePlan)>>),
+    /// A reader answered its handshake: attach it to the publisher of the generation it was
+    /// planned on. Any other generation is closed.
+    Attach(u64, Accepted),
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -286,6 +293,10 @@ impl Slot {
 
     pub(crate) fn set_publish(&self, publish: Publish) {
         lock(&self.status).publish = publish;
+    }
+
+    pub(crate) fn set_health(&self, health: Health) {
+        lock(&self.status).health = health;
     }
 
     pub(crate) fn set_readers(&self, readers: usize) {

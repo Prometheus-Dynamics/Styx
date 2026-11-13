@@ -219,6 +219,7 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
         let line = line_of(&control, cam).expect("listed");
         assert_eq!(field(&line, "skipped"), Some("0"), "{line}");
         assert_eq!(field(&line, "owner"), Some("native"), "{line}");
+        assert_eq!(field(&line, "health"), Some("healthy"), "{line}");
     }
 
     // A control request that lands a few frames on: exposure 5 ms on camera 0 only.
@@ -844,5 +845,130 @@ fn a_camera_that_leaves_and_returns_is_read_again_by_its_reader() {
         "the reader reported copies: {:?}",
         reader.lines_seen.last()
     );
+    service.shutdown();
+}
+
+// ---------------------------------------------------------------------------------------------
+// A reader that never answers its handshake.
+
+type Times = Arc<Mutex<Vec<(u64, Instant)>>>;
+
+struct TimedOutlet(Times);
+
+impl Outlet for TimedOutlet {
+    fn frame(&mut self, _camera: &str, lease: &FrameLease<FrameMetadata>) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((lease.id(), Instant::now()));
+    }
+}
+
+struct TimedOutlets(Times);
+
+impl Outlets for TimedOutlets {
+    fn attach(&self, _camera: &str) -> Box<dyn Outlet> {
+        Box::new(TimedOutlet(Arc::clone(&self.0)))
+    }
+}
+
+#[test]
+fn a_reader_that_never_answers_does_not_stall_the_camera_and_is_dropped_at_the_timeout() {
+    let dir = test_dir("stuck");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let times: Times = Arc::default();
+    let cam = "lemnos:cam0-sensor";
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\ncameras = [\"{cam}\"]\n\
+         [camera.\"{cam}\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let config = Config::parse(&text).expect("config");
+    let mut deps = deps(Arc::new(Recorder::default()), &lemnos_socket);
+    deps.outlets = Arc::new(TimedOutlets(Arc::clone(&times)));
+    let service = Service::start(config, deps).expect("start the service");
+    let control = service.control_socket().to_path_buf();
+    wait_until("streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 50
+    });
+
+    // The stuck reader: it connects, is sent the offer, and never answers. It reads what it is
+    // sent (so the offer does not just sit in a buffer) and waits to be closed.
+    let socket = camera_socket(&dir, cam);
+    let mut stuck = UnixStream::connect(&socket).expect("connect the stuck reader");
+    stuck
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .expect("timeout");
+    let connected = Instant::now();
+    let deadline = connected + Duration::from_secs(20);
+    let mut scratch = [0_u8; 4096];
+    let closed_at = loop {
+        assert!(
+            Instant::now() < deadline,
+            "the stuck reader was never dropped"
+        );
+        if let Ok(0) = stuck.read(&mut scratch) {
+            break Instant::now();
+        }
+    };
+    let window = closed_at - connected;
+
+    // The camera kept publishing through the whole handshake window: no gap between frames longer
+    // than 250 ms (a stall of the handshake would be a gap of about the timeout, 5 s).
+    let frames: Vec<(u64, Instant)> = times
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .iter()
+        .copied()
+        .filter(|(_, at)| *at >= connected && *at <= closed_at)
+        .collect();
+    let largest_gap = frames
+        .windows(2)
+        .map(|w| w[1].1 - w[0].1)
+        .max()
+        .unwrap_or(Duration::MAX);
+    assert!(
+        window >= Duration::from_secs(4),
+        "the window was {window:?}"
+    );
+    assert!(
+        largest_gap < Duration::from_millis(250),
+        "the camera stalled for {largest_gap:?} around the stuck reader"
+    );
+    assert!(
+        frames.windows(2).all(|w| w[1].0 > w[0].0),
+        "frame ids in order"
+    );
+    // Dropped at the handshake timeout (5 s), not before and not much after.
+    assert!(
+        window >= Duration::from_millis(4_500) && window <= Duration::from_secs(10),
+        "the stuck reader was dropped after {window:?}"
+    );
+    println!(
+        "proof: stuck_reader window={window:?} frames_in_window={} largest_gap={largest_gap:?}",
+        frames.len()
+    );
+
+    // A reader that does answer connects after it, and takes frames.
+    let mut reader = Reader::connect(UnixStream::connect(&socket).expect("connect"))
+        .expect("the handshake completes");
+    let until = Instant::now() + Duration::from_secs(20);
+    let mut taken = 0;
+    while taken < 5 && Instant::now() < until {
+        match reader.next_frame().expect("not cut off") {
+            Some(_) => taken += 1,
+            None => {
+                let _ = reader.wait(Some(Duration::from_millis(5)));
+            }
+        }
+    }
+    assert!(
+        taken >= 5,
+        "the reader after the stuck one got {taken} frames"
+    );
+    let status = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&status, "publish"), Some("publishing"), "{status}");
     service.shutdown();
 }
