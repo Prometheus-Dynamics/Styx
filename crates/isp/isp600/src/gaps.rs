@@ -1,32 +1,50 @@
-//! What the ISP600 mapping cannot encode yet, named per block.
+//! The settings this block cannot be given, named one by one.
 //!
-//! The Lemnos library holds the load image's regions, the register offsets and the module and
-//! update bits the kernel names. It does not hold how a value is written into them: the register
-//! encodings of the black level, gains, colour matrix, tone curve, shading, denoise, sharpening
-//! and histogram weights, the table entries behind them, or how the statistics bytes decode into
-//! `styx_aaa::Statistics`. Those are the gaps. This crate does not guess them: [`unmapped`] names
-//! each non-neutral setting that would need one of them, and [`GAPS`] says what is missing.
+//! The Lemnos library's `tuning` module writes the black level's enables and bit depths, the
+//! module enables and the temporal denoise's record enable. It writes nothing else: the register
+//! encodings of white balance, the colour matrix, the gamma and tone curves, lens shading, the
+//! spatial denoise strengths, sharpening and the statistics decodes have no open source, so this
+//! crate does not invent them. A setting outside the supported set is refused with an
+//! [`Unavailable`] error, never written as a guess, and never dropped silently.
+//!
+//! The default image path for this board family is raw from the receiver into the software ISP
+//! (`styx-soft`) or the GPU ISP (`styx-gpu`), with Styx's own 3A. The hardware ISP is optional
+//! and only useful for the black level and the enables that [`crate::load`] writes.
 
 use styx_aaa::{DenoiseParams, IDENTITY};
 use styx_settings::IspSettings;
 
-/// One block or path whose values the library cannot yet write or read.
+/// The message every refusal of a setting carries, before the setting's name.
+pub const MESSAGE: &str = "hardware ISP tuning unavailable: no open source for the encodings";
+
+/// A setting the hardware ISP cannot be given: its encoding has no open source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Unavailable {
+    /// The field of [`IspSettings`] (or the block it feeds), by name.
+    pub setting: &'static str,
+}
+
+impl std::fmt::Display for Unavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{MESSAGE} ({})", self.setting)
+    }
+}
+
+impl std::error::Error for Unavailable {}
+
+/// One block whose encodings have no open source, and what they would need.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gap {
     /// The block, by its library name.
     pub block: &'static str,
-    /// What the library would need to provide for Styx to map it.
+    /// What an open source would have to give for Styx to write it.
     pub needs: &'static str,
 }
 
-/// The gaps, one per block, in the order of the load image.
+/// The unavailable blocks, in the order of the load image.
 pub const GAPS: &[Gap] = &[
     Gap {
-        block: "BLC (black level)",
-        needs: "the register encoding of the per-channel black levels",
-    },
-    Gap {
-        block: "WB and DG (white balance, digital gain)",
+        block: "WB and DG (white balance, digital gain, deflicker gain)",
         needs: "the register encodings of the channel gains",
     },
     Gap {
@@ -54,17 +72,15 @@ pub const GAPS: &[Gap] = &[
         needs: "the register encoding of the zone weights",
     },
     Gap {
-        block: "statistics (AE, AWB, AF, AFS, histograms, tone, denoise)",
-        needs: "the field encodings inside each statistics region, to decode into styx_aaa::Statistics",
+        block: "AE, AF, AWB, AFS, histograms, tone and denoise statistics",
+        needs: "the statistics window encodings and the field decodes into styx_aaa::Statistics",
     },
 ];
 
-/// The non-neutral fields of `settings`, by name: each needs an encoding named in [`GAPS`]. Empty
-/// for neutral settings, which need none. Allocates nothing.
-pub fn unmapped(settings: &IspSettings) -> impl Iterator<Item = &'static str> {
+/// The settings of `settings` that are not neutral and have no encoding here, in the order of
+/// [`GAPS`]. Empty for neutral settings. Allocates nothing.
+pub fn unavailable(settings: &IspSettings) -> impl Iterator<Item = &'static str> {
     let fields = [
-        ("black_level", settings.black_level != 0.0),
-        ("black_channels", settings.black_channels.is_some()),
         ("wb", settings.wb != [1.0; 3]),
         ("digital_gain", settings.digital_gain != 1.0),
         ("flicker", settings.flicker != 1.0),
@@ -79,4 +95,13 @@ pub fn unmapped(settings: &IspSettings) -> impl Iterator<Item = &'static str> {
     fields
         .into_iter()
         .filter_map(|(name, non_neutral)| non_neutral.then_some(name))
+}
+
+/// `Ok` when every setting is neutral or is one this block writes (the black level). Otherwise
+/// the first unavailable setting, as an error naming it.
+pub fn check(settings: &IspSettings) -> Result<(), Unavailable> {
+    match unavailable(settings).next() {
+        Some(setting) => Err(Unavailable { setting }),
+        None => Ok(()),
+    }
 }
