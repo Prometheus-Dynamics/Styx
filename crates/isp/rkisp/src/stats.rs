@@ -63,7 +63,10 @@ fn layout(generation: Generation) -> Option<Where> {
                 hist: offset_of!(Buf, params.rawhist1.hist_bin),
             }
         }
-        Generation::Isp35 => return None,
+        // ISP35 and the ISP32, ISP32 lite and ISP39 layouts are not mapped here (see the crate docs).
+        Generation::Isp35 | Generation::Isp32 | Generation::Isp32Lite | Generation::Isp39 => {
+            return None;
+        }
     })
 }
 

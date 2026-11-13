@@ -33,7 +33,9 @@ fn check(g: Generation, tag: &str, settings: &IspSettings, frame: u32) {
     let name = match g {
         Generation::Isp21 => "isp21",
         Generation::Isp30 => "isp30",
-        Generation::Isp35 => unreachable!("ISP35 is not mapped"),
+        Generation::Isp35 | Generation::Isp32 | Generation::Isp32Lite | Generation::Isp39 => {
+            unreachable!("{g:?} is not mapped")
+        }
     };
     let mut p = Params::new(g);
     p.apply(settings, frame, 1280, 800).expect("apply");

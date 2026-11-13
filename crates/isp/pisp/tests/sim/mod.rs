@@ -295,6 +295,15 @@ impl Lifecycle for SimPisp {
 }
 
 impl CameraIsp for SimPisp {
+    // Added at Lemnos 58098f97: no layout answers here, so NOT_SUPPORTED.
+    fn input_layout(&mut self) -> core::result::Result<Option<lemnos_contract_camera_isp::OutputLayout>, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn output_layout(&mut self, _output: u8) -> core::result::Result<Option<lemnos_contract_camera_isp::OutputLayout>, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
     fn info(&mut self) -> Result<IspInfo> {
         Ok(IspInfo {
             max_outputs: 2,

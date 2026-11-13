@@ -18,9 +18,11 @@
 //!
 //! Gaps, not worked around here:
 //!
-//! - ISP35: the library's module bits (`module::*`) cover ISP21 and ISP30 only, and the ISP35 colour
-//!   and statistics blocks have their own units that the library does not state. [`Params::apply`]
-//!   and [`statistics`] refuse ISP35 ([`Error::Unmapped`]); its layouts and sizes are the library's.
+//! - ISP35, ISP32, ISP32 lite and ISP39: the library's module bits (`module::*`) cover ISP21 and
+//!   ISP30 only, and the other generations' colour and statistics blocks have their own units that
+//!   the library does not state here. [`Params::apply`] and [`statistics`] refuse them
+//!   ([`Error::Unmapped`]); their layouts and sizes are the library's, and a board with one opens
+//!   and refuses at its first apply.
 //! - Untested on board: the ISP21 and ISP30 paths are written from the vendor driver's interface and
 //!   checked against dev's buffers and statistics (`tests/`); the job path on a live ISP is not run
 //!   here. Board runs are pending.

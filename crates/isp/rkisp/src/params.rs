@@ -88,7 +88,10 @@ impl Params {
         match self.generation {
             Generation::Isp21 => apply::<Isp21>(&mut self.bytes, settings, frame, width, height),
             Generation::Isp30 => apply::<Isp30>(&mut self.bytes, settings, frame, width, height),
-            Generation::Isp35 => Err(Error::Unmapped(Generation::Isp35)),
+            Generation::Isp35
+            | Generation::Isp32
+            | Generation::Isp32Lite
+            | Generation::Isp39 => Err(Error::Unmapped(self.generation)),
         }
     }
 }
