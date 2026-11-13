@@ -442,6 +442,7 @@ fn fill_metadata(lease: &mut FrameLease<FrameMetadata>, request: *mut sys::Reque
             digital_gain_milli: digital.map_or(0, |g| (g * 1000.0) as u32),
             lux: None,
             colour_temperature_k: None,
+            achieved_fps_milli: 0,
         };
         if let Some(v) = exposure_us {
             meta.controls[Control::Exposure.index()] = ControlValue::Manual(v.max(0) as u32);

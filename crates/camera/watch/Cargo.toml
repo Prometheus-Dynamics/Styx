@@ -1,0 +1,30 @@
+[package]
+name = "styx-watch"
+description = "One stream of cameras appearing and leaving, from three sources and no udev watcher of Styx's own: Lemnos device events for native cameras, the kernel's uevents (through Lemnos's netlink library) for V4L2 nodes, read from sysfs without opening any node, and libcamera's listing. Events carry the identity styx-select uses, and a camera seen by two sources gives one arrival and one departure. The watcher never gives up: a socket that fails is retried with a backoff capped at 10 s, and its state is visible."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+lemnos-client = { workspace = true }
+lemnos-linux-sys = { workspace = true }
+styx-lemnos = { path = "../../core/lemnos" }
+styx-native = { path = "../native" }
+styx-select = { path = "../select" }
+
+[dev-dependencies]
+# The simulated backend: lemnosd in this process, its drivers and board (test only, as in styx-service).
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-hal = { workspace = true, features = ["std"] }
+lemnos-core = { workspace = true, features = ["std"] }
+lemnos-contract-camera-sensor = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
+lemnos-contract-camera-isp = { workspace = true }
+
+[lints]
+workspace = true

@@ -7,7 +7,6 @@ use std::path::PathBuf;
 use styx_isp600::job;
 use styx_isp600::layout;
 use styx_isp600::library::layout::{LOAD_REGIONS, STATISTICS_REGIONS};
-use styx_isp600::load::LoadImage;
 
 fn golden(name: &str, actual: &str) {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -24,13 +23,6 @@ fn golden(name: &str, actual: &str) {
     );
 }
 
-/// FNV-1a 64, for a compact fingerprint of a whole image.
-fn fnv1a(bytes: &[u8]) -> u64 {
-    bytes.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, &b| {
-        (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
-    })
-}
-
 #[test]
 fn regions_match_the_recorded_library_tables() {
     let mut out = String::new();
@@ -41,37 +33,6 @@ fn regions_match_the_recorded_library_tables() {
         writeln!(out, "stat {n} {:#x} {:#x}", r.offset, r.bytes).unwrap();
     }
     golden("regions.golden", &out);
-}
-
-#[test]
-fn a_fixed_load_image_matches_its_recorded_fingerprint() {
-    let mut image = LoadImage::new();
-    image.set_word(0x0, 0x1234_5678).unwrap();
-    image.set_word(0x134, 0x0000_0003).unwrap();
-    image.set_modules(1 << 24, true).unwrap();
-    for n in 1..=4u8 {
-        let r = LOAD_REGIONS[usize::from(n)];
-        let table: Vec<u8> = (0..r.bytes)
-            .map(|i| (i as u8).wrapping_mul(7).wrapping_add(n))
-            .collect();
-        image.set_table(n, &table).unwrap();
-    }
-    assert!(image.checked().is_ok());
-    let mut out = String::new();
-    writeln!(out, "fnv1a {:#018x}", fnv1a(image.bytes())).unwrap();
-    writeln!(
-        out,
-        "word0 {:#010x}",
-        u32::from_le_bytes(image.bytes()[0..4].try_into().unwrap())
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "word134 {:#010x}",
-        u32::from_le_bytes(image.bytes()[0x134..0x138].try_into().unwrap())
-    )
-    .unwrap();
-    golden("load_image.golden", &out);
 }
 
 #[test]

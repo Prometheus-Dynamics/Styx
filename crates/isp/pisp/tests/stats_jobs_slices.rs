@@ -2,9 +2,10 @@
 //! refusals of settings the library cannot carry yet.
 
 use styx_aaa::SharpenParams;
+use styx_format::{ColorRange, ColorSpace, FourCc, MediaFormat, Resolution};
 use styx_pisp::pisp::format::formats;
 use styx_pisp::pisp::uapi::{BayerOrder, ImageFormatConfig, RawStatistics, Wire};
-use styx_pisp::{BackEndBuilder, Geometry, IspSettings, PispError, job, stats};
+use styx_pisp::{BackEndBuilder, Geometry, IspSettings, Output, PispError, job, stats};
 
 fn fmt(width: u16, height: u16, format: u32) -> ImageFormatConfig {
     let mut f = ImageFormatConfig {
@@ -18,13 +19,25 @@ fn fmt(width: u16, height: u16, format: u32) -> ImageFormatConfig {
     f
 }
 
+fn output(code: FourCc, width: u32, height: u32, color: ColorSpace) -> Output {
+    Output {
+        media: MediaFormat::new(
+            code,
+            Resolution::new(width, height).expect("non-empty"),
+            color,
+            ColorRange::Full,
+        ),
+        stride_align: 64,
+    }
+}
+
 fn geometry() -> Geometry {
     Geometry {
         input: fmt(1280, 800, formats::BAYER16),
         bayer: BayerOrder::Rggb,
         outputs: [
-            fmt(1280, 800, formats::NV12),
-            fmt(640, 400, formats::RGB888),
+            output(FourCc::NV12, 1280, 800, ColorSpace::Bt601),
+            output(FourCc::RGB3, 640, 400, ColorSpace::Srgb),
         ],
         tdn: None,
         slice_at: None,
@@ -98,16 +111,18 @@ fn a_frame_splits_into_two_jobs_for_its_first_rows() {
 #[test]
 fn settings_the_library_cannot_carry_are_refused_before_a_job() {
     let mut b = BackEndBuilder::new(&geometry()).unwrap();
+    // Defective pixel correction has no table in the library at this rev: refused, not written.
+    let mut s = IspSettings::neutral(0.0625);
+    s.denoise.dpc = 1;
+    assert!(matches!(b.update(&s, 0.01), Err(PispError::Unsupported(_))));
+    // Sharpening is the library's default now, scaled by the settings' factors.
     let mut s = IspSettings::neutral(0.0625);
     s.sharpen = Some(SharpenParams {
         threshold: 0.5,
         strength: 1.0,
         limit: 1.0,
     });
-    assert!(matches!(b.update(&s, 0.01), Err(PispError::Unsupported(_))));
-    let mut s = IspSettings::neutral(0.0625);
-    s.denoise.dpc = 1;
-    assert!(matches!(b.update(&s, 0.01), Err(PispError::Unsupported(_))));
+    b.update(&s, 0.01).expect("sharpening prepares");
     b.update(&IspSettings::neutral(0.0625), 0.01)
         .expect("neutral settings prepare");
 }

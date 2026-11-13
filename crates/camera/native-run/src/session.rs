@@ -3,6 +3,7 @@
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::time::Duration;
 
 use lemnos_client::{Client, RemoteCaller};
@@ -12,12 +13,12 @@ use lemnos_core::Bound;
 use styx_controls::{FrameMetadata, Update};
 use styx_lemnos::{Geometry, open_frames_at};
 use styx_native::Camera;
-use styx_native_controls::{Initial, Landings, NativeControls};
+use styx_native_controls::{FrameRate, Initial, Landings, NativeControls};
 
 use crate::backoff::{AutoOff, Policy};
 use crate::clock::Clock;
 use crate::frames::{Frames, Lease};
-use crate::modes::{ModeError, Request, fourcc_for, select_mode};
+use crate::modes::{ModeError, Request, Selection, select_mode};
 
 type Sensor = Bound<dyn CameraSensor, RemoteCaller>;
 type Receiver = Bound<dyn CameraReceiver, RemoteCaller>;
@@ -41,6 +42,9 @@ pub struct Status {
     pub state: State,
     /// The sensor mode the session runs, while it streams.
     pub mode: Option<u16>,
+    /// The mode choice the session runs with, while it streams: the mode, its format and depth,
+    /// and the rate asked and given, with the reason (see [`Selection`]).
+    pub selection: Option<Selection>,
     /// Successful starts.
     pub starts: u64,
     /// Failures in a row, from the last successful start.
@@ -60,6 +64,7 @@ impl Status {
         Self {
             state: State::Stopped,
             mode: None,
+            selection: None,
             starts: 0,
             consecutive_failures: 0,
             total_failures: 0,
@@ -148,6 +153,7 @@ struct Running {
     receiver: Receiver,
     frames: Frames,
     mode: u16,
+    selection: Selection,
     controls: NativeControls,
 }
 
@@ -225,6 +231,8 @@ pub struct Session<'a, C: Clock> {
     status: Status,
     /// The sensor's initial values, for each run's native controls.
     settings: Option<Initial>,
+    /// Where each successful start's mode choice is sent, if someone listens.
+    selections: Option<Sender<Selection>>,
 }
 
 /// A dropped session stops its devices. Its frames are released with the stream.
@@ -265,7 +273,22 @@ impl<'a, C: Clock> Session<'a, C> {
             stalls: 0,
             status: Status::new(),
             settings: None,
+            selections: None,
         }
+    }
+
+    /// Sends each successful start's [`Selection`] to `sink`, so the owner can show the mode the
+    /// camera runs in. A send to a dropped receiver is ignored.
+    #[must_use]
+    pub fn with_selection_sink(mut self, sink: Sender<Selection>) -> Self {
+        self.selections = Some(sink);
+        self
+    }
+
+    /// The mode choice the running camera started with: the mode, its format and depth, and the
+    /// rate asked and given. `None` while the session is not running.
+    pub fn selection(&self) -> Option<&Selection> {
+        self.running.as_ref().map(|running| &running.selection)
     }
 
     /// Sets the sensor's initial values for the native controls of each run. Every frame the
@@ -288,6 +311,16 @@ impl<'a, C: Clock> Session<'a, C> {
             .controls
             .request(&mut running.sensor, updates)
             .map_err(Error::Controls)
+    }
+
+    /// The frame rate the running camera started at, as the native controls give it: the frame
+    /// length, the rate that length gives, and whether the sensor's limits clamped the request.
+    /// `None` while the session is not running. Later requests change the frame length; the frame
+    /// metadata carries the rate in force on each frame.
+    pub fn frame_rate(&self) -> Option<FrameRate> {
+        self.running
+            .as_ref()
+            .map(|running| running.controls.initial_rate())
     }
 
     /// What the session is doing, and the backoff if it is waiting.
@@ -321,6 +354,7 @@ impl<'a, C: Clock> Session<'a, C> {
         self.stalls = 0;
         self.status.state = State::Stopped;
         self.status.mode = None;
+        self.status.selection = None;
         self.status.next_delay = None;
         self.status.retry_at = None;
         match self.running.take() {
@@ -405,6 +439,10 @@ impl<'a, C: Clock> Session<'a, C> {
                 Ok(running) => {
                     self.status.state = State::Streaming;
                     self.status.mode = Some(running.mode);
+                    self.status.selection = Some(running.selection.clone());
+                    if let Some(sink) = &self.selections {
+                        let _ = sink.send(running.selection.clone());
+                    }
                     self.status.starts += 1;
                     self.status.consecutive_failures = 0;
                     self.status.next_delay = None;
@@ -470,9 +508,10 @@ impl<'a, C: Clock> Session<'a, C> {
         for index in 0..info.modes {
             modes.push(refused(sensor.mode(index), "sensor.mode")?);
         }
-        let index = select_mode(&modes, &self.request).map_err(Fault::Permanent)?;
+        let selection = select_mode(&modes, &self.request).map_err(Fault::Permanent)?;
+        let index = selection.mode;
         let mode = modes[usize::from(index)];
-        let code = fourcc_for(&mode).map_err(Fault::Permanent)?;
+        let code = selection.format;
         let initial = self.settings.ok_or(Fault::Config(Error::NoControls))?;
         let controls =
             NativeControls::new(&mode, initial).map_err(|e| Fault::Config(Error::Controls(e)))?;
@@ -503,6 +542,7 @@ impl<'a, C: Clock> Session<'a, C> {
             receiver,
             frames,
             mode: index,
+            selection,
             controls,
         };
         match running.start(mode.drop_frames, self.policy.frame_timeout) {

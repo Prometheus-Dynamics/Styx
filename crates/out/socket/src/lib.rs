@@ -20,6 +20,9 @@
 //!   dma-buf for a GPU import. The reader answers with its marks page and its doorbell. The
 //!   producer registers the reader's marks before it publishes anything, so no buffer a reader
 //!   holds can be reused.
+//! - **Start**: [`Reader::connect`] starts at the newest frame the ring holds ([`Start::Newest`]),
+//!   delivered at once; [`Reader::connect_with`] with [`Start::NextNew`] starts after the frames
+//!   already published. A reader's place is fixed when it answers the handshake.
 //! - **Doorbells**: [`Producer::add_bell`] adds a doorbell that is not a socket reader's (an
 //!   adopter's, say); every publish rings it with the readers'.
 //! - **Adopters**: [`Producer::ring`], [`Producer::pool`], [`Producer::holds`] and
@@ -53,7 +56,7 @@ pub use producer::{
     Accepted, BeginError, BellId, HANDSHAKE_TIMEOUT, HandshakePlan, OUTSIDE_BELLS, Producer,
     ProducerConfig, ProducerStats, ReaderInfo,
 };
-pub use reader::{Frame, ReadError, Reader, ReaderStats};
+pub use reader::{Frame, ReadError, Reader, ReaderStats, Start};
 pub use shm_ring_holds::Limits;
 pub use wire::USER_MAX;
 

@@ -10,15 +10,15 @@
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
 use std::time::Duration;
 
-use styx_controls::{FrameMetadata, Update, WIRE_BYTES};
+use styx_controls::{Control, ControlValue, FrameMetadata, Update, WIRE_BYTES};
 use styx_format::{FourCc, Interval};
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
-use styx_native::discover;
-use styx_native_run::{AutoOff, Clock, Initial, Policy, Request, Session};
+use styx_native::{Camera, discover};
+use styx_native_run::{AutoOff, Clock, Initial, Policy, Request, Selection, Session};
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
 use styx_select::{Capture, CaptureError, Selected, Status};
 use styx_socket::Producer;
@@ -27,8 +27,11 @@ use styx_v4l2::StreamConfig;
 use crate::config::CameraConfig;
 use crate::outlet::Outlet;
 use crate::service::Shared;
-use crate::slot::{Command, Health, Publish, Slot, State};
+use crate::slot::{Command, Health, KeepWindow, Publish, Slot, State};
 use lemnos_client::DeviceHealth;
+use lemnos_contract_camera_receiver::CameraReceiver;
+use lemnos_contract_camera_sensor::CameraSensor;
+use lemnos_core::Status as LemnosStatus;
 
 /// The client name the service gives the Lemnos daemon.
 pub const CLIENT_NAME: &str = "styx-service";
@@ -45,6 +48,21 @@ const HISTORY: u32 = 8;
 const DEFAULT_EXPOSURE_US: u32 = 10_000;
 /// The sensor's analogue gain when the config does not give one (native cameras).
 const DEFAULT_GAIN_MILLI: u32 = 1_000;
+
+/// The buffers a camera keeps to stream when the config does not say: half the pool's, at least
+/// two, and never more than the pool has. The frame ring holds the rest for readers, at most
+/// `HISTORY` of them.
+pub fn default_reserve(buffers: usize) -> usize {
+    (buffers / 2).max(2).min(buffers)
+}
+
+/// The keep window for a pool of `buffers` with `reserve` kept for the camera: the newest
+/// `min(HISTORY, buffers - reserve)` frames stay with the ring, and at least one does.
+pub fn keep_for(buffers: usize, reserve: usize) -> usize {
+    (HISTORY as usize)
+        .min(buffers.saturating_sub(reserve))
+        .max(1)
+}
 
 /// How one attempt at a camera ended.
 #[derive(Debug)]
@@ -193,8 +211,8 @@ fn attempt(
     outlet: &mut dyn Outlet,
     selection: &Selected,
 ) -> Ended {
-    let opened = open(selection, slot, shared, |capture| {
-        pump(capture, slot, commands, shared, outlet)
+    let opened = open(selection, slot, shared, |capture, selections| {
+        pump(capture, slot, commands, shared, outlet, selections)
     });
     match opened {
         Ok(ended) => ended,
@@ -207,11 +225,13 @@ fn attempt(
 
 /// Opens `selection` with its owner's capture and runs `run` on it. The capture (and the Lemnos
 /// client and camera it borrows) live for the call. Any error is text for the status.
+///
+/// `run` gets the mode choices a native camera makes as it starts (none for the other backends).
 fn open<R>(
     selection: &Selected,
     slot: &Slot,
     shared: &Shared,
-    run: impl FnOnce(&mut dyn Capture) -> R,
+    run: impl FnOnce(&mut dyn Capture, Option<&Receiver<Selection>>) -> R,
 ) -> Result<R, String> {
     use styx_select::Backend;
     let settings = &slot.settings;
@@ -230,20 +250,32 @@ fn open<R>(
                 .find(|c| c.name() == selection.key)
                 .ok_or_else(|| format!("native camera {} is not on the daemon", selection.key))?;
             slot.set_health(native_health(camera.health(), camera.reason()));
-            // The rate is the request as given: it is the sensor mode's floor and the initial
-            // frame rate. The native controls refuse a rate outside the sensor's range, so the
-            // config must give one.
+            // The rate is the request as given. A rate above the chosen mode's ceiling is answered
+            // with the ceiling, and the status says so (the mode choice). The config must give one.
             let fps = settings.fps_milli.ok_or_else(|| {
                 format!(
                     "native camera {} needs fps_milli in the config",
                     selection.id
                 )
             })?;
+            let format = settings
+                .format
+                .as_deref()
+                .map(|text| {
+                    text.parse::<FourCc>().map_err(|_| {
+                        format!(
+                            "camera {}: format {text:?} is not a four-character code",
+                            selection.id
+                        )
+                    })
+                })
+                .transpose()?;
             let request = Request {
                 width: settings.width.unwrap_or(0),
                 height: settings.height.unwrap_or(0),
-                min_fps_milli: fps,
-                bit_depth: None,
+                fps_milli: fps,
+                format,
+                bit_depth: settings.bit_depth,
                 bayer: None,
             };
             let initial = Initial {
@@ -252,10 +284,26 @@ fn open<R>(
                 frame_rate_milli: fps,
             };
             let clock: &dyn Clock = &*shared.clock;
-            let session = Session::new(&client, camera, request, native_policy(shared), clock)
-                .with_controls(initial);
-            let mut capture = NativeCapture::start(session).map_err(|e| e.to_string())?;
-            Ok(run(&mut capture))
+            let (choices, chosen) = channel();
+            let session = || {
+                Session::new(&client, camera, request, native_policy(shared), clock)
+                    .with_controls(initial)
+                    .with_selection_sink(choices.clone())
+            };
+            let mut capture = match NativeCapture::start(session()) {
+                Ok(capture) => capture,
+                Err(e) if left_started(&e.to_string()) => {
+                    // A previous owner left the sensor streaming, so it refuses a mode. Stop
+                    // the sensor and the receiver once through the contract, then try again
+                    // once. A second refusal is an ordinary failure: it backs off like any other.
+                    let note = stop_left_started(&client, camera);
+                    slot.recovered(note.clone());
+                    eprintln!("styx-service: camera {}: {note}", slot.id);
+                    NativeCapture::start(session()).map_err(|e| e.to_string())?
+                }
+                Err(e) => return Err(e.to_string()),
+            };
+            Ok(run(&mut capture, Some(&chosen)))
         }
         Backend::Libcamera => {
             let code = format_of(selection, settings)?;
@@ -268,7 +316,7 @@ fn open<R>(
             };
             let mut capture =
                 LibcameraCapture::open(&selection.key, config).map_err(|e| e.to_string())?;
-            Ok(run(&mut capture))
+            Ok(run(&mut capture, None))
         }
         Backend::V4l2 => {
             let code = format_of(selection, settings)?;
@@ -280,7 +328,7 @@ fn open<R>(
             config.interval = settings.fps_milli.and_then(|fps| Interval::new(1_000, fps));
             let mut capture =
                 V4l2Capture::start(&selection.key, config).map_err(|e| e.to_string())?;
-            Ok(run(&mut capture))
+            Ok(run(&mut capture, None))
         }
     }
 }
@@ -296,6 +344,48 @@ fn native_health(health: DeviceHealth, reason: &str) -> Health {
         DeviceHealth::Ok => Health::Healthy,
         DeviceHealth::Degraded => Health::Degraded(reason),
         DeviceHealth::Failed => Health::Failed(reason),
+    }
+}
+
+/// Whether a session's start failed because the sensor refused a mode as busy: the sensor is
+/// streaming, which is what a previous owner that did not stop it leaves behind. The text is the
+/// session's, which formats a refused call's status with `Debug`.
+fn left_started(text: &str) -> bool {
+    text.contains(&format!(
+        "sensor.select_mode refused: {:?}",
+        LemnosStatus::BUSY
+    ))
+}
+
+/// Stops the camera's sensor, then its receiver, through the Lemnos contract, as a manual stop
+/// would. Each is tried even when the other refuses. The text says what was done, for the status.
+fn stop_left_started(client: &Client, camera: &Camera) -> String {
+    let mut problems = Vec::new();
+    let sensor = &camera.sensor().name;
+    match client.open::<dyn CameraSensor>(sensor) {
+        Ok(mut device) => {
+            if let Err(status) = device.stop() {
+                problems.push(format!("sensor.stop refused: {status:?}"));
+            }
+        }
+        Err(e) => problems.push(format!("open {sensor}: {e}")),
+    }
+    let receiver = &camera.receiver().name;
+    match client.open::<dyn CameraReceiver>(receiver) {
+        Ok(mut device) => {
+            if let Err(status) = device.stop() {
+                problems.push(format!("receiver.stop refused: {status:?}"));
+            }
+        }
+        Err(e) => problems.push(format!("open {receiver}: {e}")),
+    }
+    if problems.is_empty() {
+        format!("sensor {sensor} was left started: stopped it and receiver {receiver}, retrying")
+    } else {
+        format!(
+            "sensor {sensor} was left started: {}; retrying",
+            problems.join("; ")
+        )
     }
 }
 
@@ -335,6 +425,15 @@ fn size_of(selection: &Selected, settings: &CameraConfig) -> Result<(u32, u32), 
     }
 }
 
+/// Records a frame-rate control the camera accepted as the rate asked for, so the status shows it.
+fn note_requested(slot: &Slot, updates: &[Update]) {
+    for update in updates {
+        if let (Control::FrameRate, ControlValue::Manual(milli)) = (update.control, update.value) {
+            slot.set_requested(Some(milli));
+        }
+    }
+}
+
 /// Runs frames through the outlet, the socket and the status until the camera ends, and answers
 /// commands between frames.
 ///
@@ -349,22 +448,43 @@ fn pump(
     commands: &Receiver<Command>,
     shared: &Shared,
     outlet: &mut dyn Outlet,
+    selections: Option<&Receiver<Selection>>,
 ) -> Ended {
     slot.started();
     let mut delivered = false;
     let mut publisher: Option<Producer<FrameMetadata>> = None;
     let mut generation = 0_u64;
     let mut unpublishable = false;
+    let mut window = KeepWindow::default();
     let ended = loop {
         if shared.shutdown.load(Ordering::Acquire) {
             break Ended::Stopped;
+        }
+        // The mode each start chose (a native camera restarts inside its session on a fault).
+        if let Some(chosen) = selections {
+            for mode in chosen.try_iter() {
+                slot.set_mode(mode);
+            }
         }
         match capture.next_frame(FRAME_WAIT) {
             Ok(Some(lease)) => {
                 delivered = true;
                 if publisher.is_none() && !unpublishable {
+                    let buffers = lease.pool().buffers();
                     match Producer::with_pool(lease.pool(), HISTORY) {
-                        Ok(producer) => {
+                        Ok(mut producer) => {
+                            let reserve = slot
+                                .settings
+                                .hardware_reserve
+                                .map_or(default_reserve(buffers), |r| (r as usize).min(buffers));
+                            let keep = producer.set_keep(keep_for(buffers, reserve));
+                            window = KeepWindow {
+                                keep,
+                                buffers,
+                                hardware_reserve: reserve,
+                                reclaimed: 0,
+                            };
+                            slot.set_keep(window);
                             generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
                             publisher = Some(producer);
                             slot.set_publish(Publish::Publishing);
@@ -383,8 +503,14 @@ fn pump(
                     let dropped = producer.publish_with(lease, &blob[..len]).is_err();
                     slot.published(dropped);
                     producer.reclaim();
-                    slot.set_readers(producer.stats().readers);
+                    let stats = producer.stats();
+                    slot.set_readers(stats.readers);
+                    if window.reclaimed != stats.reclaimed {
+                        window.reclaimed = stats.reclaimed;
+                        slot.set_keep(window);
+                    }
                 }
+                slot.set_rate(capture.rate());
             }
             Ok(None) => {}
             Err(error) => {
@@ -419,7 +545,11 @@ fn pump(
                 }
                 Ok(Command::Start) => {}
                 Ok(Command::Set { updates, reply }) => {
-                    let _ = reply.send(set(capture, &updates));
+                    let result = set(capture, &updates);
+                    if result.is_ok() {
+                        note_requested(slot, &updates);
+                    }
+                    let _ = reply.send(result);
                 }
                 Ok(Command::Handshake(reply)) => {
                     // The plan is made here, on the producer's thread; it is run elsewhere.
@@ -483,5 +613,28 @@ mod tests {
             native_health(DeviceHealth::Failed, ""),
             Health::Failed("no reason given".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_reserve_is_half_the_pool_and_at_least_two() {
+        assert_eq!(default_reserve(8), 4);
+        assert_eq!(default_reserve(5), 2);
+        assert_eq!(default_reserve(2), 2);
+        assert_eq!(default_reserve(1), 1);
+    }
+
+    #[test]
+    fn the_keep_window_is_the_history_or_what_the_camera_does_not_need_and_at_least_one() {
+        // 8 buffers, reserve 4: four frames for readers, below the history of 8.
+        assert_eq!(keep_for(8, 4), 4);
+        // 16 buffers, reserve 4: the history (8) is the limit.
+        assert_eq!(keep_for(16, 4), 8);
+        // The camera needs all of them: one frame is still kept.
+        assert_eq!(keep_for(4, 4), 1);
     }
 }

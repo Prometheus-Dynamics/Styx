@@ -7,13 +7,16 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. last_error=..` line per camera, then `ok` |
+//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
 //! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
 //! | `start <id>` / `stop <id>` | `ok`. Starts or stops the camera by hand |
 //!
-//! `last_error` and the other free text come last on their line.
+//! `mode` is the sensor mode's index (`-` when none), `format` its frame format, `bits` its bit
+//! depth, `mode_reason` one word (`exact`, `rate_clamped_to_ceiling`, `rate_clamped_to_floor`,
+//! `depth_lowered_for_rate`) and `mode_text` the reason in a sentence. `last_error` and the other
+//! free text come last on their line; `mode_text` and `rate_reason` are one word (spaces are `_`).
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -101,6 +104,7 @@ pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
                 .values()
                 .map(|slot| camera_line(&slot.snapshot()))
                 .collect();
+            out.extend(copy_lines());
             out.push("ok".to_string());
             out
         }
@@ -216,16 +220,47 @@ fn frame(slot: &Slot) -> Vec<String> {
     }
 }
 
+/// The copy counters of this process: every site where a frame's bytes are copied.
+fn copy_lines() -> Vec<String> {
+    styx_frame::copy_counters()
+        .iter()
+        .copied()
+        .chain(styx_v4l2::copy_counters().iter().copied())
+        .map(|c| {
+            // The site is last, as free text: it may hold spaces.
+            format!(
+                "copy copies={} bytes={} site={}",
+                c.copies(),
+                c.bytes(),
+                c.site()
+            )
+        })
+        .collect()
+}
+
 fn camera_line(status: &CameraStatus) -> String {
     let owner = status
         .owner
         .map_or_else(|| "-".to_string(), |b| b.to_string());
+    let milli = |v: Option<u32>| v.map_or_else(|| "none".to_string(), |v| v.to_string());
+    let requested = milli(status.requested_milli);
+    let achieved = status
+        .achieved_milli
+        .map_or_else(|| "unknown".to_string(), |v| v.to_string());
+    let reason = status
+        .rate_reason()
+        .map_or_else(|| "-".to_string(), |r| r.replace(' ', "_"));
+    let keep = status.keep;
     let last_id = status
         .last_frame
         .map_or_else(|| "-".to_string(), |f| f.id.to_string());
     let delay = status
         .next_delay
         .map_or_else(|| "-".to_string(), |d| d.as_millis().to_string());
+    let recovery = status
+        .last_recovery
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |r| r.replace(' ', "_"));
     let error = status
         .last_error
         .as_deref()
@@ -236,14 +271,31 @@ fn camera_line(status: &CameraStatus) -> String {
         .map_or_else(|| "-".to_string(), |p| p.display().to_string());
     // Free text in this line is one word (spaces become `_`), except `last_error`, which is last.
     let publish = status.publish.to_string().replace(' ', "_");
+    let (mode, format, bits, mode_reason, mode_text) = match &status.mode {
+        Some(chosen) => (
+            chosen.mode.to_string(),
+            chosen.format.to_string(),
+            chosen.bit_depth.to_string(),
+            chosen.reason.name().to_string(),
+            one_line(&chosen.text).replace(' ', "_"),
+        ),
+        None => (
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+        ),
+    };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
         status.starts,
         status.failures,
         status.total_failures,
+        status.recoveries,
         status.frames,
         status.skipped,
         last_id,
@@ -254,6 +306,22 @@ fn camera_line(status: &CameraStatus) -> String {
         status.published,
         status.publish_dropped,
         status.health.to_string().replace(' ', "_"),
+        requested,
+        achieved,
+        milli(status.achieved_meta_milli),
+        milli(status.measured_milli),
+        status.rate_clamped,
+        keep.keep,
+        keep.buffers,
+        keep.hardware_reserve,
+        keep.reclaimed,
+        reason,
+        mode,
+        format,
+        bits,
+        mode_reason,
+        mode_text,
+        recovery,
         error,
     )
 }

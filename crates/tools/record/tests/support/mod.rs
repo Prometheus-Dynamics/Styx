@@ -90,6 +90,7 @@ fn metadata(i: usize) -> FrameMetadata {
             None
         },
         colour_temperature_k: Some(5_600),
+        achieved_fps_milli: 0,
     }
 }
 

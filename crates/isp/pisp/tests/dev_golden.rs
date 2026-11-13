@@ -12,9 +12,10 @@
 
 use std::path::PathBuf;
 
+use styx_format::{ColorRange, ColorSpace, FourCc, MediaFormat, Resolution};
 use styx_pisp::pisp::format::formats;
 use styx_pisp::pisp::uapi::{BayerOrder, BeConfig, BeTilesConfig, ImageFormatConfig, Wire};
-use styx_pisp::{BackEndBuilder, Geometry, IspSettings};
+use styx_pisp::{BackEndBuilder, Geometry, IspSettings, Output};
 
 /// Dev's indices committed as goldens.
 const GOLDEN: [usize; 6] = [0, 1, 2, 10, 40, 80];
@@ -90,16 +91,16 @@ fn input() -> ImageFormatConfig {
     f
 }
 
-fn output(width: u16, height: u16, format: u32, align: u32) -> ImageFormatConfig {
-    let mut f = ImageFormatConfig {
-        width,
-        height,
-        format,
-        stride: 0,
-        stride2: 0,
-    };
-    styx_pisp::pisp::format::compute_stride_align(&mut f, align);
-    f
+fn output(code: FourCc, width: u32, height: u32, color: ColorSpace, align: u32) -> Output {
+    Output {
+        media: MediaFormat::new(
+            code,
+            Resolution::new(width, height).expect("non-empty"),
+            color,
+            ColorRange::Full,
+        ),
+        stride_align: align,
+    }
 }
 
 fn geometry() -> Geometry {
@@ -107,8 +108,8 @@ fn geometry() -> Geometry {
         input: input(),
         bayer: BayerOrder::Rggb,
         outputs: [
-            output(1280, 800, formats::NV12, 64),
-            output(640, 400, formats::RGB888, 64),
+            output(FourCc::NV12, 1280, 800, ColorSpace::Bt601, 64),
+            output(FourCc::RGB3, 640, 400, ColorSpace::Srgb, 64),
         ],
         tdn: Some(input()),
         slice_at: None,
@@ -167,93 +168,32 @@ fn config_bytes(c: &BeTilesConfig) -> Vec<u8> {
     out
 }
 
-/// Blocks whose bytes differ from dev's for a reason the library at 04d09360 makes, named here
-/// (not written by Styx): see each reason. Every other block must match byte for byte.
-const GAP_BLOCKS: [(&str, &str); 9] = [
-    (
-        "debin",
-        "the library leaves the debin coefficients zero; dev writes its defaults with DEBIN off (no effect)",
-    ),
-    (
-        "demosaic",
-        "the demosaic parameters are the caller's and the library has no defaults at this rev; dev's are enabled",
-    ),
-    (
-        "ycbcr",
-        "the YCbCr encoding (libpisp's full-range BT.601 'jpeg') is not in the library at this rev; the CSC and YCbCr enables are off",
-    ),
-    (
-        "ycbcr_inverse",
-        "as ycbcr: the inverse encoding is not in the library at this rev",
-    ),
-    (
-        "csc",
-        "as ycbcr: output 0's colour space conversion needs the encoding the library does not carry",
-    ),
-    (
-        "sharpen",
-        "the sharpen defaults and scaling are not in the library at this rev; Styx refuses sharpening settings",
-    ),
-    (
-        "sh_fc_combine",
-        "as sharpen: the sharpen/false-colour combine is the library's default at dev's rev",
-    ),
-    (
-        "false_colour",
-        "the false-colour block is the library's default at dev's rev; its enable is off here",
-    ),
-    (
-        "resample",
-        "output 0's resampler coefficients are dev's defaults with output 0's resampler off; output 1 (the 2x2 box) must match",
-    ),
-];
-
-/// `rgb_enables` bits dev sets that the library does not carry here: YCbCr, false colour,
-/// sharpen, inverse YCbCr and CSC0 (see the gaps above).
-const GAP_RGB: u32 = (1 << 3) | (1 << 4) | (1 << 5) | (1 << 7) | (1 << 9);
-
 #[test]
 fn back_end_bytes_match_devs_for_the_recorded_settings() {
     let ours = ours_all();
     assert_eq!(ours.len(), 81, "the start plus the recording's 80 frames");
     let size = std::mem::size_of::<BeTilesConfig>();
     let mut failures = String::new();
+    let mut report = String::new();
     for index in GOLDEN {
         let dev = golden(index);
         assert_eq!(dev.len(), size, "dev's size equals ours");
         let (a, b) = (&ours[index], &dev);
         for (name, off, len) in blocks() {
             if a[off..off + len] == b[off..off + len] {
+                report.push_str(&format!("index {index}: {name:<16} equal\n"));
                 continue;
             }
-            let gap = GAP_BLOCKS.iter().find(|g| g.0 == name);
-            let ok = match name {
-                // Only the gap bits of `rgb_enables` (bytes 4..8 of `global`) may differ.
-                "global" => {
-                    let w = |x: &[u8]| u32::from_le_bytes(x[4..8].try_into().unwrap());
-                    let rgb = off..off + len;
-                    a[rgb.start..rgb.start + 4] == b[rgb.start..rgb.start + 4]
-                        && (w(&a[rgb.clone()]) & !GAP_RGB) == (w(&b[rgb.clone()]) & !GAP_RGB)
-                        && a[rgb.start + 8..rgb.end] == b[rgb.start + 8..rgb.end]
-                }
-                // Output 1 (the box) must match: its coefficients follow output 0's in the block.
-                "resample" => a[off + len / 2..off + len] == b[off + len / 2..off + len],
-                _ => gap.is_some(),
-            };
-            if !ok {
-                failures.push_str(&format!("index {index}, block {name}:\n"));
-                failures.push_str(&diff_block(a, b, off, len));
-            } else if std::env::var_os("STYX_PISP_SHOW_GAPS").is_some() && index == 0 {
-                eprintln!(
-                    "gap {name} at {off} (+{len}), index {index}:\n{}",
-                    diff_block(a, b, off, len)
-                );
-            }
+            failures.push_str(&format!("index {index}, block {name}:\n"));
+            failures.push_str(&diff_block(a, b, off, len));
         }
+    }
+    if std::env::var_os("STYX_PISP_SHOW_BLOCKS").is_some() {
+        eprintln!("{report}");
     }
     assert!(
         failures.is_empty(),
-        "back end bytes differ from dev's outside the named gaps:\n{failures}"
+        "back end bytes differ from dev's:\n{failures}"
     );
 }
 

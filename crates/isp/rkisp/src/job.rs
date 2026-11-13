@@ -121,7 +121,8 @@ impl Isp {
         let width = info.statistics_bytes;
         let statistics =
             open_frames::<()>(client, device.index, &stats_name, FourCc::GREY, width, 1)
-                .map_err(|e| Error::Device(format!("statistics stream {stats_name}: {e}")))?;
+                .map_err(|e| Error::Device(format!("statistics stream {stats_name}: {e}")))?
+                .numbered_by_job();
         Ok(Self {
             generation,
             config,
