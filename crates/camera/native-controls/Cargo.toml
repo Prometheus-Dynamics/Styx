@@ -1,0 +1,17 @@
+[package]
+name = "styx-native-controls"
+description = "Native controls: posts exposure, gain and frame-rate updates to a camera.sensor/1 sensor for the frame each one applies to, staggered by the sensor's per-control delays, converts them to the sensor's codes within the sensor's own limits, and reports the values in force on each frame."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-controls = { path = "../../core/controls" }
+lemnos-contract-camera-sensor = { workspace = true }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+
+[lints]
+workspace = true
