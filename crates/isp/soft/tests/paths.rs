@@ -1,7 +1,7 @@
 //! The row paths of [`styx_soft::Paths`]: each new path (`Paths::CURRENT`) equals the path it
 //! replaces (`Paths::LEGACY`), bit for bit, on random raw frames and every geometry the
 //! pipeline's edges and windows meet. The settings cover the neutral case (identity matrix, sRGB
-//! tone), white balance, and lens shading.
+//! tone), the 8-bit direct luma's eligible and ineligible set-ups, and lens shading.
 
 use styx_aaa::LensShading;
 use styx_settings::IspSettings;
@@ -204,7 +204,7 @@ fn current_paths_equal_legacy_on_windows_and_at_16_bits() {
             assert_eq!(got, want, "window {win:?} {scale:?}");
         }
     }
-    // Ten-bit samples, as before.
+    // Ten-bit samples never take the direct path, and must still agree.
     let f10 = RawFormat::new(w, h, CfaPattern::Rggb, RawPacking::U16Le { bits: 10 });
     let input10 = bytes((w * h * 2) as usize, 7);
     let l10 = params(&f10, &settings, Paths::LEGACY);
@@ -236,10 +236,10 @@ fn current_paths_equal_legacy_on_windows_and_at_16_bits() {
 fn flags_parse_by_name() {
     assert_eq!(Paths::parse("current").unwrap(), Paths::CURRENT);
     assert_eq!(Paths::parse("legacy").unwrap(), Paths::LEGACY);
-    let p = Paths::parse("current,-skip-noops").unwrap();
-    assert!(!p.skip_noops);
+    let p = Paths::parse("current,-direct-u8").unwrap();
+    assert!(p.skip_noops && !p.direct_u8);
     let p = Paths::parse("legacy,+skip-noops").unwrap();
-    assert!(p.skip_noops);
+    assert!(p.skip_noops && !p.direct_u8);
     assert!(Paths::parse("fast").is_err());
-    assert!(Paths::parse("current,skip-noops").is_err());
+    assert!(Paths::parse("current,direct-u8").is_err());
 }

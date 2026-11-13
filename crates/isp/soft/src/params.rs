@@ -82,19 +82,34 @@ pub struct Paths {
     /// a tone curve is never a no-op, its table rounds where the plain shift truncates). Off:
     /// the identity matrix runs too.
     pub skip_noops: bool,
+    /// Integer luma routes read 8-bit source bytes directly when every sample is exactly 16
+    /// times its byte: 8-bit packing, zero black level, unit gains and no lens shading. Off: the
+    /// front end unpacks every row into 12-bit samples first.
+    pub direct_u8: bool,
 }
 
 impl Paths {
     /// The new paths (the default).
-    pub const CURRENT: Self = Self { skip_noops: true };
+    pub const CURRENT: Self = Self {
+        skip_noops: true,
+        direct_u8: true,
+    };
     /// The paths the new ones replace.
-    pub const LEGACY: Self = Self { skip_noops: false };
+    pub const LEGACY: Self = Self {
+        skip_noops: false,
+        direct_u8: false,
+    };
 
-    /// `current`, `legacy`, or a list of flags: `current,-skip-noops` takes the new paths but
-    /// the identity matrix; `legacy,+skip-noops` the reverse. Flags: `skip-noops`.
+    /// `current`, `legacy`, or a list of flags: `current,-direct-u8` takes the new paths but the
+    /// legacy front end; `legacy,+skip-noops` the reverse. Flags: `skip-noops`, `direct-u8`.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut out = Self::CURRENT;
         for (i, item) in text.split(',').map(str::trim).enumerate() {
+            let flag = |name: &str| match name {
+                "skip-noops" => Ok(0usize),
+                "direct-u8" => Ok(1usize),
+                other => Err(format!("unknown ISP path flag {other:?}")),
+            };
             match (i, item) {
                 (0, "current") => out = Self::CURRENT,
                 (0, "legacy") => out = Self::LEGACY,
@@ -108,9 +123,9 @@ impl Paths {
                             }
                         },
                     };
-                    match name {
-                        "skip-noops" => out.skip_noops = on,
-                        other => return Err(format!("unknown ISP path flag {other:?}")),
+                    match flag(name)? {
+                        0 => out.skip_noops = on,
+                        _ => out.direct_u8 = on,
                     }
                 }
             }

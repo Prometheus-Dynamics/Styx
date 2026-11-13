@@ -282,6 +282,84 @@ pub fn bayer_luma_row(rows: [&[u16]; 3], dst: &mut [u16], width: usize) -> SimdB
     })
 }
 
+/// See [`scalar::bayer_luma_u8_row`]: the luma of 8-bit source rows, scaled as 12-bit samples.
+/// The mirrored edge columns are done one by one; the interior is the leaves' (prefix), then
+/// the scalar kernel finishes it.
+pub fn bayer_luma_u8_row(
+    rows: [&[u8]; 3],
+    x0: usize,
+    dst: &mut [u16],
+    n: usize,
+    width: usize,
+) -> SimdBackend {
+    let dst = &mut dst[..n];
+    // Output i is interior when its neighbours are in the frame.
+    let lo = usize::from(x0 == 0).min(n);
+    let hi = if x0 + n == width {
+        n.saturating_sub(1).max(lo)
+    } else {
+        n
+    };
+    for (i, d) in dst[..lo].iter_mut().enumerate() {
+        *d = scalar::bayer_luma_u8_one(rows, x0 + i, width);
+    }
+    for (i, d) in dst[hi..].iter_mut().enumerate() {
+        *d = scalar::bayer_luma_u8_one(rows, x0 + hi + i, width);
+    }
+    let base = x0 + lo;
+    let part = &mut dst[lo..hi];
+    let (backend, done) = bayer_luma_u8_leaves(rows, base, part);
+    if done < part.len() {
+        scalar::bayer_luma_u8_interior(rows, base + done, &mut part[done..]);
+    }
+    backend
+}
+
+/// The leaves of [`bayer_luma_u8_row`] over `dst`'s interior columns from `base`: the backend
+/// and the outputs done.
+fn bayer_luma_u8_leaves(rows: [&[u8]; 3], base: usize, dst: &mut [u16]) -> (SimdBackend, usize) {
+    #[allow(unused_mut, unused_assignments)]
+    let mut outcome: Option<(SimdBackend, usize)> = None;
+    if crate::vector_enabled() {
+        #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+        {
+            outcome = neon::bayer_luma_u8_row(rows, base, dst);
+        }
+        #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+        if outcome.is_none() {
+            outcome = x86::bayer_luma_u8_row(X86FeatureSet::detect(), rows, base, dst);
+        }
+    }
+    outcome.unwrap_or((SimdBackend::Scalar, 0))
+}
+
+/// See [`scalar::quad_luma_u8_row`]; `width` is the output (half) width.
+pub fn quad_luma_u8_row(top: &[u8], bottom: &[u8], dst: &mut [u16], width: usize) -> SimdBackend {
+    let (top, bottom, dst) = (&top[..2 * width], &bottom[..2 * width], &mut dst[..width]);
+    #[allow(unused_mut, unused_assignments)]
+    let mut outcome: Option<(SimdBackend, usize)> = None;
+    if crate::vector_enabled() {
+        #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+        {
+            outcome = neon::quad_luma_u8_row(top, bottom, dst, width);
+        }
+        #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+        if outcome.is_none() {
+            outcome = x86::quad_luma_u8_row(X86FeatureSet::detect(), top, bottom, dst, width);
+        }
+    }
+    let (backend, done) = outcome.unwrap_or((SimdBackend::Scalar, 0));
+    if done < width {
+        scalar::quad_luma_u8_row(
+            &top[2 * done..],
+            &bottom[2 * done..],
+            &mut dst[done..],
+            width - done,
+        );
+    }
+    backend
+}
+
 /// See [`scalar::quad_rgb_row`]; `width` is the output (half) width.
 pub fn quad_rgb_row(
     top: &[u16],

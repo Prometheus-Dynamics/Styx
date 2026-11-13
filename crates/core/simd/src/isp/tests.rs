@@ -389,6 +389,143 @@ fn bayer_luma_matches() {
     });
 }
 
+/// The byte-source luma kernels equal the 12-bit kernels on the same samples times 16 (the front
+/// end's unpacked value of an 8-bit sample with unit gain), with the frame's mirrored edges.
+#[test]
+fn u8_luma_matches_the_12_bit_route() {
+    for width in (4..=40).chain([95, 96, 97, 255, 256, 1280]) {
+        for seed in 0..6u64 {
+            let frame: Vec<Vec<u8>> = (0..3)
+                .map(|i| bytes(width, seed * 7 + i + width as u64))
+                .collect();
+            // Output columns: the whole row, or an inner window of it (its own origin).
+            for (x0, n) in [(0, width), (2.min(width - 2), width - 2)] {
+                let n = n.min(width - x0);
+                // The 12-bit rows: 16 x the bytes at x0 - 1 ..= x0 + n, mirrored.
+                let mirror = |i: isize| -> usize {
+                    let w = width as isize;
+                    let r = if i < 0 {
+                        -i
+                    } else if i >= w {
+                        2 * w - 2 - i
+                    } else {
+                        i
+                    };
+                    r.clamp(0, w - 1) as usize
+                };
+                let wide: Vec<Vec<u16>> = frame
+                    .iter()
+                    .map(|row| {
+                        (0..n + 2)
+                            .map(|j| 16 * row[mirror(x0 as isize - 1 + j as isize)] as u16)
+                            .collect()
+                    })
+                    .collect();
+                let mut want = vec![0u16; n];
+                scalar::bayer_luma_row([&wide[0], &wide[1], &wide[2]], &mut want, n);
+                let mut got = vec![0u16; n];
+                bayer_luma_u8_row([&frame[0], &frame[1], &frame[2]], x0, &mut got, n, width);
+                assert_eq!(got, want, "bayer width {width} x0 {x0} seed {seed}");
+            }
+            // Quads: 2 n bytes of two rows from column 0.
+            let half = width / 2;
+            let pairs: Vec<u16> = (0..2 * half).map(|j| 16 * frame[0][j] as u16).collect();
+            let pairs_b: Vec<u16> = (0..2 * half).map(|j| 16 * frame[1][j] as u16).collect();
+            let mut want = vec![0u16; half];
+            scalar::quad_luma_row(&pairs, &pairs_b, &mut want, half);
+            let mut got = vec![0u16; half];
+            quad_luma_u8_row(&frame[0][..2 * half], &frame[1][..2 * half], &mut got, half);
+            assert_eq!(got, want, "quads width {width} seed {seed}");
+        }
+    }
+}
+
+/// Each byte-luma leaf on its own (every feature set this machine has, and NEON on AArch64),
+/// finished by the scalar kernel as the dispatcher does, equals the scalar oracle.
+#[test]
+fn u8_luma_leaves_match() {
+    for width in (8..=40).chain([95, 96, 97, 255, 1280]) {
+        for seed in 0..4u64 {
+            let frame: Vec<Vec<u8>> = (0..3)
+                .map(|i| bytes(width, seed * 11 + i + width as u64))
+                .collect();
+            let rows = [&frame[0][..], &frame[1][..], &frame[2][..]];
+            // Interior columns only (the dispatcher does the mirrored edges).
+            let base = 1;
+            let m = width - 2;
+            let mut want = vec![0u16; m];
+            scalar::bayer_luma_u8_interior(rows, base, &mut want);
+            let mut leaves: Vec<(&str, usize, Vec<u16>)> = Vec::new();
+            #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+            for f in [
+                X86FeatureSet {
+                    sse2: true,
+                    ..Default::default()
+                },
+                X86FeatureSet::detect(),
+            ] {
+                if !f.sse2 {
+                    continue;
+                }
+                let mut got = vec![0u16; m];
+                let outcome = x86::bayer_luma_u8_row(f, rows, base, &mut got);
+                let n = outcome.map_or(0, |(_, n)| n);
+                scalar::bayer_luma_u8_interior(rows, base + n, &mut got[n..]);
+                leaves.push(("x86", n, got));
+            }
+            #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+            {
+                let mut got = vec![0u16; m];
+                let n = neon::bayer_luma_u8_row(rows, base, &mut got).map_or(0, |(_, n)| n);
+                scalar::bayer_luma_u8_interior(rows, base + n, &mut got[n..]);
+                leaves.push(("neon", n, got));
+            }
+            for (name, _, got) in leaves {
+                assert_eq!(got, want, "{name} width {width} seed {seed}");
+            }
+        }
+    }
+}
+
+/// The quad byte-luma leaves on their own (each feature set, NEON on AArch64) against the
+/// scalar kernel.
+#[test]
+fn u8_quad_leaves_match() {
+    for width in (1..=40).chain([63, 64, 65, 255, 640]) {
+        for seed in 0..4u64 {
+            let top = bytes(2 * width, seed * 5 + width as u64);
+            let bottom = bytes(2 * width, seed * 5 + 1 + width as u64);
+            let mut want = vec![0u16; width];
+            scalar::quad_luma_u8_row(&top, &bottom, &mut want, width);
+            #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
+            for f in [
+                X86FeatureSet {
+                    sse2: true,
+                    ..Default::default()
+                },
+                X86FeatureSet::detect(),
+            ] {
+                if !f.sse2 {
+                    continue;
+                }
+                let mut got = vec![0u16; width];
+                let n =
+                    x86::quad_luma_u8_row(f, &top, &bottom, &mut got, width).map_or(0, |(_, n)| n);
+                scalar::quad_luma_u8_row(&top[2 * n..], &bottom[2 * n..], &mut got[n..], width - n);
+                assert_eq!(got, want, "x86 width {width} seed {seed}");
+            }
+            #[cfg(all(feature = "neon", target_arch = "aarch64"))]
+            {
+                let mut got = vec![0u16; width];
+                let n =
+                    neon::quad_luma_u8_row(&top, &bottom, &mut got, width).map_or(0, |(_, n)| n);
+                scalar::quad_luma_u8_row(&top[2 * n..], &bottom[2 * n..], &mut got[n..], width - n);
+                assert_eq!(got, want, "neon width {width} seed {seed}");
+            }
+        }
+    }
+}
+
 const PATTERNS: [CfaOrder; 4] = [
     CfaOrder::Rggb,
     CfaOrder::Bggr,
