@@ -1,0 +1,16 @@
+[package]
+name = "styx-core"
+description = "Codecs for Styx: one trait family for encoders, decoders and converters over frames, and a registry that picks native implementations before FFmpeg and says why."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+
+[lints]
+workspace = true
