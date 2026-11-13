@@ -17,10 +17,14 @@
 //!
 //! [`Registry`]: styx_codec_api::Registry
 
+pub mod bitstream;
 pub mod decoder;
+pub mod h264;
 pub mod hevc;
+pub mod link;
 pub mod live;
 pub mod work;
 
-pub use decoder::{HevcDecoder, Session, backoff_ns, candidate, descriptor};
+pub use decoder::{HevcDecoder, Session, candidate, descriptor};
+pub use link::backoff_ns;
 pub use live::LiveSession;

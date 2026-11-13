@@ -7,16 +7,14 @@
 //! The session is the block: the live one posts the job on Lemnos's `codec.block/1` job stream
 //! and waits for its completion; a test runs a simulated one.
 //!
-//! Recovery: a session that fails (a [`CodecError::Failed`] or [`CodecError::Unavailable`]) is
-//! closed, and the next call after a backoff opens it again. The backoff starts at 250 ms and
-//! doubles to 8 s, and the decoder never gives up and never turns itself off. A job the block
-//! refuses ([`CodecError::Rejected`]) leaves the session open and sets no backoff.
+//! Recovery is the block link's ([`crate::link`]): a failed session is reopened after a backoff
+//! that starts at 250 ms and doubles to 8 s, and the decoder never gives up and never turns
+//! itself off. A job the block refuses ([`CodecError::Rejected`]) leaves the session open and
+//! sets no backoff.
 //!
 //! Provenance: the decode logic and recovery policy are moved from Lemnos
 //! `drivers/m2m-decode` (`stateless.rs` and `decoder.rs`, lock 04d09360). Lemnos keeps the
 //! M2M session (queues, buffers, requests).
-
-use std::time::Instant;
 
 use lemnos_linux_sys::v4l2::hevc as sys;
 use styx_codec_api::{
@@ -26,16 +24,8 @@ use styx_codec_api::{
 
 use crate::hevc;
 use crate::hevc::controls::{START_CODE_LEN, idr_slice, pps_control, sps_control};
+use crate::link::Link;
 use crate::work::{self, Job, Setup};
-
-/// The first backoff after a failed session, in nanoseconds.
-pub const BACKOFF_FIRST_NS: u64 = 250_000_000;
-
-/// The backoff before reopening a session that failed `attempt` times in a row: 250 ms, doubling
-/// to 8 s and no longer.
-pub const fn backoff_ns(attempt: u32) -> u64 {
-    BACKOFF_FIRST_NS << if attempt > 5 { 5 } else { attempt }
-}
 
 /// The name the decoder registers under.
 pub const NAME: &str = "hevc-v4l2-stateless";
@@ -51,10 +41,6 @@ pub trait Session: Send {
     fn run(&mut self, work: &[u8]) -> Result<u32, CodecError>;
 }
 
-/// Opens a session. Called at the first job, and again after each failure once its backoff has
-/// passed.
-pub type Open = Box<dyn FnMut() -> Result<Box<dyn Session>, CodecError> + Send>;
-
 /// The parameter sets the slices refer to.
 struct ParameterSets {
     sps: hevc::Sps,
@@ -64,16 +50,12 @@ struct ParameterSets {
 /// The HEVC stateless decoder over one block session.
 pub struct HevcDecoder {
     descriptor: CodecDescriptor,
-    open: Open,
-    link: Option<Box<dyn Session>>,
+    link: Link,
     sets: Option<ParameterSets>,
     /// Unescaped RBSP scratch for the headers. Grows once to the largest slice seen.
     scratch: Vec<u8>,
     /// The work of one job, allocated once.
     work: Box<[u8]>,
-    started: Instant,
-    failures: u32,
-    retry_at_ns: Option<u64>,
 }
 
 impl HevcDecoder {
@@ -83,25 +65,21 @@ impl HevcDecoder {
     ) -> Self {
         Self {
             descriptor: descriptor(),
-            open: Box::new(open),
-            link: None,
+            link: Link::new(Box::new(open)),
             sets: None,
             scratch: Vec::new(),
             work: vec![0; work::WORK_BYTES].into_boxed_slice(),
-            started: Instant::now(),
-            failures: 0,
-            retry_at_ns: None,
         }
     }
 
     /// Whether a session is open.
     pub fn is_open(&self) -> bool {
-        self.link.is_some()
+        self.link.is_open()
     }
 
     /// Failed sessions in a row. 0 after a job completes.
     pub fn failures(&self) -> u32 {
-        self.failures
+        self.link.failures()
     }
 
     /// Reads the VPS, SPS and PPS of an Annex B byte stream and keeps the SPS and PPS the
@@ -139,72 +117,13 @@ impl HevcDecoder {
             _ => Err(CodecError::Rejected("the stream has no SPS and PPS".into())),
         }
     }
-
-    fn now_ns(&self) -> u64 {
-        u64::try_from(self.started.elapsed().as_nanos()).unwrap_or(u64::MAX)
-    }
-
-    /// Closes the session after a failure and schedules its reopening.
-    fn fail(&mut self, now_ns: u64) {
-        self.link = None;
-        self.retry_at_ns = Some(now_ns.saturating_add(backoff_ns(self.failures)));
-        self.failures = self.failures.saturating_add(1);
-    }
-
-    /// The session, opened if it is not, unless its backoff has not passed.
-    fn session(&mut self, now_ns: u64) -> Result<&mut Box<dyn Session>, CodecError> {
-        if let Some(at) = self.retry_at_ns
-            && now_ns < at
-        {
-            return Err(CodecError::Unavailable(format!(
-                "the decoder failed: it is opened again in {} ms",
-                (at - now_ns) / 1_000_000
-            )));
-        }
-        if self.link.is_none() {
-            match (self.open)() {
-                Ok(session) => {
-                    self.link = Some(session);
-                    self.retry_at_ns = None;
-                }
-                Err(error) => {
-                    self.fail(now_ns);
-                    return Err(error);
-                }
-            }
-        }
-        Ok(self.link.as_mut().expect("opened above"))
-    }
 }
 
 impl std::fmt::Debug for HevcDecoder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HevcDecoder")
-            .field("open", &self.is_open())
-            .field("failures", &self.failures)
-            .field("retry_at_ns", &self.retry_at_ns)
+            .field("link", &self.link)
             .finish()
-    }
-}
-
-impl HevcDecoder {
-    /// Runs one job's work on the session, opening it first when it is not open. Records a
-    /// failure for the backoff, and leaves a refusal to the caller.
-    fn run_job(&mut self, work: &[u8]) -> Result<(), CodecError> {
-        let now = self.now_ns();
-        let session = self.session(now)?;
-        match session.run(work) {
-            Ok(_) => {
-                self.failures = 0;
-                Ok(())
-            }
-            Err(error @ CodecError::Rejected(_)) => Err(error),
-            Err(error) => {
-                let now = self.now_ns();
-                self.fail(now);
-                Err(error)
-            }
-        }
     }
 }
 
@@ -311,7 +230,7 @@ impl<M> Decoder<M> for HevcDecoder {
 
         // The work leaves `self` for the call, so the session can be borrowed with it.
         let work = std::mem::take(&mut self.work);
-        let result = self.run_job(&work[..len]);
+        let result = self.link.run(&work[..len]);
         self.work = work;
         result
     }
