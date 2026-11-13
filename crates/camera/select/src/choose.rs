@@ -12,8 +12,9 @@
 //!    Config naming a camera nobody lists is an error too.
 //! 4. Default. Native if it lists the camera, else libcamera, else V4L2.
 //!
-//! Nothing here opens a device. The listers may probe (the V4L2 probe opens each node); the
-//! choice itself only compares anchors.
+//! Nothing here opens a device. The listers may probe: the V4L2 lister lists virtual nodes from
+//! sysfs without opening them, and fully probes each physical node once. The choice itself only
+//! compares anchors.
 
 use std::fmt;
 

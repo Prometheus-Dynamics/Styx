@@ -11,11 +11,11 @@ use styx_format::FourCc;
 use styx_v4l2::{Delivery, Queue, Sizes, Stream, StreamConfig};
 
 mod common;
-use common::physical_probe as probe;
+use common::physical_devices;
 
 /// The first capture node with a format that lists discrete sizes, and that format's first size.
 fn first_stream_target() -> Option<(PathBuf, FourCc, u32, u32)> {
-    for device in probe().devices {
+    for device in physical_devices() {
         for format in &device.formats {
             if let Sizes::Discrete(sizes) = &format.sizes
                 && let Some(size) = sizes.first()
@@ -29,15 +29,12 @@ fn first_stream_target() -> Option<(PathBuf, FourCc, u32, u32)> {
 
 #[test]
 fn probe_lists_capture_nodes_formats_and_controls() {
-    let found = probe();
-    for error in &found.errors {
-        println!("probe error: {error}");
-    }
-    if found.devices.is_empty() {
+    let found = physical_devices();
+    if found.is_empty() {
         println!("SKIP probe: no V4L2 capture node on this machine");
         return;
     }
-    for device in &found.devices {
+    for device in &found {
         println!(
             "node {} card={:?} driver={:?} bus={:?} queue={:?} virtual={}",
             device.path.display(),
