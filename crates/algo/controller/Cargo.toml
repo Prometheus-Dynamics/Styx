@@ -1,0 +1,30 @@
+[package]
+name = "styx-controller"
+description = "The 3A loop: one controller over styx-aaa that turns a frame's statistics into the sensor request for a named frame (styx-controls updates) and neutral ISP settings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[features]
+default = ["std"]
+# The full algorithm set of styx-aaa (AF, adaptive lens shading, Bayesian AWB, denoise, flicker
+# fitting, lux) and `std` for it. Without it the loop runs what styx-aaa has without `std`.
+std = ["styx-aaa/std"]
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+styx-aaa = { path = "../aaa", default-features = false, features = ["serde"] }
+styx-controls = { path = "../../core/controls", default-features = false }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+styx-aaa = { path = "../aaa", features = ["std-core"] }
+
+[lints]
+workspace = true
