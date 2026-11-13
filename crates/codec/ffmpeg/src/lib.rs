@@ -12,8 +12,10 @@
 //! - encoder: `I420` to `MJPG`, opened at the first frame's size.
 //!
 //! Frames are copied at the FFmpeg boundary (counted in [`COPY_TO_FFMPEG`] and
-//! [`COPY_FROM_FFMPEG`]). DRM PRIME frames from hardware decoders are not handled yet: they need
-//! FFmpeg-owned dma-bufs per frame, which `styx-frame`'s pool (buffers given once) does not model.
+//! [`COPY_FROM_FFMPEG`]), except DRM PRIME frames from a hardware decoder: [`FfmpegDecoder::decode_prime`]
+//! hands those on as a lease over the dma-buf itself, from a [`PrimeSink`], with no copy. The
+//! sink keeps FFmpeg's frame while a lease on its dma-buf is out. Only single-object frames (all
+//! planes in one dma-buf) are taken; the rest are refused with their layout named.
 //!
 //! The FFmpeg ABI is hand-written for the fields used (see `sys`), against FFmpeg 8 (libavutil 60,
 //! libavcodec 62). Only Linux has the loader; elsewhere the backend reports itself unavailable.
@@ -22,6 +24,8 @@
 mod api;
 #[cfg(all(feature = "ffmpeg", target_os = "linux"))]
 mod codec;
+#[cfg(all(feature = "ffmpeg", target_os = "linux"))]
+mod prime;
 #[cfg(all(feature = "ffmpeg", target_os = "linux"))]
 mod sys;
 
@@ -35,9 +39,10 @@ mod backend {
     use styx_format::FourCc;
 
     use crate::api;
-    use crate::codec::{FfmpegDecoder, FfmpegEncoder, descriptor};
+    use crate::codec::{FfmpegEncoder, descriptor};
 
-    pub use crate::codec::{COPY_FROM_FFMPEG, COPY_TO_FFMPEG};
+    pub use crate::codec::{COPY_FROM_FFMPEG, COPY_TO_FFMPEG, FfmpegDecoder};
+    pub use crate::prime::{Decoded, PrimeSink};
 
     /// The FFmpeg candidates this backend offers: name, kind, input, output.
     const CANDIDATES: [(&str, CodecKind, FourCc, FourCc); 2] = [
@@ -61,6 +66,19 @@ mod backend {
     /// the system path).
     pub fn available_in(dirs: &[PathBuf]) -> Result<(), String> {
         api::load(dirs).map(|_| ())
+    }
+
+    /// The FFmpeg decoder for `input` to `output`, opened directly on the system search path. A
+    /// registry hands out only `dyn Decoder`; this is the way to reach [`FfmpegDecoder::decode_prime`].
+    pub fn open_decoder(input: FourCc, output: FourCc) -> Result<FfmpegDecoder, CodecError> {
+        let &(name, _, _, _) = CANDIDATES
+            .iter()
+            .find(|(_, kind, i, o)| *kind == CodecKind::Decoder && *i == input && *o == output)
+            .ok_or_else(|| {
+                CodecError::Unavailable(format!("no FFmpeg decoder from {input} to {output}"))
+            })?;
+        let api = api::load(&[]).map_err(CodecError::Unavailable)?;
+        FfmpegDecoder::open(api, descriptor(CodecKind::Decoder, input, output, name))
     }
 
     /// Adds the FFmpeg candidates to `registry`, found on the system search path.
@@ -102,10 +120,9 @@ mod backend {
 }
 
 #[cfg(all(feature = "ffmpeg", target_os = "linux"))]
-#[cfg(all(feature = "ffmpeg", target_os = "linux"))]
 pub use api::SUPPORTED;
 #[cfg(all(feature = "ffmpeg", target_os = "linux"))]
 pub use backend::{
-    COPY_FROM_FFMPEG, COPY_TO_FFMPEG, available, available_in, copy_counters, loaded_versions,
-    register, register_in,
+    COPY_FROM_FFMPEG, COPY_TO_FFMPEG, Decoded, FfmpegDecoder, PrimeSink, available, available_in,
+    copy_counters, loaded_versions, open_decoder, register, register_in,
 };
