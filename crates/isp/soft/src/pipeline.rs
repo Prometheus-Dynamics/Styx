@@ -423,6 +423,10 @@ impl Worker {
         let Arith::Int(ip) = &p.arith else {
             unreachable!()
         };
+        if ip.direct_u8 && !matches!(g.sample, Sample::Quads { step } if step > 1) {
+            self.luma_row_u8(p, src, g, oy, ip, dst);
+            return;
+        }
         match g.sample {
             Sample::Full => {
                 let s = self.window::<3>(p, src, g, my);
@@ -433,6 +437,51 @@ impl Worker {
                 let q = self.quad_rows(p, src, g, oy);
                 let (t, b) = q.rows(&self.slots, &self.dec, col);
                 simd::quad_luma_row(t, b, &mut self.luma16, n);
+            }
+        }
+        tone(ip, &self.luma16, dst, n);
+    }
+
+    /// Output row `oy` as 8-bit luma into `dst` from the source bytes, for [`IntPrep::direct_u8`]:
+    /// no front rows (the samples are 16 times the bytes, see there), then the tone table.
+    fn luma_row_u8(
+        &mut self,
+        p: &Prepared,
+        src: &Source,
+        g: &Geom,
+        oy: usize,
+        ip: &IntPrep,
+        dst: &mut [u8],
+    ) {
+        let n = g.ow;
+        let my = Self::mosaic_row(g, oy);
+        let w = p.width;
+        // The tone table applied to the sums in the same pass (`Paths::luma_lut8`).
+        if let (true, Some(lut)) = (ip.luma_lut8, ip.lut.as_deref()) {
+            match g.sample {
+                Sample::Full => {
+                    let rows = [-1isize, 0, 1]
+                        .map(|d| src.row(reflect(my as isize + d, p.height), (0, w)));
+                    simd::bayer_tone_u8_row(rows, g.x0, dst, n, w, lut.full());
+                }
+                Sample::Quads { .. } => {
+                    let top = src.row(my, (g.x0, 2 * n));
+                    let bottom = src.row(my + 1, (g.x0, 2 * n));
+                    simd::quad_tone_u8_row(top, bottom, dst, n, lut.full());
+                }
+            }
+            return;
+        }
+        match g.sample {
+            Sample::Full => {
+                let rows =
+                    [-1isize, 0, 1].map(|d| src.row(reflect(my as isize + d, p.height), (0, w)));
+                simd::bayer_luma_u8_row(rows, g.x0, &mut self.luma16, n, w);
+            }
+            Sample::Quads { .. } => {
+                let top = src.row(my, (g.x0, 2 * n));
+                let bottom = src.row(my + 1, (g.x0, 2 * n));
+                simd::quad_luma_u8_row(top, bottom, &mut self.luma16, n);
             }
         }
         tone(ip, &self.luma16, dst, n);

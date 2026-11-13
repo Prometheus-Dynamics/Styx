@@ -99,7 +99,7 @@ pub use isp::{IspError, SoftIsp, Window, process};
 pub use output::{OutputBuffers, Scale};
 pub use params::{
     Arithmetic, BlackLevel, ChromaDenoise, ColorMatrix, Demosaic, Denoise, IspParams, LensShading,
-    LumaDenoise, Sharpen, StatsConfig, ToneCurve, WhiteBalance, YuvMatrix,
+    LumaDenoise, Paths, Sharpen, StatsConfig, ToneCurve, WhiteBalance, YuvMatrix,
 };
 pub use settings::{Options, params_for};
 pub use stage::{SoftIspStage, StageError};

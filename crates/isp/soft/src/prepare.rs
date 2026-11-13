@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use alloc::{format, vec::Vec};
 
-use crate::format::{CfaPattern, RawFormat};
+use crate::format::{CfaPattern, RawFormat, RawPacking};
 use crate::params::ToneCurve;
 use crate::params::{Arithmetic, Demosaic, IspParams, LensShading, YuvMatrix};
 use crate::post::PostPrep;
@@ -65,6 +65,12 @@ pub(crate) struct IntPrep {
     pub gains: Arc<GainRows>,
     /// What `gains` was built from.
     gain_src: GainSource,
+    /// Luma routes read the source bytes directly: every sample is exactly 16 times its byte
+    /// (see [`Paths::direct_u8`]).
+    pub direct_u8: bool,
+    /// The GREY luma routes apply the tone table in one pass ([`Paths::luma_lut8`]): the
+    /// integer table, not the quadratics, and only with `direct_u8`.
+    pub luma_lut8: bool,
     /// Q12 colour matrix.
     pub ccm: Option<[i16; 9]>,
     pub lut: Option<Arc<ToneLut>>,
@@ -407,13 +413,18 @@ impl IntPrep {
                 (rows, GainSource { cells, grid })
             }
         };
-        let ccm = params.ccm.map(|c| {
-            let mut m = [0i16; 9];
-            for (k, v) in c.m.iter().flatten().enumerate() {
-                m[k] = (v * 4096.0).round() as i16;
-            }
-            m
-        });
+        let skip = params.paths.skip_noops;
+        // The identity matrix is left out (it maps every sample to itself, see `ccm_row`).
+        let ccm = params
+            .ccm
+            .map(|c| {
+                let mut m = [0i16; 9];
+                for (k, v) in c.m.iter().flatten().enumerate() {
+                    m[k] = (v * 4096.0).round() as i16;
+                }
+                m
+            })
+            .filter(|m| !(skip && *m == IDENTITY_Q12));
         // Only when named: `Auto` is the exact table on every host. Never without feature
         // `poly-tone`.
         let poly_wanted =
@@ -441,11 +452,23 @@ impl IntPrep {
                 (lut, poly, curve)
             }
         };
+        // Exactly 16 times the byte: 8-bit samples, no black level, Q12 gains of 4096 (unit) and
+        // no shading, so `front_row` returns `(v << 8) * 4096 >> 16 = 16 v`, never clamped.
+        let unit = match &*gains {
+            GainRows::Flat(rows) => rows.iter().all(|r| r.iter().all(|&g| g == 4096)),
+            GainRows::Shaded { .. } => false,
+        };
+        let direct_u8 = params.paths.direct_u8
+            && format.packing == RawPacking::U8
+            && black == [[0; 2]; 2]
+            && unit;
         Ok(Self {
             shift: 16 - bits as u32,
             black,
             gains,
             gain_src,
+            direct_u8,
+            luma_lut8: direct_u8 && params.paths.luma_lut8 && lut.is_some() && poly.is_none(),
             ccm,
             lut,
             poly,
@@ -453,6 +476,9 @@ impl IntPrep {
         })
     }
 }
+
+/// The Q12 identity colour matrix.
+const IDENTITY_Q12: [i16; 9] = [4096, 0, 0, 0, 4096, 0, 0, 0, 4096];
 
 /// Lens shading grids must be complete and hold finite, non-negative gains.
 fn check_lens_shading(ls: &LensShading) -> Result<(), IspError> {
@@ -664,6 +690,70 @@ mod tests {
                 .collect();
             assert_eq!(grid_map(n, nodes), want, "{n} {nodes}");
         }
+    }
+
+    /// Which new paths the parameters take: the identity matrix is left out (and only then),
+    /// and the byte-source luma only for 8-bit samples with unit gains and no black level.
+    #[test]
+    fn new_paths_are_taken_only_when_exact() {
+        let u8_fmt = RawFormat::new(16, 8, CfaPattern::Rggb, RawPacking::U8);
+        let base = IspParams {
+            arithmetic: Arithmetic::Int,
+            ccm: Some(crate::params::ColorMatrix::saturation(1.0)),
+            ..IspParams::default()
+        };
+        let state = |format: &RawFormat, p: &IspParams| match Prepared::new(format, p, None, 0.0)
+            .unwrap()
+            .arith
+        {
+            Arith::Int(i) => (i.ccm.is_some(), i.direct_u8),
+            Arith::Half(_) => panic!("integer arithmetic"),
+        };
+        assert_eq!(state(&u8_fmt, &base), (false, true), "identity and unit");
+        let legacy = IspParams {
+            paths: crate::params::Paths::LEGACY,
+            ..base.clone()
+        };
+        assert_eq!(state(&u8_fmt, &legacy), (true, false), "legacy paths");
+        let mut wb = base.clone();
+        wb.white_balance = Some(crate::params::WhiteBalance {
+            r: 1.1,
+            g: 1.0,
+            b: 1.0,
+        });
+        assert_eq!(
+            state(&u8_fmt, &wb),
+            (false, false),
+            "white balance: not unit"
+        );
+        let mut black = base.clone();
+        black.black_level = Some(crate::params::BlackLevel {
+            r: 1,
+            gr: 1,
+            gb: 1,
+            b: 1,
+        });
+        assert_eq!(state(&u8_fmt, &black), (false, false), "black level");
+        // The tone folded into the sums needs the integer table and the 8-bit direct route.
+        let fused = |p: &IspParams| match Prepared::new(&u8_fmt, p, None, 0.0).unwrap().arith {
+            Arith::Int(i) => i.luma_lut8,
+            Arith::Half(_) => panic!("integer arithmetic"),
+        };
+        let mut toned = base.clone();
+        toned.tone = Some(crate::params::ToneCurve::Srgb);
+        toned.paths = crate::params::Paths {
+            luma_lut8: true,
+            ..crate::params::Paths::CURRENT
+        };
+        assert!(fused(&toned), "8-bit with a table takes the fused tone");
+        let legacy_toned = IspParams {
+            paths: crate::params::Paths::LEGACY,
+            ..toned.clone()
+        };
+        assert!(!fused(&legacy_toned), "legacy paths do not");
+        assert!(!fused(&base), "no table, nothing to fold");
+        let ten = RawFormat::new(16, 8, CfaPattern::Rggb, RawPacking::U16Le { bits: 10 });
+        assert_eq!(state(&ten, &base), (false, false), "10-bit samples");
     }
 
     /// Integer tables keep their shaded gains while the lens shading grid moves by less than

@@ -190,6 +190,47 @@ pub(super) fn luma_bins_row(
     )
 }
 
+/// See `scalar::bayer_luma_u8_row`: SSE2 leaf (the 8-bit luma of the interior columns).
+pub(super) fn bayer_luma_u8_row(
+    f: X86FeatureSet,
+    rows: [&[u8]; 3],
+    base: usize,
+    dst: &mut [u16],
+) -> Option<(SimdBackend, usize)> {
+    if f.avx2 && dst.len() >= 16 {
+        // SAFETY: AVX2 was detected above; the dispatcher sized the rows for the interior columns.
+        let n = unsafe { bayer::bayer_luma_u8_avx2(rows, base, dst) };
+        return (n > 0).then_some((SimdBackend::X86Avx2, n));
+    }
+    if !f.sse2 {
+        return None;
+    }
+    // SAFETY: SSE2 was detected above; the dispatcher sized the rows for the interior columns.
+    let n = unsafe { bayer::bayer_luma_u8_sse2(rows, base, dst) };
+    (n > 0).then_some((SimdBackend::X86Sse2, n))
+}
+
+/// See `scalar::quad_luma_u8_row`: SSE2 leaf.
+pub(super) fn quad_luma_u8_row(
+    f: X86FeatureSet,
+    top: &[u8],
+    bottom: &[u8],
+    dst: &mut [u16],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    if f.avx2 && width >= 16 {
+        // SAFETY: AVX2 was detected above; the dispatcher sized the rows for `width` quads.
+        let n = unsafe { bayer::quad_luma_u8_avx2(top, bottom, dst, width) };
+        return (n > 0).then_some((SimdBackend::X86Avx2, n));
+    }
+    if !f.sse2 {
+        return None;
+    }
+    // SAFETY: SSE2 was detected above; the dispatcher sized the rows for `width` quads.
+    let n = unsafe { bayer::quad_luma_u8_sse2(top, bottom, dst, width) };
+    (n > 0).then_some((SimdBackend::X86Sse2, n))
+}
+
 pub(super) fn quad_luma_row(
     f: X86FeatureSet,
     top: &[u16],

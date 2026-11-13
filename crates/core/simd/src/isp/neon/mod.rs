@@ -78,6 +78,23 @@ pub(super) fn bayer_luma_row(
     done(unsafe { bayer::bayer_luma(rows, dst, width) })
 }
 
+pub(super) fn bayer_luma_u8_row(
+    rows: [&[u8]; 3],
+    base: usize,
+    dst: &mut [u16],
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { bayer::bayer_luma_u8(rows, base, dst) })
+}
+
+pub(super) fn quad_luma_u8_row(
+    top: &[u8],
+    bottom: &[u8],
+    dst: &mut [u16],
+    width: usize,
+) -> Option<(SimdBackend, usize)> {
+    done(unsafe { bayer::quad_luma_u8(top, bottom, dst, width) })
+}
+
 pub(super) fn quad_rgb_row(
     top: &[u16],
     bottom: &[u16],
