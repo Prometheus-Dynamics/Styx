@@ -4,6 +4,26 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 
+# At most two gates of this repository run at once on one machine: every gate links its test
+# binaries in the same minutes, and more than two of them starve each other and whatever else
+# the machine is doing. A gate waits here for one of two slots. STYX_GATE_SLOTS=0 turns it off.
+if [ "${STYX_GATE_SLOTS:-2}" != 0 ] && command -v flock > /dev/null; then
+  slots="${TMPDIR:-/tmp}/styx-gate-slots"
+  mkdir -p "$slots"
+  waited=0
+  while :; do
+    for n in $(seq 1 "${STYX_GATE_SLOTS:-2}"); do
+      exec 8> "$slots/$n"
+      if flock -n 8; then
+        break 2
+      fi
+    done
+    [ "$waited" = 0 ] && echo "==> waiting for a gate slot"
+    waited=1
+    read -r -t 10 _ < /dev/zero || true
+  done
+fi
+
 step() {
   local label="$1" start
   shift

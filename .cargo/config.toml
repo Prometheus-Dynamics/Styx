@@ -1,0 +1,5 @@
+# The linker starts a thread per core by default. A gate links over a hundred test binaries, several
+# at a time, on a machine other work shares: thirteen links of thirty-two threads each is contention,
+# not speed. Two threads per link.
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,--threads=2"]
