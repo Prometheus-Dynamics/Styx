@@ -9,7 +9,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use common::*;
-use styx_core::{Converter, Decoder};
+use styx_codec_api::{Converter, Decoder};
 use styx_decode::{MjpegDecoder, RawConverter, Source, Target};
 use styx_format::{ColorSpace, FourCc};
 
@@ -110,7 +110,7 @@ fn zune_mjpeg_allocations_per_frame_are_reported() {
 fn turbojpeg_allocations_per_frame_are_reported() {
     let mut dec = match MjpegDecoder::turbojpeg(FourCc::MJPG) {
         Ok(d) => d,
-        Err(styx_core::CodecError::Unavailable(why)) => {
+        Err(styx_codec_api::CodecError::Unavailable(why)) => {
             eprintln!("SKIPPED turbojpeg allocation count: {why}");
             return;
         }

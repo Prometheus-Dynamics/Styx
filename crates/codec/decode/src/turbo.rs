@@ -1,7 +1,7 @@
 //! libturbojpeg (2.x API), used when build.rs finds the library. Without it, `TurboDecoder` is
 //! an uninhabited type and `new` says why.
 
-use styx_core::CodecError;
+use styx_codec_api::CodecError;
 
 #[cfg(styx_turbojpeg)]
 mod ffi {

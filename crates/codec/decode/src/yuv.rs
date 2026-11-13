@@ -1,6 +1,6 @@
 //! YUV to RGB24 in 8-bit fixed point, and the row kernels the converters run.
 //!
-//! The formula is dev's scalar oracle (`styx_core::simd::YuvMatrix` on dev): for each pixel,
+//! The formula is dev's scalar oracle (`styx_codec_api::simd::YuvMatrix` on dev): for each pixel,
 //! `c = y_scale * max(y - y_offset, 0) + 128`, `d = u - 128`, `e = v - 128`; red is `c + r_v * e`,
 //! green `c - g_u * d - g_v * e`, blue `c + b_u * d`; each is shifted right by 8 and clamped to
 //! 0..=255. dev's tests pin it to the older per-decoder formula for every Y, U and V.

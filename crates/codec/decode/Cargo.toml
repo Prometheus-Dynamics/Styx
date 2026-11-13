@@ -1,6 +1,6 @@
 [package]
 name = "styx-decode"
-description = "MJPEG decoders and raw YUV converters for Styx frames: native codec implementations, registered in styx-core's registry."
+description = "MJPEG decoders and raw YUV converters for Styx frames: native codec implementations, registered in styx-codec-api's registry."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -16,7 +16,7 @@ default = []
 turbojpeg = []
 
 [dependencies]
-styx-core = { path = "../core" }
+styx-codec-api = { path = "../codec-api" }
 styx-format = { path = "../../core/format" }
 styx-frame = { path = "../../core/frame" }
 # Pure Rust MJPEG (zune-jpeg 0.5.15, zune-core 0.5.3: the versions dev pins).

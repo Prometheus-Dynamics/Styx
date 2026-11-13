@@ -4,7 +4,7 @@
 //!   was found at build time (feature `turbojpeg`), otherwise zune-jpeg (pure Rust).
 //! - [`RawConverter`]: YUYV, NV12 and I420 to RGB24, and YUYV and NV12 to GREY (luma).
 //!
-//! [`register`] adds all of them to a [`styx_core::Registry`] as `Backend::Native` candidates.
+//! [`register`] adds all of them to a [`styx_codec_api::Registry`] as `Backend::Native` candidates.
 //! Within a request, turbojpeg is tried before zune-jpeg; a candidate that cannot be built says
 //! why in its decision.
 //!
@@ -20,7 +20,7 @@ pub mod yuv;
 pub use mjpeg::MjpegDecoder;
 pub use raw::{RawConverter, Source, Target};
 
-use styx_core::{Candidate, CodecDescriptor, Implementation, Registry};
+use styx_codec_api::{Candidate, CodecDescriptor, Implementation, Registry};
 use styx_format::FourCc;
 
 /// Adds every native decoder and converter of this crate to `registry`.
@@ -52,7 +52,7 @@ pub fn register<M: 'static>(registry: &mut Registry<M>) {
         let descriptor: CodecDescriptor = probe.descriptor().clone();
         registry.register(Candidate::new(descriptor, move || {
             let converter = RawConverter::new(source, target).ok_or_else(|| {
-                styx_core::CodecError::Unavailable("no converter for this pair".into())
+                styx_codec_api::CodecError::Unavailable("no converter for this pair".into())
             })?;
             Ok(Implementation::Converter(Box::new(converter)))
         }));

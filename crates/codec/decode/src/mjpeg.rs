@@ -1,6 +1,6 @@
 //! MJPEG (each frame one JPEG) to RGB24, with zune-jpeg (pure Rust) or libturbojpeg.
 
-use styx_core::{Backend, Codec, CodecDescriptor, CodecError, CodecKind, Decoder};
+use styx_codec_api::{Backend, Codec, CodecDescriptor, CodecError, CodecKind, Decoder};
 use styx_format::{ColorRange, ColorSpace, FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, FrameLease, packed_layouts};
 use zune_core::bytestream::ZCursor;

@@ -5,7 +5,7 @@
 mod common;
 
 use common::*;
-use styx_core::{CodecError, CodecKind, Decoder, Registry, Request, Verdict};
+use styx_codec_api::{CodecError, CodecKind, Decoder, Registry, Request, Verdict};
 use styx_decode::MjpegDecoder;
 use styx_format::{ColorSpace, FourCc};
 

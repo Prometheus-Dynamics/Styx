@@ -4,7 +4,7 @@
 //! exactly its rows is read tightly; a longer one by its stride), writes the output rows of a
 //! packed output lease, and allocates nothing. Scalar rows: see [`crate::yuv`].
 
-use styx_core::{Backend, Codec, CodecDescriptor, CodecError, CodecKind, Converter};
+use styx_codec_api::{Backend, Codec, CodecDescriptor, CodecError, CodecKind, Converter};
 use styx_format::{ColorRange, ColorSpace, FourCc, MediaFormat, Resolution};
 use styx_frame::{CpuRead, FrameEntry, FrameLease, Plane, packed_layouts};
 

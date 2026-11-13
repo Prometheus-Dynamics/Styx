@@ -5,7 +5,7 @@
 mod common;
 
 use common::*;
-use styx_core::{CodecError, Converter};
+use styx_codec_api::{CodecError, Converter};
 use styx_decode::{RawConverter, Source, Target, yuv::YuvMatrix};
 use styx_format::{ColorSpace, FourCc};
 
