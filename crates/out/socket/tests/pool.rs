@@ -63,7 +63,10 @@ fn a_producer_publishes_an_existing_pool_of_another_type_with_its_opaque_part() 
         // A reader that falls behind loses frames to the ring (counted as skipped), so the reader
         // waits for the newest frame, not for every one.
         while seen.last() != Some(&FRAMES) {
-            assert!(std::time::Instant::now() < deadline, "the newest frame never came: {seen:?}");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the newest frame never came: {seen:?}"
+            );
             match reader.next_frame().expect("not cut off") {
                 Some(frame) => {
                     let id = frame.lease().id();
@@ -120,7 +123,10 @@ fn a_producer_publishes_an_existing_pool_of_another_type_with_its_opaque_part() 
         }
     }
     let seen = reader.join().expect("reader");
-    assert!(seen.windows(2).all(|w| w[0] < w[1]), "ids in order: {seen:?}");
+    assert!(
+        seen.windows(2).all(|w| w[0] < w[1]),
+        "ids in order: {seen:?}"
+    );
     assert_eq!(seen.last(), Some(&FRAMES));
 
     // The reader is gone; the producer gives back every buffer but the newest frame's.
