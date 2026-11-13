@@ -51,6 +51,7 @@
 //! - The socket and Orion and Daedalus ways out (see above). The [`Outlets`] trait is the hook.
 //! - Degraded health from a backend (see above).
 
+pub mod access;
 pub mod config;
 pub mod control;
 pub mod outlet;
@@ -58,7 +59,8 @@ pub mod service;
 pub mod slot;
 pub mod worker;
 
-pub use config::{CameraConfig, Config, ConfigError, Force};
+pub use access::Access;
+pub use config::{CameraConfig, Config, ConfigError, Force, GroupSpec};
 pub use outlet::{Discard, Outlet, Outlets};
 pub use service::camera_socket;
 pub use service::{Daemon, Deps, Error, Listers, Nothing, Service};

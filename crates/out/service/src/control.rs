@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. last_recovery=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. last_recovery=.. empty_frames=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
 //! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
@@ -94,13 +94,15 @@ pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
     };
     match (verb, args) {
         ("list", []) => {
-            let mut out: Vec<String> = shared
-                .slots
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .map(|slot| camera_line(&slot.snapshot()))
-                .collect();
+            let mut out = vec![control_line(shared)];
+            out.extend(
+                shared
+                    .slots
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .values()
+                    .map(|slot| camera_line(&slot.snapshot())),
+            );
             out.extend(copy_lines());
             out.push("ok".to_string());
             out
@@ -217,6 +219,17 @@ fn frame(slot: &Slot) -> Vec<String> {
     }
 }
 
+/// The control socket's effective mode and group. The group is its name when `/etc/group` has one.
+fn control_line(shared: &Shared) -> String {
+    format!(
+        "control socket={} mode={:04o} group={} gid={}",
+        clip(&shared.control_socket.display().to_string()),
+        shared.access.socket_mode,
+        shared.access.group,
+        shared.access.gid,
+    )
+}
+
 /// The copy counters of this process: every site where a frame's bytes are copied.
 fn copy_lines() -> Vec<String> {
     styx_frame::copy_counters()
@@ -269,7 +282,7 @@ fn camera_line(status: &CameraStatus) -> String {
     // Free text in this line is one word (spaces become `_`), except `last_error`, which is last.
     let publish = status.publish.to_string().replace(' ', "_");
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} last_recovery={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} last_recovery={} empty_frames={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -298,6 +311,7 @@ fn camera_line(status: &CameraStatus) -> String {
         keep.reclaimed,
         reason,
         recovery,
+        status.empty_frames,
         error,
     )
 }
