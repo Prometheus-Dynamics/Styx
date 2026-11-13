@@ -172,7 +172,7 @@ mod tests {
         let mut image = LoadImage::new();
         // The input size word: LOAD_REGISTERS_OFFSET (0x100) + INPUT_SIZE (0x20).
         image.bytes[0x120] = 1;
-        let refusal = image.checked().err().expect("refused");
+        let refusal = image.checked().expect_err("refused");
         assert_eq!(refusal, Refusal::Extent(0x120));
         assert!(refusal_message(refusal).contains("extent word at 0x120"));
         assert_eq!(
@@ -186,7 +186,7 @@ mod tests {
         let mut image = LoadImage::new();
         // Control block 0's load address: AHB_OFFSET (0x20) + LOAD_ADDR (0x4).
         image.bytes[0x24] = 1;
-        let refusal = image.checked().err().expect("refused");
+        let refusal = image.checked().expect_err("refused");
         assert_eq!(refusal, Refusal::Address(0x24));
         assert!(refusal_message(refusal).contains("address word at 0x24"));
     }

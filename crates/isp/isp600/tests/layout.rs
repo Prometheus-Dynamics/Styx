@@ -174,7 +174,8 @@ fn the_bit_depth_comes_from_the_input_format() {
 
 #[test]
 fn every_unavailable_setting_is_refused_by_name_and_writes_nothing() {
-    let cases: [(&str, fn(&mut IspSettings)); 10] = [
+    type Set = fn(&mut IspSettings);
+    let cases: [(&str, Set); 10] = [
         ("wb", |s| s.wb = [1.5, 1.0, 1.2]),
         ("digital_gain", |s| s.digital_gain = 1.25),
         ("flicker", |s| s.flicker = 1.1),
