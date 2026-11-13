@@ -326,13 +326,41 @@ pub fn open_frames<M: Default + Send + Sync>(
     width: u32,
     height: u32,
 ) -> Result<Frames<M>, Error> {
+    open_frames_with(client, device, stream, code, width, height, false)
+}
+
+/// [`open_frames`] with the buffers mapped for writing too: for a producer in this process that
+/// fills the stream's buffers (a simulated camera, a software stage writing in place).
+pub fn open_frames_writable<M: Default + Send + Sync>(
+    client: &Client,
+    device: u32,
+    stream: &str,
+    code: FourCc,
+    width: u32,
+    height: u32,
+) -> Result<Frames<M>, Error> {
+    open_frames_with(client, device, stream, code, width, height, true)
+}
+
+fn open_frames_with<M: Default + Send + Sync>(
+    client: &Client,
+    device: u32,
+    stream: &str,
+    code: FourCc,
+    width: u32,
+    height: u32,
+    writable: bool,
+) -> Result<Frames<M>, Error> {
     let platform = Arc::new(MappingPlatform {
         inner: LinuxStreams,
         mapped: Mutex::new(Mapped::default()),
     });
-    let opened = client
-        .open_stream(device, stream, platform.clone())
-        .map_err(Error::Client)?;
+    let opened = if writable {
+        client.open_stream_writable(device, stream, platform.clone())
+    } else {
+        client.open_stream(device, stream, platform.clone())
+    }
+    .map_err(Error::Client)?;
     let mapped = std::mem::take(&mut *platform.lock());
     let format = MediaFormat::with_defaults(
         code,

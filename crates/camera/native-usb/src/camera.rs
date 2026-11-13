@@ -205,7 +205,7 @@ impl UsbCamera {
     ///
     /// Call it in a loop. A lost camera is detached and retried inside these calls, so the loop
     /// needs no recovery code of its own.
-    pub fn next_frame(&mut self, timeout: Duration) -> Option<FrameLease<usize>> {
+    pub fn next_frame(&mut self, timeout: Duration) -> Option<FrameLease> {
         let deadline = Instant::now() + timeout;
         loop {
             if !self.wanted {
@@ -244,7 +244,7 @@ impl UsbCamera {
     }
 
     /// One wait on the stream, with the health check when it is due.
-    fn pump(&mut self, slice: Duration) -> Result<Option<FrameLease<usize>>, String> {
+    fn pump(&mut self, slice: Duration) -> Result<Option<FrameLease>, String> {
         let State::Streaming(live) = &mut self.state else {
             return Ok(None);
         };
