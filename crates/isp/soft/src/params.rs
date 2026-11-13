@@ -35,6 +35,8 @@ pub struct IspParams {
     pub stats: Option<StatsConfig>,
     /// The arithmetic of the per-pixel stages.
     pub arithmetic: Arithmetic,
+    /// Which equivalent row paths run (see [`Paths`]).
+    pub paths: Paths,
 }
 
 impl IspParams {
@@ -64,7 +66,62 @@ impl Default for IspParams {
             yuv: YuvMatrix::Bt709Limited,
             stats: None,
             arithmetic: Arithmetic::Auto,
+            paths: Paths::CURRENT,
         }
+    }
+}
+
+/// Which of two equivalent row paths run, per stage. [`Paths::CURRENT`] (the default) takes each
+/// new path; [`Paths::LEGACY`] takes the path each one replaced, so a board run can compare the
+/// two in one session (`styx-measure read --isp-variant legacy`). Every flag is bit-exact in
+/// both settings: the tests of this crate compare them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Paths {
+    /// Leave out the colour matrix when it is the identity (decided when the tables are built;
+    /// a tone curve is never a no-op, its table rounds where the plain shift truncates). Off:
+    /// the identity matrix runs too.
+    pub skip_noops: bool,
+}
+
+impl Paths {
+    /// The new paths (the default).
+    pub const CURRENT: Self = Self { skip_noops: true };
+    /// The paths the new ones replace.
+    pub const LEGACY: Self = Self { skip_noops: false };
+
+    /// `current`, `legacy`, or a list of flags: `current,-skip-noops` takes the new paths but
+    /// the identity matrix; `legacy,+skip-noops` the reverse. Flags: `skip-noops`.
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let mut out = Self::CURRENT;
+        for (i, item) in text.split(',').map(str::trim).enumerate() {
+            match (i, item) {
+                (0, "current") => out = Self::CURRENT,
+                (0, "legacy") => out = Self::LEGACY,
+                (_, _) => {
+                    let (on, name) = match item.strip_prefix('+') {
+                        Some(name) => (true, name),
+                        None => match item.strip_prefix('-') {
+                            Some(name) => (false, name),
+                            None => {
+                                return Err(format!("ISP path {item:?}: expected +flag or -flag"));
+                            }
+                        },
+                    };
+                    match name {
+                        "skip-noops" => out.skip_noops = on,
+                        other => return Err(format!("unknown ISP path flag {other:?}")),
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+impl Default for Paths {
+    fn default() -> Self {
+        Self::CURRENT
     }
 }
 

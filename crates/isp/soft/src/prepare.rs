@@ -407,13 +407,18 @@ impl IntPrep {
                 (rows, GainSource { cells, grid })
             }
         };
-        let ccm = params.ccm.map(|c| {
-            let mut m = [0i16; 9];
-            for (k, v) in c.m.iter().flatten().enumerate() {
-                m[k] = (v * 4096.0).round() as i16;
-            }
-            m
-        });
+        let skip = params.paths.skip_noops;
+        // The identity matrix is left out (it maps every sample to itself, see `ccm_row`).
+        let ccm = params
+            .ccm
+            .map(|c| {
+                let mut m = [0i16; 9];
+                for (k, v) in c.m.iter().flatten().enumerate() {
+                    m[k] = (v * 4096.0).round() as i16;
+                }
+                m
+            })
+            .filter(|m| !(skip && *m == IDENTITY_Q12));
         // Only when named: `Auto` is the exact table on every host. Never without feature
         // `poly-tone`.
         let poly_wanted =
@@ -453,6 +458,9 @@ impl IntPrep {
         })
     }
 }
+
+/// The Q12 identity colour matrix.
+const IDENTITY_Q12: [i16; 9] = [4096, 0, 0, 0, 4096, 0, 0, 0, 4096];
 
 /// Lens shading grids must be complete and hold finite, non-negative gains.
 fn check_lens_shading(ls: &LensShading) -> Result<(), IspError> {
