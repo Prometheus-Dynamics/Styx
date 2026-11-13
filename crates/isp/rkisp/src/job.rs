@@ -83,7 +83,11 @@ impl Isp {
                     device.name, info.statistics_layout
                 ))
             })?;
-        let want: ConfigLayout = generation.config_layout();
+        let config = generation.config_layout();
+        let want = ConfigLayout {
+            layout: config.layout,
+            bytes: config.bytes,
+        };
         let config_layout = isp
             .config_layout(0)
             .map_err(|e| Error::Device(format!("{}: config_layout: {e:?}", device.name)))?;

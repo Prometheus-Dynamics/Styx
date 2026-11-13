@@ -6,7 +6,7 @@
 //! `fail_moves` (device config) makes that many moves after power-up fail with a bus error, to
 //! exercise the retry path.
 
-use lemnos_contract_lens::{Lens, Range};
+use lemnos_contract_lens::{FocusDirection, Lens, Range};
 use lemnos_core::{Config, ConfigValue, Lifecycle, Result, Status, driver};
 
 /// The lens's range: a 10-bit actuator, as the DW9807 and DW9714.
@@ -39,6 +39,16 @@ impl Lifecycle for SimLens {
 impl Lens for SimLens {
     fn range(&mut self) -> Result<Range> {
         Ok(RANGE)
+    }
+
+    fn direction(&mut self) -> Result<FocusDirection> {
+        // The simulated lens does not say which way focus moves: never a guess.
+        Ok(FocusDirection::Unknown)
+    }
+
+    fn settle_us(&mut self, _distance: u16) -> Result<Option<u32>> {
+        // No settle time is modelled.
+        Ok(None)
     }
 
     fn set_position(&mut self, position: u16) -> Result<()> {

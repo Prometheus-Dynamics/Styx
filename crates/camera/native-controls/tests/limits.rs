@@ -23,6 +23,7 @@ fn mode() -> Mode {
             max: 255,
             unity: 16,
             step: 1,
+            law: lemnos_contract_camera_sensor::GainLaw::Linear,
         },
         exposure_delay: 2,
         gain_delay: 2,
