@@ -69,7 +69,7 @@ G_DEFINE_TYPE(StyxSrc, styx_src, GST_TYPE_PUSH_SRC)
 enum { PROP_0, PROP_SOCKET };
 
 static GstStaticPadTemplate g_src_template = GST_STATIC_PAD_TEMPLATE(
-    "src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw"));
+    "src", GST_PAD_SRC, GST_PAD_ALWAYS, GST_STATIC_CAPS("video/x-raw; image/jpeg"));
 
 /* Runs when GStreamer frees the memory that holds a frame. */
 static void styx_token_released(gpointer token) {
@@ -137,12 +137,16 @@ static gboolean styx_src_unlock_stop(GstBaseSrc *base) {
   return TRUE;
 }
 
-/* Sets the element's caps when the frame's format, size or rate differs from the last. */
-static void styx_src_update_caps(StyxSrc *src, const styx_gst_frame *f, GstVideoFormat format) {
-  if (src->caps_format && strcmp(src->caps_format, f->format) == 0 &&
-      src->caps_width == f->width && src->caps_height == f->height &&
-      src->caps_fps_num == f->fps_num && src->caps_fps_den == f->fps_den) {
-    return;
+/* The frame's caps: image/jpeg for a compressed frame (MJPG), raw video otherwise. */
+static GstCaps *styx_frame_caps(const styx_gst_frame *f, GstVideoFormat format, int jpeg) {
+  if (jpeg) {
+    GstCaps *caps = gst_caps_new_simple("image/jpeg", "width", G_TYPE_INT, (int)f->width,
+                                        "height", G_TYPE_INT, (int)f->height, NULL);
+    if (f->fps_num > 0 && f->fps_den > 0) {
+      gst_caps_set_simple(caps, "framerate", GST_TYPE_FRACTION, (int)f->fps_num, (int)f->fps_den,
+                          NULL);
+    }
+    return caps;
   }
   GstVideoInfo info;
   gst_video_info_set_format(&info, format, f->width, f->height);
@@ -150,7 +154,18 @@ static void styx_src_update_caps(StyxSrc *src, const styx_gst_frame *f, GstVideo
     info.fps_n = f->fps_num;
     info.fps_d = f->fps_den;
   }
-  GstCaps *caps = gst_video_info_to_caps(&info);
+  return gst_video_info_to_caps(&info);
+}
+
+/* Sets the element's caps when the frame's format, size or rate differs from the last. */
+static void styx_src_update_caps(StyxSrc *src, const styx_gst_frame *f, GstVideoFormat format,
+                                 int jpeg) {
+  if (src->caps_format && strcmp(src->caps_format, f->format) == 0 &&
+      src->caps_width == f->width && src->caps_height == f->height &&
+      src->caps_fps_num == f->fps_num && src->caps_fps_den == f->fps_den) {
+    return;
+  }
+  GstCaps *caps = styx_frame_caps(f, format, jpeg);
   gst_base_src_set_caps(GST_BASE_SRC(src), caps);
   gst_caps_unref(caps);
   g_free(src->caps_format);
@@ -175,13 +190,14 @@ static GstFlowReturn styx_src_create(GstPushSrc *push, GstBuffer **out) {
       break;
     }
   }
-  GstVideoFormat format = gst_video_format_from_string(f.format);
-  if (format == GST_VIDEO_FORMAT_UNKNOWN || f.planes == 0 || f.planes > 4) {
+  int jpeg = strcmp(f.format, "image/jpeg") == 0;
+  GstVideoFormat format = jpeg ? GST_VIDEO_FORMAT_UNKNOWN : gst_video_format_from_string(f.format);
+  if (!jpeg && (format == GST_VIDEO_FORMAT_UNKNOWN || f.planes == 0 || f.planes > 4)) {
     g_ops->release(f.token);
     GST_ELEMENT_ERROR(src, STREAM, FORMAT, ("frame format %s is not supported", f.format), (NULL));
     return GST_FLOW_ERROR;
   }
-  styx_src_update_caps(src, &f, format);
+  styx_src_update_caps(src, &f, format, jpeg);
 
   GstMemory *memory = NULL;
 #ifdef STYX_HAVE_ALLOCATORS
@@ -218,8 +234,10 @@ static GstFlowReturn styx_src_create(GstPushSrc *push, GstBuffer **out) {
     offsets[i] = f.offset[i];
     strides[i] = f.stride[i];
   }
-  gst_buffer_add_video_meta_full(buffer, GST_VIDEO_FRAME_FLAG_NONE, format, f.width, f.height,
-                                 f.planes, offsets, strides);
+  if (!jpeg) {
+    gst_buffer_add_video_meta_full(buffer, GST_VIDEO_FRAME_FLAG_NONE, format, f.width, f.height,
+                                   f.planes, offsets, strides);
+  }
   GST_BUFFER_PTS(buffer) = f.pts_ns;
   if (f.fps_num > 0 && f.fps_den > 0) {
     GST_BUFFER_DURATION(buffer) = gst_util_uint64_scale(GST_SECOND, f.fps_den, f.fps_num);

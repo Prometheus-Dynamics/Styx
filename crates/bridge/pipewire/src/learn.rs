@@ -1,41 +1,30 @@
 //! Learning the producer's buffers: the node needs each ring buffer's descriptor before PipeWire
-//! can name it, and a reader only sees a buffer's descriptor through a frame in it. So the node
-//! first takes frames, duplicates each new index's descriptor, and releases the frame at once.
-//! No PipeWire here: this part is tested without the library.
+//! can name it, and a reader only sees a buffer's descriptor through a frame in it. The learner
+//! takes frames one at a time, duplicates each new index's descriptor, and the caller releases
+//! each frame at once, so the producer keeps running while the node learns. No PipeWire here.
 
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use styx_format::{FourCc, Resolution};
-use styx_socket::Reader;
+use styx_socket::Frame;
 
-const BACKOFF_START: Duration = Duration::from_millis(100);
-const BACKOFF_CAP: Duration = Duration::from_secs(5);
-
-/// Why the buffers could not be learned.
+/// Why the buffers could not be learned. The node treats each as a lost producer and retries.
 #[derive(Debug)]
 pub enum LearnError {
-    /// The stop flag was set first.
-    Stopped,
-    /// The producer went away while the buffers were learned.
-    ProducerLost,
     /// Buffer `index` is not a memfd or dma-buf, so it cannot be handed to PipeWire by reference.
     NoDescriptor(usize),
     /// The frames changed format while the buffers were learned.
     FormatChanged,
     /// Duplicating a descriptor failed.
     Io(io::Error),
+    /// [`Learner::finish`] was called before every buffer was seen.
+    Incomplete,
 }
 
 impl std::fmt::Display for LearnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Stopped => f.write_str("stopped"),
-            Self::ProducerLost => f.write_str("the producer went away while buffers were learned"),
             Self::NoDescriptor(index) => {
                 write!(f, "buffer {index} is not a memfd or dma-buf")
             }
@@ -43,6 +32,7 @@ impl std::fmt::Display for LearnError {
                 f.write_str("the producer changed format while buffers were learned")
             }
             Self::Io(err) => write!(f, "duplicating a buffer descriptor: {err}"),
+            Self::Incomplete => f.write_str("not every buffer was learned"),
         }
     }
 }
@@ -63,97 +53,104 @@ pub struct Buffers {
     pub stride: u32,
     /// Bytes of one frame (the planes' span).
     pub frame_len: u32,
-}
-
-/// Connects a reader to the producer at `socket`, trying again with backoff (100 ms doubling to
-/// 5 s) until it connects or `stop` is set.
-pub fn connect(socket: &Path, stop: &AtomicBool) -> Option<Reader> {
-    let mut backoff = BACKOFF_START;
-    loop {
-        if stop.load(Ordering::Acquire) {
-            return None;
-        }
-        let connected = UnixStream::connect(socket)
-            .ok()
-            .and_then(|stream| Reader::connect(stream).ok());
-        if let Some(reader) = connected {
-            return Some(reader);
-        }
-        std::thread::sleep(backoff);
-        backoff = (backoff * 2).min(BACKOFF_CAP);
-    }
-}
-
-/// Learns the descriptor of each of `buffers` ring buffers from the frames `reader` delivers.
-/// Frames are released as soon as their descriptor is taken, so the producer keeps running.
-///
-/// # Errors
-///
-/// [`LearnError`] when stopped, when the producer goes away, when a buffer has no descriptor, or
-/// when the format changes.
-pub fn learn(
-    reader: &mut Reader,
-    buffers: usize,
-    stop: &AtomicBool,
-) -> Result<Buffers, LearnError> {
-    let mut found: Vec<Option<(OwnedFd, u32)>> = (0..buffers).map(|_| None).collect();
-    let mut count = 0;
-    let mut shape: Option<(FourCc, Resolution, u32, u32)> = None;
-    while count < buffers {
-        if stop.load(Ordering::Acquire) {
-            return Err(LearnError::Stopped);
-        }
-        match reader.next_frame() {
-            Ok(Some(frame)) => {
-                let lease = frame.lease();
-                let format = lease.format();
-                let stride = lease
-                    .layouts()
-                    .first()
-                    .map_or(0, |plane| plane.stride as u32);
-                let frame_len = lease.layouts().span().unwrap_or(0) as u32;
-                let this = (format.code, format.resolution, stride, frame_len);
-                match shape {
-                    None => shape = Some(this),
-                    Some(known) if known != this => return Err(LearnError::FormatChanged),
-                    Some(_) => {}
-                }
-                let index = frame.buffer();
-                if index < buffers && found[index].is_none() {
-                    let memory = lease.memory();
-                    let fd = memory.fd().ok_or(LearnError::NoDescriptor(index))?;
-                    let owned = fd.try_clone_to_owned().map_err(LearnError::Io)?;
-                    found[index] = Some((owned, memory.len() as u32));
-                    count += 1;
-                }
-            }
-            Ok(None) => {
-                let _ = reader.wait(Some(Duration::from_millis(20)));
-            }
-            Err(_) => return Err(LearnError::ProducerLost),
-        }
-    }
-    let (fourcc, resolution, stride, frame_len) = shape.ok_or(LearnError::ProducerLost)?;
-    let (fds, lens) = found
-        .into_iter()
-        .map(|entry| entry.expect("every index was learned"))
-        .unzip();
-    Ok(Buffers {
-        fds,
-        lens,
-        fourcc,
-        resolution,
-        stride,
-        frame_len,
-    })
+    /// The raw descriptors of `fds`, in order, for the shim's copy.
+    raw: Vec<i32>,
 }
 
 impl Buffers {
-    /// The raw descriptors, for handing to the PipeWire shim (the shim duplicates them).
-    pub fn raw_fds(&self) -> Vec<i32> {
-        self.fds
+    /// The raw descriptors, in buffer order. The shim duplicates them before the call returns.
+    pub fn raw_fds(&self) -> &[i32] {
+        &self.raw
+    }
+}
+
+/// The shape every frame of one producer carries. A change in it is a new producer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shape {
+    fourcc: FourCc,
+    resolution: Resolution,
+    stride: u32,
+    frame_len: u32,
+}
+
+/// Learns the descriptors of `buffers` ring buffers, one frame at a time.
+#[derive(Debug)]
+pub struct Learner {
+    found: Vec<Option<(OwnedFd, u32)>>,
+    count: usize,
+    shape: Option<Shape>,
+}
+
+impl Learner {
+    /// A learner for a producer with `buffers` ring buffers (from its handshake's geometry).
+    pub fn new(buffers: usize) -> Self {
+        Self {
+            found: (0..buffers).map(|_| None).collect(),
+            count: 0,
+            shape: None,
+        }
+    }
+
+    /// Takes `frame`'s buffer descriptor when its index is new. Returns `true` once every buffer
+    /// is known. The caller drops the frame: the descriptor it took is a duplicate.
+    ///
+    /// # Errors
+    ///
+    /// [`LearnError`] when the frame's buffer has no descriptor, the format changed, or a
+    /// duplicate fails.
+    pub fn feed(&mut self, frame: &Frame) -> Result<bool, LearnError> {
+        let lease = frame.lease();
+        let format = lease.format();
+        let stride = lease
+            .layouts()
+            .first()
+            .map_or(0, |plane| plane.stride as u32);
+        let frame_len = lease.layouts().span().unwrap_or(0) as u32;
+        let this = Shape {
+            fourcc: format.code,
+            resolution: format.resolution,
+            stride,
+            frame_len,
+        };
+        match self.shape {
+            None => self.shape = Some(this),
+            Some(known) if known != this => return Err(LearnError::FormatChanged),
+            Some(_) => {}
+        }
+        let index = frame.buffer();
+        if index < self.found.len() && self.found[index].is_none() {
+            let memory = lease.memory();
+            let fd = memory.fd().ok_or(LearnError::NoDescriptor(index))?;
+            let owned = fd.try_clone_to_owned().map_err(LearnError::Io)?;
+            self.found[index] = Some((owned, memory.len() as u32));
+            self.count += 1;
+        }
+        Ok(self.count == self.found.len())
+    }
+
+    /// The buffers, once every one is known.
+    ///
+    /// # Errors
+    ///
+    /// [`LearnError::Incomplete`] when some buffer was not seen.
+    pub fn finish(self) -> Result<Buffers, LearnError> {
+        let shape = match (self.count == self.found.len(), self.shape) {
+            (true, Some(shape)) => shape,
+            _ => return Err(LearnError::Incomplete),
+        };
+        let (fds, lens): (Vec<OwnedFd>, Vec<u32>) = self.found.into_iter().flatten().unzip();
+        let raw = fds
             .iter()
             .map(|fd| std::os::fd::AsRawFd::as_raw_fd(&fd.as_fd()))
-            .collect()
+            .collect();
+        Ok(Buffers {
+            fds,
+            lens,
+            fourcc: shape.fourcc,
+            resolution: shape.resolution,
+            stride: shape.stride,
+            frame_len: shape.frame_len,
+            raw,
+        })
     }
 }
