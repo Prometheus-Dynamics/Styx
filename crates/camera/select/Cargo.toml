@@ -1,0 +1,21 @@
+[package]
+name = "styx-select"
+description = "Choosing a backend per camera: native first, then libcamera, then V4L2. One owner per camera, one camera per physical device across backends, a reason for each choice, config overrides, and virtual V4L2 nodes only when named. Also the common capture trait over the three backends' streams."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-controls = { path = "../../core/controls" }
+styx-frame = { path = "../../core/frame" }
+styx-lemnos = { path = "../../core/lemnos" }
+styx-native = { path = "../native" }
+styx-native-run = { path = "../native-run" }
+styx-libcamera = { path = "../libcamera" }
+styx-v4l2 = { path = "../v4l2" }
+
+[lints]
+workspace = true
