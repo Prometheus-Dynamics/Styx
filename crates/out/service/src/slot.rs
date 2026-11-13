@@ -197,6 +197,11 @@ pub struct CameraStatus {
     pub next_delay: Option<Duration>,
     /// The last failure's message, or the backend's last retry message.
     pub last_error: Option<String>,
+    /// Times the service stopped a sensor and receiver a previous owner left started, since the
+    /// service started (see `worker`).
+    pub recoveries: u64,
+    /// The last such stop: what was stopped, or what refused.
+    pub last_recovery: Option<String>,
     /// Frames delivered since the service started.
     pub frames: u64,
     /// Frame identities skipped (a gap in the stream), since the service started.
@@ -297,6 +302,8 @@ impl Slot {
             total_failures: 0,
             next_delay: None,
             last_error: None,
+            recoveries: 0,
+            last_recovery: None,
             frames: 0,
             skipped: 0,
             last_frame: None,
@@ -385,6 +392,13 @@ impl Slot {
         let mut status = lock(&self.status);
         status.state = State::Backoff;
         status.next_delay = Some(delay);
+    }
+
+    /// Records a stop of the devices a previous owner left started, and what it reported.
+    pub(crate) fn recovered(&self, note: String) {
+        let mut status = lock(&self.status);
+        status.recoveries += 1;
+        status.last_recovery = Some(note);
     }
 
     pub(crate) fn reset_failures(&self) {

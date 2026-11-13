@@ -17,7 +17,7 @@ use styx_controls::{Control, ControlValue, FrameMetadata, Update, WIRE_BYTES};
 use styx_format::{FourCc, Interval};
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
-use styx_native::discover;
+use styx_native::{Camera, discover};
 use styx_native_run::{AutoOff, Clock, Initial, Policy, Request, Session};
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
 use styx_select::{Capture, CaptureError, Selected, Status};
@@ -29,6 +29,9 @@ use crate::outlet::Outlet;
 use crate::service::Shared;
 use crate::slot::{Command, Health, KeepWindow, Publish, Slot, State};
 use lemnos_client::DeviceHealth;
+use lemnos_contract_camera_receiver::CameraReceiver;
+use lemnos_contract_camera_sensor::CameraSensor;
+use lemnos_core::Status as LemnosStatus;
 
 /// The client name the service gives the Lemnos daemon.
 pub const CLIENT_NAME: &str = "styx-service";
@@ -267,9 +270,23 @@ fn open<R>(
                 frame_rate_milli: fps,
             };
             let clock: &dyn Clock = &*shared.clock;
-            let session = Session::new(&client, camera, request, native_policy(shared), clock)
-                .with_controls(initial);
-            let mut capture = NativeCapture::start(session).map_err(|e| e.to_string())?;
+            let session = || {
+                Session::new(&client, camera, request, native_policy(shared), clock)
+                    .with_controls(initial)
+            };
+            let mut capture = match NativeCapture::start(session()) {
+                Ok(capture) => capture,
+                Err(e) if left_started(&e.to_string()) => {
+                    // A previous owner left the sensor streaming, so it refuses a mode. Stop
+                    // the sensor and the receiver once through the contract, then try again
+                    // once. A second refusal is an ordinary failure: it backs off like any other.
+                    let note = stop_left_started(&client, camera);
+                    slot.recovered(note.clone());
+                    eprintln!("styx-service: camera {}: {note}", slot.id);
+                    NativeCapture::start(session()).map_err(|e| e.to_string())?
+                }
+                Err(e) => return Err(e.to_string()),
+            };
             Ok(run(&mut capture))
         }
         Backend::Libcamera => {
@@ -311,6 +328,48 @@ fn native_health(health: DeviceHealth, reason: &str) -> Health {
         DeviceHealth::Ok => Health::Healthy,
         DeviceHealth::Degraded => Health::Degraded(reason),
         DeviceHealth::Failed => Health::Failed(reason),
+    }
+}
+
+/// Whether a session's start failed because the sensor refused a mode as busy: the sensor is
+/// streaming, which is what a previous owner that did not stop it leaves behind. The text is the
+/// session's, which formats a refused call's status with `Debug`.
+fn left_started(text: &str) -> bool {
+    text.contains(&format!(
+        "sensor.select_mode refused: {:?}",
+        LemnosStatus::BUSY
+    ))
+}
+
+/// Stops the camera's sensor, then its receiver, through the Lemnos contract, as a manual stop
+/// would. Each is tried even when the other refuses. The text says what was done, for the status.
+fn stop_left_started(client: &Client, camera: &Camera) -> String {
+    let mut problems = Vec::new();
+    let sensor = &camera.sensor().name;
+    match client.open::<dyn CameraSensor>(sensor) {
+        Ok(mut device) => {
+            if let Err(status) = device.stop() {
+                problems.push(format!("sensor.stop refused: {status:?}"));
+            }
+        }
+        Err(e) => problems.push(format!("open {sensor}: {e}")),
+    }
+    let receiver = &camera.receiver().name;
+    match client.open::<dyn CameraReceiver>(receiver) {
+        Ok(mut device) => {
+            if let Err(status) = device.stop() {
+                problems.push(format!("receiver.stop refused: {status:?}"));
+            }
+        }
+        Err(e) => problems.push(format!("open {receiver}: {e}")),
+    }
+    if problems.is_empty() {
+        format!("sensor {sensor} was left started: stopped it and receiver {receiver}, retrying")
+    } else {
+        format!(
+            "sensor {sensor} was left started: {}; retrying",
+            problems.join("; ")
+        )
     }
 }
 
