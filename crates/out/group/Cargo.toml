@@ -1,0 +1,26 @@
+[package]
+name = "styx-group"
+description = "Multi-camera frame grouping: matches the frames of N cameras by timestamp within a tolerance, emits groups, and counts every drop by reason."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[features]
+default = ["std"]
+# `std` for the frame's error traits and file descriptors; the grouper itself is `core` + `alloc`.
+std = ["styx-frame/std"]
+
+[dependencies]
+styx-frame = { path = "../../core/frame", default-features = false }
+
+[dev-dependencies]
+styx-format = { path = "../../core/format" }
+
+[lints]
+workspace = true
