@@ -1,0 +1,79 @@
+[package]
+name = "styx-examples"
+description = "The runnable examples. Each program lives in the top-level examples/ tree and is built here through an [[example]] entry, so the gate builds and tests every one. Each runs on the simulated camera with --sim, and on real cameras through styx-select otherwise."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[features]
+# The Daedalus graph example (examples/02_graph/daedalus_frames). Off by default: without it that
+# example prints how to turn it on and exits 0. The Daedalus crates are the workspace's git
+# dependencies; the feature names them here, as the example's nodes need.
+daedalus = [
+    "styx-daedalus/daedalus",
+    "dep:daedalus",
+    "dep:daedalus-abi",
+    "dep:daedalus-backend",
+    "dep:daedalus-cpu",
+    "dep:daedalus-cpu-author",
+    "dep:daedalus-registry",
+    "dep:daedalus-runner",
+    "dep:daedalus-types",
+]
+
+[dependencies]
+styx-controls = { path = "../../core/controls" }
+styx-daedalus = { path = "../../out/daedalus" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame", features = ["linux"] }
+styx-jpeg = { path = "../../codec/jpeg" }
+styx-lemnos = { path = "../../core/lemnos" }
+styx-libcamera = { path = "../../camera/libcamera" }
+styx-native = { path = "../../camera/native" }
+styx-native-run = { path = "../../camera/native-run" }
+styx-select = { path = "../../camera/select" }
+styx-service = { path = "../../out/service" }
+styx-socket = { path = "../../out/socket" }
+styx-v4l2 = { path = "../../camera/v4l2" }
+# The Daedalus crates the graph example uses; optional, behind the `daedalus` feature.
+daedalus = { workspace = true, features = ["std"], optional = true }
+daedalus-abi = { workspace = true, optional = true }
+daedalus-backend = { workspace = true, optional = true }
+daedalus-cpu = { workspace = true, optional = true }
+daedalus-cpu-author = { workspace = true, optional = true }
+daedalus-registry = { workspace = true, optional = true }
+daedalus-runner = { workspace = true, optional = true }
+daedalus-types = { workspace = true, optional = true }
+
+# The simulated backend: lemnosd in this process on lemnos-sim, with the drivers in src/sim.rs.
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-core = { workspace = true, features = ["std"] }
+lemnos-hal = { workspace = true, features = ["std"] }
+lemnos-contract-camera-sensor = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
+lemnos-contract-camera-isp = { workspace = true }
+
+[[example]]
+name = "quickstart"
+path = "../../../examples/00_quickstart/main.rs"
+
+[[example]]
+name = "capture"
+path = "../../../examples/01_capture/main.rs"
+
+[[example]]
+name = "socket_reader"
+path = "../../../examples/05_apps/socket_reader/main.rs"
+
+[[example]]
+name = "daedalus_frames"
+path = "../../../examples/02_graph/daedalus_frames/main.rs"
+
+[lints]
+workspace = true

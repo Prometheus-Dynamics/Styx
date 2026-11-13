@@ -565,3 +565,139 @@ instantiate! {
     luma_bins => luma_bins_sse2, luma_bins_avx2(
         rgb: [&[u16]; 3], dst: &mut [u16], bins: u16, width: usize);
 }
+
+/// Luma of 8-bit source rows for output columns `base .. base + dst.len()`, as the NEON leaf
+/// (`super::super::neon::bayer_luma_u8`): 8 outputs a step.
+///
+/// # Safety
+/// As the NEON leaf's contract; SSE2 must be available (the caller checked it).
+#[target_feature(enable = "sse2")]
+pub(in crate::isp) unsafe fn bayer_luma_u8_sse2(
+    rows: [&[u8]; 3],
+    base: usize,
+    dst: &mut [u16],
+) -> usize {
+    let [up, cur, dn] = rows;
+    let m = dst.len();
+    let mut i = 0;
+    let zero = _mm_setzero_si128();
+    // SAFETY: 8 bytes loaded at each column of the contract (the loads read `c ..= c + 7`, all
+    // inside the rows); 8 outputs stored at `i`, `i + 8 <= m`.
+    unsafe {
+        // Column sums of 8 lanes from column `c`, widened: up + 2 cur + dn.
+        let col = |p_up: *const u8, p_cur: *const u8, p_dn: *const u8, c: usize| {
+            let u = _mm_unpacklo_epi8(_mm_loadl_epi64(p_up.add(c).cast()), zero);
+            let d = _mm_unpacklo_epi8(_mm_loadl_epi64(p_dn.add(c).cast()), zero);
+            let r = _mm_unpacklo_epi8(_mm_loadl_epi64(p_cur.add(c).cast()), zero);
+            _mm_add_epi16(_mm_add_epi16(u, d), _mm_slli_epi16::<1>(r))
+        };
+        let (pu, pc, pd) = (up.as_ptr(), cur.as_ptr(), dn.as_ptr());
+        while i + 8 <= m {
+            let c = base + i;
+            let left = col(pu, pc, pd, c - 1);
+            let centre = col(pu, pc, pd, c);
+            let right = col(pu, pc, pd, c + 1);
+            let s = _mm_add_epi16(_mm_add_epi16(left, right), _mm_slli_epi16::<1>(centre));
+            _mm_storeu_si128(dst.as_mut_ptr().add(i).cast(), s);
+            i += 8;
+        }
+    }
+    i
+}
+
+/// Quad luma of 8-bit rows: `4 V` per quad (see `scalar::quad_luma_u8_row`), 8 a step.
+///
+/// # Safety
+/// `top` and `bottom` hold `2 * width` bytes and `dst` `width` values; SSE2 is available.
+#[target_feature(enable = "sse2")]
+pub(in crate::isp) unsafe fn quad_luma_u8_sse2(
+    top: &[u8],
+    bottom: &[u8],
+    dst: &mut [u16],
+    width: usize,
+) -> usize {
+    let mut i = 0;
+    let low = _mm_set1_epi16(0x00FF);
+    // SAFETY: 16 bytes of each input at `2 i` and 8 outputs at `i`, with `i + 8 <= width`.
+    unsafe {
+        while i + 8 <= width {
+            let t = _mm_loadu_si128(top.as_ptr().add(2 * i).cast());
+            let b = _mm_loadu_si128(bottom.as_ptr().add(2 * i).cast());
+            // Even bytes (left column) and odd bytes (right column) as 16-bit lanes.
+            let sum = |v: __m128i| _mm_add_epi16(_mm_and_si128(v, low), _mm_srli_epi16::<8>(v));
+            let s = _mm_add_epi16(sum(t), sum(b));
+            _mm_storeu_si128(dst.as_mut_ptr().add(i).cast(), _mm_slli_epi16::<2>(s));
+            i += 8;
+        }
+    }
+    i
+}
+
+/// [`bayer_luma_u8_sse2`] with 256-bit vectors (16 outputs a step; the bytes widen with
+/// `vpmovzxbw`).
+///
+/// # Safety
+/// As [`bayer_luma_u8_sse2`]; AVX2 must be available (the caller checked it).
+#[target_feature(enable = "avx2")]
+pub(in crate::isp) unsafe fn bayer_luma_u8_avx2(
+    rows: [&[u8]; 3],
+    base: usize,
+    dst: &mut [u16],
+) -> usize {
+    let [up, cur, dn] = rows;
+    let m = dst.len();
+    let mut i = 0;
+    // SAFETY: 16 bytes loaded at each column of the contract (`c ..= c + 15`, inside the rows);
+    // 16 outputs stored at `i`, `i + 16 <= m`.
+    unsafe {
+        let col = |p_up: *const u8, p_cur: *const u8, p_dn: *const u8, c: usize| {
+            let u = _mm256_cvtepu8_epi16(_mm_loadu_si128(p_up.add(c).cast()));
+            let d = _mm256_cvtepu8_epi16(_mm_loadu_si128(p_dn.add(c).cast()));
+            let r = _mm256_cvtepu8_epi16(_mm_loadu_si128(p_cur.add(c).cast()));
+            _mm256_add_epi16(_mm256_add_epi16(u, d), _mm256_slli_epi16::<1>(r))
+        };
+        let (pu, pc, pd) = (up.as_ptr(), cur.as_ptr(), dn.as_ptr());
+        while i + 16 <= m {
+            let c = base + i;
+            let left = col(pu, pc, pd, c - 1);
+            let centre = col(pu, pc, pd, c);
+            let right = col(pu, pc, pd, c + 1);
+            let s = _mm256_add_epi16(
+                _mm256_add_epi16(left, right),
+                _mm256_slli_epi16::<1>(centre),
+            );
+            _mm256_storeu_si256(dst.as_mut_ptr().add(i).cast(), s);
+            i += 16;
+        }
+    }
+    i
+}
+
+/// [`quad_luma_u8_sse2`] with 256-bit vectors: 16 quads a step.
+///
+/// # Safety
+/// As [`quad_luma_u8_sse2`]; AVX2 must be available (the caller checked it).
+#[target_feature(enable = "avx2")]
+pub(in crate::isp) unsafe fn quad_luma_u8_avx2(
+    top: &[u8],
+    bottom: &[u8],
+    dst: &mut [u16],
+    width: usize,
+) -> usize {
+    let mut i = 0;
+    let low = _mm256_set1_epi16(0x00FF);
+    // SAFETY: 32 bytes of each input at `2 i` and 16 outputs at `i`, with `i + 16 <= width`.
+    unsafe {
+        while i + 16 <= width {
+            let t = _mm256_loadu_si256(top.as_ptr().add(2 * i).cast());
+            let b = _mm256_loadu_si256(bottom.as_ptr().add(2 * i).cast());
+            // Each 16-bit lane holds one quad row's pair: left byte and right byte.
+            let sum =
+                |v: __m256i| _mm256_add_epi16(_mm256_and_si256(v, low), _mm256_srli_epi16::<8>(v));
+            let s = _mm256_add_epi16(sum(t), sum(b));
+            _mm256_storeu_si256(dst.as_mut_ptr().add(i).cast(), _mm256_slli_epi16::<2>(s));
+            i += 16;
+        }
+    }
+    i
+}

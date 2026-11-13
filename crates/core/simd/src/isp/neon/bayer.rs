@@ -448,6 +448,74 @@ pub(in crate::isp) unsafe fn quad_luma(
     i
 }
 
+/// Luma of 8-bit source rows for output columns `base .. base + dst.len()` (see
+/// `scalar::bayer_luma_u8_interior`): the column sums of the three rows, widened as they are
+/// added, then the 1-2-1 weights across the row.
+///
+/// # Safety
+/// `rows` are the frame's rows (`width` bytes each) and `base >= 1`, `base + dst.len() < width`
+/// (so every 8-byte load at `base + i - 1 ..= base + i + 8` with `i + 8 <= dst.len()` is inside
+/// the rows). Returns the outputs written, a multiple of 8, from the start.
+#[target_feature(enable = "neon")]
+pub(in crate::isp) unsafe fn bayer_luma_u8(
+    rows: [&[u8]; 3],
+    base: usize,
+    dst: &mut [u16],
+) -> usize {
+    let [up, cur, dn] = rows;
+    let m = dst.len();
+    let mut i = 0;
+    // The column sum of 8 lanes starting at column `c`: up + 2 cur + dn, in 16 bits.
+    // SAFETY (for every load below): as the function's contract, `c + 8 <= base + m + 1`.
+    let col = |row_up: *const u8, row_cur: *const u8, row_dn: *const u8, c: usize| unsafe {
+        let two = vdup_n_u8(2);
+        let acc = vaddl_u8(vld1_u8(row_up.add(c)), vld1_u8(row_dn.add(c)));
+        vmlal_u8(acc, vld1_u8(row_cur.add(c)), two)
+    };
+    // SAFETY: see above; the pointers are into `up`, `cur` and `dn`, which have `width` bytes.
+    unsafe {
+        let (pu, pc, pd) = (up.as_ptr(), cur.as_ptr(), dn.as_ptr());
+        while i + 8 <= m {
+            let c = base + i;
+            let left = col(pu, pc, pd, c - 1);
+            let centre = col(pu, pc, pd, c);
+            let right = col(pu, pc, pd, c + 1);
+            let s = vaddq_u16(vaddq_u16(left, right), vshlq_n_u16::<1>(centre));
+            vst1q_u16(dst.as_mut_ptr().add(i), s);
+            i += 8;
+        }
+    }
+    i
+}
+
+/// Quad luma of 8-bit rows: `4 V` for the byte sum `V` of each quad (see
+/// `scalar::quad_luma_u8_row`).
+///
+/// # Safety
+/// `top` and `bottom` hold `2 * width` bytes and `dst` `width` values. Returns the outputs
+/// written, a multiple of 8, from the start.
+#[target_feature(enable = "neon")]
+pub(in crate::isp) unsafe fn quad_luma_u8(
+    top: &[u8],
+    bottom: &[u8],
+    dst: &mut [u16],
+    width: usize,
+) -> usize {
+    let mut i = 0;
+    // SAFETY: 16 bytes of each input at `2i` and 8 outputs at `i`, with `i + 8 <= width`.
+    unsafe {
+        while i + 8 <= width {
+            // Even and odd bytes of each row (the quad's left and right columns).
+            let t = vld2_u8(top.as_ptr().add(2 * i));
+            let b = vld2_u8(bottom.as_ptr().add(2 * i));
+            let s = vaddq_u16(vaddl_u8(t.0, t.1), vaddl_u8(b.0, b.1));
+            vst1q_u16(dst.as_mut_ptr().add(i), vshlq_n_u16::<2>(s));
+            i += 8;
+        }
+    }
+    i
+}
+
 /// # Safety
 /// As [`unpack`]; the rows hold `width` 12-bit samples. Returns the quads done and their sums.
 #[target_feature(enable = "neon")]
