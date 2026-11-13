@@ -17,7 +17,7 @@
 //! # `no_std`
 //!
 //! Without the default `std` feature the crate is `no_std` + `alloc`. Float maths for `no_std`
-//! builds comes from `libm` through the crate's own shim (the same functions as `styx-math`).
+//! builds comes from `styx-math` (`libm` underneath).
 //! The `serde` feature derives serialisation for the parameter types; `std-core` (in `std`)
 //! turns it on, with the replay format.
 
@@ -28,9 +28,6 @@ extern crate alloc;
 pub mod algos;
 mod config;
 mod error;
-#[cfg(not(feature = "std-core"))]
-#[allow(dead_code)] // the whole shim, as styx-math has it; only some of it is used here
-mod float;
 mod frame;
 mod math;
 mod params;
