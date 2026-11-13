@@ -13,12 +13,21 @@ styx-settings = { path = "../settings" }
 styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["std-core"] }
 # The PiSP library (`pisp` feature): front and back end builders, tiling and statistics layouts.
 styx-lemnos = { path = "../../core/lemnos", features = ["pisp"] }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
 lemnos-core = { workspace = true }
+lemnos-client = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
 lemnos-contract-isp-pisp = { workspace = true }
 
 [dev-dependencies]
 serde_json = "1"
+# The simulated backend: lemnosd in this process with a simulated camera.isp/1 + isp.pisp/1 (test only).
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-hal = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true

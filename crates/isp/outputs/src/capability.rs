@@ -87,19 +87,25 @@ impl IspCapability for Described {
     }
 }
 
-/// The PiSP back end as `styx-pisp` exposes it: output 0 at full size, output 1 exactly half
-/// size (its 2x2 box). `styx-pisp` names its formats as the library's image configs, not as
-/// FourCcs, so no format is listed: it needs to expose one FourCc per output (see the PR).
+/// The PiSP back end as `styx-pisp` exposes it: two outputs from one pass, each writing the
+/// FourCcs `styx_pisp::format` names (the formats the library's back end and the reference
+/// board's `camera.isp/1` driver take) and each making any size from the capture down to a
+/// fifteenth of it on each side (the resampler's factors under 16x; output 1's downscaler sits in
+/// front of its resampler). Sizes above the capture are not made.
 pub const PISP: Described = Described {
     name: "pisp",
     outputs: &[
         OutputCapability {
-            sizes: SizeRule::Divisor(1),
-            formats: &[],
+            sizes: SizeRule::Downscale {
+                max_divisor: styx_pisp::format::BACK_END_OUTPUTS[0].max_divisor,
+            },
+            formats: styx_pisp::format::BACK_END_OUTPUTS[0].formats,
         },
         OutputCapability {
-            sizes: SizeRule::Divisor(2),
-            formats: &[],
+            sizes: SizeRule::Downscale {
+                max_divisor: styx_pisp::format::BACK_END_OUTPUTS[1].max_divisor,
+            },
+            formats: styx_pisp::format::BACK_END_OUTPUTS[1].formats,
         },
     ],
 };

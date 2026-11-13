@@ -9,9 +9,14 @@ use styx_settings::IspSettings;
 use crate::PispError;
 use crate::back_end::level16;
 
-/// The RGB-to-Y weights of the statistics (libpisp's full-range BT.601 luma row, on the front
-/// end's 4.10 scale).
-const Y_COEFFS: [f64; 3] = [306.0, 601.0, 117.0];
+/// The RGB-to-Y weights of the statistics: the luma row of the library's full-range BT.601
+/// encoding (`be::defaults`), on the front end's 4.10 scale.
+fn y_coeffs() -> [f64; 3] {
+    let c = styx_lemnos::pisp::be::defaults::Encoding::Jpeg
+        .forward()
+        .coeffs;
+    [f64::from(c[0]), f64::from(c[1]), f64::from(c[2])]
+}
 
 /// The front end for one raw geometry.
 #[derive(Debug)]
@@ -45,7 +50,7 @@ impl FrontEndBuilder {
         });
         let extra = 1.0 / s.wb.iter().copied().fold(1.0, f64::min).max(0.1);
         let y = |coeff: f64, gain: f64| (coeff * gain * extra).round().clamp(0.0, 16383.0) as u16;
-        let [r, g, b] = Y_COEFFS;
+        let [r, g, b] = y_coeffs();
         let rgby = FeRgbyConfig {
             gain_r: y(r, s.wb[0]),
             gain_g: y(g, s.wb[1]),
