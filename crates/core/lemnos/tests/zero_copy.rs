@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use lemnos_linux_sys::dma_buf;
 use styx_format::{FourCc, MediaFormat, Resolution};
-use styx_frame::{FdMemory, FrameEntry, copy_counters, packed_layouts};
+use styx_frame::{FdMemory, FrameEntry, FramePool, copy_counters, packed_layouts};
 use styx_lemnos::{each_memories, pool_over, whole_memories};
 
 const WIDTH: u32 = 16;
@@ -34,7 +34,7 @@ fn stream_buffers_become_leases_with_zero_copies() {
 
     let whole = Arc::new(FdMemory::memfd(file.into(), (STRIDE * 2) as usize, true).unwrap());
     let memories = whole_memories(&whole, 2, BUFFER_BYTES).unwrap();
-    let pool = pool_over(memories, BUFFER_BYTES).unwrap();
+    let pool: FramePool = pool_over(memories, BUFFER_BYTES).unwrap();
     assert_eq!(pool.buffers(), 2);
 
     let code = FourCc::GREY;
@@ -77,5 +77,5 @@ fn a_dma_buf_per_buffer_maps_the_same_way() {
     )];
     let memories = each_memories(&each, BUFFER_BYTES).unwrap();
     assert_eq!(memories.len(), 1);
-    let _ = pool_over(memories, BUFFER_BYTES).unwrap();
+    let _: FramePool = pool_over(memories, BUFFER_BYTES).unwrap();
 }
