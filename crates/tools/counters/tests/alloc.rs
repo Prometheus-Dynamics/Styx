@@ -2,18 +2,25 @@
 //! recorded frames, drops and window takes (the window is the publisher's, and is excluded).
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::cell::Cell;
 
 use styx_counters::{CameraCounters, DropReason};
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+// This thread's allocations only: the test harness's own threads allocate while the test runs.
+thread_local! {
+    static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
+}
 
-// SAFETY: every call forwards to the system allocator unchanged; the counter is an atomic.
+fn allocations() -> u64 {
+    ALLOCATIONS.with(Cell::get)
+}
+
+// SAFETY: every call forwards to the system allocator unchanged; it only counts this thread's allocations.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
         // SAFETY: the caller upholds `GlobalAlloc::alloc`'s contract; forwarded unchanged.
         unsafe { System.alloc(layout) }
     }
@@ -22,7 +29,7 @@ unsafe impl GlobalAlloc for Counting {
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
         // SAFETY: forwarded unchanged; `ptr` and `layout` come from this allocator.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -34,7 +41,7 @@ static GLOBAL: Counting = Counting;
 #[test]
 fn the_frame_path_makes_no_allocation() {
     let counters = CameraCounters::new();
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = allocations();
     let mut id = 0_u64;
     for step in 0..200_000_u64 {
         // A gap every 1000 frames; a held drop is recorded for every other one.
@@ -45,7 +52,7 @@ fn the_frame_path_makes_no_allocation() {
         let ts = 1_000_000 * step;
         counters.record_frame(id, ts, ts + 2_000_000);
     }
-    let after = ALLOCATIONS.load(Ordering::Relaxed);
+    let after = allocations();
     assert_eq!(after - before, 0, "the frame path allocated");
     assert_eq!(counters.frames(), 200_000);
     // The gaps at steps 999, 2999, ... have no drop recorded for them: 100 unattributed.
