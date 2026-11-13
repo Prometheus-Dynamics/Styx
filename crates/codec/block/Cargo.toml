@@ -23,6 +23,8 @@ lemnos-wire = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev =
 lemnos-linux-stream = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
 
 [dev-dependencies]
+# Styx's own H.264 encoder: the streams the H.264 parser's tests read.
+styx-h264 = { path = "../h264" }
 # The simulated backend: lemnosd in this process, its board and the test driver (test only).
 lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
 lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
