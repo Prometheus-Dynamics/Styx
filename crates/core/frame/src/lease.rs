@@ -70,11 +70,11 @@ impl<M> FrameLease<M> {
     }
 
     pub fn memory(&self) -> &dyn BufferMemory {
-        &*self.slot().memory
+        self.slot().memory()
     }
 
     pub fn memory_kind(&self) -> MemoryKind {
-        self.slot().memory.kind()
+        self.slot().memory().kind()
     }
 
     /// Leases on this frame now, this one included.
@@ -134,12 +134,12 @@ impl<M> FrameLease<M> {
     pub fn read(&self) -> Option<CpuRead<'_, M>> {
         self.finish_write();
         let slot = self.slot();
-        let ptr = slot.memory.cpu_ptr()?;
-        slot.readers.begin(&*slot.memory);
+        let ptr = slot.memory().cpu_ptr()?;
+        slot.readers.begin(slot.memory());
         // SAFETY: `BufferMemory` promises `len` valid bytes at `ptr` while the pool holds the
         // memory, which outlives this borrow of the lease. Writes need `&mut` on the only lease,
         // which this `&self` borrow excludes, so the bytes do not change while the slice lives.
-        let bytes = unsafe { core::slice::from_raw_parts(ptr.as_ptr(), slot.memory.len()) };
+        let bytes = unsafe { core::slice::from_raw_parts(ptr.as_ptr(), slot.memory().len()) };
         Some(CpuRead {
             slot,
             bytes,
@@ -156,24 +156,24 @@ impl<M> FrameLease<M> {
         }
         let layouts = self.entry().layouts;
         let slot = self.slot();
-        if !slot.memory.cpu_writable() {
+        if !slot.memory().cpu_writable() {
             return None;
         }
-        let ptr = slot.memory.cpu_ptr()?;
+        let ptr = slot.memory().cpu_ptr()?;
         if !slot.writing.swap(true, Ordering::Relaxed) {
-            slot.memory.begin_cpu(CpuAccess::Write);
+            slot.memory().begin_cpu(CpuAccess::Write);
         }
         // SAFETY: `BufferMemory` promises `len` writable bytes at `ptr` while the pool holds the
         // memory. This is the only lease and `&mut self` is borrowed for the slice's life, so no
         // other slice of these bytes exists or can be made.
-        let bytes = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), slot.memory.len()) };
+        let bytes = unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr(), slot.memory().len()) };
         Some(PlanesMut { bytes, layouts })
     }
 
     fn finish_write(&self) {
         let slot = self.slot();
         if slot.writing.swap(false, Ordering::Relaxed) {
-            slot.memory.end_cpu(CpuAccess::Write);
+            slot.memory().end_cpu(CpuAccess::Write);
         }
     }
 
@@ -337,7 +337,7 @@ impl<'a, M> CpuRead<'a, M> {
 
 impl<M> Drop for CpuRead<'_, M> {
     fn drop(&mut self) {
-        self.slot.readers.end(&*self.slot.memory);
+        self.slot.readers.end(self.slot.memory());
     }
 }
 

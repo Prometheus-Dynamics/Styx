@@ -44,7 +44,7 @@ lux = []
 serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"], optional = true }
 serde_json = { version = "1.0.151", default-features = false, features = ["alloc", "float_roundtrip"], optional = true }
 thiserror = { version = "2.0.21", default-features = false }
-libm = "0.2.16"
+styx-math = { path = "../../core/math", default-features = false }
 
 [dev-dependencies]
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
