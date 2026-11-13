@@ -83,6 +83,9 @@ pub struct LiveIsp {
     output_busy: [Vec<bool>; 2],
     timeout: Duration,
     input_copies: usize,
+    /// Frames not posted because no buffer or ring slot was free: nothing was sent, so the ISP never
+    /// saw them (see [`LiveIsp::post`]).
+    refused: u64,
 }
 
 impl std::fmt::Debug for LiveIsp {
@@ -208,12 +211,28 @@ impl LiveIsp {
             output_busy: [vec![false; out_buffers[0]], vec![false; out_buffers[1]]],
             timeout,
             input_copies: 0,
+            refused: 0,
         })
     }
 
     /// Input frames copied into the ISP's input buffers, since the setup.
     pub fn input_copies(&self) -> usize {
         self.input_copies
+    }
+
+    /// Frames not posted since the setup, because the config, input or output buffers, or the job
+    /// ring, were full. Each is a refusal the caller handled by not posting, and nothing was dropped
+    /// from the ISP's output: a job that is posted always gets its buffers.
+    pub fn refused(&self) -> u64 {
+        self.refused
+    }
+
+    /// Completions the ISP's job streams were too late for, summed over the config, input and output
+    /// streams. A job-driven stream never replaces an unread result, so this stays 0.
+    pub fn skipped(&self) -> u64 {
+        self.config.skipped()
+            + self.input.skipped()
+            + self.outputs.iter().map(JobStream::skipped).sum::<u64>()
     }
 
     /// Jobs posted and not yet complete.
@@ -233,20 +252,30 @@ impl LiveIsp {
         exposure: f64,
         raw: &FrameLease<M>,
     ) -> Result<(), PispError> {
-        let config = (0..CONFIG_BUFFERS)
-            .find(|c| !self.flights.iter().any(|f| f.config == *c))
-            .ok_or(PispError::Busy("both config buffers are in flight"))?;
-        let input = (0..self.input_busy.len())
+        let refuse = |this: &mut Self, why: &'static str| {
+            this.refused += 1;
+            PispError::Busy(why)
+        };
+        let Some(config) = (0..CONFIG_BUFFERS).find(|c| !self.flights.iter().any(|f| f.config == *c))
+        else {
+            return Err(refuse(self, "both config buffers are in flight"));
+        };
+        let Some(input) = (0..self.input_busy.len())
             .find(|&i| !self.input_busy[i] && self.input.pool().is_free(i))
-            .ok_or(PispError::Busy("no free input buffer"))?;
+        else {
+            return Err(refuse(self, "no free input buffer"));
+        };
         let mut outputs = [0usize; 2];
         for (k, slot) in outputs.iter_mut().enumerate() {
-            *slot = (0..self.output_busy[k].len())
-                .find(|&j| !self.output_busy[k][j] && self.outputs[k].pool().is_free(j))
-                .ok_or(PispError::Busy("no free output buffer"))?;
+            let free = (0..self.output_busy[k].len())
+                .find(|&j| !self.output_busy[k][j] && self.outputs[k].pool().is_free(j));
+            let Some(free) = free else {
+                return Err(refuse(self, "no free output buffer"));
+            };
+            *slot = free;
         }
         if self.flights.len() >= CONFIG_BUFFERS {
-            return Err(PispError::Busy("both config buffers are in flight"));
+            return Err(refuse(self, "both config buffers are in flight"));
         }
         // The configuration, encoded straight into the config buffer.
         self.builder.update(settings, exposure)?;
@@ -269,6 +298,7 @@ impl LiveIsp {
         if !posted {
             // Nothing was sent: the temporal average starts over with the next frame.
             self.builder.reset_tdn();
+            self.refused += 1;
             return Err(PispError::Busy("the job ring is full"));
         }
         self.input_busy[input] = true;

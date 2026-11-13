@@ -142,6 +142,12 @@ impl Lemnos {
         })
     }
 
+    /// Completions this converter's reader was too late for (`FrameStream::skipped`). It reads each
+    /// completion of the one job it has in flight, so this stays 0.
+    pub fn skipped(&self) -> u64 {
+        self.stream.skipped()
+    }
+
     /// What the converter has moved so far.
     pub fn stats(&self) -> Stats {
         self.stats

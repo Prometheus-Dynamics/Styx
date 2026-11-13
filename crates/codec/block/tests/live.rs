@@ -10,7 +10,7 @@ mod sim;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use lemnos_contract_codec_block::{CodecBlock, JobStatus};
+use lemnos_contract_codec_block::{CodecBlock, JOB_BYTES, JobStatus};
 use lemnos_host::board::parse;
 use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
@@ -25,9 +25,15 @@ use styx_lemnos::Client;
 
 const STREAM: &[u8] = include_bytes!("../src/hevc/fixtures/idr320.h265");
 
-const BOARD: &str = "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
-    [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
-    [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = 20\n";
+/// The board: one simulated codec with a job stream whose jobs are the contract's `JOB_BYTES`, so
+/// the fixture follows the contract's record size (a job is a length-prefixed block).
+fn board() -> String {
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
+         [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
+         [devices.streams.jobs]\nbuffers = 8\nkind = \"job\"\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = {JOB_BYTES}\n"
+    )
+}
 
 fn socket_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("styx-block-live-{}", std::process::id()));
@@ -42,7 +48,7 @@ fn start(name: &str) -> (Service, PathBuf) {
     let config = Config {
         socket: socket.clone(),
         name: "styx-block-test".to_string(),
-        board: parse(BOARD).expect("board"),
+        board: parse(&board()).expect("board"),
         drivers: vec![entry::<sim::SimCodec>()],
         backend: Box::new(SimBoard::new()),
         options: Options {
