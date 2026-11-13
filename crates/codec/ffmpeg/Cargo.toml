@@ -12,7 +12,8 @@ homepage.workspace = true
 default = []
 # The FFmpeg backend. Off by default. Nothing links at build time: the libraries are opened with
 # dlopen when a codec is first used, and a machine without them skips the candidates with a reason.
-ffmpeg = []
+# DRM PRIME frames as FFmpeg hands them out: dma-bufs in styx-frame, linux only.
+ffmpeg = ["styx-frame/linux"]
 
 [dependencies]
 styx-codec-api = { path = "../codec-api" }

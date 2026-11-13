@@ -5,8 +5,8 @@
 //! into FFmpeg by pointer where FFmpeg accepts that (the input lease's planes are read, and
 //! copied into the frame FFmpeg allocated once, counted in [`COPY_TO_FFMPEG`]); decoded frames
 //! are copied into the caller's output lease (counted in [`COPY_FROM_FFMPEG`]). FFmpeg's own
-//! buffers stay FFmpeg's: a DRM PRIME frame from a hardware decoder is not handled here (see the
-//! crate docs).
+//! buffers stay FFmpeg's. A DRM PRIME frame from a hardware decoder is not copied:
+//! [`FfmpegDecoder::decode_prime`] hands it on as a lease over its dma-buf (see `prime`).
 
 use std::ffi::{CString, c_int, c_void};
 use std::fmt;
@@ -17,6 +17,7 @@ use styx_format::{FourCc, plane_geometry};
 use styx_frame::{CopyCounter, FrameEntry, FrameLease, PlaneLayout};
 
 use crate::api::{Api, error_text};
+use crate::prime::{Decoded, PrimeSink};
 use crate::sys::{
     ERR_EAGAIN, FRAME_DATA, FRAME_FORMAT, FRAME_HEIGHT, FRAME_LINESIZE, FRAME_WIDTH, PACKET_DATA,
     PACKET_PTS, PACKET_SIZE, PIX_GRAY8, PIX_NV12, PIX_YUV420P, PIX_YUVJ420P, PIX_YUYV422, read_int,
@@ -307,6 +308,19 @@ impl<M> Decoder<M> for FfmpegDecoder {
         input: &FrameLease<M>,
         output: &mut FrameLease<M>,
     ) -> Result<(), CodecError> {
+        self.send_receive(input)?;
+        let frame = self.session.frame;
+        let result = self.take_frame(output, frame, input);
+        // SAFETY: the frame is this session's; unref releases what the decoder gave it.
+        unsafe { (self.session.api.util.av_frame_unref)(frame) };
+        result
+    }
+}
+
+impl FfmpegDecoder {
+    /// Sends `input`'s bitstream as one packet and receives the frame it produced into the
+    /// session's frame, which the caller then takes (or unrefs).
+    fn send_receive<M>(&mut self, input: &FrameLease<M>) -> Result<(), CodecError> {
         let api = self.session.api.clone();
         let (ctx, frame, packet) = (self.session.ctx, self.session.frame, self.session.packet);
 
@@ -359,10 +373,7 @@ impl<M> Decoder<M> for FfmpegDecoder {
         if got < 0 {
             return Err(CodecError::Failed(error_text(&api, got)));
         }
-        let result = self.take_frame(output, frame, input);
-        // SAFETY: the frame is this session's; unref releases what the decoder gave it.
-        unsafe { (api.util.av_frame_unref)(frame) };
-        result
+        Ok(())
     }
 }
 
@@ -413,6 +424,48 @@ impl FfmpegDecoder {
         output
             .set_entry(entry)
             .map_err(|e| CodecError::Failed(e.to_string()))
+    }
+}
+
+impl FfmpegDecoder {
+    /// A sink for this decoder's DRM PRIME frames: `payload` bytes per frame at most, room for
+    /// `capacity` dma-bufs, and (when `cpu_access`) read-only CPU mappings of them.
+    ///
+    /// `capacity` must cover the frames the decoder keeps in flight (its surface pool) plus those
+    /// consumers hold: a frame whose dma-buf is still held is dropped, and the decoder's own pool
+    /// runs dry if the sink keeps too many slots busy.
+    pub fn prime_sink<M: Default>(
+        &self,
+        payload: usize,
+        capacity: usize,
+        cpu_access: bool,
+    ) -> Result<PrimeSink<M>, CodecError> {
+        PrimeSink::new(self.session.api.clone(), payload, capacity, cpu_access)
+    }
+
+    /// Decodes `input` into a DRM PRIME frame and hands it on as a lease from `sink`, without
+    /// copying the frame. The decoder supplies the lease; [`Decoder::decode`] takes a lease the
+    /// caller acquired instead.
+    ///
+    /// Errors when the decoder's frame is not DRM PRIME (a software decoder, or a frame the
+    /// descriptor cannot describe as one object). The frame is then dropped, and nothing is held.
+    pub fn decode_prime<M>(
+        &mut self,
+        input: &FrameLease<M>,
+        sink: &mut PrimeSink<M>,
+    ) -> Result<Decoded<M>, CodecError> {
+        self.send_receive(input)?;
+        let frame = self.session.frame;
+        let result = sink.accept(
+            frame,
+            self.descriptor.output,
+            input.id(),
+            input.timestamp_ns(),
+        );
+        // SAFETY: the frame is this session's. When the sink took it the frame is already empty
+        // and this is a no-op; otherwise it releases what the decoder gave.
+        unsafe { (self.session.api.util.av_frame_unref)(frame) };
+        result
     }
 }
 

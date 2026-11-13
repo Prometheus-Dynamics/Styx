@@ -175,7 +175,9 @@ function_table!(AvUtil from util {
     av_frame_free: fn(*mut *mut c_void);
     av_frame_get_buffer: fn(*mut c_void, c_int) -> c_int;
     av_frame_make_writable: fn(*mut c_void) -> c_int;
+    av_frame_move_ref: fn(*mut c_void, *mut c_void);
     av_frame_unref: fn(*mut c_void);
+    av_get_pix_fmt: fn(*const c_char) -> c_int;
     av_opt_set: fn(*mut c_void, *const c_char, *const c_char, c_int) -> c_int;
     av_strerror: fn(c_int, *mut c_char, usize) -> c_int;
 });
