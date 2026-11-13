@@ -20,11 +20,14 @@
 
 use std::fmt;
 
-use styx_controls::FrameMetadata;
+use styx_controls::{Control, DeviceControl, FrameMetadata};
 use styx_format::FourCc;
 use styx_frame::FrameLease;
 
-// Plane placement is plain arithmetic: it builds and is tested with or without libcamera.
+// Plane placement and the control mapping are plain arithmetic and tables: they build and are
+// tested with or without libcamera.
+#[cfg_attr(not(has_libcamera), allow(dead_code))]
+mod controls;
 #[cfg_attr(not(has_libcamera), allow(dead_code))]
 mod planes;
 
@@ -49,6 +52,10 @@ pub enum Error {
     Camera(String),
     /// Styx asked for something this backend does not do.
     Unsupported(&'static str),
+    /// The camera has no such control, or the control refuses the value it was given.
+    Refused(String),
+    /// A value the control does not take.
+    Value(styx_controls::ValueError),
 }
 
 impl fmt::Display for Error {
@@ -57,11 +64,19 @@ impl fmt::Display for Error {
             Self::Unavailable(reason) => write!(f, "libcamera unavailable: {reason}"),
             Self::Camera(message) => write!(f, "libcamera: {message}"),
             Self::Unsupported(what) => write!(f, "libcamera unsupported: {what}"),
+            Self::Refused(why) => write!(f, "libcamera: {why}"),
+            Self::Value(e) => write!(f, "libcamera control value: {e}"),
         }
     }
 }
 
 impl std::error::Error for Error {}
+
+impl From<styx_controls::ValueError> for Error {
+    fn from(e: styx_controls::ValueError) -> Self {
+        Error::Value(e)
+    }
+}
 
 /// A format a camera offers: a Styx code at a size.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,6 +91,17 @@ pub struct StreamFormat {
 pub struct CameraInfo {
     pub id: String,
     pub formats: Vec<StreamFormat>,
+}
+
+/// A control a camera offers, listed by libcamera's id and name. Every listed control is either
+/// mapped to a Styx control or a passthrough: `mapped` says which.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeviceEntry {
+    /// The control: libcamera's id, name, kind and bounds (floats are truncated to integers here;
+    /// the backend keeps the float ranges it maps to a Styx control).
+    pub control: DeviceControl,
+    /// The Styx control this one is used for, when this crate maps it.
+    pub mapped: Option<Control>,
 }
 
 /// What to capture: one format at one size, with `buffers` buffers in the pool.

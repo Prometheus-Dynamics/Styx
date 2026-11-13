@@ -64,11 +64,8 @@ impl HalfPrep {
             return None;
         }
         let wanted = match params.arithmetic {
-            Arithmetic::Int | Arithmetic::IntPolyTone => false,
+            Arithmetic::Auto | Arithmetic::Int | Arithmetic::ApproxTone => false,
             Arithmetic::Half => true,
-            // Without a colour matrix or a tone curve the integer path does less (no matrix,
-            // a plain narrowing): 1.7 instead of 2.3 ms per 1280x800 RGB24 frame on the A76.
-            Arithmetic::Auto => half::hardware() && (params.ccm.is_some() || params.tone.is_some()),
         };
         if !wanted || format.packing.bit_depth() > 10 || params.demosaic != Demosaic::Bilinear {
             return None;

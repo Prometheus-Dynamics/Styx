@@ -12,7 +12,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 REPO = "Prometheus-Dynamics/Styx"
 # Outside blocks (docs/design.md) that have landed. Edited only by the coordinator.
-OUTSIDE_DONE = {"X1", "X3", "X5", "X6", "X7"}  # Lemnos next is locked by commit in Cargo.toml; X2-X7 are asked of other repos
+OUTSIDE_DONE = {"X1", "X2", "X3", "X5", "X6", "X7"}  # Lemnos next is locked by commit in Cargo.toml; X2-X7 are asked of other repos
 
 
 def sort_key(pr_id):

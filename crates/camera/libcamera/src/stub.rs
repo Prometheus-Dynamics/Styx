@@ -26,4 +26,17 @@ impl Capture {
     pub fn camera_id(&self) -> String {
         String::new()
     }
+
+    /// Every control the camera offers: none in this build.
+    pub fn device_controls(&self) -> &[crate::DeviceEntry] {
+        &[]
+    }
+
+    pub fn get_device_control(&self, _id: u32) -> Result<i64, Error> {
+        Err(Error::Unavailable(REASON))
+    }
+
+    pub fn set_device_control(&self, _id: u32, _value: i64) -> Result<(), Error> {
+        Err(Error::Unavailable(REASON))
+    }
 }
