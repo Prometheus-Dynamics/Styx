@@ -10,7 +10,7 @@
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
 use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update, WIRE_BYTES};
@@ -18,7 +18,7 @@ use styx_format::{FourCc, Interval};
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
 use styx_native::{Camera, discover};
-use styx_native_run::{AutoOff, Clock, Initial, Policy, Request, Session};
+use styx_native_run::{AutoOff, Clock, Initial, Policy, Request, Selection, Session};
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
 use styx_select::{Capture, CaptureError, Selected, Status};
 use styx_socket::Producer;
@@ -211,8 +211,8 @@ fn attempt(
     outlet: &mut dyn Outlet,
     selection: &Selected,
 ) -> Ended {
-    let opened = open(selection, slot, shared, |capture| {
-        pump(capture, slot, commands, shared, outlet)
+    let opened = open(selection, slot, shared, |capture, selections| {
+        pump(capture, slot, commands, shared, outlet, selections)
     });
     match opened {
         Ok(ended) => ended,
@@ -225,11 +225,13 @@ fn attempt(
 
 /// Opens `selection` with its owner's capture and runs `run` on it. The capture (and the Lemnos
 /// client and camera it borrows) live for the call. Any error is text for the status.
+///
+/// `run` gets the mode choices a native camera makes as it starts (none for the other backends).
 fn open<R>(
     selection: &Selected,
     slot: &Slot,
     shared: &Shared,
-    run: impl FnOnce(&mut dyn Capture) -> R,
+    run: impl FnOnce(&mut dyn Capture, Option<&Receiver<Selection>>) -> R,
 ) -> Result<R, String> {
     use styx_select::Backend;
     let settings = &slot.settings;
@@ -248,20 +250,32 @@ fn open<R>(
                 .find(|c| c.name() == selection.key)
                 .ok_or_else(|| format!("native camera {} is not on the daemon", selection.key))?;
             slot.set_health(native_health(camera.health(), camera.reason()));
-            // The rate is the request as given: it is the sensor mode's floor and the initial
-            // frame rate. The native controls refuse a rate outside the sensor's range, so the
-            // config must give one.
+            // The rate is the request as given. A rate above the chosen mode's ceiling is answered
+            // with the ceiling, and the status says so (the mode choice). The config must give one.
             let fps = settings.fps_milli.ok_or_else(|| {
                 format!(
                     "native camera {} needs fps_milli in the config",
                     selection.id
                 )
             })?;
+            let format = settings
+                .format
+                .as_deref()
+                .map(|text| {
+                    text.parse::<FourCc>().map_err(|_| {
+                        format!(
+                            "camera {}: format {text:?} is not a four-character code",
+                            selection.id
+                        )
+                    })
+                })
+                .transpose()?;
             let request = Request {
                 width: settings.width.unwrap_or(0),
                 height: settings.height.unwrap_or(0),
-                min_fps_milli: fps,
-                bit_depth: None,
+                fps_milli: fps,
+                format,
+                bit_depth: settings.bit_depth,
                 bayer: None,
             };
             let initial = Initial {
@@ -270,9 +284,11 @@ fn open<R>(
                 frame_rate_milli: fps,
             };
             let clock: &dyn Clock = &*shared.clock;
+            let (choices, chosen) = channel();
             let session = || {
                 Session::new(&client, camera, request, native_policy(shared), clock)
                     .with_controls(initial)
+                    .with_selection_sink(choices.clone())
             };
             let mut capture = match NativeCapture::start(session()) {
                 Ok(capture) => capture,
@@ -287,7 +303,7 @@ fn open<R>(
                 }
                 Err(e) => return Err(e.to_string()),
             };
-            Ok(run(&mut capture))
+            Ok(run(&mut capture, Some(&chosen)))
         }
         Backend::Libcamera => {
             let code = format_of(selection, settings)?;
@@ -300,7 +316,7 @@ fn open<R>(
             };
             let mut capture =
                 LibcameraCapture::open(&selection.key, config).map_err(|e| e.to_string())?;
-            Ok(run(&mut capture))
+            Ok(run(&mut capture, None))
         }
         Backend::V4l2 => {
             let code = format_of(selection, settings)?;
@@ -312,7 +328,7 @@ fn open<R>(
             config.interval = settings.fps_milli.and_then(|fps| Interval::new(1_000, fps));
             let mut capture =
                 V4l2Capture::start(&selection.key, config).map_err(|e| e.to_string())?;
-            Ok(run(&mut capture))
+            Ok(run(&mut capture, None))
         }
     }
 }
@@ -432,6 +448,7 @@ fn pump(
     commands: &Receiver<Command>,
     shared: &Shared,
     outlet: &mut dyn Outlet,
+    selections: Option<&Receiver<Selection>>,
 ) -> Ended {
     slot.started();
     let mut delivered = false;
@@ -442,6 +459,12 @@ fn pump(
     let ended = loop {
         if shared.shutdown.load(Ordering::Acquire) {
             break Ended::Stopped;
+        }
+        // The mode each start chose (a native camera restarts inside its session on a fault).
+        if let Some(chosen) = selections {
+            for mode in chosen.try_iter() {
+                slot.set_mode(mode);
+            }
         }
         match capture.next_frame(FRAME_WAIT) {
             Ok(Some(lease)) => {

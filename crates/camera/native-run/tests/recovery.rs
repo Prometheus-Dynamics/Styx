@@ -120,8 +120,9 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     let request = Request {
         width: 320,
         height: 40,
-        min_fps_milli: 60_000,
+        fps_milli: 60_000,
         bit_depth: Some(10),
+        format: None,
         bayer: Some(BayerOrder::Rggb),
     };
     // The frame-wait limits the test uses: a stall is three 20 ms waits with no frame.
