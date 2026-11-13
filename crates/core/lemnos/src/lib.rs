@@ -3,8 +3,8 @@
 //! [`find_chain`] finds the `camera.sensor/1` device by tag and follows `link` to its receiver and,
 //! when it has one, its ISP; [`find_chains`] does that for every sensor on the board. [`Frames`]
 //! opens the receiver's frame stream and turns each of its buffers into [`styx_frame`] buffers,
-//! once, so that every frame is a [`FrameLease`] over the memory Lemnos filled: no copy. Lemnos
-//! carries the frame identity and timestamp as opaque values; both reach the lease unchanged.
+//! once, so that every frame is a [`FrameLease`] over the memory Lemnos filled: no copy. A lease's
+//! id is the frame's sequence in its stream; its timestamp is the frame's timestamp, unchanged.
 //! [`open_job_stream`] is the writable form, for a job stream the consumer fills and posts on.
 //!
 //! A `Frames` or `JobStream` that drops closes its stream on the daemon, so the stream opens again.
@@ -643,6 +643,7 @@ fn open_frames_with<M: Default + Send + Sync>(
         layouts,
         held_drops: 0,
         oversize_drops: 0,
+        by_job: false,
     })
 }
 
@@ -719,6 +720,8 @@ pub struct Frames<M = ()> {
     layouts: Option<Layouts>,
     held_drops: u64,
     oversize_drops: u64,
+    /// Number each frame by the job that made it, not by its place in the stream.
+    by_job: bool,
 }
 
 impl<M> fmt::Debug for Frames<M> {
@@ -732,6 +735,16 @@ impl<M> fmt::Debug for Frames<M> {
 }
 
 impl<M> Frames<M> {
+    /// Numbers each frame by the job that made it: the frame id is the identity the job was
+    /// posted with, so a result can be matched to its job. For a stream of job results
+    /// (statistics, a device's outputs). A capture stream keeps the default, the frame's
+    /// sequence in its stream: nothing posts jobs to it, and its identity is 0 on every frame.
+    #[must_use]
+    pub fn numbered_by_job(mut self) -> Self {
+        self.by_job = true;
+        self
+    }
+
     /// Buffers in the stream.
     pub fn buffers(&self) -> usize {
         self.pool.buffers()
@@ -818,7 +831,15 @@ impl<M> Frames<M> {
                     .ok_or(Error::Layout(styx_format::LayoutError::Overflow))?
             }
         };
-        let entry = FrameEntry::new(frame.identity(), frame.timestamp_ns(), self.format, layouts);
+        // The frame's number in its stream. Lemnos's `identity` is the consumer's own tag for the
+        // values it posted, and is 0 on every frame until something posts one, so it cannot
+        // number captured frames. A stream of job results is numbered by it on request.
+        let id = if self.by_job {
+            frame.identity()
+        } else {
+            frame.sequence()
+        };
+        let entry = FrameEntry::new(id, frame.timestamp_ns(), self.format, layouts);
         match self.pool.acquire_at(index, entry) {
             Ok(lease) => {
                 self.pending[index] = Some(frame);

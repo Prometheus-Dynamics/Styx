@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
+use styx_native_run::{ExposureReport, Selection};
 use styx_select::{Backend, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
 
@@ -197,6 +198,11 @@ pub struct CameraStatus {
     pub next_delay: Option<Duration>,
     /// The last failure's message, or the backend's last retry message.
     pub last_error: Option<String>,
+    /// Times the service stopped a sensor and receiver a previous owner left started, since the
+    /// service started (see `worker`).
+    pub recoveries: u64,
+    /// The last such stop: what was stopped, or what refused.
+    pub last_recovery: Option<String>,
     /// Frames delivered since the service started.
     pub frames: u64,
     /// Frame identities skipped (a gap in the stream), since the service started.
@@ -219,6 +225,15 @@ pub struct CameraStatus {
     pub keep: KeepWindow,
     /// The capture timestamps the measured rate is taken over.
     pub rate_window: RateWindow,
+    /// The sensor mode a native camera runs in, and why it was chosen (`None` for the other
+    /// backends, and before a native camera starts).
+    pub mode: Option<Selection>,
+    /// Frames the backend delivered with zero bytes (every plane of the frame's layout is empty),
+    /// since the service started. The frame is still counted in `frames` and given on.
+    pub empty_frames: u64,
+    /// The exposure a native camera has: asked, applied, and the clamp with its reason (`None` for
+    /// the other backends, and before a native camera starts).
+    pub exposure: Option<ExposureReport>,
 }
 
 impl CameraStatus {
@@ -297,6 +312,8 @@ impl Slot {
             total_failures: 0,
             next_delay: None,
             last_error: None,
+            recoveries: 0,
+            last_recovery: None,
             frames: 0,
             skipped: 0,
             last_frame: None,
@@ -307,6 +324,9 @@ impl Slot {
             measured_milli: None,
             keep: KeepWindow::default(),
             rate_window: RateWindow::new(),
+            mode: None,
+            empty_frames: 0,
+            exposure: None,
         };
         Self {
             id,
@@ -387,6 +407,13 @@ impl Slot {
         status.next_delay = Some(delay);
     }
 
+    /// Records a stop of the devices a previous owner left started, and what it reported.
+    pub(crate) fn recovered(&self, note: String) {
+        let mut status = lock(&self.status);
+        status.recoveries += 1;
+        status.last_recovery = Some(note);
+    }
+
     pub(crate) fn reset_failures(&self) {
         lock(&self.status).failures = 0;
     }
@@ -398,7 +425,13 @@ impl Slot {
     }
 
     pub(crate) fn set_publish(&self, publish: Publish) {
-        lock(&self.status).publish = publish;
+        let mut status = lock(&self.status);
+        // With no socket there is nothing to publish on: the reason the socket could not be
+        // made stays in the status until a socket exists.
+        if status.socket.is_none() && matches!(status.publish, Publish::NotPublishable(_)) {
+            return;
+        }
+        status.publish = publish;
     }
 
     pub(crate) fn set_health(&self, health: Health) {
@@ -418,6 +451,16 @@ impl Slot {
         let mut status = lock(&self.status);
         status.achieved_milli = rate.achieved_milli;
         status.rate_clamped = rate.clamped;
+    }
+
+    /// The mode choice a native camera started with.
+    pub(crate) fn set_mode(&self, mode: Selection) {
+        lock(&self.status).mode = Some(mode);
+    }
+
+    /// The exposure a native camera has now.
+    pub(crate) fn set_exposure(&self, exposure: ExposureReport) {
+        lock(&self.status).exposure = Some(exposure);
     }
 
     pub(crate) fn set_keep(&self, keep: KeepWindow) {
@@ -444,6 +487,9 @@ impl Slot {
             status.skipped += id - last.id - 1;
         }
         status.frames += 1;
+        if lease.layouts().iter().all(|plane| plane.len == 0) {
+            status.empty_frames += 1;
+        }
         status.rate_window.push(lease.timestamp_ns());
         status.measured_milli = status.rate_window.measured_milli();
         status.achieved_meta_milli =
@@ -469,6 +515,8 @@ impl Slot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use styx_format::{FourCc, MediaFormat, Resolution};
+    use styx_frame::{BufferSize, FrameEntry, FramePool, Layouts, PlaneLayout};
 
     fn status(requested: Option<u32>, achieved: Option<u32>, clamped: bool) -> CameraStatus {
         let mut s = Slot::new(
@@ -533,5 +581,44 @@ mod tests {
             status(Some(120_000), None, false).rate_reason().as_deref(),
             Some("the backend does not report its rate")
         );
+    }
+
+    /// A frame of `id` whose layout has the given plane lengths, from a pool made for the test.
+    fn lease(
+        pool: &FramePool<FrameMetadata>,
+        id: u64,
+        planes: &[usize],
+    ) -> FrameLease<FrameMetadata> {
+        let layouts: Vec<PlaneLayout> = planes
+            .iter()
+            .map(|&len| PlaneLayout::new(0, 8, len))
+            .collect();
+        let format =
+            MediaFormat::with_defaults(FourCc::GREY, Resolution::new(8, 8).expect("a resolution"));
+        let entry = FrameEntry::new(
+            id,
+            1_000 + id,
+            format,
+            Layouts::new(&layouts).expect("planes"),
+        );
+        pool.acquire(entry).expect("a free buffer")
+    }
+
+    #[test]
+    fn a_frame_with_no_bytes_is_counted_as_empty_and_others_are_not() {
+        let pool = FramePool::<FrameMetadata>::host(4, BufferSize::new(64, 0)).expect("a pool");
+        let slot = Slot::new(
+            "cam".to_string(),
+            CameraConfig::default(),
+            std::sync::mpsc::channel().0,
+        );
+        slot.frame(&lease(&pool, 1, &[64]));
+        slot.frame(&lease(&pool, 2, &[0]));
+        slot.frame(&lease(&pool, 3, &[]));
+        slot.frame(&lease(&pool, 4, &[32, 0]));
+        let status = slot.snapshot();
+        assert_eq!(status.frames, 4);
+        assert_eq!(status.empty_frames, 2);
+        assert_eq!(status.last_frame.map(|f| f.id), Some(4));
     }
 }

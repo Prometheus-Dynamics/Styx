@@ -2,10 +2,11 @@
 
 use std::fmt;
 use std::os::fd::BorrowedFd;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use daedalus::layers::types::{TypeExpr, TypeKey, Typed};
 use daedalus_dmabuf::{DmaBufBacked, DmaBufMemory};
-use styx_frame::{BufferMemory, BufferSize, FrameLease, MediaFormat, MemoryKind};
+use styx_frame::{BufferMemory, BufferSize, CpuAccess, FrameLease, MediaFormat, MemoryKind};
 use styx_socket::Frame;
 
 /// The type key of a frame: the name of `styx:frame` across a graph.
@@ -71,6 +72,9 @@ pub struct StyxFrame {
     /// The bytes Daedalus may import from the dma-buf: the pool's allocation (payload and GPU
     /// slack), so a device's import of the buffer is never refused for length.
     import_len: u64,
+    /// Whether the CPU read bracket of the buffer is open (a dma-buf's sync START). It is opened by
+    /// the first [`DmaBufBacked::bytes`] and ended when the frame drops.
+    bracket: AtomicBool,
 }
 
 impl StyxFrame {
@@ -84,6 +88,7 @@ impl StyxFrame {
         Some(Self {
             hold: Box::new(lease),
             import_len,
+            bracket: AtomicBool::new(false),
         })
     }
 
@@ -93,6 +98,7 @@ impl StyxFrame {
         Self {
             hold: Box::new(frame),
             import_len,
+            bracket: AtomicBool::new(false),
         }
     }
 
@@ -132,6 +138,14 @@ impl StyxFrame {
     }
 }
 
+impl Drop for StyxFrame {
+    fn drop(&mut self) {
+        if self.bracket.load(Ordering::Acquire) {
+            self.hold.memory().end_cpu(CpuAccess::Read);
+        }
+    }
+}
+
 impl fmt::Debug for StyxFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StyxFrame")
@@ -151,6 +165,10 @@ impl Typed for StyxFrame {
 }
 
 impl DmaBufBacked for StyxFrame {
+    /// A Styx frame's fd is read-only where the producer hands it out so (Lemnos does), so the
+    /// planner may import it on a device that takes a read-only fd.
+    const READ_ONLY: bool = true;
+
     /// The dma-buf holding the frame, and the import length. `None` for a frame that is not in a
     /// dma-buf (host, memfd, GPU), for a dma-buf the frame starts past its start (several buffers
     /// in one descriptor: a dma-buf's size is its whole length, so the offset is not expressible
@@ -164,6 +182,24 @@ impl DmaBufBacked for StyxFrame {
             return None;
         }
         Some((memory.fd()?, self.import_len))
+    }
+
+    /// The frame's bytes, borrowed from the mapping with no copy: the buffer's CPU mapping, from
+    /// the frame's own start (a frame cut from a descriptor at an offset starts there). A dma-buf
+    /// is read under its CPU read bracket, opened here and held until the frame drops, so the
+    /// borrow is always inside one. `None` for a buffer that is not mapped here.
+    fn bytes(&self) -> Option<&[u8]> {
+        let memory = self.hold.memory();
+        let ptr = memory.cpu_ptr()?;
+        if !self.bracket.swap(true, Ordering::AcqRel) {
+            memory.begin_cpu(CpuAccess::Read);
+        }
+        // SAFETY: `cpu_ptr` is the start of `memory.len()` bytes of this buffer's mapping (Styx's
+        // `BufferMemory` contract). The hold owns the buffer and lives as long as `self`, and the
+        // borrow is of `self`, so the mapping cannot be unmapped under the slice. The buffer is
+        // held by this frame, so the producer does not write it while the frame exists, and the
+        // read bracket opened above covers a dma-buf until `Drop` ends it.
+        Some(unsafe { core::slice::from_raw_parts(ptr.as_ptr(), memory.len()) })
     }
 }
 

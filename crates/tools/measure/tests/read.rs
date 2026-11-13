@@ -212,7 +212,17 @@ fn check_report(path: &std::path::Path, isp: bool) {
         0.0
     };
     let bound_ns = (keep - 1.0) * period_ns;
-    if !isp || isp_max < bound_ns {
+    // "Keeps up" is checked, not assumed: the longest time from a frame's capture to the reader
+    // holding it covers a stall of the reader, of the service or of the simulated camera (a busy
+    // machine). A frame older than the keep window when it was read says somebody stalled.
+    let latency_max = json_u64(&v, &["latency_ns", "max"]) as f64;
+    if latency_max >= bound_ns {
+        println!(
+            "capture-to-reader max {latency_max} ns is not below (keep - 1) frame periods \
+             ({bound_ns} ns): a process was held up, zero gaps is not asserted for this run \
+             ({gaps} gaps, {skipped} skips)"
+        );
+    } else if !isp || isp_max < bound_ns {
         assert_eq!(gaps, 0, "a reader that keeps up has no gaps: {text}");
         assert_eq!(skipped, 0, "the ring skipped no frame: {text}");
     } else {

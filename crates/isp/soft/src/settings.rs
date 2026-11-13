@@ -13,7 +13,7 @@ use styx_settings::IspSettings;
 use crate::format::RawFormat;
 use crate::params::{
     Arithmetic, BlackLevel, ChromaDenoise, ColorMatrix, Demosaic, Denoise, IspParams, LensShading,
-    LumaDenoise, Sharpen, StatsConfig, ToneCurve, WhiteBalance, YuvMatrix,
+    LumaDenoise, Paths, Sharpen, StatsConfig, ToneCurve, WhiteBalance, YuvMatrix,
 };
 
 /// The choices an ISP makes that the neutral settings do not carry.
@@ -78,6 +78,7 @@ pub fn params_for(format: &RawFormat, settings: &IspSettings, options: &Options)
         yuv: options.yuv,
         stats: options.stats,
         arithmetic: options.arithmetic,
+        paths: Paths::default(),
     }
 }
 

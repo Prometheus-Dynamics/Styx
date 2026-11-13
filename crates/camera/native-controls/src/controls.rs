@@ -3,6 +3,7 @@
 use lemnos_contract_camera_sensor::{CameraSensor, Controls, FrameValues, GainRange, Mode};
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 
+use crate::clamp::{Clamp, ClampReason, ExposureReport};
 use crate::error::{Error, Limit};
 use crate::gain;
 use crate::schedule::Lane;
@@ -95,6 +96,31 @@ pub struct NativeControls {
     lanes: [Lane; LANES],
     frame: Option<u64>,
     initial_rate: FrameRate,
+    /// The exposure asked for last, in microseconds.
+    exposure_requested_us: u32,
+    /// The exposure the last decision on exposure applied, in microseconds.
+    exposure_applied_us: u32,
+    /// The clamp of the last decision on exposure, if it was clamped.
+    exposure_clamp: Option<Clamp>,
+    /// The clamp of the last gain request, if it was clamped.
+    gain_clamp: Option<Clamp>,
+}
+
+/// A value fitted to the sensor's range: its code, its value in the control's unit, and the end it
+/// was moved to, if it was moved.
+#[derive(Debug, Clone, Copy)]
+struct Fitted {
+    code: u32,
+    applied: u32,
+    bound: Option<ClampReason>,
+}
+
+impl Fitted {
+    /// The clamp for a request of `requested`, if this fit moved it.
+    fn clamp(self, control: Control, requested: u32, frame_lines: Option<u32>) -> Option<Clamp> {
+        self.bound
+            .map(|reason| Clamp::new(control, requested, self.applied, frame_lines, reason))
+    }
 }
 
 /// The sensor's limits for one mode: what the contract's mode says, in the sensor's own codes.
@@ -158,41 +184,58 @@ impl Limits {
         })
     }
 
-    /// The exposure code for `us` at a frame of `fl` lines, if the sensor takes it there.
-    fn exposure(&self, us: u32, fl: u32) -> Result<u32, Error> {
+    /// The exposure codes the sensor takes at a frame of `fl` lines: its minimum, and the ceiling the
+    /// frame allows (the frame less the mode's margin). A frame too short for the margin gives the
+    /// minimum as its ceiling, so the range is never empty.
+    fn exposure_bounds(&self, fl: u32) -> (u64, u64) {
+        let min = u64::from(self.exposure_min);
+        let max = units::exposure_max_code(u64::from(fl), self.exposure_margin, self.fraction_bits);
+        (min, max.max(min))
+    }
+
+    /// The exposure for `us` at a frame of `fl` lines, moved to the nearest code the sensor takes
+    /// there. A request moved to a bound by rounding alone, with the same microseconds, is not a
+    /// clamp.
+    fn exposure(&self, us: u32, fl: u32) -> Fitted {
         let code = units::exposure_code(us, self.line_time_ps, self.fraction_bits);
-        let max = units::exposure_max_code(u64::from(fl), self.exposure_margin, self.fraction_bits);
-        if code < u64::from(self.exposure_min) || code > max {
-            return Err(Error::Limit(Limit {
-                control: Control::Exposure,
-                requested: us,
-                min: self.exposure_us(self.exposure_min),
-                max: units::exposure_us(max, self.line_time_ps, self.fraction_bits),
-                frame_lines: Some(fl),
-            }));
+        let (min, max) = self.exposure_bounds(fl);
+        let (code, bound) = if code > max {
+            (max, Some(ClampReason::Ceiling))
+        } else if code < min {
+            (min, Some(ClampReason::Floor))
+        } else {
+            (code, None)
+        };
+        let code = u32::try_from(code).unwrap_or(u32::MAX);
+        let applied = self.exposure_us(code);
+        Fitted {
+            code,
+            applied,
+            bound: bound.filter(|_| applied != us),
         }
-        Ok(code as u32)
     }
 
-    /// The largest exposure, in microseconds, a frame of `fl` lines allows.
-    fn exposure_max_us(&self, fl: u32) -> u32 {
-        let max = units::exposure_max_code(u64::from(fl), self.exposure_margin, self.fraction_bits);
-        units::exposure_us(max, self.line_time_ps, self.fraction_bits)
-    }
-
-    /// The gain code for `milli`, if the sensor has that code.
-    fn gain(&self, milli: u32) -> Result<u32, Error> {
-        let code = gain::gain_to_code(&self.gain, milli)?;
-        if code < self.gain.min || code > self.gain.max {
-            return Err(Error::Limit(Limit {
-                control: Control::Gain,
-                requested: milli,
-                min: self.gain_milli(self.gain.min),
-                max: self.gain_milli(self.gain.max),
-                frame_lines: None,
-            }));
-        }
-        Ok(code)
+    /// The gain for `milli`, moved to the nearest gain of the sensor's codes. The codes are the
+    /// range's `min`..=`max`; a gain outside them is moved to the end it is past.
+    fn gain(&self, milli: u32) -> Result<Fitted, Error> {
+        let (low, high) = (
+            self.gain_milli(self.gain.min),
+            self.gain_milli(self.gain.max),
+        );
+        let (wanted, bound) = if milli < low {
+            (low, Some(ClampReason::Floor))
+        } else if milli > high {
+            (high, Some(ClampReason::Ceiling))
+        } else {
+            (milli, None)
+        };
+        let code = gain::gain_to_code(&self.gain, wanted)?.clamp(self.gain.min, self.gain.max);
+        let applied = self.gain_milli(code);
+        Ok(Fitted {
+            code,
+            applied,
+            bound: bound.filter(|_| applied != milli),
+        })
     }
 }
 
@@ -226,18 +269,43 @@ impl NativeControls {
         }
         let rate = limits.frame_rate(initial.frame_rate_milli)?;
         let fl = rate.lines;
-        let exposure = limits.exposure(initial.exposure_us, fl)?;
+        // The frame rate has priority: the exposure is fitted to the frame length it gives.
+        let exposure = limits.exposure(initial.exposure_us, fl);
         let gain = limits.gain(initial.gain_milli)?;
         Ok(Self {
-            limits,
             lanes: [
-                Lane::new(mode.exposure_delay.into(), exposure),
-                Lane::new(mode.gain_delay.into(), gain),
+                Lane::new(mode.exposure_delay.into(), exposure.code),
+                Lane::new(mode.gain_delay.into(), gain.code),
                 Lane::new(mode.frame_length_delay.into(), fl),
             ],
             frame: None,
             initial_rate: rate,
+            exposure_requested_us: initial.exposure_us,
+            exposure_applied_us: exposure.applied,
+            exposure_clamp: exposure.clamp(Control::Exposure, initial.exposure_us, Some(fl)),
+            gain_clamp: gain.clamp(Control::Gain, initial.gain_milli, None),
+            limits,
         })
+    }
+
+    /// Exposure as it stands: the value asked for last, the value applied, and the clamp of the
+    /// last decision on it (`None` when that decision was not clamped).
+    pub fn exposure_report(&self) -> ExposureReport {
+        ExposureReport {
+            requested_us: self.exposure_requested_us,
+            applied_us: self.exposure_applied_us,
+            clamp: self.exposure_clamp.clone(),
+        }
+    }
+
+    /// The clamp of the last decision on `control` (exposure or gain), if that decision was
+    /// clamped. `None` for the other controls, and when it was not.
+    pub fn clamp(&self, control: Control) -> Option<&Clamp> {
+        match control {
+            Control::Exposure => self.exposure_clamp.as_ref(),
+            Control::Gain => self.gain_clamp.as_ref(),
+            _ => None,
+        }
     }
 
     /// The frame rate the initial value gave: the frame length and the rate it runs at, and whether
@@ -273,9 +341,14 @@ impl NativeControls {
     /// current frame or earlier), and otherwise in the frame that is its delay before it. Returns
     /// where each is predicted to land.
     ///
+    /// A value the sensor cannot take exactly is moved to the nearest one it can take, and the
+    /// clamp says why ([`NativeControls::clamp`], [`NativeControls::exposure_report`]): an exposure
+    /// past its frame length's ceiling or the minimum, a gain past the sensor's codes, and an
+    /// exposure in force that a shorter frame cannot hold (the frame rate has priority, so the
+    /// frame is never lengthened for an exposure).
+    ///
     /// Refused, with nothing posted: a control with no sensor value here, a value outside the
-    /// generic range or this sensor's limits (including an exposure too long for the frame length
-    /// in force on its frame, and a frame rate that would make the exposure in force too long).
+    /// generic range, an automatic value, a duplicate, and a frame rate of zero.
     pub fn request<S: CameraSensor + ?Sized>(
         &mut self,
         sensor: &mut S,
@@ -284,6 +357,7 @@ impl NativeControls {
         let at = self.frame.ok_or(Error::NotStreaming)?;
         let mut asked: [Option<(u64, u32)>; LANES] = [None; LANES];
         let mut exposure_us: Option<(u64, u32)> = None;
+        let mut gain_fit: Option<(u32, Fitted)> = None;
         let mut landings = Landings::default();
         for update in updates {
             let control = update.control;
@@ -302,7 +376,11 @@ impl NativeControls {
             let frame = update.frame;
             match lane {
                 EXPOSURE => exposure_us = Some((frame, value)),
-                GAIN => asked[GAIN] = Some((frame, self.limits.gain(value)?)),
+                GAIN => {
+                    let fit = self.limits.gain(value)?;
+                    asked[GAIN] = Some((frame, fit.code));
+                    gain_fit = Some((value, fit));
+                }
                 _ => {
                     let frame_rate = self.limits.frame_rate(value)?;
                     asked[FRAME_LENGTH] = Some((frame, frame_rate.lines));
@@ -326,36 +404,60 @@ impl NativeControls {
             landings.len += 1;
         }
 
-        // Exposure is checked against the frame length in force on its frame, which may be the one
-        // this request sets. A frame length is checked against the exposure in force on its frame,
-        // which may be the one this request sets.
+        // Exposure is fitted to the frame length in force on its frame, which may be the one this
+        // request sets. Then a frame length is checked against the exposure in force on its frame,
+        // which may be the one this request sets: the frame rate has priority, so the exposure is
+        // moved to the frame's ceiling and the frame length is kept.
         let fl_asked = asked[FRAME_LENGTH];
+        let requested_us = exposure_us.map_or(self.exposure_requested_us, |(_, us)| us);
+        let mut exposure_clamp = None;
         if let Some((frame, us)) = exposure_us {
             let fl = self.lanes[FRAME_LENGTH].planned_at(frame, fl_asked);
-            asked[EXPOSURE] = Some((frame, self.limits.exposure(us, fl)?));
+            let fit = self.limits.exposure(us, fl);
+            asked[EXPOSURE] = Some((frame, fit.code));
+            exposure_clamp = fit.clamp(Control::Exposure, us, Some(fl));
         }
         if let Some((frame, fl)) = fl_asked {
-            let exposure = self.lanes[EXPOSURE].planned_at(frame, asked[EXPOSURE]);
-            let max = units::exposure_max_code(
-                u64::from(fl),
-                self.limits.exposure_margin,
-                self.limits.fraction_bits,
-            );
-            if u64::from(exposure) > max {
-                return Err(Error::Limit(Limit {
-                    control: Control::Exposure,
-                    requested: self.limits.exposure_us(exposure),
-                    min: self.limits.exposure_us(self.limits.exposure_min),
-                    max: self.limits.exposure_max_us(fl),
-                    frame_lines: Some(fl),
-                }));
+            let planned = self.lanes[EXPOSURE].planned_at(frame, asked[EXPOSURE]);
+            let (_, max) = self.limits.exposure_bounds(fl);
+            if u64::from(planned) > max {
+                let code = u32::try_from(max).unwrap_or(u32::MAX);
+                let applied = self.limits.exposure_us(code);
+                asked[EXPOSURE] = Some((frame, code));
+                exposure_clamp = (applied != requested_us).then(|| {
+                    Clamp::new(
+                        Control::Exposure,
+                        requested_us,
+                        applied,
+                        Some(fl),
+                        ClampReason::Ceiling,
+                    )
+                });
             }
         }
+        let exposure_decided = exposure_us.is_some() || fl_asked.is_some();
+        let applied_us = match exposure_us.map(|(f, _)| f).or(fl_asked.map(|(f, _)| f)) {
+            Some(frame) if exposure_decided => {
+                let code = self.lanes[EXPOSURE].planned_at(frame, asked[EXPOSURE]);
+                self.limits.exposure_us(code)
+            }
+            _ => self.exposure_applied_us,
+        };
 
         for (lane, asked) in asked.into_iter().enumerate() {
             if let Some((frame, code)) = asked {
                 self.lanes[lane].insert(frame, code);
             }
+        }
+        if exposure_us.is_some() {
+            self.exposure_requested_us = requested_us;
+        }
+        if exposure_decided {
+            self.exposure_applied_us = applied_us;
+            self.exposure_clamp = exposure_clamp;
+        }
+        if let Some((requested, fit)) = gain_fit {
+            self.gain_clamp = fit.clamp(Control::Gain, requested, None);
         }
         self.post_due(sensor, at)?;
         Ok(landings)

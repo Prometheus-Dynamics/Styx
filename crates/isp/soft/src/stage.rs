@@ -16,6 +16,7 @@ use styx_settings::IspSettings;
 use crate::format::RawFormat;
 use crate::isp::{IspError, SoftIsp};
 use crate::output::{OutputBuffers, Scale};
+use crate::params::Paths;
 use crate::settings::{Options, params_for};
 use crate::stats::IspStats;
 
@@ -46,6 +47,7 @@ pub struct SoftIspStage {
     code: FourCc,
     format: RawFormat,
     options: Options,
+    paths: Paths,
     isp: SoftIsp,
 }
 
@@ -66,8 +68,18 @@ impl SoftIspStage {
             code,
             format,
             options,
+            paths: Paths::default(),
             isp: SoftIsp::new(format, params)?,
         })
+    }
+
+    /// Takes the given row paths (see [`Paths`]) for this stage and the settings applied after.
+    pub fn with_paths(mut self, paths: Paths) -> Result<Self, StageError> {
+        self.paths = paths;
+        let mut params = self.isp.params().clone();
+        params.paths = paths;
+        self.isp.set_params(params)?;
+        Ok(self)
     }
 
     /// The raw format this stage processes.
@@ -78,6 +90,7 @@ impl SoftIspStage {
     /// Applies `settings` to the following frames. Tables are rebuilt only for what changed.
     pub fn apply(&mut self, settings: &IspSettings) -> Result<(), StageError> {
         let mut params = params_for(&self.format, settings, &self.options);
+        params.paths = self.paths;
         self.isp.swap_params(&mut params)?;
         Ok(())
     }

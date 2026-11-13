@@ -9,6 +9,7 @@ use styx_aaa::Statistics;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{BufferSize, FrameEntry, FrameLease, FramePool, packed_layouts};
 use styx_settings::IspSettings;
+use styx_soft::params::Paths;
 use styx_soft::{Options, SoftIspStage};
 
 use crate::clock::monotonic_ns;
@@ -85,6 +86,7 @@ pub struct IspRunner {
     out_size: (u32, u32),
     times: Histogram,
     errors: u64,
+    paths: Paths,
 }
 
 impl IspRunner {
@@ -97,7 +99,14 @@ impl IspRunner {
             pool: None,
             times: Histogram::new(),
             errors: 0,
+            paths: Paths::default(),
         }
+    }
+
+    /// The row paths the stage takes (`--isp-variant`); the default is the new paths.
+    pub fn with_paths(mut self, paths: Paths) -> Self {
+        self.paths = paths;
+        self
     }
 
     /// Processes one raw frame. The first call makes the stage and the pool; every later call
@@ -149,7 +158,9 @@ impl IspRunner {
         }
         let settings = IspSettings::neutral(0.0);
         let stage = SoftIspStage::new(format.code, w, h, &settings, Options::default())
+            .and_then(|stage| stage.with_paths(self.paths))
             .map_err(|e| IspError::Setup(format!("{:?}: {e}", format.code)))?;
+        eprintln!("soft ISP paths: {:?}", self.paths);
         let (out_w, out_h) = self.out_size;
         let layouts = packed_layouts(self.out_code, out_w, out_h, None, None)
             .map_err(|e| IspError::Pool(format!("{e:?}")))?;
