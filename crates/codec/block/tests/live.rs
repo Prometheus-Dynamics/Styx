@@ -31,7 +31,7 @@ fn board() -> String {
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
          [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
-         [devices.streams.jobs]\nbuffers = 8\nkind = \"job\"\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = {JOB_BYTES}\n"
+         [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = {JOB_BYTES}\n"
     )
 }
 

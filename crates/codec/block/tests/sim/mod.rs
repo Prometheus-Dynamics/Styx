@@ -56,7 +56,7 @@ pub fn pattern(index: usize, stamp: u64) -> u8 {
 
 #[driver("sim-codec", provides = [CodecBlock])]
 pub struct SimCodec {
-    #[needs]
+    #[needs(job)]
     jobs: StreamHandle,
     /// The buffers the block holds, one bit each.
     held: u64,

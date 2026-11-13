@@ -127,13 +127,13 @@ impl Slots {
 
 #[driver("sim-pisp", provides = [CameraIsp, IspPisp])]
 pub struct SimPisp {
-    #[needs]
+    #[needs(job)]
     config: StreamHandle,
-    #[needs]
+    #[needs(job)]
     input: StreamHandle,
-    #[needs]
+    #[needs(job)]
     output0: StreamHandle,
-    #[needs]
+    #[needs(job)]
     output1: StreamHandle,
     input_set: Option<IspInput>,
     outputs: [Option<(IspOutput, u32)>; 2],
@@ -447,9 +447,9 @@ fn name(stream: &[u8], into: &mut [u8]) -> Result<usize> {
 pub fn board() -> String {
     "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-pisp\"\n\
      [[devices]]\nid = \"isp0\"\ndriver = \"sim-pisp\"\n\
-     [devices.streams.config]\nbuffers = 4\nkind = \"job\"\nbuffer_bytes = 32768\njob_slots = 4\njob_bytes = 128\n\
-     [devices.streams.input]\nbuffers = 3\nkind = \"job\"\nbuffer_bytes = 2048000\n\
-     [devices.streams.output0]\nbuffers = 3\nkind = \"job\"\nbuffer_bytes = 1600000\n\
-     [devices.streams.output1]\nbuffers = 3\nkind = \"job\"\nbuffer_bytes = 800000\n"
+     [devices.streams.config]\nbuffers = 4\nbuffer_bytes = 32768\njob_slots = 4\njob_bytes = 128\n\
+     [devices.streams.input]\nbuffers = 3\nbuffer_bytes = 2048000\n\
+     [devices.streams.output0]\nbuffers = 3\nbuffer_bytes = 1600000\n\
+     [devices.streams.output1]\nbuffers = 3\nbuffer_bytes = 800000\n"
         .to_string()
 }

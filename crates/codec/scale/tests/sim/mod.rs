@@ -47,7 +47,7 @@ fn channels(code: FourCc, index: usize) -> usize {
 
 #[driver("sim-scaler", provides = [ImageScaler])]
 pub struct SimScaler {
-    #[needs]
+    #[needs(job)]
     scale: StreamHandle,
     /// The buffers this driver holds: taken from the consumer, not yet published.
     held: u64,
@@ -277,6 +277,6 @@ impl SimScaler {
 pub fn board() -> String {
     "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-scaler\"\n\
      [[devices]]\nid = \"scaler0\"\ndriver = \"sim-scaler\"\n\
-     [devices.streams.scale]\nbuffers = 4\nkind = \"job\"\nbuffer_bytes = 16384\n"
+     [devices.streams.scale]\nbuffers = 4\nbuffer_bytes = 16384\n"
         .to_string()
 }

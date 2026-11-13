@@ -229,7 +229,7 @@ struct Run {
 
 #[driver("sim-receiver", provides = [CameraReceiver])]
 pub struct SimReceiver {
-    #[needs]
+    #[needs(free)]
     frames: StreamHandle,
     configured: Option<LinkConfig>,
     layout: Option<FrameLayout>,

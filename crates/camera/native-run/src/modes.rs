@@ -90,6 +90,9 @@ pub struct Selection {
     pub requested_fps_milli: u32,
     /// The rate the mode gives, in milli-fps: its frame length in whole lines over its line time.
     pub achieved_fps_milli: u32,
+    /// The chosen mode's readout span of one frame, in picoseconds (the sensor's `readout_ps`; 0
+    /// when the sensor reports none). A frame ends at its start stamp plus this: [`frame_end_ns`].
+    pub readout_ps: u64,
     /// Why this mode and rate.
     pub reason: Reason,
     /// The reason in a sentence, with the numbers (for example `asked 240.000 fps, the mode's
@@ -371,9 +374,17 @@ pub fn select_mode(modes: &[Mode], request: &Request) -> Result<Selection, ModeE
         bit_depth: mode.link.bit_depth,
         requested_fps_milli: request.fps_milli,
         achieved_fps_milli: achieved,
+        readout_ps: mode.readout_ps,
         reason,
         text,
     })
+}
+
+/// A frame's end time on `CLOCK_MONOTONIC`, from its start stamp and the readout span of its mode
+/// (`readout_ps`, picoseconds): the start plus the span, rounded up to a whole nanosecond. Zero
+/// readout ends the frame at its start. The rate arithmetic does not use this.
+pub fn frame_end_ns(start_ns: u64, readout_ps: u64) -> u64 {
+    start_ns.saturating_add(readout_ps.div_ceil(1_000))
 }
 
 struct Described<'a> {
@@ -497,6 +508,14 @@ mod tests {
             fps_milli: milli,
             ..Request::default()
         }
+    }
+
+    #[test]
+    fn a_frame_ends_its_readout_after_its_start_rounded_up_to_a_nanosecond() {
+        // 1 ns is 1000 ps; 1500 ps rounds up to 2 ns; no readout ends at the start.
+        assert_eq!(frame_end_ns(10_000, 0), 10_000);
+        assert_eq!(frame_end_ns(10_000, 1_000), 10_001);
+        assert_eq!(frame_end_ns(10_000, 1_500), 10_002);
     }
 
     #[test]

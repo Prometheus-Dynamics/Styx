@@ -83,6 +83,7 @@ fn mode(index: usize) -> Option<Mode> {
         exposure_delay: 2,
         gain_delay: 1,
         frame_length_delay: 2,
+        readout_ps: 0,
         drop_frames: 2,
         ..Mode::default()
     })
@@ -249,7 +250,7 @@ struct Run {
 
 #[driver("sim-receiver", provides = [CameraReceiver])]
 pub struct SimReceiver {
-    #[needs]
+    #[needs(free)]
     frames: StreamHandle,
     configured: Option<LinkConfig>,
     layout: Option<FrameLayout>,

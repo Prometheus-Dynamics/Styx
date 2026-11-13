@@ -42,6 +42,7 @@ pub fn mode(exposure_delay: u8, gain_delay: u8, frame_length_delay: u8) -> Mode 
         exposure_delay,
         gain_delay,
         frame_length_delay,
+        readout_ps: 0,
         ..Mode::default()
     }
 }

@@ -24,6 +24,6 @@ mod session;
 pub use backoff::{AutoOff, Backoff, BackoffError, Policy};
 pub use clock::{Clock, SystemClock};
 pub use frames::{Frames, Lease};
-pub use modes::{ModeError, Reason, Request, Selection, fourcc_for, select_mode};
+pub use modes::{ModeError, Reason, Request, Selection, fourcc_for, frame_end_ns, select_mode};
 pub use session::{Error, Session, State, Status, StopHandle};
 pub use styx_native_controls::{FrameRate, Initial, Landing, Landings};
