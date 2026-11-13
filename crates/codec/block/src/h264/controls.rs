@@ -283,14 +283,14 @@ pub fn scaling_matrix(sps: &Sps, pps: &Pps) -> Option<sys::ScalingMatrix> {
         None => from_sps,
     }?;
     let mut matrix = sys::ScalingMatrix::default();
-    for list in 0..6 {
+    for (list, lane) in matrix.scaling_list_4x4.iter_mut().enumerate() {
         for (k, &pos) in ZIGZAG_4X4.iter().enumerate() {
-            matrix.scaling_list_4x4[list][usize::from(pos)] = effective[list][k];
+            lane[usize::from(pos)] = effective[list][k];
         }
     }
-    for list in 0..6 {
+    for (list, lane) in matrix.scaling_list_8x8.iter_mut().enumerate() {
         for (k, &pos) in ZIGZAG_8X8.iter().enumerate() {
-            matrix.scaling_list_8x8[list][usize::from(pos)] = effective[6 + list][k];
+            lane[usize::from(pos)] = effective[6 + list][k];
         }
     }
     Some(matrix)

@@ -43,7 +43,7 @@ pub struct Stamps {
 impl Stamps {
     /// The next stamp: the microseconds after the last, in nanoseconds. `None` only when the
     /// count runs out, which a decoder reports as a refused frame.
-    pub fn next(&mut self) -> Option<u64> {
+    pub fn advance(&mut self) -> Option<u64> {
         let us = self.last_us.checked_add(1)?;
         let ns = us.checked_mul(1_000)?;
         self.last_us = us;
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn stamps_are_whole_microseconds_and_never_repeat() {
         let mut stamps = Stamps::default();
-        let first: Vec<u64> = (0..1000).map(|_| stamps.next().unwrap()).collect();
+        let first: Vec<u64> = (0..1000).map(|_| stamps.advance().unwrap()).collect();
         assert_eq!(first[0], 1_000);
         assert!(first.iter().all(|ns| ns % 1_000 == 0));
         assert!(first.windows(2).all(|pair| pair[0] < pair[1]));
@@ -163,6 +163,6 @@ mod tests {
         let mut stamps = Stamps {
             last_us: u64::MAX / 1_000,
         };
-        assert_eq!(stamps.next(), None);
+        assert_eq!(stamps.advance(), None);
     }
 }

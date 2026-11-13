@@ -218,7 +218,7 @@ impl<M> Decoder<M> for HevcDecoder {
         ];
         let stamp_ns = self
             .stamps
-            .next()
+            .advance()
             .ok_or_else(|| rejected("this decoder has no stamps left"))?;
         let job = Job {
             setup: Setup {
