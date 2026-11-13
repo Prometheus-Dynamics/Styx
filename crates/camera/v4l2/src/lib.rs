@@ -2,8 +2,10 @@
 //! boards' capture drivers) on Lemnos's `lemnos-v4l2` library, used as a plain library through
 //! `styx-lemnos`'s re-export. No lemnosd is needed. Styx carries no V4L2 bindings of its own.
 //!
-//! - [`probe`] lists the capture nodes with their formats, frame sizes and intervals, and the
-//!   controls Styx maps to [`styx_controls::Control`].
+//! - [`probe`] lists the video nodes from sysfs and opens none of them. [`probe_node`],
+//!   [`probe_card`] and [`probe_input`] fully probe one named node (formats, frame sizes and
+//!   intervals, and the controls Styx maps to [`styx_controls::Control`]), opening that node once.
+//!   A virtual node (another program's loopback camera) is opened only when a caller names it.
 //! - [`Stream::start`] negotiates a format and streams it. Frames are [`styx_frame::FrameLease`]s
 //!   with [`styx_controls::FrameMetadata`]: DMABUF-exported buffers are handed on without a copy,
 //!   MMAP buffers are copied (counted in [`copy_counters`]). Timestamps are `CLOCK_MONOTONIC`
@@ -21,8 +23,8 @@ mod stream;
 
 pub use error::Error;
 pub use probe::{
-    Device, DeviceMenuItem, Format, Intervals, Probe, Queue, RawControl, Size, SizeRange, Sizes,
-    probe, probe_node,
+    Device, DeviceMenuItem, Format, Intervals, Listing, Node, Opener, Prober, Queue, RawControl,
+    Size, SizeRange, Sizes, System, probe, probe_card, probe_input, probe_node,
 };
 pub use stream::{Delivery, State, Status, Stream, StreamConfig};
 

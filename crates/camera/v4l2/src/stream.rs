@@ -58,6 +58,9 @@ pub struct StreamConfig {
     /// The failure policy. `None` (the default) retries forever. `Some(n)` stops the stream after
     /// `n` failed reconnects in a row, a policy the caller chose.
     pub give_up_after: Option<u32>,
+    /// The video input to select before the format is set (`VIDIOC_S_INPUT`). `None` keeps the
+    /// driver's own. Inputs are numbered by the driver; Lemnos has no input enumeration yet.
+    pub input: Option<u32>,
     /// Copy every frame out of the mapped driver buffers, never exporting them as dma-bufs (no
     /// `VIDIOC_EXPBUF`). Off by default: a node whose buffers export is then zero-copy. Used to
     /// exercise the copy path on a node that exports.
@@ -76,6 +79,7 @@ impl StreamConfig {
             buffers: 4,
             controls: Vec::new(),
             give_up_after: None,
+            input: None,
             copy_mapped: false,
         }
     }
@@ -451,6 +455,9 @@ impl Session {
         let dev = VideoDevice::open(path)?;
         let (_queue, buf_type) = probe::queue_of(&dev)
             .ok_or_else(|| Error::Unsupported(format!("{}: not a capture node", path.display())))?;
+        if let Some(input) = config.input {
+            dev.set_input(input)?;
+        }
         let got = negotiate(&dev, buf_type, config)?;
         let shape = Shape::new(&got)?;
         if let Some(interval) = config.interval {

@@ -1,0 +1,311 @@
+//! The control socket: a line protocol for the camera list, the controls, and the start and stop
+//! of a camera by hand.
+//!
+//! One request per line, at most [`MAX_LINE`] bytes, and at most [`MAX_TOKENS`] words. Each request
+//! gets its answer lines, the last one `ok` or `err <why>`. Requests are untrusted: every length
+//! is checked before it is used, and nothing in here panics on input.
+//!
+//! | Request | Answer |
+//! |---|---|
+//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. last_error=..` line per camera, then `ok` |
+//! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
+//! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
+//! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
+//! | `start <id>` / `stop <id>` | `ok`. Starts or stops the camera by hand |
+//!
+//! `last_error` and the other free text come last on their line.
+
+use std::io::{self, BufRead, BufReader, Read, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::sync::mpsc;
+use std::time::Duration;
+
+use styx_controls::{Control, ControlValue, Range, Update};
+
+use crate::service::Shared;
+use crate::slot::{CameraStatus, Command, Slot};
+
+/// The longest request line, in bytes, newline excluded.
+pub const MAX_LINE: usize = 256;
+/// The most words in a request.
+pub const MAX_TOKENS: usize = 8;
+/// The longest camera id a request may name.
+pub const MAX_ID: usize = 128;
+/// How long a connection may sit idle, and how long a camera may take to answer a `set`.
+const IDLE: Duration = Duration::from_secs(2);
+const ANSWER: Duration = Duration::from_secs(2);
+
+/// Accepts connections until shutdown. Connections are served one at a time: the protocol is
+/// small and the answers are quick.
+pub(crate) fn serve(listener: &UnixListener, shared: &Arc<Shared>) {
+    while !shared.shutdown.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                let _ = connection(stream, shared);
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(20)),
+        }
+    }
+}
+
+fn connection(stream: UnixStream, shared: &Arc<Shared>) -> io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(IDLE))?;
+    stream.set_write_timeout(Some(IDLE))?;
+    let mut writer = stream.try_clone()?;
+    let mut reader = BufReader::new(stream.take(0));
+    loop {
+        reader.get_mut().set_limit(MAX_LINE as u64 + 1);
+        let mut line = Vec::new();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            return Ok(());
+        }
+        if line.last() != Some(&b'\n') {
+            // Either the line is too long or the peer stopped mid-line. Answer and hang up.
+            writeln!(writer, "err request is longer than {MAX_LINE} bytes")?;
+            return Ok(());
+        }
+        line.pop();
+        let lines = match std::str::from_utf8(&line) {
+            Ok(text) => dispatch(text, shared),
+            Err(_) => vec!["err request is not UTF-8".to_string()],
+        };
+        for answer in lines {
+            writeln!(writer, "{answer}")?;
+        }
+        writer.flush()?;
+    }
+}
+
+/// Answers one request line.
+pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
+    if line.len() > MAX_LINE {
+        return vec![format!("err request is longer than {MAX_LINE} bytes")];
+    }
+    let words: Vec<&str> = line.split_ascii_whitespace().collect();
+    if words.len() > MAX_TOKENS {
+        return vec![format!("err at most {MAX_TOKENS} words")];
+    }
+    let Some((&verb, args)) = words.split_first() else {
+        return vec!["err empty request".to_string()];
+    };
+    match (verb, args) {
+        ("list", []) => {
+            let mut out: Vec<String> = shared
+                .slots
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .values()
+                .map(|slot| camera_line(&slot.snapshot()))
+                .collect();
+            out.push("ok".to_string());
+            out
+        }
+        ("controls", [id]) => with_slot(shared, id, controls),
+        ("frame", [id]) => with_slot(shared, id, frame),
+        ("start", [id]) => with_slot(shared, id, |slot| {
+            slot.wake.store(true, Ordering::Release);
+            let _ = slot.commands.send(Command::Start);
+            vec!["ok".to_string()]
+        }),
+        ("stop", [id]) => with_slot(shared, id, |slot| {
+            slot.wake.store(true, Ordering::Release);
+            let _ = slot.commands.send(Command::Stop);
+            vec!["ok".to_string()]
+        }),
+        ("set", [id, control, value, frame]) => {
+            let Some(frame) = frame.parse::<u64>().ok() else {
+                return vec!["err the frame must be a number".to_string()];
+            };
+            let Some(control) = control_named(control) else {
+                return vec![format!("err no control named {}", clip(control))];
+            };
+            let Some(value) = parse_value(value) else {
+                return vec!["err the value must be a number, auto, on or off".to_string()];
+            };
+            let update = Update {
+                control,
+                value,
+                frame,
+            };
+            if let Err(e) = control.validate(value) {
+                return vec![format!("err {e:?}")];
+            }
+            with_slot(shared, id, |slot| set(slot, update))
+        }
+        ("help", []) => vec![
+            "list | controls <id> | frame <id> | set <id> <control> <value> <frame> | start <id> | stop <id>"
+                .to_string(),
+            "ok".to_string(),
+        ],
+        _ => vec![format!("err unknown request {}", clip(verb))],
+    }
+}
+
+fn with_slot(shared: &Arc<Shared>, id: &str, f: impl FnOnce(&Slot) -> Vec<String>) -> Vec<String> {
+    if id.len() > MAX_ID {
+        return vec![format!("err a camera id is at most {MAX_ID} bytes")];
+    }
+    let slot = shared
+        .slots
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(id)
+        .cloned();
+    match slot {
+        Some(slot) => f(&slot),
+        None => vec![format!("err no camera {}", clip(id))],
+    }
+}
+
+fn set(slot: &Slot, update: Update) -> Vec<String> {
+    let (tx, rx) = mpsc::channel();
+    if slot
+        .commands
+        .send(Command::Set {
+            updates: vec![update],
+            reply: tx,
+        })
+        .is_err()
+    {
+        return vec!["err the camera's worker has ended".to_string()];
+    }
+    match rx.recv_timeout(ANSWER) {
+        Ok(Ok(())) => vec!["ok".to_string()],
+        Ok(Err(e)) => vec![format!("err {}", one_line(&e))],
+        Err(_) => vec!["err the camera did not answer".to_string()],
+    }
+}
+
+fn controls(slot: &Slot) -> Vec<String> {
+    let current = slot.current_controls();
+    let mut out = Vec::with_capacity(Control::COUNT + 1);
+    for control in Control::ALL {
+        let spec = control.spec();
+        let value = match current {
+            Some(values) => show(values[control.index()]),
+            None => "-".to_string(),
+        };
+        out.push(format!(
+            "control {} unit={} range={} default={} auto={} value={}",
+            control.name(),
+            if spec.unit.is_empty() { "-" } else { spec.unit },
+            range(spec.range),
+            show(spec.default),
+            spec.auto,
+            value,
+        ));
+    }
+    out.push("ok".to_string());
+    out
+}
+
+fn frame(slot: &Slot) -> Vec<String> {
+    match slot.snapshot().last_frame {
+        Some(f) => vec![
+            format!(
+                "frame id={} timestamp_ns={} exposure_us={} gain_milli={}",
+                f.id, f.timestamp_ns, f.exposure_us, f.gain_milli
+            ),
+            "ok".to_string(),
+        ],
+        None => vec!["err no frame yet".to_string()],
+    }
+}
+
+fn camera_line(status: &CameraStatus) -> String {
+    let owner = status
+        .owner
+        .map_or_else(|| "-".to_string(), |b| b.to_string());
+    let last_id = status
+        .last_frame
+        .map_or_else(|| "-".to_string(), |f| f.id.to_string());
+    let delay = status
+        .next_delay
+        .map_or_else(|| "-".to_string(), |d| d.as_millis().to_string());
+    let error = status
+        .last_error
+        .as_deref()
+        .map_or_else(|| "-".to_string(), one_line);
+    let socket = status
+        .socket
+        .as_ref()
+        .map_or_else(|| "-".to_string(), |p| p.display().to_string());
+    // Free text in this line is one word (spaces become `_`), except `last_error`, which is last.
+    let publish = status.publish.to_string().replace(' ', "_");
+    format!(
+        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} last_error={}",
+        clip(&status.id),
+        status.state,
+        owner,
+        status.starts,
+        status.failures,
+        status.total_failures,
+        status.frames,
+        status.skipped,
+        last_id,
+        delay,
+        socket,
+        publish,
+        status.readers,
+        status.published,
+        status.publish_dropped,
+        status.health.to_string().replace(' ', "_"),
+        error,
+    )
+}
+
+fn control_named(name: &str) -> Option<Control> {
+    Control::ALL.into_iter().find(|c| c.name() == name)
+}
+
+fn parse_value(text: &str) -> Option<ControlValue> {
+    match text {
+        "auto" => Some(ControlValue::Auto),
+        "on" => Some(ControlValue::Flag(true)),
+        "off" => Some(ControlValue::Flag(false)),
+        number => number.parse::<u32>().ok().map(ControlValue::Manual),
+    }
+}
+
+fn show(value: ControlValue) -> String {
+    match value {
+        ControlValue::Auto => "auto".to_string(),
+        ControlValue::Manual(v) => v.to_string(),
+        ControlValue::Flag(true) => "on".to_string(),
+        ControlValue::Flag(false) => "off".to_string(),
+        ControlValue::Crop(_) => "rect".to_string(),
+    }
+}
+
+fn range(range: Range) -> String {
+    match range {
+        Range::Manual { min, max } => format!("{min}..{max}"),
+        Range::Flag => "flag".to_string(),
+        Range::Rect => "rect".to_string(),
+    }
+}
+
+/// Free text as one line, cut to a sane length.
+fn one_line(text: &str) -> String {
+    let flat: String = text
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    clip(&flat)
+}
+
+fn clip(text: &str) -> String {
+    const LIMIT: usize = 200;
+    if text.len() <= LIMIT {
+        return text.to_string();
+    }
+    let mut end = LIMIT;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}...", &text[..end])
+}

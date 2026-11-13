@@ -379,6 +379,12 @@ unsafe impl BufferMemory for Slice {
     fn fd(&self) -> Option<BorrowedFd<'_>> {
         self.base.fd()
     }
+
+    /// Where this buffer starts in its descriptor: the base's offset plus this slice's offset.
+    /// One memfd holds every buffer at its own offset; a dma-buf is one buffer from its first byte.
+    fn fd_offset(&self) -> usize {
+        self.base.fd_offset() + self.offset
+    }
 }
 
 fn slice(base: &Arc<FdMemory>, offset: usize, len: usize) -> Result<Slice, Error> {
@@ -729,6 +735,13 @@ impl<M> Frames<M> {
     /// Buffers in the stream.
     pub fn buffers(&self) -> usize {
         self.pool.buffers()
+    }
+
+    /// The stream's frame pool, borrowed. Its buffers are fd-backed (one memfd at offsets, or a
+    /// dma-buf each), so a producer can publish them with `styx_socket::Producer::with_pool`
+    /// (it takes a handle with `FramePool::clone`).
+    pub fn pool(&self) -> &FramePool<M> {
+        &self.pool
     }
 
     /// Frames dropped because their buffer's previous lease was still out.
