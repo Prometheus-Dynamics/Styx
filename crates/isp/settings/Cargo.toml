@@ -15,9 +15,6 @@ no_std = true
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["serde"] }
 styx-format = { path = "../../core/format", default-features = false, features = ["serde"] }
-# The controller's own neutral settings, for the conversion in `convert`. Dependency direction:
-# settings <- controller (the controller should re-export this type, see the PR text).
-styx-controller = { path = "../../algo/controller", default-features = false }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
