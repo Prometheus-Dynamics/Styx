@@ -20,8 +20,8 @@ use styx_frame::{
 use crate::SocketError;
 use crate::geometry::Geometry;
 use crate::wire::{
-    ACK_LEN, OFFER_LEN, Offer, RECORD_LEN, Record, VERSION, decode_meta, decode_offer,
-    decode_record,
+    ACK_LEN, OFFER_LEN, Offer, RECORD_LEN, Record, USER_MAX, VERSION, decode_meta, decode_offer,
+    decode_record, decode_user,
 };
 
 const FIELD: FieldId = FieldId(0);
@@ -66,9 +66,29 @@ pub struct Frame {
     /// slot is free before the ring's mark is taken off.
     lease: FrameLease<()>,
     held: Held<Arc<Marks>>,
+    user: UserBytes,
+}
+
+/// The opaque bytes a producer attached to a frame, copied out of the ring entry (the ring's
+/// slot is not the reader's to keep).
+struct UserBytes {
+    len: usize,
+    bytes: [u8; USER_MAX],
+}
+
+impl core::fmt::Debug for UserBytes {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("UserBytes").field("len", &self.len).finish()
+    }
 }
 
 impl Frame {
+    /// The opaque bytes the producer attached to this frame ([`crate::Producer::publish_with`]),
+    /// empty when it attached none. This crate does not read them.
+    pub fn user(&self) -> &[u8] {
+        &self.user.bytes[..self.user.len]
+    }
+
     /// The ring's sequence number of the frame's entry.
     pub const fn seq(&self) -> u64 {
         self.seq
@@ -495,10 +515,17 @@ fn admit(
         held,
     } = batch;
     let decoded = decode_meta(meta);
+    let user = decode_user(meta);
     let index = held.buffer(0).filter(|_| held.len() == 1);
-    let (Some((id, format, layouts)), Some(index)) = (decoded, index) else {
+    let (Some((id, format, layouts)), Some(user), Some(index)) = (decoded, user, index) else {
         counters.malformed += 1;
         return None;
+    };
+    let mut bytes = [0_u8; USER_MAX];
+    bytes[..user.len()].copy_from_slice(user);
+    let user = UserBytes {
+        len: user.len(),
+        bytes,
     };
     let entry = FrameEntry::new(id, time.as_nanos(), format, layouts);
     let Ok(lease) = frames.acquire_at(index.0 as usize, entry) else {
@@ -513,5 +540,6 @@ fn admit(
         age_ns,
         lease,
         held,
+        user,
     })
 }

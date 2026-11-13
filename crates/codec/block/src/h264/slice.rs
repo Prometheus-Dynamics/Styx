@@ -136,6 +136,11 @@ pub struct SliceHeader {
     /// The bit offset of the slice data in the RBSP (header included). The data's first
     /// syntax element, `cabac_alignment_one_bit` for CABAC, is at this bit.
     pub data_bit_offset: usize,
+    /// The size in bits of the picture order count syntax (`pic_order_cnt_lsb` through the
+    /// delta counts), 0 when the stream's type has none.
+    pub poc_bits: u32,
+    /// The size in bits of `dec_ref_pic_marking()`, 0 for a non-reference picture.
+    pub marking_bits: u32,
 }
 
 impl SliceHeader {
@@ -287,7 +292,10 @@ pub fn parse_slice_header(
         alpha_c0_offset_div2: 0,
         beta_offset_div2: 0,
         data_bit_offset: 0,
+        poc_bits: 0,
+        marking_bits: 0,
     };
+    let poc_start = r.bit_pos();
     match sps.poc_type {
         0 => {
             h.poc_lsb = r.bits(u32::from(sps.log2_max_poc_lsb))?;
@@ -303,6 +311,7 @@ pub fn parse_slice_header(
         }
         _ => {}
     }
+    h.poc_bits = (r.bit_pos() - poc_start) as u32;
     if pps.redundant_pic_cnt_present {
         h.redundant_pic_cnt = r.ue_max(127, "redundant_pic_cnt")?;
     }
@@ -353,6 +362,7 @@ pub fn parse_slice_header(
             entries,
         }));
     }
+    let marking_start = r.bit_pos();
     if nal_ref_idc != 0 {
         if idr {
             h.no_output_of_prior_pics = r.flag()?;
@@ -389,6 +399,7 @@ pub fn parse_slice_header(
                 h.mmco_count = n as u8;
             }
         }
+        h.marking_bits = (r.bit_pos() - marking_start) as u32;
     }
     if pps.cabac && !matches!(kind, SliceKind::I | SliceKind::SI) {
         h.cabac_init_idc = r.ue_max(2, "cabac_init_idc")? as u8;

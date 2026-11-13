@@ -38,7 +38,7 @@ fn serial() -> MutexGuard<'static, ()> {
 
 /// The first vivid capture node, probed. `None` when the machine has none.
 fn vivid() -> Option<Device> {
-    for path in common::physical_nodes() {
+    for path in common::physical_nodes().into_iter().map(|node| node.path) {
         let Ok(Some(device)) = probe_node(&path) else {
             continue;
         };
@@ -344,4 +344,40 @@ fn a_disconnected_device_retries_with_capped_backoff_and_comes_back() {
         seen.iter().any(|s| s.starts_with("Retrying")),
         "it went through Retrying: {seen:?}"
     );
+}
+
+#[test]
+fn a_stream_on_a_selected_input_delivers_frames() {
+    let _guard = serial();
+    let Some(device) = vivid() else {
+        return skip("input stream", "no vivid capture node on this machine");
+    };
+    // vivid lists YUYV as a stepwise range on this PC: take its smallest size.
+    let code = FourCc::YUYV;
+    let Some(format) = device.formats.iter().find(|f| f.code == code) else {
+        return skip("input stream", "vivid lists no YUYV format");
+    };
+    let (width, height) = match &format.sizes {
+        Sizes::Discrete(sizes) => match sizes.first() {
+            Some(size) => (size.width, size.height),
+            None => return skip("input stream", "vivid lists no YUYV size"),
+        },
+        Sizes::Stepwise(range) | Sizes::Continuous(range) => range.min,
+    };
+    let mut config = StreamConfig::new(code, width, height);
+    config.input = Some(1);
+    let stream = match Stream::start(&device.path, config) {
+        Ok(stream) => stream,
+        Err(e) => return skip("input stream", &format!("input 1 not selectable: {e}")),
+    };
+    let frame = stream
+        .frames()
+        .recv_timeout(Duration::from_secs(3))
+        .expect("a frame on input 1");
+    println!(
+        "input 1 frame: {}x{}",
+        frame.format().resolution.width,
+        frame.format().resolution.height
+    );
+    assert_eq!(stream.status().state, State::Streaming);
 }

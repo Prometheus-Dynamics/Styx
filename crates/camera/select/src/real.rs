@@ -1,11 +1,7 @@
 //! The listers over the real backends. Each one lists; none opens a camera for good.
 //!
-//! The V4L2 lister calls `styx_v4l2::probe`, which opens every video node to read it. That is
-//! the probe's behaviour today, virtual nodes included; it should not open virtual nodes by
-//! default (a change to `styx-v4l2`, not made here).
-
-use std::fs;
-use std::path::{Path, PathBuf};
+//! The V4L2 lister lists from `styx_v4l2::probe` (sysfs, no open). Virtual nodes stay unopened.
+//! Each physical `videoN` node is fully probed once: a node that is not a capture node is dropped.
 
 use styx_lemnos::{Client, FRAMES_TAG, SENSOR_TAG};
 
@@ -71,44 +67,54 @@ impl LibcameraLister for Libcamera {
     }
 }
 
-/// The V4L2 capture nodes, from `styx_v4l2::probe`.
+/// The V4L2 capture nodes. Virtual nodes are listed from sysfs and never opened. Each other
+/// `videoN` node is fully probed once, to learn whether it is a capture node (sysfs does not say).
 #[derive(Debug)]
 pub struct Probe;
 
 impl V4l2Lister for Probe {
     fn list_v4l2(&self) -> Result<Vec<Listed>, ListError> {
-        Ok(styx_v4l2::probe()
-            .devices
-            .into_iter()
-            .map(|device| {
-                let mut anchors = vec![Anchor::VideoNode(device.path.clone())];
-                if let Some(sysfs) = sysfs_device(&device.path) {
+        let mut out = Vec::new();
+        for node in styx_v4l2::probe().nodes {
+            // Camera capture nodes are `videoN`; radio, vbi and touch nodes are not listed here.
+            let is_video = node
+                .path
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("video"));
+            if !is_video {
+                continue;
+            }
+            if node.virtual_node {
+                let mut anchors = vec![Anchor::VideoNode(node.path.clone())];
+                if let Some(sysfs) = node.device_path.clone() {
                     anchors.push(Anchor::Sysfs(sysfs));
                 }
-                if let Some(port) = device.bus_info.strip_prefix("usb-") {
-                    anchors.push(Anchor::Usb {
-                        port: port.to_string(),
-                        ids: None,
-                    });
-                }
-                Listed {
-                    key: device.path.display().to_string(),
+                out.push(Listed {
+                    key: node.path.display().to_string(),
                     anchors,
-                    virtual_node: device.virtual_node,
-                }
-            })
-            .collect())
+                    virtual_node: true,
+                });
+                continue;
+            }
+            let Ok(Some(device)) = styx_v4l2::probe_node(&node.path) else {
+                continue;
+            };
+            let mut anchors = vec![Anchor::VideoNode(device.path.clone())];
+            if let Some(sysfs) = node.device_path.clone() {
+                anchors.push(Anchor::Sysfs(sysfs));
+            }
+            if let Some(port) = device.bus_info.strip_prefix("usb-") {
+                anchors.push(Anchor::Usb {
+                    port: port.to_string(),
+                    ids: None,
+                });
+            }
+            out.push(Listed {
+                key: device.path.display().to_string(),
+                anchors,
+                virtual_node: false,
+            });
+        }
+        Ok(out)
     }
-}
-
-/// The canonical sysfs device directory of a video node (`/sys/class/video4linux/<node>/device`).
-/// Reads sysfs only; the node is not opened.
-fn sysfs_device(node: &Path) -> Option<PathBuf> {
-    let name = node.file_name()?;
-    fs::canonicalize(
-        PathBuf::from("/sys/class/video4linux")
-            .join(name)
-            .join("device"),
-    )
-    .ok()
 }

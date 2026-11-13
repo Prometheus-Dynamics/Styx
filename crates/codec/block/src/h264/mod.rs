@@ -30,11 +30,11 @@
 //!
 //! Not parsed: the VUI and the SPS and PPS extensions (their contents are skipped, not read), SVC
 //! and MVC (`nal_unit_type` 14, 15, 20), and the prefix NAL units. The decoder is
-//! [`decoder::H264Decoder`]; the layout of the block's controls is the caller's ([`controls`]),
-//! since the V4L2 H.264 control structures are not at Lemnos's lock.
+//! [`decoder::H264Decoder`], which builds the block's controls ([`controls`]) in the V4L2
+//! structures of `lemnos_linux_sys::v4l2::h264`, and runs each slice as a job ([`work`]).
 //!
-//! Provenance: written from ITU-T H.264 (sections 7.3, 7.4, 8.2) for Styx. Lemnos has no H.264
-//! parser at its lock 04d09360. No FFmpeg, GStreamer or kernel source was read or copied.
+//! Provenance: written from ITU-T H.264 (sections 7.3, 7.4, 8.2, 8.5.6) for Styx. No FFmpeg,
+//! GStreamer or kernel source was read or copied.
 
 pub mod controls;
 pub mod decoder;
@@ -48,7 +48,7 @@ pub mod work;
 mod tests;
 
 pub use crate::bitstream::{BitReader, Error, Result, unescape};
-pub use controls::{Controls, Layout, SliceView};
+pub use controls::{Controls, SliceView};
 pub use decoder::{H264Decoder, candidate, descriptor};
 pub use dpb::{Dpb, NONE, RefLists};
 pub use poc::{Poc, PocState};
