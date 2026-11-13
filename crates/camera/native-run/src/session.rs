@@ -9,8 +9,10 @@ use lemnos_client::{Client, RemoteCaller};
 use lemnos_contract_camera_receiver::{CameraReceiver, MAX_STREAM_NAME, Packing};
 use lemnos_contract_camera_sensor::{CameraSensor, Mode};
 use lemnos_core::Bound;
+use styx_controls::{FrameMetadata, Update};
 use styx_lemnos::open_frames;
 use styx_native::Camera;
+use styx_native_controls::{GainLaw, Initial, Landings, NativeControls};
 
 use crate::backoff::{AutoOff, Policy};
 use crate::clock::Clock;
@@ -82,6 +84,13 @@ pub enum Error {
     Mode(ModeError),
     /// A device refused to stop. Both were asked to stop.
     Device(String),
+    /// The session has no controls configured: [`Session::with_controls`] gives the sensor's
+    /// initial values and its gain law. Retrying cannot fix this, so [`Session::start`] returns it
+    /// at once.
+    NoControls,
+    /// The native controls refused: the mode cannot take them (for example a gain law that is
+    /// [`GainLaw::Unknown`]), or a request was refused (see `styx_native_controls::Error`).
+    Controls(styx_native_controls::Error),
 }
 
 impl fmt::Display for Error {
@@ -98,6 +107,11 @@ impl fmt::Display for Error {
             Self::NotStreaming => write!(f, "no session is streaming"),
             Self::Mode(e) => write!(f, "no usable sensor mode: {e}"),
             Self::Device(text) => write!(f, "{text}"),
+            Self::NoControls => write!(
+                f,
+                "no controls configured: call with_controls with the sensor's initial values and gain law"
+            ),
+            Self::Controls(e) => write!(f, "controls: {e}"),
         }
     }
 }
@@ -120,6 +134,8 @@ impl StopHandle {
 enum Fault {
     Retry(String),
     Permanent(ModeError),
+    /// The session's settings cannot run on this camera. Retrying cannot fix it.
+    Config(Error),
 }
 
 /// A lemnos call's refusal, as text for the status.
@@ -133,17 +149,28 @@ struct Running {
     receiver: Receiver,
     frames: Frames,
     mode: u16,
+    controls: NativeControls,
 }
 
 impl Running {
-    /// Starts the receiver, then the sensor, then drops the mode's first frames. On a failure the
-    /// caller stops both devices.
+    /// Writes the initial values, starts the receiver, then the sensor, then drops the mode's first
+    /// frames. On a failure the caller stops both devices.
     fn start(&mut self, drop_frames: u8, frame_timeout: Duration) -> Result<(), Fault> {
+        self.controls
+            .prepare(&mut self.sensor)
+            .map_err(|e| Fault::Retry(format!("initial controls: {e}")))?;
         refused(self.receiver.start(), "receiver.start")?;
         refused(self.sensor.start(), "sensor.start")?;
         for dropped in 0..drop_frames {
             match self.frames.next(frame_timeout) {
-                Ok(Some(lease)) => drop(lease),
+                Ok(Some(lease)) => {
+                    // A dropped frame is still a frame the sensor made: it counts toward the frame
+                    // the next value is written on.
+                    self.controls
+                        .frame_start(&mut self.sensor, lease.id())
+                        .map_err(|e| Fault::Retry(format!("controls: {e}")))?;
+                    drop(lease);
+                }
                 Ok(None) => {
                     return Err(Fault::Retry(format!(
                         "no frame while dropping the first {drop_frames} ({dropped} seen)"
@@ -197,6 +224,8 @@ pub struct Session<'a, C: Clock> {
     running: Option<Running>,
     stalls: u32,
     status: Status,
+    /// The sensor's initial values and gain law, for each run's native controls.
+    settings: Option<(Initial, GainLaw)>,
 }
 
 /// A dropped session stops its devices. Its frames are released with the stream.
@@ -236,7 +265,29 @@ impl<'a, C: Clock> Session<'a, C> {
             running: None,
             stalls: 0,
             status: Status::new(),
+            settings: None,
         }
+    }
+
+    /// Sets the sensor's initial values and gain law for the native controls of each run. Every
+    /// frame the session delivers then carries its [`FrameMetadata`], and
+    /// [`Session::request_controls`] posts changes. Without it the session does not start.
+    #[must_use]
+    pub fn with_controls(mut self, initial: Initial, law: GainLaw) -> Self {
+        self.settings = Some((initial, law));
+        self
+    }
+
+    /// Posts controls to the running camera, each for the frame it applies from. Returns where each
+    /// is predicted to land. The frame a value is written on is the last frame the session
+    /// delivered (see `styx_native_controls`): a value written after frame `n` is delivered with
+    /// frame `n + delay`. A request that is refused posts nothing.
+    pub fn request_controls(&mut self, updates: &[Update]) -> Result<Landings, Error> {
+        let running = self.running.as_mut().ok_or(Error::NotStreaming)?;
+        running
+            .controls
+            .request(&mut running.sensor, updates)
+            .map_err(Error::Controls)
     }
 
     /// What the session is doing, and the backoff if it is waiting.
@@ -291,9 +342,24 @@ impl<'a, C: Clock> Session<'a, C> {
             None => return Err(Error::NotStreaming),
         };
         match polled {
-            Ok(Some(lease)) => {
+            Ok(Some(mut lease)) => {
                 self.stalls = 0;
-                Ok(Some(lease))
+                let (id, timestamp_ns) = (lease.id(), lease.timestamp_ns());
+                let running = self.running.as_mut().ok_or(Error::NotStreaming)?;
+                let posted = running.controls.frame_start(&mut running.sensor, id);
+                match posted {
+                    Ok(()) => {
+                        let metadata: FrameMetadata = running.controls.metadata(id, timestamp_ns);
+                        if let Some(meta) = lease.meta_mut() {
+                            *meta = metadata;
+                        }
+                        Ok(Some(lease))
+                    }
+                    Err(e) => {
+                        self.fault(format!("controls: {e}"))?;
+                        Ok(None)
+                    }
+                }
             }
             Ok(None) => {
                 self.stalls += 1;
@@ -352,6 +418,11 @@ impl<'a, C: Clock> Session<'a, C> {
                     return Err(Error::Mode(e));
                 }
                 Err(Fault::Retry(text)) => self.backoff_after(text)?,
+                Err(Fault::Config(e)) => {
+                    self.status.state = State::Stopped;
+                    self.status.last_error = Some(e.to_string());
+                    return Err(e);
+                }
             }
         }
     }
@@ -402,6 +473,9 @@ impl<'a, C: Clock> Session<'a, C> {
         let index = select_mode(&modes, &self.request).map_err(Fault::Permanent)?;
         let mode = modes[usize::from(index)];
         let code = fourcc_for(&mode).map_err(Fault::Permanent)?;
+        let (initial, law) = self.settings.ok_or(Fault::Config(Error::NoControls))?;
+        let controls = NativeControls::new(&mode, initial, law)
+            .map_err(|e| Fault::Config(Error::Controls(e)))?;
 
         refused(sensor.select_mode(index), "sensor.select_mode")?;
         let layout = refused(
@@ -429,6 +503,7 @@ impl<'a, C: Clock> Session<'a, C> {
             receiver,
             frames,
             mode: index,
+            controls,
         };
         match running.start(mode.drop_frames, self.policy.frame_timeout) {
             Ok(()) => Ok(running),
