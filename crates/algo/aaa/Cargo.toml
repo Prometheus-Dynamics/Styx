@@ -1,0 +1,54 @@
+[package]
+name = "styx-aaa"
+version.workspace = true
+edition.workspace = true
+description = "Camera control algorithms (AE, AWB, lens shading, colour) driven by tuning data, deterministic and replayable."
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[features]
+default = ["std"]
+# Replay (JSON Lines over `std::io`), I/O errors, float maths from std, and everything below: a
+# `std` build (Linux) has every algorithm and the serde formats. Without it the crate is
+# `no_std` + `alloc` with every algorithm too; the features below select them.
+std = ["std-core", "all-algorithms"]
+# `std` without the optional algorithms.
+std-core = ["serde", "dep:serde_json", "serde/std", "thiserror/std"]
+# Every optional algorithm (what `std` has).
+all-algorithms = ["af", "alsc", "awb-bayes", "denoise", "flicker", "lux"]
+# Serialisation (serde derives) for the parameter types and the replay format.
+serde = ["dep:serde"]
+# Autofocus (contrast detection and PDAF over a focus lens). Without it `Pipeline::from_tuning`
+# leaves AF out (it does nothing without a lens).
+af = []
+# Adaptive lens shading correction. Without it `from_tuning` ignores an `alsc` section.
+alsc = []
+# AWB's Bayesian search along the CT curve with priors; without it AWB is grey world whatever
+# the tuning says.
+awb-bayes = []
+# Denoise, green equalisation, defective pixels and sharpening parameters (ISP blocks the
+# software ISP does not have). Without it `from_tuning` ignores a `denoise` section.
+denoise = []
+# Mains flicker fitting: automatic 50/60 Hz detection, metering against the flicker, deflicker.
+# Without it AE avoids flicker only by whole periods of the frequency the controls name.
+flicker = []
+# Lux estimation. Without it `from_tuning` ignores a `lux` section.
+lux = []
+
+[dependencies]
+serde = { version = "1.0.229", default-features = false, features = ["derive", "alloc"], optional = true }
+serde_json = { version = "1.0.151", default-features = false, features = ["alloc", "float_roundtrip"], optional = true }
+thiserror = { version = "2.0.21", default-features = false }
+libm = "0.2.16"
+
+[dev-dependencies]
+serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+serde = { version = "1.0.229", features = ["derive"] }
+
+[lints]
+workspace = true
