@@ -1,0 +1,30 @@
+[package]
+name = "styx-pipewire"
+description = "PipeWire video source node for Styx frames: a Video/Source node whose buffers are the producer's memfds, so frames reach PipeWire consumers without a copy. Off by default; built only when pkg-config finds libpipewire-0.3."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# The PipeWire node. Off by default. Without libpipewire-0.3 the crate builds with the node left
+# out and `node_built()` says so.
+pipewire = []
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame", features = ["std", "linux"] }
+styx-socket = { path = "../../out/socket" }
+
+[dev-dependencies]
+shm-ring = { workspace = true }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[lints]
+workspace = true
