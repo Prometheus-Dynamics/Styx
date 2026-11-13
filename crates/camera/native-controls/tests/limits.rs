@@ -3,7 +3,7 @@
 
 use lemnos_contract_camera_sensor::{GainRange, Mode};
 use styx_controls::{Control, ControlValue, Update, ValueError};
-use styx_native_controls::{Error, Initial, Limit, NativeControls};
+use styx_native_controls::{Error, GainLaw, Initial, Limit, NativeControls};
 
 mod common;
 
@@ -48,7 +48,7 @@ fn manual(control: Control, value: u32, frame: u64) -> Update {
 /// A controls and sensor that are streaming, at frame 10 (the frame the test asks in).
 fn streaming() -> (NativeControls, Sensor) {
     let mode = mode();
-    let mut controls = NativeControls::new(&mode, START).unwrap();
+    let mut controls = NativeControls::new(&mode, START, GainLaw::Linear).unwrap();
     let mut sensor = Sensor::new(&mode);
     controls.prepare(&mut sensor).unwrap();
     for k in 0..=10 {
@@ -169,7 +169,7 @@ fn auto_unsupported_and_duplicate_requests_are_refused() {
 #[test]
 fn a_request_before_the_first_frame_is_refused() {
     let mode = mode();
-    let mut controls = NativeControls::new(&mode, START).unwrap();
+    let mut controls = NativeControls::new(&mode, START, GainLaw::Linear).unwrap();
     let mut sensor = Sensor::new(&mode);
     assert_eq!(
         controls.request(&mut sensor, &[manual(Control::Exposure, 9_000, 1)]),
@@ -180,7 +180,7 @@ fn a_request_before_the_first_frame_is_refused() {
 #[test]
 fn a_frame_rate_that_cuts_the_exposure_in_force_is_refused() {
     let mode = mode();
-    let mut controls = NativeControls::new(&mode, START).unwrap();
+    let mut controls = NativeControls::new(&mode, START, GainLaw::Linear).unwrap();
     let mut sensor = Sensor::new(&mode);
     controls.prepare(&mut sensor).unwrap();
     for k in 0..=9 {
@@ -217,6 +217,7 @@ fn an_initial_value_the_sensor_cannot_take_is_refused_at_setup() {
             exposure_us: 17_000,
             ..START
         },
+        GainLaw::Linear,
     )
     .unwrap_err();
     assert!(matches!(

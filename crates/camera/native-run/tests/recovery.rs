@@ -17,7 +17,14 @@ use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
 use lemnosd::{Config, Service};
 use styx_lemnos::Client;
-use styx_native_run::{AutoOff, Clock, Error, Policy, Request, Session, State};
+use styx_native_run::{AutoOff, Clock, Error, GainLaw, Initial, Policy, Request, Session, State};
+
+/// The sensor's initial values: exposure 8 ms, gain 1.0x, 60 fps.
+const CONTROLS: Initial = Initial {
+    exposure_us: 8_000,
+    gain_milli: 1_000,
+    frame_rate_milli: 60_000,
+};
 
 /// A clock that records each wait and returns at once. A session can be told to cancel after a
 /// number of waits, as a stop from another thread would.
@@ -127,7 +134,8 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     // 1. The receiver fails its next eight starts. The waits double from 250 ms and hold at the
     //    5 s cap; the ninth start streams.
     let clock = FakeClock::default();
-    let mut session = Session::new(&client, camera, request, policy, &clock);
+    let mut session = Session::new(&client, camera, request, policy, &clock)
+        .with_controls(CONTROLS, GainLaw::Linear);
     sim::FAIL_STARTS.store(8, Ordering::SeqCst);
     session
         .start()
@@ -179,7 +187,8 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
         auto_off: AutoOff::AfterFailures(3.try_into().unwrap()),
         ..policy
     };
-    let mut session = Session::new(&client, camera, request, policy, &clock);
+    let mut session = Session::new(&client, camera, request, policy, &clock)
+        .with_controls(CONTROLS, GainLaw::Linear);
     sim::FAIL_STARTS.store(5, Ordering::SeqCst);
     match session.start() {
         Err(Error::AutoOff { failures, .. }) => assert_eq!(failures, 3),
@@ -200,7 +209,8 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     //    Starting again, with the fault cleared, streams.
     let clock = FakeClock::default();
     clock.cancel_after.set(Some(3));
-    let mut session = Session::new(&client, camera, request, Policy::default(), &clock);
+    let mut session = Session::new(&client, camera, request, Policy::default(), &clock)
+        .with_controls(CONTROLS, GainLaw::Linear);
     sim::FAIL_STARTS.store(100, Ordering::SeqCst);
     match session.start() {
         Err(Error::Stopped) => {}

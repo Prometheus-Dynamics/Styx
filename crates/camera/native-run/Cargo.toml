@@ -13,6 +13,8 @@ styx-native = { path = "../native" }
 styx-lemnos = { path = "../../core/lemnos" }
 styx-format = { path = "../../core/format" }
 styx-frame = { path = "../../core/frame" }
+styx-controls = { path = "../../core/controls" }
+styx-native-controls = { path = "../native-controls" }
 lemnos-client = { workspace = true }
 lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
 lemnos-contract-camera-sensor = { workspace = true }
