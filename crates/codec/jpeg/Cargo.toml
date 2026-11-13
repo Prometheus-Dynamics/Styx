@@ -1,0 +1,22 @@
+[package]
+name = "styx-jpeg"
+description = "Styx's own baseline JPEG encoder: planar YUV or grey in, JFIF out, on styx-simd's DCT and colour kernels, as a styx-codec-api Encoder."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-codec-api = { path = "../codec-api" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+styx-simd = { path = "../../core/simd" }
+
+[dev-dependencies]
+jpeg-decoder = { version = "0.3.2", default-features = false }
+zune-jpeg = "0.5.15"
+
+[lints]
+workspace = true
