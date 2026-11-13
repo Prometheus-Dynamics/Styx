@@ -1,0 +1,24 @@
+[package]
+name = "styx-pisp"
+description = "The PiSP (BCM2712 ISP) path: Styx's neutral ISP settings mapped into Lemnos's PiSP front and back end configuration, tiling, statistics layouts and ISP jobs on camera.isp/1 and isp.pisp/1."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-settings = { path = "../settings" }
+styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["std-core"] }
+# The PiSP library (`pisp` feature): front and back end builders, tiling and statistics layouts.
+styx-lemnos = { path = "../../core/lemnos", features = ["pisp"] }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-contract-camera-isp = { workspace = true }
+lemnos-contract-isp-pisp = { workspace = true }
+
+[dev-dependencies]
+serde_json = "1"
+
+[lints]
+workspace = true
