@@ -54,6 +54,7 @@ pub use producer::{
 };
 pub use reader::{Frame, ReadError, Reader, ReaderStats};
 pub use shm_ring_holds::Limits;
+pub use wire::USER_MAX;
 
 /// Why a handshake, a publish or a connection failed.
 #[derive(Debug)]

@@ -50,5 +50,6 @@ pub mod worker;
 
 pub use config::{CameraConfig, Config, ConfigError, Force, GainLawName};
 pub use outlet::{Discard, Outlet, Outlets};
+pub use service::camera_socket;
 pub use service::{Daemon, Deps, Error, Listers, Nothing, Service};
-pub use slot::{CameraStatus, FrameSummary, State};
+pub use slot::{CameraStatus, FrameSummary, Health, Publish, State};

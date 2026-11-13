@@ -87,6 +87,15 @@ impl<M> FrameLease<M> {
         self.holders() == 1
     }
 
+    /// The pool this lease's buffer belongs to: another handle on the same pool (an `Arc` clone;
+    /// no buffer is made or copied). A producer that publishes frames from a pool takes its handle
+    /// here, since the pool is not otherwise reachable from a lease.
+    pub fn pool(&self) -> crate::FramePool<M> {
+        crate::FramePool {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+
     /// Another lease on the same frame. Ends an open write window first, so the share sees the
     /// written bytes.
     pub fn share(&self) -> Self {

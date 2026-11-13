@@ -3,10 +3,13 @@
 
 mod sim;
 
-use std::io::{BufRead, BufReader, Write};
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -14,9 +17,12 @@ use lemnos_host::board::parse;
 use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
 use lemnosd::{Config as DaemonConfig, Service as LemnosDaemon};
+use styx_controls::FrameMetadata;
+use styx_frame::{FrameLease, copy_counters};
 use styx_native_run::Clock;
 use styx_select::listing::{LibcameraLister, ListError, Listed, V4l2Lister};
-use styx_service::{Config, Deps, Discard, Listers, Service};
+use styx_service::{Config, Deps, Discard, Listers, Outlet, Outlets, Service, camera_socket};
+use styx_socket::Reader;
 
 /// Two complete chains (sensor, receiver, ISP each) on one daemon.
 fn two_cameras() -> String {
@@ -400,5 +406,443 @@ fn requests_are_checked_and_never_panic() {
     assert!(answer.starts_with("err"), "{answer}");
     // The service still answers.
     assert_eq!(ask(&control, "list").last().map(String::as_str), Some("ok"));
+    service.shutdown();
+}
+
+// ---------------------------------------------------------------------------------------------
+// Readers in other processes. The test binary runs itself as a reader (`reader_child`), one per
+// camera, and each child reports on stdout what it received.
+
+const CHILD_SOCKET: &str = "STYX_SERVICE_TEST_READER_SOCKET";
+const CHILD_STOP: &str = "STYX_SERVICE_TEST_READER_STOP";
+
+fn fnv(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+/// Whether the producer has closed `socket` (a reader's end of its connection).
+fn closed(socket: &UnixStream) -> bool {
+    let Ok(mut other) = socket.try_clone() else {
+        return true;
+    };
+    if other.set_nonblocking(true).is_err() {
+        return true;
+    }
+    let mut byte = [0_u8; 1];
+    let ended = matches!(other.read(&mut byte), Ok(0));
+    let _ = other.set_nonblocking(false);
+    ended
+}
+
+/// The child process: connects to the camera socket named in the environment, takes frames, and
+/// reports each on stdout, until the file named in the environment exists (the parent makes it).
+/// Connects again when the producer closes its connection. Does nothing when the environment does
+/// not name a socket, so the normal test run passes it by.
+#[test]
+fn reader_child() {
+    let Ok(socket) = std::env::var(CHILD_SOCKET) else {
+        return;
+    };
+    let stop = PathBuf::from(std::env::var(CHILD_STOP).expect("the stop file's path"));
+    let deadline = Instant::now() + Duration::from_secs(120);
+    let mut reader: Option<Reader> = None;
+    let mut told = false;
+    while !stop.exists() && Instant::now() < deadline {
+        let Some(current) = reader.as_mut() else {
+            match UnixStream::connect(&socket)
+                .and_then(|s| Reader::connect(s).map_err(|e| std::io::Error::other(e.to_string())))
+            {
+                Ok(connected) => {
+                    println!("STYX CONNECTED");
+                    reader = Some(connected);
+                }
+                Err(e) => {
+                    if !told {
+                        eprintln!("STYX reader child: connect {socket}: {e}");
+                        told = true;
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
+            continue;
+        };
+        match current.next_frame() {
+            Ok(Some(frame)) => {
+                let id = frame.lease().id();
+                let meta = FrameMetadata::from_bytes(frame.user());
+                let checksum = {
+                    let read = frame.lease().read().expect("mapped for the CPU");
+                    fnv(read.plane(0).expect("plane").data)
+                };
+                match meta {
+                    Some(m) => println!(
+                        "STYX FRAME id={id} exposure={} checksum={checksum:016x}",
+                        m.exposure_us
+                    ),
+                    None => println!("STYX FRAME id={id} exposure=bad checksum={checksum:016x}"),
+                }
+            }
+            Ok(None) => {
+                if closed(current.socket()) {
+                    println!("STYX CLOSED");
+                    reader = None;
+                } else {
+                    let _ = current.wait(Some(Duration::from_millis(5)));
+                }
+            }
+            Err(_) => {
+                println!("STYX CLOSED");
+                reader = None;
+            }
+        }
+    }
+    let copies: usize = copy_counters().iter().map(|c| c.copies()).sum();
+    println!("STYX COPIES {copies}");
+}
+
+/// A reader child process and what it prints.
+struct ChildReader {
+    lines: Receiver<String>,
+    child: Child,
+    stop: PathBuf,
+    lines_seen: Vec<String>,
+}
+
+impl ChildReader {
+    fn spawn(dir: &Path, socket: &Path, name: &str) -> Self {
+        let stop = dir.join(format!("{name}.stop"));
+        let _ = std::fs::remove_file(&stop);
+        let exe = std::env::current_exe().expect("the test binary");
+        let mut child = Command::new(exe)
+            .args(["--exact", "reader_child", "--nocapture", "--test-threads=1"])
+            .env(CHILD_SOCKET, socket)
+            .env(CHILD_STOP, &stop)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn a reader process");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let (tx, lines) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if tx.send(line).is_err() {
+                    break;
+                }
+            }
+        });
+        Self {
+            lines,
+            child,
+            stop,
+            lines_seen: Vec::new(),
+        }
+    }
+
+    /// Reads what the child has printed for up to `within`, keeping it. Its markers start with
+    /// `STYX `; anything before that on the line (libtest's `test reader_child ... `) is dropped.
+    fn pump(&mut self, within: Duration) {
+        let deadline = Instant::now() + within;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.lines.recv_timeout(left.max(Duration::from_millis(1))) {
+                Ok(line) => {
+                    if let Some(at) = line.find("STYX ") {
+                        self.lines_seen.push(line[at + 5..].to_string());
+                    }
+                }
+                Err(_) => break,
+            }
+            if Instant::now() >= deadline {
+                break;
+            }
+        }
+    }
+
+    fn has(&self, want: impl Fn(&str) -> bool) -> bool {
+        self.lines_seen.iter().any(|l| want(l))
+    }
+
+    fn frames(&self) -> Vec<(u64, u32, u64)> {
+        frame_lines(&self.lines_seen)
+    }
+
+    /// Tells the child to stop, and reads until it has reported its copies and exited.
+    fn finish(&mut self) {
+        let _ = std::fs::write(&self.stop, b"stop");
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline && !self.has(|l| l.starts_with("COPIES")) {
+            self.pump(Duration::from_millis(100));
+        }
+    }
+}
+
+impl Drop for ChildReader {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn frame_lines(lines: &[String]) -> Vec<(u64, u32, u64)> {
+    lines
+        .iter()
+        .filter_map(|l| l.strip_prefix("FRAME "))
+        .filter_map(|rest| {
+            let id = field(rest, "id")?.parse().ok()?;
+            let exposure = field(rest, "exposure")?.parse().ok()?;
+            let checksum = u64::from_str_radix(field(rest, "checksum")?, 16).ok()?;
+            Some((id, exposure, checksum))
+        })
+        .collect()
+}
+
+/// The checksum of each frame each camera's outlet saw, by camera and frame id.
+type Seen = Arc<Mutex<BTreeMap<(String, u64), u64>>>;
+
+struct RecordingOutlet {
+    camera: String,
+    seen: Seen,
+}
+
+impl Outlet for RecordingOutlet {
+    fn frame(&mut self, _camera: &str, lease: &FrameLease<FrameMetadata>) {
+        let read = lease.read().expect("mapped for the CPU");
+        let checksum = fnv(read.plane(0).expect("plane").data);
+        self.seen
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert((self.camera.clone(), lease.id()), checksum);
+    }
+}
+
+struct RecordingOutlets(Seen);
+
+impl Outlets for RecordingOutlets {
+    fn attach(&self, camera: &str) -> Box<dyn Outlet> {
+        Box::new(RecordingOutlet {
+            camera: camera.to_string(),
+            seen: Arc::clone(&self.0),
+        })
+    }
+}
+
+fn start_recording_service(lemnos_socket: &Path, text: &str, seen: Seen) -> Service {
+    let config = Config::parse(text).expect("config");
+    let mut deps = deps(Arc::new(Recorder::default()), lemnos_socket);
+    deps.outlets = Arc::new(RecordingOutlets(seen));
+    Service::start(config, deps).expect("start the service")
+}
+
+#[test]
+fn frames_reach_readers_in_other_processes_with_their_metadata_and_bytes() {
+    let dir = test_dir("readers");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let seen: Seen = Arc::new(Mutex::new(BTreeMap::new()));
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
+         [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\nexposure_us = 10000\n\
+         [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\nexposure_us = 10000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let service = start_recording_service(&lemnos_socket, &text, Arc::clone(&seen));
+    let control = service.control_socket().to_path_buf();
+    let cams = ["lemnos:cam0-sensor", "lemnos:cam1-sensor"];
+    wait_until("both cameras streaming", Duration::from_secs(20), || {
+        cams.iter().all(|c| state_of(&control, c) == "streaming")
+    });
+
+    let mut readers: Vec<ChildReader> = cams
+        .iter()
+        .enumerate()
+        .map(|(i, c)| ChildReader::spawn(&dir, &camera_socket(&dir, c), &format!("reader{i}")))
+        .collect();
+    wait_until("both readers connected", Duration::from_secs(30), || {
+        for reader in readers.iter_mut() {
+            reader.pump(Duration::from_millis(20));
+        }
+        readers.iter().all(|r| r.has(|l| l == "CONNECTED"))
+    });
+    for cam in cams {
+        let line = line_of(&control, cam).expect("listed");
+        assert_eq!(field(&line, "publish"), Some("publishing"), "{line}");
+    }
+
+    // A control request from here on: exposure 5 ms on camera 0 only, a few frames on.
+    let last: u64 = field(&line_of(&control, cams[0]).expect("listed"), "last_id")
+        .and_then(|v| v.parse().ok())
+        .expect("last_id");
+    let landing = last + 60;
+    assert_eq!(
+        ask(
+            &control,
+            &format!("set {} exposure 5000 {landing}", cams[0])
+        ),
+        vec!["ok"]
+    );
+
+    // Each reader takes frames until it has seen the change and some frames after it.
+    wait_until(
+        "camera 0's reader sees the change",
+        Duration::from_secs(60),
+        || {
+            for reader in readers.iter_mut() {
+                reader.pump(Duration::from_millis(20));
+            }
+            let cam0 = readers[0].frames();
+            cam0.iter().any(|f| f.1 == 5_000) && cam0.iter().filter(|f| f.1 == 5_000).count() >= 60
+        },
+    );
+    for reader in readers.iter_mut() {
+        reader.finish();
+    }
+    let lines: Vec<Vec<String>> = readers.iter().map(|r| r.lines_seen.clone()).collect();
+
+    let cam0 = frame_lines(&lines[0]);
+    let cam1 = frame_lines(&lines[1]);
+    assert!(cam0.len() >= 100, "camera 0 frames read: {}", cam0.len());
+    assert!(cam1.len() >= 100, "camera 1 frames read: {}", cam1.len());
+    for (cam, frames) in [("camera 0", &cam0), ("camera 1", &cam1)] {
+        assert!(
+            frames.windows(2).all(|w| w[0].0 < w[1].0),
+            "{cam}: ids in order"
+        );
+    }
+    for line in lines.iter().flatten().filter(|l| l.starts_with("COPIES")) {
+        assert_eq!(line, "COPIES 0", "the reader process copied frames");
+    }
+    assert_eq!(
+        lines
+            .iter()
+            .flatten()
+            .filter(|l| l.starts_with("COPIES"))
+            .count(),
+        2,
+        "both readers finished and reported"
+    );
+
+    // The metadata the readers decoded: camera 0 changes exposure from the landing frame on,
+    // camera 1 never does.
+    assert!(
+        cam1.iter().all(|f| f.1 == 10_000),
+        "camera 1 exposure: {cam1:?}"
+    );
+    assert!(
+        cam0.iter().all(|f| f.1 == 10_000 || f.1 == 5_000),
+        "camera 0: {cam0:?}"
+    );
+    let first_changed = cam0.iter().find(|f| f.1 == 5_000).map(|f| f.0);
+    let first_changed = first_changed.expect("camera 0's readers saw the exposure change");
+    assert!(
+        first_changed >= landing,
+        "changed at {first_changed}, asked for {landing}"
+    );
+    assert!(
+        cam0.iter()
+            .filter(|f| f.0 < first_changed)
+            .all(|f| f.1 == 10_000),
+        "exposure is 10000 before the change"
+    );
+
+    // The bytes: each reader's checksum for a frame is the checksum the service read for it.
+    let seen = seen.lock().unwrap_or_else(PoisonError::into_inner).clone();
+    let mut matched = 0;
+    for (cam, frames) in [(cams[0], &cam0), (cams[1], &cam1)] {
+        for (id, _, checksum) in frames.iter() {
+            if let Some(service) = seen.get(&(cam.to_string(), *id)) {
+                assert_eq!(
+                    service, checksum,
+                    "{cam} frame {id}: the reader's bytes differ"
+                );
+                matched += 1;
+            }
+        }
+    }
+    assert!(matched >= 100, "matched {matched} frames by id");
+    println!(
+        "proof: readers_frames cam0={} cam1={} matched_bytes={matched} first_changed={first_changed} landing={landing} copies=0",
+        cam0.len(),
+        cam1.len()
+    );
+    let copies: usize = copy_counters().iter().map(|c| c.copies()).sum();
+    assert_eq!(copies, 0, "the service copied frames");
+    service.shutdown();
+}
+
+#[test]
+fn a_camera_that_leaves_and_returns_is_read_again_by_its_reader() {
+    let dir = test_dir("readers-return");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let board = two_cameras();
+    let lemnos = daemon(&lemnos_socket, &board);
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
+         [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let recorder = Arc::new(Recorder::default());
+    let config = Config::parse(&text).expect("config");
+    let service =
+        Service::start(config, deps(Arc::clone(&recorder), &lemnos_socket)).expect("start");
+    let control = service.control_socket().to_path_buf();
+    let cam = "lemnos:cam0-sensor";
+    wait_until("streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming"
+    });
+    let mut reader = ChildReader::spawn(&dir, &camera_socket(&dir, cam), "reader");
+    wait_until("the reader has frames", Duration::from_secs(30), || {
+        reader.pump(Duration::from_millis(20));
+        reader.frames().len() >= 20
+    });
+
+    // The camera leaves: lemnosd goes away, and the reader is told by its connection closing.
+    drop(lemnos);
+    wait_until("the reader sees the close", Duration::from_secs(30), || {
+        reader.pump(Duration::from_millis(20));
+        reader.has(|l| l == "CLOSED")
+    });
+    let before = reader.frames().len();
+
+    // It comes back: the same socket. The service makes a new pool and producer; the reader
+    // connects again and takes frames from the new pool.
+    let _lemnos = daemon(&lemnos_socket, &board);
+    wait_until("the reader connects again", Duration::from_secs(60), || {
+        reader.pump(Duration::from_millis(20));
+        reader
+            .lines_seen
+            .iter()
+            .filter(|l| *l == "CONNECTED")
+            .count()
+            >= 2
+    });
+    wait_until("frames after the return", Duration::from_secs(60), || {
+        reader.pump(Duration::from_millis(20));
+        reader.frames().len() >= before + 30
+    });
+    let frames = reader.frames();
+    let after: Vec<u64> = frames[before..].iter().map(|f| f.0).collect();
+    assert!(
+        after.windows(2).all(|w| w[0] < w[1]),
+        "ids in order after the return"
+    );
+    let status = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&status, "publish"), Some("publishing"), "{status}");
+    println!(
+        "proof: reader_return frames_before_close={before} frames_after_return={} connects=2 copies=0",
+        frames.len() - before
+    );
+    reader.finish();
+    assert!(
+        reader.has(|l| l == "COPIES 0"),
+        "the reader reported copies: {:?}",
+        reader.lines_seen.last()
+    );
     service.shutdown();
 }

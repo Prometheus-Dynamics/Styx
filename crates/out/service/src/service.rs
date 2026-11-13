@@ -18,7 +18,7 @@ use styx_select::{Backend, Config as SelectConfig};
 
 use crate::config::{CameraConfig, Config, ConfigError};
 use crate::outlet::Outlets;
-use crate::slot::{CameraStatus, Command, Slot};
+use crate::slot::{CameraStatus, Command, Publish, Slot};
 
 /// The three backends' listers. The binary passes the real ones; tests pass simulated ones.
 pub struct Listers {
@@ -321,14 +321,98 @@ fn ensure_slot(shared: &Arc<Shared>, id: &str) -> std::io::Result<Arc<Slot>> {
     let (tx, rx): (mpsc::Sender<Command>, Receiver<Command>) = mpsc::channel();
     let settings: CameraConfig = shared.config.camera.get(id).cloned().unwrap_or_default();
     let slot = Arc::new(Slot::new(id.to_string(), settings, tx));
+    let socket_path = camera_socket(&shared.config.socket_dir, id);
+    let socket_slot = Arc::clone(&slot);
+    let socket_shared = Arc::clone(shared);
+    let socket_tx = slot.commands.clone();
+    let socket_handle = std::thread::Builder::new()
+        .name(format!("styx-socket:{id}"))
+        .spawn(move || {
+            serve_camera_socket(&socket_path, &socket_slot, &socket_tx, &socket_shared);
+        })?;
     let worker_slot = Arc::clone(&slot);
     let worker_shared = Arc::clone(shared);
     let handle = std::thread::Builder::new()
         .name(format!("styx-camera:{id}"))
         .spawn(move || crate::worker::run(&worker_slot, &rx, &worker_shared))?;
-    lock(&shared.workers).push(handle);
+    let mut workers = lock(&shared.workers);
+    workers.push(socket_handle);
+    workers.push(handle);
+    drop(workers);
     slots.insert(id.to_string(), Arc::clone(&slot));
     Ok(slot)
+}
+
+/// A camera's socket for readers in other processes: `<socket_dir>/cameras/<name>-<hash>.sock`.
+/// The name is the camera's id with every byte that is not a letter, digit, `-` or `_` made `_`
+/// (and cut to 40 bytes); the hash is FNV-1a of the whole id, so two ids never share a path. It
+/// depends only on the id, so a camera that leaves and returns keeps its path.
+pub fn camera_socket(socket_dir: &Path, id: &str) -> PathBuf {
+    let mut name: String = id
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    name.truncate(40);
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in id.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    socket_dir
+        .join("cameras")
+        .join(format!("{name}-{hash:016x}.sock"))
+}
+
+/// Accepts readers on a camera's socket until shutdown, and hands each to the camera's worker.
+/// A reader the worker cannot serve right now is closed by the worker, and connects again.
+fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, shared: &Shared) {
+    if let Some(dir) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(dir)
+    {
+        slot.set_socket(
+            None,
+            Publish::NotPublishable(format!("socket directory: {e}")),
+        );
+        return;
+    }
+    let _ = std::fs::remove_file(path);
+    let listener = match UnixListener::bind(path) {
+        Ok(listener) => listener,
+        Err(e) => {
+            slot.set_socket(
+                None,
+                Publish::NotPublishable(format!("socket {}: {e}", path.display())),
+            );
+            return;
+        }
+    };
+    if listener.set_nonblocking(true).is_err() {
+        slot.set_socket(
+            None,
+            Publish::NotPublishable("socket: cannot poll".to_string()),
+        );
+        return;
+    }
+    slot.set_socket(Some(path.to_path_buf()), Publish::Waiting);
+    while !shared.shutdown.load(Ordering::Acquire) {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                if stream.set_nonblocking(false).is_err()
+                    || tx.send(Command::Reader(stream)).is_err()
+                {
+                    break;
+                }
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(10)),
+        }
+    }
+    let _ = std::fs::remove_file(path);
 }
 
 /// The Lemnos daemon as a native lister: connects, lists, and disconnects on each scan.

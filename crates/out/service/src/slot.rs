@@ -1,17 +1,63 @@
 //! One camera's shared state: what the worker thread reports and what the control socket reads.
 
 use std::fmt;
+use std::os::unix::net::UnixStream;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use styx_controls::FrameMetadata;
-use styx_controls::{Control, ControlValue, Update};
+use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
 use styx_select::{Backend, Selected};
 
 use crate::config::CameraConfig;
+
+/// Whether a camera's frames go to readers in other processes, and why not when they don't.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Publish {
+    /// Not streaming yet: no frame has come to publish.
+    Waiting,
+    /// Frames are published on the camera's socket.
+    Publishing,
+    /// The camera's frames cannot go to readers without a copy (not fd-backed, or the socket could
+    /// not be made). Frames still reach the outlet and the status; nothing is copied to publish.
+    NotPublishable(String),
+}
+
+impl fmt::Display for Publish {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Publish::Waiting => f.write_str("waiting"),
+            Publish::Publishing => f.write_str("publishing"),
+            Publish::NotPublishable(why) => write!(f, "not-publishable ({why})"),
+        }
+    }
+}
+
+/// A camera's health as its backend reports it. No backend reports health through the `Capture`
+/// trait yet, so every camera is `Unknown`. A device-health PR adds the reports; `Degraded` is a
+/// usable camera with a reason, never a refusal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Health {
+    /// No backend has reported health for this camera.
+    Unknown,
+    /// The backend reports the camera fine.
+    Healthy,
+    /// The backend reports the camera working with a reason it is not fully healthy.
+    Degraded(String),
+}
+
+impl fmt::Display for Health {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Health::Unknown => f.write_str("unknown"),
+            Health::Healthy => f.write_str("healthy"),
+            Health::Degraded(why) => write!(f, "degraded ({why})"),
+        }
+    }
+}
 
 /// Where a camera's worker is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +104,18 @@ pub struct FrameSummary {
 pub struct CameraStatus {
     /// The camera's id (its best stable anchor, for example `lemnos:sensor0`).
     pub id: String,
+    /// The camera's socket for readers in other processes.
+    pub socket: Option<PathBuf>,
+    /// Whether and how the camera's frames are published.
+    pub publish: Publish,
+    /// Readers connected to the camera's socket now.
+    pub readers: usize,
+    /// Frames published to readers, since the service started.
+    pub published: u64,
+    /// Frames not published because the ring had no free buffer for them.
+    pub publish_dropped: u64,
+    /// The camera's health, as its backend reports it (`Unknown` until a backend does).
+    pub health: Health,
     /// The backend that owns the camera now, if a scan has listed it.
     pub owner: Option<Backend>,
     /// Why that backend owns it, in one line (the chooser's reason).
@@ -106,6 +164,9 @@ pub enum Command {
         updates: Vec<Update>,
         reply: Sender<Result<(), String>>,
     },
+    /// A reader connected to the camera's socket. Served while the camera streams; closed
+    /// otherwise, so the reader connects again.
+    Reader(UnixStream),
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -116,6 +177,12 @@ impl Slot {
     pub fn new(id: String, settings: CameraConfig, commands: Sender<Command>) -> Self {
         let status = CameraStatus {
             id: id.clone(),
+            socket: None,
+            publish: Publish::Waiting,
+            readers: 0,
+            published: 0,
+            publish_dropped: 0,
+            health: Health::Unknown,
             owner: None,
             reason: None,
             state: State::Absent,
@@ -209,6 +276,29 @@ impl Slot {
 
     pub(crate) fn reset_failures(&self) {
         lock(&self.status).failures = 0;
+    }
+
+    pub(crate) fn set_socket(&self, socket: Option<PathBuf>, publish: Publish) {
+        let mut status = lock(&self.status);
+        status.socket = socket;
+        status.publish = publish;
+    }
+
+    pub(crate) fn set_publish(&self, publish: Publish) {
+        lock(&self.status).publish = publish;
+    }
+
+    pub(crate) fn set_readers(&self, readers: usize) {
+        lock(&self.status).readers = readers;
+    }
+
+    pub(crate) fn published(&self, dropped: bool) {
+        let mut status = lock(&self.status);
+        if dropped {
+            status.publish_dropped += 1;
+        } else {
+            status.published += 1;
+        }
     }
 
     /// Called for every frame. Takes the status lock and writes numbers; nothing is allocated.

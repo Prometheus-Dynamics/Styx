@@ -13,7 +13,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
-use styx_controls::Update;
+use styx_controls::{FrameMetadata, Update, WIRE_BYTES};
 use styx_format::{FourCc, Interval};
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
@@ -21,12 +21,13 @@ use styx_native::discover;
 use styx_native_run::{AutoOff, Clock, GainLaw, Initial, Policy, Request, Session};
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
 use styx_select::{Capture, CaptureError, Selected, Status};
+use styx_socket::{Limits, Producer};
 use styx_v4l2::StreamConfig;
 
 use crate::config::CameraConfig;
 use crate::outlet::Outlet;
 use crate::service::Shared;
-use crate::slot::{Command, Slot, State};
+use crate::slot::{Command, Publish, Slot, State};
 
 /// The client name the service gives the Lemnos daemon.
 pub const CLIENT_NAME: &str = "styx-service";
@@ -34,6 +35,11 @@ pub const CLIENT_NAME: &str = "styx-service";
 const FRAME_WAIT: Duration = Duration::from_millis(100);
 /// How long an idle, stopped or turned-off worker waits for a command before it looks again.
 const IDLE_WAIT: Duration = Duration::from_millis(100);
+/// The ring's history, in entries, for each camera's socket.
+const HISTORY: u32 = 8;
+/// What one reader may hold of a camera's buffers at once. A reader over this is cut off by the
+/// producer (it reconnects). No time limit.
+const READER_HOLDS: u32 = 4;
 /// The sensor's exposure when the config does not give one (native cameras).
 const DEFAULT_EXPOSURE_US: u32 = 10_000;
 /// The sensor's analogue gain when the config does not give one (native cameras).
@@ -65,6 +71,8 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                 Ok(Command::Set { reply, .. }) => {
                     let _ = reply.send(Err(format!("camera is {state}, not streaming")));
                 }
+                // Closed: the reader connects again later.
+                Ok(Command::Reader(stream)) => drop(stream),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -96,6 +104,7 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                 Ok(Command::Set { reply, .. }) => {
                     let _ = reply.send(Err("camera is absent, not streaming".to_string()));
                 }
+                Ok(Command::Reader(stream)) => drop(stream),
                 Err(RecvTimeoutError::Timeout) => {}
                 Err(RecvTimeoutError::Disconnected) => return,
             }
@@ -159,6 +168,7 @@ fn drain(commands: &Receiver<Command>, slot: &Slot) -> Drained {
                     slot.snapshot().state
                 )));
             }
+            Ok(Command::Reader(stream)) => drop(stream),
             Err(TryRecvError::Empty) => return Drained::Idle,
             Err(TryRecvError::Disconnected) => return Drained::Gone,
         }
@@ -300,8 +310,14 @@ fn size_of(selection: &Selected, settings: &CameraConfig) -> Result<(u32, u32), 
     }
 }
 
-/// Runs frames through the outlet and the status until the camera ends, and answers commands
-/// between frames.
+/// Runs frames through the outlet, the socket and the status until the camera ends, and answers
+/// commands between frames.
+///
+/// The camera's pool is the one its first frame came from ([`FrameLease::pool`]): a producer over
+/// it publishes each frame's buffer as it is, with the frame's metadata as the opaque part. A
+/// camera whose frames are not fd-backed cannot be published without a copy; it says so in the
+/// status and publishes nothing. A reader that connects before the first frame is closed (it
+/// connects again). The producer, and so every reader's connection, ends with this attempt.
 fn pump(
     capture: &mut dyn Capture,
     slot: &Slot,
@@ -311,19 +327,41 @@ fn pump(
 ) -> Ended {
     slot.started();
     let mut delivered = false;
-    loop {
+    let mut publisher: Option<Producer<FrameMetadata>> = None;
+    let mut unpublishable = false;
+    let ended = loop {
         if shared.shutdown.load(Ordering::Acquire) {
-            return Ended::Stopped;
+            break Ended::Stopped;
         }
         match capture.next_frame(FRAME_WAIT) {
             Ok(Some(lease)) => {
                 delivered = true;
+                if publisher.is_none() && !unpublishable {
+                    match Producer::with_pool(lease.pool(), HISTORY) {
+                        Ok(producer) => {
+                            publisher = Some(producer);
+                            slot.set_publish(Publish::Publishing);
+                        }
+                        Err(error) => {
+                            unpublishable = true;
+                            slot.set_publish(Publish::NotPublishable(error.to_string()));
+                        }
+                    }
+                }
                 slot.frame(&lease);
                 outlet.frame(&slot.id, &lease);
+                if let Some(producer) = publisher.as_mut() {
+                    let mut blob = [0_u8; WIRE_BYTES];
+                    let len = lease.meta().to_bytes(&mut blob);
+                    let dropped = producer.publish_with(lease, &blob[..len]).is_err();
+                    slot.published(dropped);
+                    producer.reclaim();
+                    slot.set_readers(producer.stats().readers);
+                }
             }
             Ok(None) => {}
             Err(error) => {
-                return Ended::Fault {
+                break Ended::Fault {
                     text: describe(&error),
                     delivered,
                 };
@@ -333,30 +371,64 @@ fn pump(
             Status::Streaming => slot.resumed(),
             Status::Retrying { reason } => slot.retrying(reason),
             Status::Stopped => {
-                return Ended::Fault {
+                break Ended::Fault {
                     text: "the backend reports the camera stopped".to_string(),
                     delivered,
                 };
             }
             Status::Failed { reason } => {
-                return Ended::Fault {
+                break Ended::Fault {
                     text: reason,
                     delivered,
                 };
             }
         }
+        let mut stop = None;
         loop {
             match commands.try_recv() {
-                Ok(Command::Stop) => return Ended::Stopped,
+                Ok(Command::Stop) => {
+                    stop = Some(Ended::Stopped);
+                    break;
+                }
                 Ok(Command::Start) => {}
                 Ok(Command::Set { updates, reply }) => {
                     let _ = reply.send(set(capture, &updates));
                 }
+                Ok(Command::Reader(stream)) => match publisher.as_mut() {
+                    Some(producer) => {
+                        if producer
+                            .accept(
+                                stream,
+                                Limits {
+                                    max_held: READER_HOLDS,
+                                    max_hold: None,
+                                },
+                            )
+                            .is_ok()
+                        {
+                            slot.set_readers(producer.stats().readers);
+                        }
+                    }
+                    None => drop(stream),
+                },
                 Err(TryRecvError::Empty) => break,
-                Err(TryRecvError::Disconnected) => return Ended::Stopped,
+                Err(TryRecvError::Disconnected) => {
+                    stop = Some(Ended::Stopped);
+                    break;
+                }
             }
         }
+        if let Some(ended) = stop {
+            break ended;
+        }
+    };
+    // The producer goes first: its readers see their connection end, and the buffers it held go
+    // back before the capture is stopped.
+    if publisher.take().is_some() {
+        slot.set_readers(0);
+        slot.set_publish(Publish::Waiting);
     }
+    ended
 }
 
 fn set(capture: &mut dyn Capture, updates: &[Update]) -> Result<(), String> {

@@ -18,7 +18,7 @@ use styx_frame::{
 use crate::SocketError;
 use crate::geometry::Geometry;
 use crate::wire::{
-    ACK_LEN, MAX_DESCRIPTORS, META_MAX, Offer, Record, VERSION, encode_meta, encode_offer,
+    ACK_LEN, MAX_DESCRIPTORS, META_MAX, Offer, Record, VERSION, encode_entry, encode_offer,
     encode_record,
 };
 
@@ -111,19 +111,27 @@ pub struct ReaderInfo {
 
 /// Publishes frames to any number of readers in other processes.
 ///
+/// `M` is the pool's metadata type (`()` for [`Producer::new`]). A producer over a camera's pool
+/// publishes that pool's leases as they are: [`Producer::publish`] takes a lease from the pool
+/// and writes its buffer's index into the ring, with no copy. The buffer must be free in the ring
+/// (see [`Producer::reclaim`]), and the lease is kept until the ring gives the buffer back.
+///
 /// Hold it on one thread: [`Producer::begin`] and [`Producer::publish`] are the frame path and
 /// make no system call beyond one eventfd write per doorbell that is asleep.
 #[derive(Debug)]
-pub struct Producer {
+pub struct Producer<M = ()> {
     ring: Ring,
     writer: BufferWriter<WriteMap>,
-    frames: FramePool<()>,
+    frames: FramePool<M>,
     holds: HoldTable<ReadMap>,
     links: Vec<Link>,
     bells: Vec<BellSlot>,
     /// For each buffer, the lease on the frame the ring still holds in it. Kept until the ring
     /// takes the buffer back, so the buffer stays this producer's while any reader may read it.
-    in_flight: Vec<Option<FrameLease<()>>>,
+    in_flight: Vec<Option<FrameLease<M>>>,
+    /// The buffer of the newest published frame. [`Producer::reclaim`] leaves it alone, so there
+    /// is always a frame for a reader to find (as the ring's own `take` does).
+    newest: Option<usize>,
     /// The memory kind of each buffer, as the handshake names it.
     kinds: Vec<MemoryKind>,
     geometry: Geometry,
@@ -132,7 +140,7 @@ pub struct Producer {
     gone: u64,
 }
 
-impl Producer {
+impl Producer<()> {
     /// A producer with `config`'s ring and buffers, all free and no readers yet. The buffers
     /// all sit in one memfd, at [`Geometry::offset`] each, and the memfd is sealed against
     /// shrinking. The outside bell set is allocated here, [`OUTSIDE_BELLS`] long.
@@ -158,7 +166,9 @@ impl Producer {
         )?;
         Self::with_pool(frames, config.history)
     }
+}
 
+impl<M> Producer<M> {
     /// A producer that publishes an existing pool's frames. Every buffer of `pool` must be
     /// registered and fd-backed: a memfd (sealed against shrinking, as `shm_ring::sealed_memfd`
     /// makes it) or a dma-buf, one descriptor per buffer or several buffers at offsets in one.
@@ -178,7 +188,7 @@ impl Producer {
     /// GPU memory, or the pool spans more than [`MAX_DESCRIPTORS`] descriptors.
     /// [`SocketError::Ring`] or [`SocketError::Io`] when the ring or the descriptor identity
     /// can't be made.
-    pub fn with_pool(pool: FramePool<()>, history: u32) -> Result<Self, SocketError> {
+    pub fn with_pool(pool: FramePool<M>, history: u32) -> Result<Self, SocketError> {
         let size = pool.buffer_size();
         let buffers = pool.buffers();
         let geometry = Geometry::checked(history, META_MAX, buffers, size.payload, size.gpu_slack)?;
@@ -236,6 +246,7 @@ impl Producer {
                 })
                 .collect(),
             in_flight: (0..geometry.buffers()).map(|_| None).collect(),
+            newest: None,
             kinds,
             geometry,
             published: 0,
@@ -381,7 +392,7 @@ impl Producer {
     /// # Errors
     ///
     /// [`BeginError::NoFreeBuffer`] when every buffer is published or held by a reader.
-    pub fn begin(&mut self, entry: FrameEntry) -> Result<FrameLease<()>, BeginError> {
+    pub fn begin(&mut self, entry: FrameEntry) -> Result<FrameLease<M>, BeginError> {
         self.reap();
         let now = SampleTime::now().as_nanos();
         self.holds.enforce(now, self.writer.pool().page());
@@ -409,11 +420,27 @@ impl Producer {
     /// # Errors
     ///
     /// [`SocketError::Buffer`] if the ring refuses the buffer. Nothing is published.
-    pub fn publish(&mut self, lease: FrameLease<()>) -> Result<u64, SocketError> {
+    pub fn publish(&mut self, lease: FrameLease<M>) -> Result<u64, SocketError> {
+        self.publish_with(lease, &[])
+    }
+
+    /// [`Producer::publish`], with `user` attached to the frame: opaque bytes the ring carries
+    /// unread and the reader hands on with the frame ([`crate::Frame::user`]). At most
+    /// [`Geometry::user_max`] bytes; a longer one is refused and nothing is published.
+    ///
+    /// A buffer the ring still has published (its frame not yet reclaimed) is refused with
+    /// [`SocketError::Buffer`]; call [`Producer::reclaim`] to give back the buffers no reader holds.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Config`] for `user` too long; [`SocketError::Buffer`] when the ring refuses
+    /// the buffer. In both cases the lease is dropped, so its buffer goes back to its pool.
+    pub fn publish_with(&mut self, lease: FrameLease<M>, user: &[u8]) -> Result<u64, SocketError> {
         let index = lease.buffer_index();
         let entry = *lease.entry();
         let mut meta = [0_u8; META_MAX];
-        let len = encode_meta(&entry, &mut meta);
+        let len = encode_entry(&entry, user, &mut meta)
+            .ok_or(SocketError::Config("a frame's opaque metadata is too long"))?;
         // The frame's CPU write window ends before the ring names its buffer, so a dma-buf's sync
         // END is issued before any reader's START. A share taken and dropped at once ends the
         // window (`FrameLease::share` closes it) and keeps the lease's one hold.
@@ -424,6 +451,7 @@ impl Producer {
             &meta[..len],
         )?;
         self.in_flight[index] = Some(lease);
+        self.newest = Some(index);
         self.published += 1;
         for link in &mut self.links {
             link.bell.ring();
@@ -434,6 +462,24 @@ impl Producer {
             }
         }
         Ok(seq)
+    }
+
+    /// Gives back the buffers the ring no longer needs: each one no reader holds, except the newest
+    /// frame's (which readers must still find). Its lease is dropped, so a pool buffer that is free
+    /// after this can be given to a stream or a device again. Returns how many were given back.
+    /// Call it after publishing, so the next frame's buffer is free when the pool offers it.
+    pub fn reclaim(&mut self) -> usize {
+        let mut given = 0;
+        for index in 0..self.in_flight.len() {
+            if self.newest == Some(index) || self.in_flight[index].is_none() {
+                continue;
+            }
+            if self.writer.reclaim(BufferIndex(index as u32), &self.holds) {
+                self.in_flight[index] = None;
+                given += 1;
+            }
+        }
+        given
     }
 
     /// The shape the producer runs with: what [`Producer::new`] was asked for, resolved.

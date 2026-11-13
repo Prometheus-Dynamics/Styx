@@ -230,8 +230,14 @@ fn camera_line(status: &CameraStatus) -> String {
         .last_error
         .as_deref()
         .map_or_else(|| "-".to_string(), one_line);
+    let socket = status
+        .socket
+        .as_ref()
+        .map_or_else(|| "-".to_string(), |p| p.display().to_string());
+    // Free text in this line is one word (spaces become `_`), except `last_error`, which is last.
+    let publish = status.publish.to_string().replace(' ', "_");
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -242,6 +248,12 @@ fn camera_line(status: &CameraStatus) -> String {
         status.skipped,
         last_id,
         delay,
+        socket,
+        publish,
+        status.readers,
+        status.published,
+        status.publish_dropped,
+        status.health.to_string().replace(' ', "_"),
         error,
     )
 }

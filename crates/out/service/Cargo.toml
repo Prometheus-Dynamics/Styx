@@ -17,6 +17,7 @@ styx-native = { path = "../../camera/native" }
 styx-native-controls = { path = "../../camera/native-controls" }
 styx-native-run = { path = "../../camera/native-run" }
 styx-select = { path = "../../camera/select" }
+styx-socket = { path = "../socket" }
 styx-libcamera = { path = "../../camera/libcamera" }
 styx-v4l2 = { path = "../../camera/v4l2" }
 serde = { version = "1.0.229", features = ["derive"] }
