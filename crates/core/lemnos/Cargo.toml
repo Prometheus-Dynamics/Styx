@@ -26,9 +26,8 @@ lemnos-contract-camera-receiver = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }
 lemnos-contract-camera-frames = { workspace = true }
 lemnos-linux-sys = { workspace = true }
-# Not in the root workspace table at 04d09360's rev, declared here with the same URL and rev.
-lemnos-wire = { workspace = true }
 lemnos-linux-stream = { workspace = true }
+libc = "0.2"
 
 # Library halves (X6): optional, each built only with its feature.
 lemnos-v4l2 = { workspace = true, optional = true }

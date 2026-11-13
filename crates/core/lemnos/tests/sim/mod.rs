@@ -16,10 +16,12 @@ use lemnos_contract_camera_isp::{
     CameraIsp, ConfigLayout, Counters as IspCounters, IspInfo, IspInput, IspOutput, OutputLayout,
 };
 use lemnos_contract_camera_receiver::{
-    BayerOrder, CameraReceiver, Counters, FrameLayout, Limits, LinkConfig, MAX_STREAM_NAME, Packing,
+    BayerOrder, CameraReceiver, Counters, FrameLayout, FrameStarts, Limits, LinkConfig,
+    MAX_STREAM_NAME, Packing,
 };
 use lemnos_contract_camera_sensor::{
-    CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
+    AppliedLanding, CameraSensor, Controls, FrameValues, GainRange, InForce, Landing, Mode, Rect,
+    SensorInfo,
 };
 use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
 use lemnos_hal::blocks::StreamFrame;
@@ -100,6 +102,31 @@ impl Lifecycle for SimSensor {
 }
 
 impl CameraSensor for SimSensor {
+    // The simulated sensor has no frame-start counts, so its landings are refused (NOT_SUPPORTED).
+    fn post_values_at(&mut self, _values: FrameValues) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn applied_landing(&mut self) -> Result<Option<AppliedLanding>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn in_force(&mut self) -> Result<InForce> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn set_exposure(&mut self, _lines: u32) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn set_analogue_gain(&mut self, _code: u32) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn set_frame_length(&mut self, _lines: u32) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
     fn identity(&mut self, _into: &mut [u8]) -> Result<usize> {
         Err(Status::NOT_SUPPORTED)
     }
@@ -252,6 +279,10 @@ impl Lifecycle for SimReceiver {
 }
 
 impl CameraReceiver for SimReceiver {
+    fn frame_starts(&mut self) -> Result<Option<FrameStarts>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
     fn embedded_stream(&mut self, _into: &mut [u8]) -> Result<usize> {
         Ok(0)
     }
@@ -367,6 +398,14 @@ impl Lifecycle for SimIsp {
 }
 
 impl CameraIsp for SimIsp {
+    fn input_layout(&mut self) -> Result<Option<OutputLayout>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn output_layout(&mut self, _output: u8) -> Result<Option<OutputLayout>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
     fn info(&mut self) -> Result<IspInfo> {
         Ok(IspInfo {
             max_outputs: 0,

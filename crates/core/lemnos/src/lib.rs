@@ -13,18 +13,15 @@
 
 use std::fmt;
 use std::io;
-use std::os::fd::{BorrowedFd, OwnedFd};
-use std::ptr::NonNull;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 pub use lemnos_client::{Client, DeviceEntry, FrameStream, HeldFrame, StreamPlatform, follow};
 use lemnos_linux_stream::LinuxStreams;
-use lemnos_wire::ring::{BUFFER_ALIGN, ByteMemory, WordMemory};
 use styx_format::{FourCc, MediaFormat};
 use styx_frame::{
-    AcquireError, BufferMemory, BufferSize, CpuAccess, FdMemory, FrameEntry, FrameLease, FramePool,
-    Layouts, MemoryKind, PlaneLayout, PoolError, PoolStats,
+    AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, Layouts,
+    PlaneLayout, PoolError, PoolStats,
 };
 
 /// ISP600 layouts through the vendor vin driver (feature `isp600`).
@@ -207,6 +204,8 @@ pub enum Error {
     Map(io::Error),
     /// The stream has no buffers this crate can map (neither one memfd nor one dma-buf each).
     NoBuffers,
+    /// The stream has this many planes per buffer; this crate maps one plane per buffer.
+    Planes(u32),
     /// A frame names a buffer outside the stream.
     BadBuffer(u32),
     /// A frame named a buffer whose lease is still out; the frame was given back to Lemnos.
@@ -241,6 +240,7 @@ impl fmt::Display for Error {
             Self::Chain(e) => write!(f, "{e}"),
             Self::Map(e) => write!(f, "mapping stream buffers: {e}"),
             Self::NoBuffers => write!(f, "stream has no mappable buffers"),
+            Self::Planes(n) => write!(f, "stream has {n} planes per buffer; one is mapped here"),
             Self::BadBuffer(b) => write!(f, "frame names buffer {b}, which is out of range"),
             Self::Held(b) => write!(f, "buffer {b} still held; frame dropped"),
             Self::Oversize { len, payload } => {
@@ -261,143 +261,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-/// The stream's buffer memory as mapped from its descriptors.
-#[derive(Debug, Default)]
-struct Mapped {
-    /// One memfd for every buffer, at a stride of `buffer_bytes` rounded to `BUFFER_ALIGN`.
-    whole: Option<Arc<FdMemory>>,
-    /// One dma-buf per buffer.
-    each: Vec<Arc<FdMemory>>,
-}
-
-/// Wraps [`LinuxStreams`] so the buffer descriptors the client maps are also mapped here, as
-/// [`FdMemory`]. Both maps view the same memory; nothing is copied.
-#[derive(Debug)]
-struct MappingPlatform {
-    inner: LinuxStreams,
-    mapped: Mutex<Mapped>,
-}
-
-impl StreamPlatform for MappingPlatform {
-    fn recv_with_descriptors(
-        &self,
-        socket: BorrowedFd<'_>,
-        buf: &mut [u8],
-        fds: &mut Vec<OwnedFd>,
-    ) -> io::Result<usize> {
-        self.inner.recv_with_descriptors(socket, buf, fds)
-    }
-
-    fn map_ring(&self, fd: BorrowedFd<'_>, bytes: usize) -> io::Result<Arc<dyn WordMemory>> {
-        Ok(Arc::new(self.inner.map_ring(fd, bytes)?))
-    }
-
-    fn map_buffers(
-        &self,
-        fd: BorrowedFd<'_>,
-        bytes: usize,
-        writable: bool,
-    ) -> io::Result<Box<dyn ByteMemory>> {
-        let mine = FdMemory::memfd(fd.try_clone_to_owned()?, bytes, writable)?;
-        self.lock().whole = Some(Arc::new(mine));
-        Ok(Box::new(self.inner.map_buffers(fd, bytes, writable)?))
-    }
-
-    fn map_buffer(
-        &self,
-        fd: BorrowedFd<'_>,
-        bytes: usize,
-        writable: bool,
-    ) -> io::Result<Box<dyn ByteMemory>> {
-        let mine = FdMemory::dmabuf(fd.try_clone_to_owned()?, bytes, writable)?;
-        self.lock().each.push(Arc::new(mine));
-        Ok(Box::new(self.inner.map_buffer(fd, bytes, writable)?))
-    }
-
-    fn wait_doorbell(&self, fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {
-        self.inner.wait_doorbell(fd, timeout)
-    }
-}
-
-impl MappingPlatform {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Mapped> {
-        self.mapped
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-/// One buffer's bytes inside a mapping: the pool's view of it. Holds the mapping alive.
-struct Slice {
-    base: Arc<FdMemory>,
-    offset: usize,
-    len: usize,
-}
-
-impl fmt::Debug for Slice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Slice")
-            .field("offset", &self.offset)
-            .field("len", &self.len)
-            .finish()
-    }
-}
-
-// SAFETY: `cpu_ptr` is `base`'s start plus `offset`, with `offset + len` inside `base.len()`
-// (checked when the slice is made). `base` is held for the slice's life, so the mapping does not
-// go away, and the slice reads and writes only the bytes of the one buffer it names.
-unsafe impl BufferMemory for Slice {
-    fn kind(&self) -> MemoryKind {
-        self.base.kind()
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn cpu_ptr(&self) -> Option<NonNull<u8>> {
-        let base = self.base.cpu_ptr()?;
-        // SAFETY: `offset` is inside the mapping (checked in `slice`), so the offset pointer stays
-        // in the same allocation.
-        let ptr = unsafe { base.as_ptr().add(self.offset) };
-        NonNull::new(ptr)
-    }
-
-    fn cpu_writable(&self) -> bool {
-        self.base.cpu_writable()
-    }
-
-    fn begin_cpu(&self, access: CpuAccess) {
-        self.base.begin_cpu(access);
-    }
-
-    fn end_cpu(&self, access: CpuAccess) {
-        self.base.end_cpu(access);
-    }
-
-    fn fd(&self) -> Option<BorrowedFd<'_>> {
-        self.base.fd()
-    }
-
-    /// Where this buffer starts in its descriptor: the base's offset plus this slice's offset.
-    /// One memfd holds every buffer at its own offset; a dma-buf is one buffer from its first byte.
-    fn fd_offset(&self) -> usize {
-        self.base.fd_offset() + self.offset
-    }
-}
-
-fn slice(base: &Arc<FdMemory>, offset: usize, len: usize) -> Result<Slice, Error> {
-    let end = offset.checked_add(len).ok_or(Error::NoBuffers)?;
-    if end > base.len() {
-        return Err(Error::NoBuffers);
-    }
-    Ok(Slice {
-        base: Arc::clone(base),
-        offset,
-        len,
-    })
-}
 
 /// A stream taken from the daemon. It is given back when this drops, or at [`Taken::close`] with
 /// the daemon's answer. A stream left open holds its name on the daemon until the connection ends,
@@ -454,22 +317,19 @@ impl fmt::Debug for Taken {
     }
 }
 
-/// Opens `stream` on `device` and maps its buffers into one pool. The stream is taken as its
-/// writable or read-only form; on any error after it is taken it is given back.
+/// Opens `stream` on `device` and maps each of its buffers into one pool. The stream is taken as
+/// its writable or read-only form; on any error after it is taken it is given back.
 fn open_mapped<M: Default + Send + Sync>(
     client: &Client,
     device: u32,
     stream: &str,
     writable: bool,
 ) -> Result<(Taken, FramePool<M>), Error> {
-    let platform = Arc::new(MappingPlatform {
-        inner: LinuxStreams,
-        mapped: Mutex::new(Mapped::default()),
-    });
+    let platform: Arc<dyn StreamPlatform> = Arc::new(LinuxStreams);
     let opened = if writable {
-        client.open_stream_writable(device, stream, platform.clone())
+        client.open_stream_writable(device, stream, platform)
     } else {
-        client.open_stream(device, stream, platform.clone())
+        client.open_stream(device, stream, platform)
     }
     .map_err(Error::Client)?;
     // From here the stream is given back on every error path: `Taken` does it on drop.
@@ -477,19 +337,11 @@ fn open_mapped<M: Default + Send + Sync>(
         client: client.clone(),
         stream: Some(opened),
     };
-    let mapped = std::mem::take(&mut *platform.lock());
-    let (buffers, buffer_bytes) = {
-        let layout = taken.stream().layout();
-        (layout.buffers as usize, layout.buffer_bytes as usize)
-    };
-    let memories = match &mapped.whole {
-        Some(whole) => whole_memories(whole, buffers, buffer_bytes)?,
-        None => each_memories(&mapped.each, buffer_bytes)?,
-    };
+    let memories = buffer_memories(taken.stream(), writable)?;
     if memories.is_empty() {
         return Err(Error::NoBuffers);
     }
-    let pool = pool_over(memories, buffer_bytes)?;
+    let pool = pool_over(memories, taken.stream().buffer_len())?;
     Ok((taken, pool))
 }
 
@@ -661,28 +513,39 @@ pub fn open_job_stream<M: Default + Send + Sync>(
     Ok(JobStream { taken, pool })
 }
 
-/// One memory per buffer, cut from a memfd holding every buffer at the ring's stride.
-pub fn whole_memories(
-    whole: &Arc<FdMemory>,
-    buffers: usize,
-    buffer_bytes: usize,
+/// One memory per buffer, each mapped from the region the stream gives for it: a shared pool's
+/// memfd at the buffer's offset, or the buffer's own dma-buf. Nothing is copied: the frame pool
+/// and the stream's own mapping are two views of the same memory.
+///
+/// A stream of several planes per buffer is refused: this crate's pool holds one memory per
+/// buffer. `writable` maps the buffers read-write; a read-only stream maps them read-only.
+pub fn buffer_memories(
+    stream: &FrameStream,
+    writable: bool,
 ) -> Result<Vec<Box<dyn BufferMemory>>, Error> {
-    let stride = buffer_bytes.next_multiple_of(BUFFER_ALIGN as usize);
-    (0..buffers)
-        .map(|i| {
-            let offset = i.checked_mul(stride).ok_or(Error::NoBuffers)?;
-            slice(whole, offset, buffer_bytes).map(|s| Box::new(s) as Box<dyn BufferMemory>)
+    let planes = stream.planes().count();
+    if planes != 1 {
+        return Err(Error::Planes(planes));
+    }
+    let buffer_bytes = stream.buffer_len();
+    (0..stream.buffer_count())
+        .map(|buffer| {
+            let region = stream.region(buffer, 0).ok_or(Error::NoBuffers)?;
+            let len = usize::try_from(region.payload_bytes).map_err(|_| Error::NoBuffers)?;
+            if len != buffer_bytes {
+                return Err(Error::NoBuffers);
+            }
+            let offset = usize::try_from(region.offset).map_err(|_| Error::NoBuffers)?;
+            let fd = region.fd.try_clone_to_owned().map_err(Error::Map)?;
+            let mapped = match region.kind {
+                lemnos_client::MemoryKind::SharedMemory => {
+                    FdMemory::memfd_at(fd, offset, len, writable)
+                }
+                lemnos_client::MemoryKind::DmaBuf => FdMemory::dmabuf_at(fd, offset, len, writable),
+            }
+            .map_err(Error::Map)?;
+            Ok(Box::new(mapped) as Box<dyn BufferMemory>)
         })
-        .collect()
-}
-
-/// One memory per buffer, each a dma-buf from its first byte.
-pub fn each_memories(
-    each: &[Arc<FdMemory>],
-    buffer_bytes: usize,
-) -> Result<Vec<Box<dyn BufferMemory>>, Error> {
-    each.iter()
-        .map(|one| slice(one, 0, buffer_bytes).map(|s| Box::new(s) as Box<dyn BufferMemory>))
         .collect()
 }
 
@@ -697,6 +560,28 @@ pub fn pool_over<M: Default + Send + Sync>(
         gpu_slack: 0,
     };
     FramePool::new(size, memories).map_err(Error::Pool)
+}
+
+/// A frame's time on `CLOCK_MONOTONIC`. Lemnos's 0 means the producer had no time for the frame,
+/// so it is no time at all, and not time zero: the frame is stamped on arrival, as `styx-frame`
+/// stamps every source that has no clock of its own.
+fn frame_time(frame: &HeldFrame) -> u64 {
+    match frame.timestamp_ns() {
+        0 => monotonic_ns(),
+        time => time,
+    }
+}
+
+fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid out-pointer for the call.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    (ts.tv_sec as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(ts.tv_nsec as u64)
 }
 
 /// A frame stream's buffers as one frame pool, and the stream it came from.
@@ -755,6 +640,19 @@ impl<M> Frames<M> {
     /// (it takes a handle with `FramePool::clone`).
     pub fn pool(&self) -> &FramePool<M> {
         &self.pool
+    }
+
+    /// Frames the reader was too late for, in total: overwritten or taken back by the producer before
+    /// [`Frames::next`] or [`Frames::try_next`] read them. Lemnos counts them as `skipped`; they are
+    /// not frames of this crate's pool and never reach a lease.
+    pub fn skipped(&self) -> u64 {
+        self.taken.stream().skipped()
+    }
+
+    /// The pool generation of the Lemnos stream this was mapped from. A new generation means the
+    /// daemon made a new pool: this `Frames` is then on a pool that is gone and must be reopened.
+    pub fn generation(&self) -> u32 {
+        self.taken.stream().generation()
     }
 
     /// Frames dropped because their buffer's previous lease was still out.
@@ -839,7 +737,7 @@ impl<M> Frames<M> {
         } else {
             frame.sequence()
         };
-        let entry = FrameEntry::new(id, frame.timestamp_ns(), self.format, layouts);
+        let entry = FrameEntry::new(id, frame_time(&frame), self.format, layouts);
         match self.pool.acquire_at(index, entry) {
             Ok(lease) => {
                 self.pending[index] = Some(frame);
