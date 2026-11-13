@@ -1,0 +1,67 @@
+//! The one way to read an opened camera, whichever backend owns it.
+//!
+//! Frames are [`FrameLease`]s with [`FrameMetadata`], controls are [`Update`]s, and status is
+//! [`Status`]. The adapters in [`crate::adapters`] put the three backends' streams behind this
+//! trait without changing those backends.
+
+use std::fmt;
+use std::time::Duration;
+
+use styx_controls::{FrameMetadata, Update};
+use styx_frame::FrameLease;
+
+/// What an opened camera is doing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    /// Frames flow.
+    Streaming,
+    /// The device failed; the backend is retrying. `reason` is its last error.
+    Retrying { reason: String },
+    /// Stopped by the caller.
+    Stopped,
+    /// The backend gave up.
+    Failed { reason: String },
+}
+
+/// Why a capture call failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaptureError {
+    /// The camera was stopped.
+    Stopped,
+    /// The backend failed (its message).
+    Failed(String),
+    /// The backend does not do what was asked; the name of the missing operation.
+    Unsupported(&'static str),
+}
+
+impl fmt::Display for CaptureError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            CaptureError::Stopped => f.write_str("camera stopped"),
+            CaptureError::Failed(message) => f.write_str(message),
+            CaptureError::Unsupported(what) => write!(f, "unsupported by this backend: {what}"),
+        }
+    }
+}
+
+impl std::error::Error for CaptureError {}
+
+/// An opened camera. Dropping it stops it.
+pub trait Capture {
+    /// The next frame, or `None` when none arrived within `timeout`.
+    fn next_frame(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<FrameLease<FrameMetadata>>, CaptureError>;
+
+    /// Applies controls. A backend that applies a value on the next frame it takes does so;
+    /// `Update::frame` is honoured where the backend supports frame-exact landing and otherwise
+    /// ignored (see each adapter).
+    fn set_controls(&mut self, updates: &[Update]) -> Result<(), CaptureError>;
+
+    /// What the camera is doing now.
+    fn status(&self) -> Status;
+
+    /// Stops the camera. Idempotent.
+    fn stop(&mut self);
+}
