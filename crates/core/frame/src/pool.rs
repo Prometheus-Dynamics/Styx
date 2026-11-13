@@ -76,6 +76,8 @@ pub enum PoolError {
     },
     /// Payload plus slack overflows.
     SizeOverflow,
+    /// [`FramePool::register`]: every slot already has a buffer.
+    Full { capacity: usize },
 }
 
 impl fmt::Display for PoolError {
@@ -86,6 +88,7 @@ impl fmt::Display for PoolError {
                 "buffer {index} has {len} bytes, the pool needs {needed} (payload and GPU slack)"
             ),
             Self::SizeOverflow => f.write_str("buffer payload plus GPU slack overflows"),
+            Self::Full { capacity } => write!(f, "the pool already has its {capacity} buffers"),
         }
     }
 }
@@ -115,14 +118,20 @@ pub struct FramePool<M = ()> {
 pub(crate) struct Shared<M> {
     pub(crate) slots: Box<[Slot<M>]>,
     pub(crate) size: BufferSize,
+    /// Slots claimed by `register`.
+    registered: AtomicUsize,
     next: AtomicUsize,
     acquired: AtomicUsize,
     misses: AtomicUsize,
 }
 
 pub(crate) struct Slot<M> {
-    pub(crate) memory: Box<dyn BufferMemory>,
-    /// Leases holding the buffer: 0 free, 1 one owner who may write, more: shared, read-only.
+    /// The buffer's memory: `None` until it is registered, then never changed.
+    memory: UnsafeCell<Option<Box<dyn BufferMemory>>>,
+    /// `memory` is written and may be read.
+    ready: AtomicBool,
+    /// Leases holding the buffer: 0 free, 1 one owner who may write, more: shared, read-only;
+    /// [`UNREGISTERED`] before the buffer is given.
     pub(crate) refs: AtomicU32,
     /// A CPU write window is open (begun, not yet ended).
     pub(crate) writing: AtomicBool,
@@ -131,7 +140,29 @@ pub(crate) struct Slot<M> {
     pub(crate) meta: UnsafeCell<M>,
 }
 
-// SAFETY: `entry` and `meta` are written only by the one lease holding the slot (refs == 1, through
+/// `refs` of a slot with no buffer yet: never free, so never acquired.
+const UNREGISTERED: u32 = u32::MAX;
+
+impl<M> Slot<M> {
+    /// The slot's memory, once registered.
+    pub(crate) fn registered(&self) -> Option<&dyn BufferMemory> {
+        if !self.ready.load(Ordering::Acquire) {
+            return None;
+        }
+        // SAFETY: `ready` is set (with release ordering) only after `memory` was written by the
+        // one `register` call that claimed this slot, and `memory` is never written again.
+        unsafe { (*self.memory.get()).as_deref() }
+    }
+
+    /// The memory of a slot a lease holds.
+    pub(crate) fn memory(&self) -> &dyn BufferMemory {
+        self.registered()
+            .unwrap_or_else(|| unreachable!("a lease exists only on a registered buffer"))
+    }
+}
+
+// SAFETY: `memory` is written once, by the `register` call that claimed the slot, before `ready`
+// is set, and only read after. `entry` and `meta` are written only by the one lease holding the slot (refs == 1, through
 // `&mut FrameLease`) or by `acquire` after winning the slot from refs == 0; every other access is
 // a read while the slot is held, ordered by the acquire/release operations on `refs`. `M` crosses
 // threads with the leases, so it must be `Send + Sync`.
@@ -144,24 +175,24 @@ impl<M: Default> FramePool<M> {
         size: BufferSize,
         memories: impl IntoIterator<Item = Box<dyn BufferMemory>>,
     ) -> Result<Self, PoolError> {
-        let needed = size.allocation().ok_or(PoolError::SizeOverflow)?;
         let memories: Vec<Box<dyn BufferMemory>> = memories.into_iter().collect();
-        if let Some((index, memory)) = memories
-            .iter()
-            .enumerate()
-            .find(|(_, memory)| memory.len() < needed)
-        {
-            return Err(PoolError::BufferTooShort {
-                index,
-                len: memory.len(),
-                needed,
-            });
+        let pool = Self::with_capacity(size, memories.len())?;
+        for memory in memories {
+            pool.register(memory)?;
         }
-        let slots: Vec<Slot<M>> = memories
-            .into_iter()
-            .map(|memory| Slot {
-                memory,
-                refs: AtomicU32::new(0),
+        Ok(pool)
+    }
+
+    /// A pool with room for `capacity` buffers and none yet: for a producer whose buffers first
+    /// appear while it runs (a decoder's output dma-bufs). Each is given once with
+    /// [`FramePool::register`]. Every slot is allocated here; registering allocates nothing.
+    pub fn with_capacity(size: BufferSize, capacity: usize) -> Result<Self, PoolError> {
+        size.allocation().ok_or(PoolError::SizeOverflow)?;
+        let slots: Vec<Slot<M>> = (0..capacity)
+            .map(|_| Slot {
+                memory: UnsafeCell::new(None),
+                ready: AtomicBool::new(false),
+                refs: AtomicU32::new(UNREGISTERED),
                 writing: AtomicBool::new(false),
                 readers: ReadWindow::new(),
                 entry: UnsafeCell::new(FrameEntry::EMPTY),
@@ -172,6 +203,7 @@ impl<M: Default> FramePool<M> {
             shared: Arc::new(Shared {
                 slots: slots.into_boxed_slice(),
                 size,
+                registered: AtomicUsize::new(0),
                 next: AtomicUsize::new(0),
                 acquired: AtomicUsize::new(0),
                 misses: AtomicUsize::new(0),
@@ -222,7 +254,7 @@ impl<M> FramePool<M> {
         index: usize,
         entry: FrameEntry,
     ) -> Result<FrameLease<M>, AcquireError> {
-        if index >= self.shared.slots.len() {
+        if self.memory(index).is_none() {
             return Err(AcquireError::NoSuchBuffer { index });
         }
         let taken = self.take(index, entry);
@@ -263,23 +295,73 @@ impl<M> FramePool<M> {
         self.shared.size
     }
 
+    /// Gives the pool one more buffer, once, and returns its index. The buffer must be at least
+    /// [`BufferSize::allocation`] bytes. Nothing is allocated: the slot was made with the pool.
+    pub fn register(&self, memory: Box<dyn BufferMemory>) -> Result<usize, PoolError> {
+        let needed = self
+            .shared
+            .size
+            .allocation()
+            .ok_or(PoolError::SizeOverflow)?;
+        let capacity = self.shared.slots.len();
+        if memory.len() < needed {
+            return Err(PoolError::BufferTooShort {
+                index: self.shared.registered.load(Ordering::Relaxed).min(capacity),
+                len: memory.len(),
+                needed,
+            });
+        }
+        let claimed =
+            self.shared
+                .registered
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                    (n < capacity).then_some(n + 1)
+                });
+        let Ok(index) = claimed else {
+            return Err(PoolError::Full { capacity });
+        };
+        let slot = &self.shared.slots[index];
+        // SAFETY: `fetch_update` gave `index` to this call alone, `ready` is still false, so no
+        // one reads `memory`, and no other call writes it.
+        unsafe { *slot.memory.get() = Some(memory) };
+        slot.ready.store(true, Ordering::Release);
+        slot.refs.store(0, Ordering::Release);
+        Ok(index)
+    }
+
+    /// Whether buffer `index` is registered and no lease holds it: a producer checks this before
+    /// giving the buffer back to whoever fills it.
+    pub fn is_free(&self, index: usize) -> bool {
+        self.shared
+            .slots
+            .get(index)
+            .is_some_and(|slot| slot.refs.load(Ordering::Acquire) == 0)
+    }
+
+    /// Buffers registered.
     pub fn buffers(&self) -> usize {
+        self.shared.registered.load(Ordering::Relaxed)
+    }
+
+    /// Buffers the pool has room for.
+    pub fn capacity(&self) -> usize {
         self.shared.slots.len()
     }
 
     /// Buffer `index`'s memory, for handing the set to a reader once (descriptors, sizes).
+    /// `None` when no buffer is registered there.
     pub fn memory(&self, index: usize) -> Option<&dyn BufferMemory> {
-        self.shared.slots.get(index).map(|slot| &*slot.memory)
+        self.shared.slots.get(index)?.registered()
     }
 
     pub fn stats(&self) -> PoolStats {
         PoolStats {
-            buffers: self.shared.slots.len(),
+            buffers: self.buffers(),
             in_use: self
                 .shared
                 .slots
                 .iter()
-                .filter(|slot| slot.refs.load(Ordering::Relaxed) != 0)
+                .filter(|slot| !matches!(slot.refs.load(Ordering::Relaxed), 0 | UNREGISTERED))
                 .count(),
             acquired: self.shared.acquired.load(Ordering::Relaxed),
             misses: self.shared.misses.load(Ordering::Relaxed),
