@@ -6,18 +6,74 @@
 //! template holds no heap), and prepared into the builder's own config buffer, so a frame after
 //! the first allocates nothing here.
 
-use styx_aaa::Pwl;
+use styx_aaa::{Pwl, SharpenParams};
+use styx_format::{ColorRange, ColorSpace, MediaFormat};
+use styx_frame::Layouts;
 use styx_settings::IspSettings;
 
 use crate::PispError;
-use styx_lemnos::pisp::be::BackEnd;
+use crate::format::{format_or_refuse, is_yuv};
+use styx_lemnos::pisp::be::defaults::{self, Encoding, ResampleFilter};
 use styx_lemnos::pisp::be::lsc::{pack_lut, resample_table};
-use styx_lemnos::pisp::be::{SplitJobs, split_tiles};
+use styx_lemnos::pisp::be::{BackEnd, BeCacExtra, SplitJobs, split_tiles};
+use styx_lemnos::pisp::format::compute_stride_align;
 use styx_lemnos::pisp::uapi::{
     BayerOrder, BeCdnConfig, BeCropConfig, BeDpcConfig, BeGeqConfig, BeLscExtra,
-    BeOutputFormatConfig, BeResampleExtra, BeSdnConfig, BeTdnConfig, BeTilesConfig, Branch,
-    ImageFormatConfig, rgb_enable,
+    BeOutputFormatConfig, BeResampleExtra, BeSdnConfig, BeSharpenConfig, BeTdnConfig,
+    BeTilesConfig, Branch, ImageFormatConfig, rgb_enable,
 };
+
+/// One back-end output: its picture (the size, the FourCc and the colour space and range) and the
+/// stride it is laid out with, in bytes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Output {
+    pub media: MediaFormat,
+    /// Bytes each row is aligned to (the stride is at least the packed row).
+    pub stride_align: u32,
+}
+
+impl Output {
+    /// The library's image configuration for this output, with its strides.
+    pub fn image(&self) -> Result<ImageFormatConfig, PispError> {
+        let r = self.media.resolution;
+        let width = u16::try_from(r.width.get())
+            .map_err(|_| PispError::Config(format!("output width {} is too large", r.width)))?;
+        let height = u16::try_from(r.height.get())
+            .map_err(|_| PispError::Config(format!("output height {} is too large", r.height)))?;
+        let mut image = ImageFormatConfig {
+            width,
+            height,
+            format: format_or_refuse(self.media.code)?,
+            stride: 0,
+            stride2: 0,
+        };
+        compute_stride_align(&mut image, self.stride_align);
+        Ok(image)
+    }
+
+    /// The colour encoding of this output's YCbCr conversion: `None` for an output with no
+    /// chroma (RGB and grey). A YUV output takes the encoding its colour space and range name;
+    /// a combination the library has no conversion for is refused, never guessed.
+    pub fn encoding(&self) -> Result<Option<Encoding>, PispError> {
+        if !is_yuv(self.media.code) {
+            return Ok(None);
+        }
+        let encoding = match (self.media.color, self.media.range) {
+            (ColorSpace::Bt601, ColorRange::Full) => Encoding::Jpeg,
+            (ColorSpace::Bt601, ColorRange::Limited) => Encoding::Smpte170m,
+            (ColorSpace::Bt709, ColorRange::Limited) => Encoding::Rec709,
+            (ColorSpace::Bt709, ColorRange::Full) => Encoding::Rec709Full,
+            (ColorSpace::Bt2020, ColorRange::Limited) => Encoding::Bt2020,
+            (ColorSpace::Bt2020, ColorRange::Full) => Encoding::Bt2020Full,
+            _ => {
+                return Err(PispError::Unsupported(
+                    "YUV output colour space and range the library has no conversion for",
+                ));
+            }
+        };
+        Ok(Some(encoding))
+    }
+}
 
 /// The frame geometry the back end is set up for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,8 +81,9 @@ pub struct Geometry {
     /// The raw input the front end gives (16-bit Bayer, the stride the front end writes).
     pub input: ImageFormatConfig,
     pub bayer: BayerOrder,
-    /// Output 0 (full size) and output 1 (half size, made by the 2x2 box).
-    pub outputs: [ImageFormatConfig; 2],
+    /// Output 0 (full size) and output 1 (the 2x2 box at half size, or any size the resampler
+    /// makes).
+    pub outputs: [Output; 2],
     /// The temporal denoise buffers' format (the input's), when the buffers exist.
     pub tdn: Option<ImageFormatConfig>,
     /// The input row a frame is split at into two back-end jobs (see [`BackEndBuilder::split`]),
@@ -47,46 +104,57 @@ const TDN_MAX_RATIO: f64 = 4.0;
 pub struct BackEndBuilder {
     template: BackEnd,
     config: Box<BeTilesConfig>,
+    /// The two outputs' images as the configuration has them (sizes, FourCc format, strides).
+    images: [ImageFormatConfig; 2],
+    /// The geometry's outputs, which the settings' `outputs` must agree with.
+    outputs: [MediaFormat; 2],
     tdn_on: bool,
     /// Exposure of the last frame that read temporal denoise (`None`: the next starts over).
     tdn_last: Option<f64>,
 }
 
 impl BackEndBuilder {
-    /// The builder for `geometry`. Fails if the library refuses the configuration (before any
-    /// frame is sent).
+    /// The builder for `geometry`. Fails if the library refuses the configuration, or an output
+    /// is a picture the library cannot make or a YUV colour it cannot convert (before any frame
+    /// is sent).
     pub fn new(geometry: &Geometry) -> Result<Self, PispError> {
-        let [out0, out1] = geometry.outputs;
+        let [o0, o1] = geometry.outputs;
+        let images = [o0.image()?, o1.image()?];
+        let encodings = [o0.encoding()?, o1.encoding()?];
+        let input = geometry.input;
         let mut be = BackEnd::simple_bayer(
-            geometry.input,
+            input,
             geometry.bayer,
             0,
             (1.0, 1.0, 1.0),
             None,
-            out0.format,
-            None,
+            images[0].format,
+            encodings[0].map(Encoding::forward),
         );
-        for (i, out) in geometry.outputs.iter().enumerate() {
+        for (i, image) in images.iter().enumerate() {
             let branch = branch(i);
             be.set_output_format(
                 branch,
                 BeOutputFormatConfig {
-                    image: *out,
+                    image: *image,
                     ..Default::default()
                 },
             );
-            if (out.width, out.height) != (geometry.input.width, geometry.input.height) {
-                be.set_smart_resize(branch, out.width, out.height);
+            if (image.width, image.height) != (input.width, input.height) {
+                be.set_smart_resize(branch, image.width, image.height);
             }
             let rgb = be.config().global.rgb_enables | rgb_enable::output(i);
             be.config_mut().global.rgb_enables = rgb;
             be.set_crop(branch, BeCropConfig::default());
         }
-        if (u32::from(out1.width) * 2, u32::from(out1.height) * 2)
-            == (
-                u32::from(geometry.input.width),
-                u32::from(geometry.input.height),
-            )
+        if let Some(e) = encodings[1] {
+            be.set_csc_encoding(Branch::One, e);
+        }
+        set_blocks_with_defaults(&mut be, geometry.bayer)?;
+        if (
+            u32::from(images[1].width) * 2,
+            u32::from(images[1].height) * 2,
+        ) == (u32::from(input.width), u32::from(input.height))
         {
             set_box_half(&mut be);
         }
@@ -94,10 +162,10 @@ impl BackEndBuilder {
             be.set_tdn_format(f);
         }
         if let Some(line) = geometry.slice_at {
-            if line == 0 || u32::from(line) >= u32::from(geometry.input.height) {
+            if line == 0 || u32::from(line) >= u32::from(input.height) {
                 return Err(PispError::Config(format!(
                     "slice point row {line} is outside the {} rows of the frame",
-                    geometry.input.height
+                    input.height
                 )));
             }
             be.set_max_stripe_height(line.saturating_sub(STRIPE_MARGIN));
@@ -111,9 +179,22 @@ impl BackEndBuilder {
         Ok(Self {
             template,
             config,
+            images,
+            outputs: [o0.media, o1.media],
             tdn_on: geometry.tdn.is_some(),
             tdn_last: None,
         })
+    }
+
+    /// The configuration of output `i` as the back end writes it (size, format, strides).
+    pub fn image(&self, i: usize) -> ImageFormatConfig {
+        self.images[i]
+    }
+
+    /// Output `i`'s planes in its buffer, as the back end lays them out: plane 0 at offset 0,
+    /// each later plane after the planes before it, with the chroma strides and line counts.
+    pub fn layouts(&self, i: usize) -> Result<Layouts, PispError> {
+        image_layouts(&self.images[i])
     }
 
     /// The config as of the last [`Self::update`] (the template's before the first).
@@ -126,13 +207,30 @@ impl BackEndBuilder {
         self.tdn_last = None;
     }
 
-    /// Maps `settings` for a frame exposed for `exposure` (exposure time × analogue gain ×
+    /// Maps `settings` for a frame exposed for `exposure` (exposure time x analogue gain x
     /// flicker correction, in any consistent unit) onto the config. Temporal denoise scales its
     /// average by the exposure ratio to the previous frame that read it.
+    ///
+    /// `settings.outputs`, when given, must name the outputs this builder was made for (the
+    /// colour space and range are part of the YCbCr conversion, so a change needs a new builder).
     pub fn update(&mut self, settings: &IspSettings, exposure: f64) -> Result<(), PispError> {
-        let tdn = self.tdn_for(settings, exposure);
+        for (i, given) in settings.outputs.iter().enumerate() {
+            let Some(made) = self.outputs.get(i) else {
+                return Err(PispError::Config(format!(
+                    "settings name output {i}, which this builder does not make"
+                )));
+            };
+            if given != made {
+                return Err(PispError::Config(format!(
+                    "settings' output {i} is {given:?}; the builder was made for {made:?}"
+                )));
+            }
+        }
         let mut be = self.template.clone();
         apply(&mut be, settings)?;
+        // Temporal denoise's state moves only for a frame that is made: a refusal below restores it.
+        let before = self.tdn_last;
+        let tdn = self.tdn_for(settings, exposure);
         match tdn {
             Some((ratio, read)) => {
                 let t = settings.denoise.tdn.expect("temporal denoise settings");
@@ -148,7 +246,10 @@ impl BackEndBuilder {
             }
             None => be.set_tdn(None, false),
         }
-        be.prepare_into(&mut self.config).map_err(prepare_error)?;
+        if let Err(e) = be.prepare_into(&mut self.config) {
+            self.tdn_last = before;
+            return Err(prepare_error(e));
+        }
         Ok(())
     }
 
@@ -215,11 +316,11 @@ fn apply(be: &mut BackEnd, s: &IspSettings) -> Result<(), PispError> {
         iir_strength: field(c.strength, 8, 8) as u8,
         g_adjust: 0,
     }));
-    if s.sharpen.is_some() {
-        return Err(PispError::Unsupported(
-            "sharpening (the library has no sharpen defaults or scaling)",
-        ));
+    match &s.sharpen {
+        None => be.set_sharpen(Some(defaults::SHARPEN_DEFAULT)),
+        Some(p) => be.set_sharpen(Some(sharpen_scaled(p))),
     }
+    .map_err(|e| PispError::Config(format!("sharpen: {e}")))?;
     if let Some(ls) = &s.lens_shading {
         let (w, h) = (ls.width as usize, ls.height as usize);
         let lsc =
@@ -235,6 +336,80 @@ fn apply(be: &mut BackEnd, s: &IspSettings) -> Result<(), PispError> {
     let rgb = be.config().global.rgb_enables | rgb_enable::GAMMA;
     be.config_mut().global.rgb_enables = rgb;
     Ok(())
+}
+
+/// The back end's blocks that have no settings of their own, each at the library's own default
+/// (`be::defaults`), enabled or left off as dev's configuration has them. Sharpening is on with
+/// its default unless the settings scale it (see [`apply`]).
+///
+/// The YCbCr conversion around sharpening and false colour is libpisp's full-range BT.601
+/// (`jpeg`), as dev has it. Debinning is off, both directions included (its filter coefficients
+/// are the library's, as dev writes them); demosaic and false colour run with their defaults;
+/// tone mapping, saturation control, chromatic aberration and HOG are off. Output 0's resampler
+/// filter is the library's Lanczos 3 coefficients with the resampler off (smart resize writes
+/// its own when it turns on); output 1 is the box filter ([`set_box_half`]).
+fn set_blocks_with_defaults(be: &mut BackEnd, bayer: BayerOrder) -> Result<(), PispError> {
+    be.set_ycbcr_encoding(Some(Encoding::Jpeg));
+    be.set_debin(None)
+        .map_err(|e| PispError::Config(format!("debin: {e}")))?;
+    // The block is off, and so are its directions: dev's configuration has both enables at 0.
+    let debin = &mut be.config_mut().debin;
+    debin.h_enable = 0;
+    debin.v_enable = 0;
+    let demosaic = (bayer != BayerOrder::Greyscale).then_some(defaults::DEMOSAIC_DEFAULT);
+    be.set_demosaic(demosaic);
+    be.set_false_colour(Some(defaults::FALSE_COLOUR_DEFAULT));
+    let mut combine = be.config().sh_fc_combine;
+    combine.y_factor = defaults::SHFC_Y_FACTOR_DEFAULT;
+    be.set_sh_fc_combine(combine);
+    be.set_sharpen(Some(defaults::SHARPEN_DEFAULT))
+        .map_err(|e| PispError::Config(format!("sharpen: {e}")))?;
+    be.set_resample_default(Branch::Zero, ResampleFilter::Lanczos3);
+    be.set_sat_control(None);
+    be.set_tonemap(None)
+        .map_err(|e| PispError::Config(format!("tone map: {e}")))?;
+    be.set_cac(None, BeCacExtra::default());
+    be.set_hog(None);
+    Ok(())
+}
+
+/// The library's sharpening defaults scaled by the settings' three factors: the threshold factor
+/// on each filter's threshold, the strength factor on both response strengths, the limit factor
+/// on both limits. Styx's own mapping of the factors onto the library's fields; the factors are
+/// 1 for the library's defaults, so the default block is unchanged.
+pub fn sharpen_scaled(p: &SharpenParams) -> BeSharpenConfig {
+    let mut s = defaults::SHARPEN_DEFAULT;
+    let scale = |v: u16, k: f64| (f64::from(v) * k).round().clamp(0.0, f64::from(u16::MAX)) as u16;
+    for t in &mut s.thresholds {
+        t[0] = scale(t[0], p.threshold);
+    }
+    s.positive_strength = scale(s.positive_strength, p.strength);
+    s.negative_strength = scale(s.negative_strength, p.strength);
+    s.positive_limit = scale(s.positive_limit, p.limit);
+    s.negative_limit = scale(s.negative_limit, p.limit);
+    s
+}
+
+/// The planes of an image in its buffer, as the back end lays them out (see
+/// [`BackEndBuilder::layouts`]): plane 0 at offset 0 with `stride` bytes a line, then each
+/// later plane with `stride2` bytes a line and its own line count (halved for 4:2:0).
+pub fn image_layouts(image: &ImageFormatConfig) -> Result<Layouts, PispError> {
+    let planes = styx_lemnos::pisp::format::num_planes(image.format);
+    let mut out = Vec::with_capacity(planes);
+    let mut offset = 0usize;
+    for plane in 0..planes {
+        let stride = if plane == 0 {
+            image.stride
+        } else {
+            image.stride2
+        };
+        let stride = usize::try_from(stride)
+            .map_err(|_| PispError::Config("negative stride".to_string()))?;
+        let len = styx_lemnos::pisp::format::plane_size(image, plane);
+        out.push(styx_frame::PlaneLayout::new(offset, stride, len));
+        offset += len;
+    }
+    Layouts::new(&out).ok_or_else(|| PispError::Config("too many planes".to_string()))
 }
 
 /// A normalised level on the 16-bit scale the PiSP works in.

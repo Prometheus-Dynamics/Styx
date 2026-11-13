@@ -14,6 +14,7 @@ styx-frame = { path = "../../core/frame" }
 styx-settings = { path = "../settings" }
 styx-codec-api = { path = "../../codec/codec-api" }
 styx-scale = { path = "../../codec/scale" }
+styx-pisp = { path = "../pisp" }
 
 [dev-dependencies]
 styx-soft = { path = "../soft" }
