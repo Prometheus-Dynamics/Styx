@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use styx_controls::FrameMetadata;
-use styx_socket::{Frame, ReadError, Reader, ReaderStats};
+use styx_socket::{Frame, ReadError, Reader, ReaderStats, Start};
 
 use crate::clock::monotonic_ns;
 use crate::isp::{IspError, IspRunner};
@@ -77,11 +77,22 @@ impl Session {
 
     /// Connects to the camera's frame socket at `socket` and takes the producer's handshake.
     pub fn connect(socket: &Path, isp: Option<IspRunner>) -> Result<Self, SessionError> {
+        Self::connect_with(socket, isp, Start::default())
+    }
+
+    /// As [`Session::connect`], with the reader's start chosen: the newest kept frame at once,
+    /// or only frames published after the attach.
+    pub fn connect_with(
+        socket: &Path,
+        isp: Option<IspRunner>,
+        start: Start,
+    ) -> Result<Self, SessionError> {
         let stream = UnixStream::connect(socket).map_err(|error| SessionError::Connect {
             socket: socket.to_path_buf(),
             error,
         })?;
-        let reader = Reader::connect(stream).map_err(|e| SessionError::Handshake(e.to_string()))?;
+        let reader = Reader::connect_with(stream, start)
+            .map_err(|e| SessionError::Handshake(e.to_string()))?;
         let reader_start = reader.stats();
         Ok(Self {
             socket: socket.to_path_buf(),
