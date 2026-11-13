@@ -47,7 +47,7 @@ fn a_host_frame_is_not_a_dmabuf() {
 }
 
 #[test]
-fn a_host_frame_has_its_bytes_and_a_dma_buf_frame_has_none_on_the_host() {
+fn a_host_frame_and_a_mapped_dma_buf_frame_have_their_bytes() {
     let pool: FramePool<()> = FramePool::host(1, support::SIZE).unwrap();
     let mut lease = pool.acquire(support::entry(2)).unwrap();
     lease.write().unwrap().bytes().fill(0x5a);
@@ -60,11 +60,16 @@ fn a_host_frame_has_its_bytes_and_a_dma_buf_frame_has_none_on_the_host() {
     let Some(pool) = support::dma_pool(1) else {
         return;
     };
-    let frame = StyxFrame::from_lease(pool.acquire(support::entry(3)).unwrap(), pool.buffer_size())
-        .unwrap();
+    let mut lease = pool.acquire(support::entry(3)).unwrap();
+    lease.write().unwrap().bytes().fill(0x3c);
+    let frame = StyxFrame::from_lease(lease, pool.buffer_size()).unwrap();
+    let bytes = frame
+        .bytes()
+        .expect("a mapped dma-buf's bytes, under its read bracket");
+    assert!(bytes.iter().all(|&byte| byte == 0x3c));
     assert!(
-        frame.bytes().is_none(),
-        "a dma-buf's bytes are reached through the import or the copy, not borrowed here"
+        frame.dmabuf().is_some(),
+        "the import still names the dma-buf"
     );
 }
 
