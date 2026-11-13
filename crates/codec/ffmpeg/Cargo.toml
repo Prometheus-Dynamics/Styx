@@ -1,6 +1,6 @@
 [package]
 name = "styx-ffmpeg"
-description = "FFmpeg as a Styx coverage backend: libavcodec loaded at run time (never linked), registered as the FFmpeg candidates of styx-core's registry."
+description = "FFmpeg as a Styx coverage backend: libavcodec loaded at run time (never linked), registered as the FFmpeg candidates of styx-codec-api's registry."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,7 @@ default = []
 ffmpeg = []
 
 [dependencies]
-styx-core = { path = "../core" }
+styx-codec-api = { path = "../codec-api" }
 styx-format = { path = "../../core/format" }
 styx-frame = { path = "../../core/frame" }
 

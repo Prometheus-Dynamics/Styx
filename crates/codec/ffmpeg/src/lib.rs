@@ -1,7 +1,7 @@
 //! FFmpeg as a coverage backend for Styx's codecs.
 //!
 //! With the `ffmpeg` feature, [`register`] adds the FFmpeg implementations to a
-//! [`styx_core::Registry`] as [`styx_core::Backend::Ffmpeg`] candidates. Nothing links FFmpeg: the
+//! [`styx_codec_api::Registry`] as [`styx_codec_api::Backend::Ffmpeg`] candidates. Nothing links FFmpeg: the
 //! libraries are opened at run time, the first time a candidate is built. A machine without them
 //! reports `FFmpeg not present: ...`, and the registry skips those candidates with that reason.
 //!
@@ -29,7 +29,9 @@ mod sys;
 mod backend {
     use std::path::PathBuf;
 
-    use styx_core::{Candidate, CodecDescriptor, CodecError, CodecKind, Implementation, Registry};
+    use styx_codec_api::{
+        Candidate, CodecDescriptor, CodecError, CodecKind, Implementation, Registry,
+    };
     use styx_format::FourCc;
 
     use crate::api;
@@ -42,6 +44,13 @@ mod backend {
         ("mjpeg", CodecKind::Decoder, FourCc::MJPG, FourCc::I420),
         ("mjpeg", CodecKind::Encoder, FourCc::I420, FourCc::MJPG),
     ];
+
+    /// The (libavutil, libavcodec) majors the libraries on the system search path report, from
+    /// their own version functions. Only supported pairs are returned ([`SUPPORTED`]).
+    pub fn loaded_versions() -> Result<(u32, u32), String> {
+        let api = api::load(&[])?;
+        Ok((api.util_major, api.codec_major))
+    }
 
     /// Whether FFmpeg's libraries are present on the system search path, or why not.
     pub fn available() -> Result<(), String> {
@@ -93,6 +102,10 @@ mod backend {
 }
 
 #[cfg(all(feature = "ffmpeg", target_os = "linux"))]
+#[cfg(all(feature = "ffmpeg", target_os = "linux"))]
+pub use api::SUPPORTED;
+#[cfg(all(feature = "ffmpeg", target_os = "linux"))]
 pub use backend::{
-    COPY_FROM_FFMPEG, COPY_TO_FFMPEG, available, available_in, copy_counters, register, register_in,
+    COPY_FROM_FFMPEG, COPY_TO_FFMPEG, available, available_in, copy_counters, loaded_versions,
+    register, register_in,
 };

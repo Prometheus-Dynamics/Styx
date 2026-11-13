@@ -12,15 +12,15 @@ use std::ffi::{CString, c_int, c_void};
 use std::fmt;
 use std::sync::Arc;
 
-use styx_core::{Backend, Codec, CodecDescriptor, CodecError, CodecKind, Decoder, Encoder};
+use styx_codec_api::{Backend, Codec, CodecDescriptor, CodecError, CodecKind, Decoder, Encoder};
 use styx_format::{FourCc, plane_geometry};
 use styx_frame::{CopyCounter, FrameEntry, FrameLease, PlaneLayout};
 
 use crate::api::{Api, error_text};
 use crate::sys::{
-    ERR_EAGAIN, FRAME_DATA, FRAME_FORMAT, FRAME_HEIGHT, FRAME_LINESIZE, FRAME_PTS, FRAME_WIDTH,
-    PACKET_DATA, PACKET_PTS, PACKET_SIZE, PIX_GRAY8, PIX_NV12, PIX_YUV420P, PIX_YUVJ420P,
-    PIX_YUYV422, read_i64, read_int, read_ptr, write_i64, write_int,
+    ERR_EAGAIN, FRAME_DATA, FRAME_FORMAT, FRAME_HEIGHT, FRAME_LINESIZE, FRAME_WIDTH, PACKET_DATA,
+    PACKET_PTS, PACKET_SIZE, PIX_GRAY8, PIX_NV12, PIX_YUV420P, PIX_YUVJ420P, PIX_YUYV422, read_int,
+    read_ptr, write_i64, write_int,
 };
 
 /// Bytes copied from a Styx lease into FFmpeg's frames or packets.
@@ -403,14 +403,13 @@ impl FfmpegDecoder {
         }
         // SAFETY: the frame's planes are valid for this geometry, per the decoder's output.
         unsafe { copy_out_of_frame(frame, output, code, width, height)? };
-        // SAFETY: as above, for the timestamp field.
-        let pts = unsafe { read_i64(frame, FRAME_PTS) };
-        let timestamp = if pts >= 0 {
-            pts as u64
-        } else {
-            input.timestamp_ns()
-        };
-        let entry = FrameEntry::new(input.id(), timestamp, *output.format(), *output.layouts());
+        // The timestamp is the input's: one packet in, one frame out (see `sys`).
+        let entry = FrameEntry::new(
+            input.id(),
+            input.timestamp_ns(),
+            *output.format(),
+            *output.layouts(),
+        );
         output
             .set_entry(entry)
             .map_err(|e| CodecError::Failed(e.to_string()))
@@ -506,7 +505,6 @@ impl<M> Encoder<M> for FfmpegEncoder {
             write_int(frame, FRAME_WIDTH, width as c_int);
             write_int(frame, FRAME_HEIGHT, height as c_int);
             write_int(frame, FRAME_FORMAT, pix);
-            write_i64(frame, FRAME_PTS, input.timestamp_ns() as i64);
         }
         // SAFETY: `frame` is this session's. The first frame gets buffers from FFmpeg; later
         // frames reuse them when FFmpeg holds no other reference.

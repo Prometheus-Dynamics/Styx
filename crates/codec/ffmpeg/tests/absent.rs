@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use styx_core::{CodecKind, Registry, Request, Verdict};
+use styx_codec_api::{CodecKind, Registry, Request, Verdict};
 use styx_format::FourCc;
 
 #[test]

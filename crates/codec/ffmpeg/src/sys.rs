@@ -1,11 +1,22 @@
-//! The FFmpeg structs Styx touches, by field offset.
+//! The FFmpeg struct fields Styx reads and writes, by offset, and no others.
 //!
-//! The FFmpeg headers are not installed where this is written, so the layouts are not generated.
-//! Styx reads and writes only the leading fields below, whose offsets have been the same across
-//! FFmpeg 6 to 8 (`AVFrame`: `data` at 0, `linesize` at 64, `width` and `height` at 104 and 108,
-//! `format` at 116, `pts` at 136; `AVPacket`: `pts` at 8, `data` at 24, `size` at 32). The tests
-//! check them against the library: `av_frame_get_buffer` and `av_new_packet` fill those fields,
-//! and a round trip through the codec must return the timestamps that went in.
+//! No libavcodec context field is touched: codec parameters go through the AVOptions API
+//! (`video_size`, `pixel_format`, `time_base`, set with `av_opt_set`), and decoded geometry is read
+//! from the frame. Only the leading public fields of `AVFrame` and `AVPacket` are used, and only
+//! those are laid out here. Each layout holds for the majors in [`crate::SUPPORTED`]:
+//!
+//! - `AVFrame` (libavutil 60, FFmpeg 8.x): `data[8]` at 0 (8-byte pointers), `linesize[8]` at 64
+//!   (`int`s), `extended_data` at 96, `width` at 104, `height` at 108, `nb_samples` at 112,
+//!   `format` at 116. Frames are allocated only with `av_frame_alloc`.
+//! - `AVPacket` (libavcodec 62, FFmpeg 8.x): `buf` at 0, `pts` at 8 (`int64`), `dts` at 16,
+//!   `data` at 24, `size` at 32 (`int`). Packets are allocated only with `av_packet_alloc`.
+//!
+//! The frame's own `pts` is not used: its offset is outside this list. A frame's timestamp is the
+//! lease it came from, which is exact for the one-packet-in, one-frame-out calls this backend
+//! makes. A codec that reorders frames would need the frame's pts (a later PR).
+//!
+//! The tests check these: `av_frame_get_buffer` fills `linesize` and reads `width`, `height` and
+//! `format`, and a decode of an encoded frame returns the geometry it was given.
 
 use std::ffi::{c_int, c_void};
 
@@ -14,7 +25,6 @@ pub(crate) const FRAME_LINESIZE: usize = 64;
 pub(crate) const FRAME_WIDTH: usize = 104;
 pub(crate) const FRAME_HEIGHT: usize = 108;
 pub(crate) const FRAME_FORMAT: usize = 116;
-pub(crate) const FRAME_PTS: usize = 136;
 
 pub(crate) const PACKET_PTS: usize = 8;
 pub(crate) const PACKET_DATA: usize = 24;
@@ -59,16 +69,6 @@ pub(crate) unsafe fn write_int(base: *mut c_void, offset: usize, value: c_int) {
             .cast::<c_int>()
             .write_unaligned(value)
     }
-}
-
-/// Reads the `i64` at `offset`.
-///
-/// # Safety
-///
-/// As [`read_int`], for an `i64`.
-pub(crate) unsafe fn read_i64(base: *const c_void, offset: usize) -> i64 {
-    // SAFETY: as in `read_int`.
-    unsafe { base.cast::<u8>().add(offset).cast::<i64>().read_unaligned() }
 }
 
 /// Writes the `i64` at `offset`.

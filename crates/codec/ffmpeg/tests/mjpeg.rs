@@ -2,7 +2,7 @@
 //! when FFmpeg is not installed.
 #![cfg(all(feature = "ffmpeg", target_os = "linux"))]
 
-use styx_core::{CodecKind, Implementation, Registry, Request};
+use styx_codec_api::{CodecKind, Implementation, Registry, Request};
 use styx_format::{FourCc, MediaFormat, Resolution, plane_geometry};
 use styx_frame::{BufferSize, FrameEntry, FrameLease, FramePool, PlaneLayout, packed_layouts};
 
