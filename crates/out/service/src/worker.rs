@@ -466,7 +466,9 @@ fn pump(
                 slot.set_mode(mode);
             }
         }
-        match capture.next_frame(FRAME_WAIT) {
+        let next = capture.next_frame(FRAME_WAIT);
+        slot.set_lemnos_skipped(capture.lemnos_skipped());
+        match next {
             Ok(Some(lease)) => {
                 delivered = true;
                 if publisher.is_none() && !unpublishable {

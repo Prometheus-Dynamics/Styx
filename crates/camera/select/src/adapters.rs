@@ -47,6 +47,10 @@ impl<'a, C: Clock> NativeCapture<'a, C> {
 }
 
 impl<C: Clock> Capture for NativeCapture<'_, C> {
+    fn lemnos_skipped(&self) -> u64 {
+        self.session.skipped()
+    }
+
     fn next_frame(
         &mut self,
         timeout: Duration,

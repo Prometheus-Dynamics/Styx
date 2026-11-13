@@ -78,6 +78,13 @@ pub trait Capture {
         RateReport::default()
     }
 
+    /// Frames the reader was too late for, in all (a Lemnos stream's `skipped`, on a native
+    /// camera): frames the backend made that this reader never saw. 0 where the backend has no such
+    /// count.
+    fn lemnos_skipped(&self) -> u64 {
+        0
+    }
+
     /// Stops the camera. Idempotent.
     fn stop(&mut self);
 }

@@ -227,6 +227,9 @@ pub struct Session<'a, C: Clock> {
     clock: C,
     stop: Arc<AtomicBool>,
     running: Option<Running>,
+    /// Frames the readers of earlier runs were too late for (`Frames::skipped`), summed over the
+    /// runs this session has stopped.
+    skipped_done: u64,
     stalls: u32,
     status: Status,
     /// The sensor's initial values, for each run's native controls.
@@ -238,7 +241,7 @@ pub struct Session<'a, C: Clock> {
 /// A dropped session stops its devices. Its frames are released with the stream.
 impl<C: Clock> Drop for Session<'_, C> {
     fn drop(&mut self) {
-        if let Some(running) = self.running.take() {
+        if let Some(running) = self.take_running() {
             let _ = halt(running);
         }
     }
@@ -270,6 +273,7 @@ impl<'a, C: Clock> Session<'a, C> {
             clock,
             stop: Arc::new(AtomicBool::new(false)),
             running: None,
+            skipped_done: 0,
             stalls: 0,
             status: Status::new(),
             settings: None,
@@ -357,7 +361,7 @@ impl<'a, C: Clock> Session<'a, C> {
         self.status.selection = None;
         self.status.next_delay = None;
         self.status.retry_at = None;
-        match self.running.take() {
+        match self.take_running() {
             Some(running) => halt(running).map_err(Error::Device),
             None => Ok(()),
         }
@@ -412,10 +416,23 @@ impl<'a, C: Clock> Session<'a, C> {
         }
     }
 
+    /// Takes the running devices out, keeping their skipped-frame count in `skipped_done`.
+    fn take_running(&mut self) -> Option<Running> {
+        let running = self.running.take()?;
+        self.skipped_done += running.frames.skipped();
+        Some(running)
+    }
+
+    /// Frames this session's readers were too late for, in all: the Lemnos stream's own count
+    /// (`FrameStream::skipped`) over every run so far. A reader that keeps up never counts one.
+    pub fn skipped(&self) -> u64 {
+        self.skipped_done + self.running.as_ref().map_or(0, |r| r.frames.skipped())
+    }
+
     /// Stops the devices after a fault, backs off, and starts again.
     fn fault(&mut self, text: String) -> Result<(), Error> {
         self.stalls = 0;
-        let text = match self.running.take() {
+        let text = match self.take_running() {
             Some(running) => match halt(running) {
                 Ok(()) => text,
                 Err(stop) => format!("{text}; {stop}"),

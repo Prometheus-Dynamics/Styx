@@ -715,9 +715,9 @@ impl<M> Frames<M> {
         let layouts = match self.layouts {
             Some(layouts) => layouts,
             None => {
-                let len = frame.len();
                 let payload = self.pool.buffer_size().payload;
-                if len > payload {
+                if frame.len() > payload {
+                    let len = frame.len();
                     self.oversize_drops += 1;
                     self.taken
                         .stream_mut()
@@ -725,6 +725,8 @@ impl<M> Frames<M> {
                         .map_err(Error::Client)?;
                     return Err(Error::Oversize { len, payload });
                 }
+                // The frame's one plane: the bytes it holds, as the stream's own arithmetic counts them.
+                let len = self.taken.stream().plane_len(&frame, 0);
                 Layouts::new(&[PlaneLayout::new(0, 0, len)])
                     .ok_or(Error::Layout(styx_format::LayoutError::Overflow))?
             }
@@ -811,6 +813,12 @@ impl<M> JobStream<M> {
     /// Buffers in the stream.
     pub fn buffers(&self) -> usize {
         self.pool.buffers()
+    }
+
+    /// Completions the reader was too late for, in total (`FrameStream::skipped`). On a job stream
+    /// every completion is read, so this stays 0 unless the reader falls behind.
+    pub fn skipped(&self) -> u64 {
+        self.taken.stream().skipped()
     }
 
     /// Bytes in each buffer, as the stream's open reply gives them.

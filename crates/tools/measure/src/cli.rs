@@ -305,6 +305,7 @@ fn service_camera(cam: &CameraLine) -> ServiceCamera {
         state: cam.get("state").unwrap_or("-").to_string(),
         frames: cam.number("frames"),
         skipped: cam.number("skipped"),
+        lemnos_skipped: cam.number("lemnos_skipped"),
         last_id: cam.number("last_id"),
         publish: cam.get("publish").unwrap_or("-").to_string(),
         readers: cam.number("readers"),

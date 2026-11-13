@@ -14,6 +14,8 @@ pub struct ServiceCamera {
     pub state: String,
     pub frames: Option<u64>,
     pub skipped: Option<u64>,
+    /// The Lemnos stream reader's own skipped count (`lemnos_skipped`), apart from `skipped`.
+    pub lemnos_skipped: Option<u64>,
     pub last_id: Option<u64>,
     pub publish: String,
     pub readers: Option<u64>,
@@ -117,6 +119,7 @@ fn camera_json(c: &Option<ServiceCamera>) -> Json {
             ("state", Json::Str(c.state.clone())),
             ("frames", Json::opt_int(c.frames)),
             ("skipped", Json::opt_int(c.skipped)),
+            ("lemnos_skipped", Json::opt_int(c.lemnos_skipped)),
             ("last_id", Json::opt_int(c.last_id)),
             ("publish", Json::Str(c.publish.clone())),
             ("readers", Json::opt_int(c.readers)),
