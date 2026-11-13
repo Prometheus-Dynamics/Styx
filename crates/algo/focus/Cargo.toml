@@ -13,15 +13,15 @@ styx-aaa = { path = "../aaa" }
 styx-controls = { path = "../../core/controls" }
 styx-lemnos = { path = "../../core/lemnos" }
 lemnos-client = { workspace = true }
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-lens = { workspace = true }
 
 [dev-dependencies]
 # The simulated backend: lemnosd in this process with a simulated lens driver (test only). Same
 # pins as styx-lemnos's dev-dependencies.
-lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
 
 [lints]
 workspace = true

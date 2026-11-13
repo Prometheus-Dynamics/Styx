@@ -16,7 +16,7 @@ styx-lemnos = { path = "../../core/lemnos", features = ["rkisp"] }
 styx-settings = { path = "../settings" }
 lemnos-contract-camera-isp = { workspace = true }
 # Not in the root workspace table at 04d09360's rev, declared here with the same URL and rev.
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnos-core = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }

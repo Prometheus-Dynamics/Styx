@@ -11,6 +11,7 @@ const RANGE: GainRange = GainRange {
     max: 255,
     unity: 16,
     step: 1,
+    law: lemnos_contract_camera_sensor::GainLaw::Linear,
 };
 
 #[test]

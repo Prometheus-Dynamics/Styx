@@ -92,12 +92,16 @@ impl Lifecycle for SimSensor {
 }
 
 impl CameraSensor for SimSensor {
+    fn identity(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Err(Status::NOT_SUPPORTED)
+    }
     fn info(&mut self) -> Result<SensorInfo> {
         Ok(SensorInfo {
             modes: MODES.len() as u16,
             array_width: 1280,
             array_height: 800,
             test_patterns: 0,
+            embedded_data: lemnos_contract_camera_sensor::EmbeddedData::None,
         })
     }
 
@@ -237,6 +241,17 @@ impl Lifecycle for SimReceiver {
 }
 
 impl CameraReceiver for SimReceiver {
+    fn embedded_stream(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Ok(0)
+    }
+
+    fn source(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn layout(&mut self) -> Result<Option<lemnos_contract_camera_receiver::FrameLayout>> {
+        Ok(None)
+    }
     fn limits(&mut self) -> Result<Limits> {
         Ok(Limits {
             max_lanes: 2,

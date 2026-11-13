@@ -23,9 +23,9 @@ orion = { workspace = true, optional = true, features = ["topics"] }
 styx-frame = { path = "../../core/frame", features = ["linux"] }
 # The in-process comm core the Orion test starts, as Orion's own tests do. Pinned to the rev the
 # root Cargo.toml locks for `orion`.
-orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "ae4d6bcd71066c9c17e7c22df994a654573a7d65", package = "orion-broker" }
-orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "ae4d6bcd71066c9c17e7c22df994a654573a7d65", package = "orion-server" }
-orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "ae4d6bcd71066c9c17e7c22df994a654573a7d65", package = "orion-unix" }
+orion-broker = { workspace = true }
+orion-server = { workspace = true }
+orion-unix = { workspace = true }
 tokio = { version = "1.53.2", default-features = false, features = ["rt", "macros", "net", "time", "sync"] }
 
 [lints]

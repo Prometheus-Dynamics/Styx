@@ -18,11 +18,11 @@ lemnos-contract-camera-sensor = { workspace = true }
 lemnos-contract-camera-receiver = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }
 # The simulated backend and its daemon run in this process (see `drivers` and `camera`).
-lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
-lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-core = { workspace = true, features = ["std"] }
+lemnos-hal = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true

@@ -38,6 +38,7 @@ pub fn mode(exposure_delay: u8, gain_delay: u8, frame_length_delay: u8) -> Mode 
             max: 255,
             unity: 16,
             step: 1,
+            law: lemnos_contract_camera_sensor::GainLaw::Linear,
         },
         exposure_delay,
         gain_delay,
@@ -115,6 +116,9 @@ impl Sensor {
 }
 
 impl CameraSensor for Sensor {
+    fn identity(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Err(Status::NOT_SUPPORTED)
+    }
     fn info(&mut self) -> Result<SensorInfo> {
         Ok(SensorInfo::default())
     }

@@ -40,4 +40,7 @@ if compgen -G "crates/*/*/src" > /dev/null; then
   step "no product names in code" bash -c '! grep -rn -i -E "\b(raze|helios|photonvision|systemcore|roborio|ov9782|cm5)\b" crates/*/*/src'
 fi
 
+# One lock per outside repository: crates name git dependencies through the workspace only.
+step "git dependencies are named in the workspace only" bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
+
 echo "gate passed"
