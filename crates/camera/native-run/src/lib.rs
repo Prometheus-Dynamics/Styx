@@ -26,3 +26,4 @@ pub use clock::{Clock, SystemClock};
 pub use frames::{Frames, Lease};
 pub use modes::{ModeError, Request, fourcc_for, select_mode};
 pub use session::{Error, Session, State, Status, StopHandle};
+pub use styx_native_controls::{GainLaw, Initial, Landing, Landings};

@@ -3,13 +3,16 @@
 //! Copied from Lemnos `testing/crates/camera-proof/tests/sim/mod.rs` at 04d09360 (test code there;
 //! here it is a library module of `styx-sim`). The bus and the proof helpers are left out.
 //!
-//! They keep no state across a restart. Each contract call that changes something is appended to
-//! a log. The receiver makes frames on the host's ticks at the rate its link implies, and publishes
-//! them on the frame stream the board gives it. A driver's stream end can't write pixel bytes (on
-//! hardware the block's DMA does that), so the frames carry sequence, identity, timestamp and size,
-//! and no pixel content: `styx-sim` renders the pixels into the lease it is given.
+//! The sensor and the receiver share one clock and one set of settings per camera (`silicon`),
+//! found by the name the board gives them in their `config` table. The receiver latches and
+//! publishes a frame when the camera grants it (see `silicon` for the clock). The sensor applies
+//! each posted value on the frame the mode's delay says, and the frame carries sequence, identity
+//! and size, and no pixel content: `styx-sim` renders the pixels into the lease it is given.
+//!
+//! The drivers keep no state across a restart. Each contract call that changes something is
+//! appended to a log.
 
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use lemnos_contract_camera_isp::{
     CameraIsp, ConfigLayout, Counters as IspCounters, IspInfo, IspInput, IspOutput, OutputLayout,
@@ -22,6 +25,8 @@ use lemnos_contract_camera_sensor::{
 };
 use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
 use lemnos_hal::blocks::StreamFrame;
+
+use crate::silicon::{self, SensorTiming, Silicon};
 
 /// Calls in the order they arrived, across every simulated device in this process.
 static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -42,8 +47,10 @@ pub fn call_log() -> Vec<String> {
 /// follows from the link alone.
 pub(crate) const MODES: [(u32, u32, u32); 2] = [(320, 40, 120), (640, 40, 60)];
 const PIXEL_RATE_HZ: u64 = 1_536_000;
+/// How often the receiver looks for a granted frame while it waits (nanoseconds).
+const POLL_NS: u64 = 200_000;
 
-pub(crate) fn mode(index: usize) -> Option<Mode> {
+pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
     let (width, height, fps) = *MODES.get(index)?;
     Some(Mode {
         link: LinkConfig {
@@ -59,25 +66,37 @@ pub(crate) fn mode(index: usize) -> Option<Mode> {
         },
         bayer: BayerOrder::Rggb,
         max_fps_milli: fps * 1000,
+        line_time_ps: silicon::LINE_TIME_PS as u32,
+        line_length: 1456,
+        frame_length_min: 900,
+        frame_length_max: 52_000,
+        exposure_min: 16,
+        exposure_margin: 25,
+        exposure_fraction_bits: silicon::EXPOSURE_FRACTION_BITS,
         crop: Rect {
             x: 0,
             y: 0,
             width,
             height,
         },
-        analogue_gain: GainRange::default(),
+        analogue_gain: GainRange {
+            min: 16,
+            max: 255,
+            unity: silicon::GAIN_UNITY,
+            step: 1,
+        },
         digital_gain: GainRange::default(),
+        exposure_delay: timing.exposure_delay,
+        gain_delay: timing.gain_delay,
+        frame_length_delay: timing.frame_length_delay,
         ..Mode::default()
     })
 }
 
-/// Frame time in nanoseconds for a link: its active pixels at its pixel rate.
-fn frame_interval_ns(link: &LinkConfig) -> u64 {
-    let pixels = u128::from(link.width) * u128::from(link.height);
-    let rate = u128::from(link.pixel_rate_hz.max(1));
-    u64::try_from(pixels * 1_000_000_000 / rate)
-        .unwrap_or(u64::MAX)
-        .max(1)
+/// The shared clock named by a device's `camera` config entry.
+fn clock(cfg: &Config<'_>) -> Result<Arc<Silicon>> {
+    let name = cfg.str("camera").ok_or(Status::INVALID_ARGUMENT)?;
+    silicon::lookup(name).ok_or(Status::NOT_FOUND)
 }
 
 #[driver("sim-sensor", provides = [CameraSensor])]
@@ -85,17 +104,25 @@ pub struct SimSensor {
     selected: Option<u16>,
     streaming: bool,
     applied: Option<FrameValues>,
+    clock: Option<Arc<Silicon>>,
 }
 
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
 
-    fn start(_needs: SimSensorNeeds, _cfg: &Config<'_>) -> Result<Self> {
+    fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
             selected: None,
             streaming: false,
             applied: None,
+            clock: Some(clock(cfg)?),
         })
+    }
+}
+
+impl SimSensor {
+    fn silicon(&self) -> Result<&Silicon> {
+        self.clock.as_deref().ok_or(Status::INVALID_ARGUMENT)
     }
 }
 
@@ -110,14 +137,15 @@ impl CameraSensor for SimSensor {
     }
 
     fn mode(&mut self, index: u16) -> Result<Mode> {
-        mode(usize::from(index)).ok_or(Status::NOT_FOUND)
+        let timing = self.silicon()?.timing();
+        mode(usize::from(index), timing).ok_or(Status::NOT_FOUND)
     }
 
     fn select_mode(&mut self, index: u16) -> Result<()> {
         if self.streaming {
             return Err(Status::BUSY);
         }
-        if mode(usize::from(index)).is_none() {
+        if mode(usize::from(index), SensorTiming::default()).is_none() {
             return Err(Status::NOT_FOUND);
         }
         log("sensor.select_mode");
@@ -144,15 +172,42 @@ impl CameraSensor for SimSensor {
         Ok(())
     }
 
-    fn set_controls(&mut self, _controls: Controls) -> Result<()> {
+    /// Writes `controls` to show on the next frame to be latched.
+    fn set_controls(&mut self, controls: Controls) -> Result<()> {
         if self.selected.is_none() {
             return Err(Status::INVALID_ARGUMENT);
         }
         log("sensor.set_controls");
+        let silicon = self.silicon()?;
+        if let Some(code) = controls.exposure {
+            silicon.set_now(silicon::EXPOSURE, Some(code));
+        }
+        if let Some(code) = controls.analogue_gain {
+            silicon.set_now(silicon::GAIN, Some(code));
+        }
+        if let Some(code) = controls.frame_length {
+            silicon.set_now(silicon::FRAME_LENGTH, Some(code));
+        }
         Ok(())
     }
 
+    /// Posts `values` during the last latched frame: each control shows from that frame plus its
+    /// delay. Exposure and gain posted together show together only when their delays are equal.
     fn post_values(&mut self, values: FrameValues) -> Result<()> {
+        if self.selected.is_none() {
+            return Err(Status::INVALID_ARGUMENT);
+        }
+        let silicon = self.silicon()?;
+        let controls = values.controls;
+        if let Some(code) = controls.exposure {
+            silicon.post(silicon::EXPOSURE, Some(code));
+        }
+        if let Some(code) = controls.analogue_gain {
+            silicon.post(silicon::GAIN, Some(code));
+        }
+        if let Some(code) = controls.frame_length {
+            silicon.post(silicon::FRAME_LENGTH, Some(code));
+        }
         self.applied = Some(values);
         Ok(())
     }
@@ -174,58 +229,54 @@ impl CameraSensor for SimSensor {
     }
 }
 
-/// A frame stream's producer, and what it makes: one frame per interval, while running.
-#[derive(Clone, Copy)]
-struct Run {
-    interval_ns: u64,
-    next_ns: Option<u64>,
-    sequence: u64,
-}
-
 #[driver("sim-receiver", provides = [CameraReceiver])]
 pub struct SimReceiver {
     #[needs]
     frames: StreamHandle,
     configured: Option<LinkConfig>,
     layout: Option<FrameLayout>,
-    run: Option<Run>,
+    /// Frame time of the link, and the timestamp of the next frame made, while running.
+    running: Option<Running>,
     counters: Counters,
+    clock: Option<Arc<Silicon>>,
+}
+
+#[derive(Clone, Copy)]
+struct Running {
+    interval_ns: u64,
+    next_ns: Option<u64>,
 }
 
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
     const TICKS: bool = true;
 
-    fn start(needs: SimReceiverNeeds, _cfg: &Config<'_>) -> Result<Self> {
+    fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
             frames: needs.frames,
             configured: None,
             layout: None,
-            run: None,
+            running: None,
             counters: Counters::default(),
+            clock: Some(clock(cfg)?),
         })
     }
 
-    /// Makes every frame due by `now_ns`, and returns when the next one is due.
+    /// Latches and publishes each frame the camera has granted, and asks to be looked at again
+    /// soon: a frame is made when it is granted, not when its time comes.
     fn tick(&mut self, now_ns: u64) -> Option<u64> {
-        let run = self.run.as_mut()?;
-        let mut next = match run.next_ns {
-            Some(next) => next,
-            None => {
-                let next = now_ns.saturating_add(run.interval_ns);
-                run.next_ns = Some(next);
-                return Some(next);
-            }
-        };
+        let running = self.running?;
+        let silicon = self.clock.clone()?;
         let size = self.layout.map_or(0, |layout| layout.size);
-        while next <= now_ns {
+        let mut next = running.next_ns.unwrap_or(now_ns);
+        while let Some(id) = silicon.latch() {
             match self.frames.next_buffer() {
                 Ok(Some(buffer)) => {
                     let frame = StreamFrame {
                         buffer,
                         bytes: size,
-                        sequence: run.sequence,
-                        identity: run.sequence,
+                        sequence: id,
+                        identity: id,
                         timestamp_ns: next,
                     };
                     match self.frames.publish(frame) {
@@ -236,11 +287,12 @@ impl Lifecycle for SimReceiver {
                 Ok(None) => self.counters.dropped += 1,
                 Err(_) => self.counters.errors += 1,
             }
-            run.sequence += 1;
-            next = next.saturating_add(run.interval_ns);
+            next = next.saturating_add(running.interval_ns);
         }
-        run.next_ns = Some(next);
-        Some(next)
+        if let Some(running) = self.running.as_mut() {
+            running.next_ns = Some(next);
+        }
+        Some(now_ns.saturating_add(POLL_NS))
     }
 }
 
@@ -255,7 +307,7 @@ impl CameraReceiver for SimReceiver {
     }
 
     fn configure(&mut self, link: LinkConfig, packing: Packing) -> Result<FrameLayout> {
-        if self.run.is_some() {
+        if self.running.is_some() {
             return Err(Status::BUSY);
         }
         if link.lanes == 0
@@ -302,22 +354,21 @@ impl CameraReceiver for SimReceiver {
 
     fn start(&mut self) -> Result<()> {
         let link = self.configured.ok_or(Status::INVALID_ARGUMENT)?;
-        if self.run.is_some() {
+        if self.running.is_some() {
             return Err(Status::BUSY);
         }
         log("receiver.start");
         self.counters = Counters::default();
-        self.run = Some(Run {
+        self.running = Some(Running {
             interval_ns: frame_interval_ns(&link),
             next_ns: None,
-            sequence: 0,
         });
         Ok(())
     }
 
     fn stop(&mut self) -> Result<()> {
         log("receiver.stop");
-        self.run = None;
+        self.running = None;
         Ok(())
     }
 
@@ -328,6 +379,15 @@ impl CameraReceiver for SimReceiver {
     fn feeds(&mut self, _into: &mut [u8]) -> Result<usize> {
         Ok(0)
     }
+}
+
+/// Frame time in nanoseconds for a link: its active pixels at its pixel rate.
+fn frame_interval_ns(link: &LinkConfig) -> u64 {
+    let pixels = u128::from(link.width) * u128::from(link.height);
+    let rate = u128::from(link.pixel_rate_hz.max(1));
+    u64::try_from(pixels * 1_000_000_000 / rate)
+        .unwrap_or(u64::MAX)
+        .max(1)
 }
 
 #[driver("sim-isp", provides = [CameraIsp])]
@@ -418,8 +478,9 @@ impl CameraIsp for SimIsp {
 
 /// A board with one sensor, one receiver it links to, and the ISP that receiver links to. A decoy
 /// receiver with no link is listed before the real one, so a tool that takes the first receiver
-/// fails. `sensor_link` replaces the sensor's link when given.
-pub(crate) fn board(sensor_link: Option<&str>) -> String {
+/// fails. `sensor_link` replaces the sensor's link when given. Every simulated device names the
+/// camera `camera`, whose clock and timing they share.
+pub(crate) fn board(camera: &str, sensor_link: Option<&str>) -> String {
     let link = match sensor_link {
         Some(target) => format!("link = \"{target}\""),
         None => String::new(),
@@ -428,9 +489,12 @@ pub(crate) fn board(sensor_link: Option<&str>) -> String {
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-camera\"\n\
          [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
          [[devices]]\nid = \"csi-spare\"\ndriver = \"sim-receiver\"\n\
+         config = {{ camera = \"{camera}\" }}\n\
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
          [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+         config = {{ camera = \"{camera}\" }}\n\
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}\n"
+         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}\n\
+         config = {{ camera = \"{camera}\" }}\n"
     )
 }
