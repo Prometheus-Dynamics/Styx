@@ -198,3 +198,31 @@ fn gpu_equals_soft_and_goldens_bit_for_bit() {
         }
     }
 }
+
+/// The opt-in approximation runs on the GPU too: `ApproxTone`'s quadratics, bit for bit with
+/// `styx-soft`'s and its golden (the luma case, where the default sRGB curve's quadratics differ
+/// from the table).
+#[test]
+fn gpu_approx_tone_equals_soft_bit_for_bit() {
+    let Some(ctx) = device() else { return };
+    let raw_pool = picture_pool(RAW, W, H, 1);
+    let raw = raw_lease(&raw_pool, 1);
+    let settings = settings(true, false);
+    let mut options = options(Demosaic::Bilinear, YuvMatrix::Bt709Limited, false);
+    options.arithmetic = styx_soft::params::Arithmetic::ApproxTone;
+    let mut cpu = SoftIspStage::new(RAW, W, H, &settings, options.clone()).unwrap();
+    let mut gpu = GpuIspStage::with_context(Some(&ctx), RAW, W, H, &settings, options).unwrap();
+    let out_pool = picture_pool(FourCc::GREY, W, H, 2);
+    let mut cpu_out = picture(&out_pool, FourCc::GREY, W, H, 2);
+    let mut gpu_out = picture(&out_pool, FourCc::GREY, W, H, 3);
+    cpu.process(&raw, &mut cpu_out, None).unwrap();
+    gpu.process(&raw, &mut gpu_out, None).unwrap();
+    let cpu_bytes = packed(&cpu_out, Kind::Luma, W as usize, H as usize);
+    let gpu_bytes = packed(&gpu_out, Kind::Luma, W as usize, H as usize);
+    assert!(cpu_bytes == gpu_bytes, "ApproxTone: GPU differs from soft");
+    assert!(
+        gpu_bytes == data("luma_full.approx.out"),
+        "ApproxTone: golden"
+    );
+    eprintln!("luma_full ApproxTone: equal to soft and the golden");
+}

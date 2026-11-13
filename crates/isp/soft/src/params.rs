@@ -118,31 +118,38 @@ pub struct Sharpen {
     pub limit: f32,
 }
 
-/// How the per-pixel stages compute. They give pictures within a code or two of each
-/// other; [`SoftIsp::arithmetic`](crate::SoftIsp::arithmetic) tells which one runs.
+/// How the per-pixel stages compute.
+///
+/// [`Self::Auto`], [`Self::Int`] and [`Self::Half`] are the arithmetic a picture is defined by:
+/// the same bits on every host and backend for the same parameters, except that [`Self::Half`]
+/// is a different arithmetic (fp16) from [`Self::Int`] and is chosen only by name. The one
+/// approximation is [`Self::ApproxTone`], which is excluded from every bit-for-bit claim.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Arithmetic {
-    /// [`Self::Half`] where it is fast and applies (with a colour matrix or a tone curve, on
-    /// CPUs with FP16 arithmetic), else [`Self::IntPolyTone`] where it is fast and applies (a
-    /// tone curve, x86 with AVX2), else [`Self::Int`].
+    /// The integer arithmetic with the exact tone table ([`Self::Int`]), on every host. Never
+    /// chosen by CPU features: a picture is the same on a PC and on a board. Pick
+    /// [`Self::Half`] or [`Self::ApproxTone`] by name.
     #[default]
     Auto,
-    /// 12-bit fixed point: the reference, on every CPU (SIMD on x86 and AArch64).
+    /// 12-bit fixed point with the exact 4096-entry tone table: the reference, on every CPU
+    /// (SIMD on x86, AArch64 and RISC-V; every leaf equals the scalar oracle).
     Int,
     /// fp16 in the front end, the bilinear demosaic, the colour matrix and the tone curve
     /// (whose 257-node table becomes 48 segments looked up by the fp16 exponent); 2-3 times
     /// faster on CPUs with FP16 arithmetic (ARMv8.2 and later: Cortex-A55, A76, ...), emulated
     /// (slowly) elsewhere. Applies to inputs of 10 bits or fewer, the bilinear demosaic and
-    /// tone curves that never fall; other set-ups use [`Self::Int`].
+    /// tone curves that never fall; other set-ups use [`Self::Int`]. A different arithmetic
+    /// from [`Self::Int`] (its own goldens), so it is never chosen for [`Self::Auto`].
     Half,
-    /// [`Self::Int`] with the tone curve as a quadratic per octave (16-bit fixed point, the
-    /// same result on every CPU) instead of the table, used only when it lands within one code
-    /// of the table for every input (sRGB, gamma 1.8-2.2 and S-shaped contrast curves do;
-    /// steeper ones keep the table, and [`SoftIsp::arithmetic`](crate::SoftIsp::arithmetic)
-    /// then says [`Self::Int`]). 2.3x faster than the table on x86 with AVX2 (Zen 3), slower
-    /// than NEON's table lookups on the Cortex-A76.
-    IntPolyTone,
+    /// APPROXIMATE. [`Self::Int`] with the tone curve as a quadratic per octave (16-bit fixed
+    /// point) instead of the table, used only when it lands within one code of the table for
+    /// every input (sRGB, gamma 1.8-2.2 and S-shaped contrast curves do; steeper ones keep the
+    /// table, and [`SoftIsp::arithmetic`](crate::SoftIsp::arithmetic) then says [`Self::Int`]).
+    /// Its output may differ from [`Self::Int`] by one code on some samples. It is excluded from
+    /// every bit-for-bit claim (goldens, GPU equality, cross-host equality). Faster than the
+    /// table on x86 with AVX2 (2.3x on Zen 3), slower than NEON's table lookups on the Cortex-A76.
+    ApproxTone,
 }
 
 /// Black level per CFA cell: red, green on red rows, green on blue rows, blue.
@@ -322,12 +329,16 @@ impl ToneCurve {
     pub fn eval(&self, x: f32) -> f32 {
         let x = x.clamp(0.0, 1.0);
         match self {
-            Self::Gamma { gamma } => x.powf(1.0 / gamma.max(1e-3)),
+            // `styx_math`'s powf (libm, the same bits on every host), not the platform's libm,
+            // whose last bit may differ between hosts (glibc's FMA variants on x86 and not on
+            // AArch64): a table entry at a rounding boundary would then differ between a PC and a
+            // board.
+            Self::Gamma { gamma } => styx_math::Float::powf(x, 1.0 / gamma.max(1e-3)),
             Self::Srgb => {
                 if x <= 0.003_130_8 {
                     12.92 * x
                 } else {
-                    1.055 * x.powf(1.0 / 2.4) - 0.055
+                    1.055 * styx_math::Float::powf(x, 1.0 / 2.4) - 0.055
                 }
             }
             Self::Points { points } => {

@@ -308,7 +308,7 @@ impl Tables {
             }
         }
         // The tone curve: its table (mode 1), or its quadratics (mode 2) when the arithmetic is
-        // `IntPolyTone` and they fit it, as `styx-soft` (the words go in `lut` either way).
+        // `ApproxTone` and they fit it, as `styx-soft` (the words go in `lut` either way).
         let (lut, lut_fresh) = match (previous, &params.tone) {
             (Some((p, prev)), Some(_))
                 if prev.tone == params.tone && prev.arithmetic == params.arithmetic =>
@@ -323,13 +323,12 @@ impl Tables {
                 tone.set_curve(|x| curve.eval(x));
                 let mut lut = writable(&mut spare.luts);
                 let words = Arc::get_mut(&mut lut).expect("unshared");
-                // `Auto` resolves as `styx-soft` does on this host: quadratics where the CPU
-                // prefers them (AVX2) and they fit the curve. The quadratics are within one
-                // code of the table, not equal to it, so the choice decides the bits.
+                // `Auto` is the exact table on every host, as `styx-soft`. The quadratics
+                // (`ApproxTone`) are within one code of the table, not equal to it, so they run
+                // only when named.
                 let want_poly = match params.arithmetic {
-                    Arithmetic::IntPolyTone => true,
-                    Arithmetic::Auto => styx_simd::isp::poly_preferred(),
-                    Arithmetic::Int | Arithmetic::Half => false,
+                    Arithmetic::ApproxTone => true,
+                    Arithmetic::Auto | Arithmetic::Int | Arithmetic::Half => false,
                 };
                 let poly = want_poly
                     .then(|| PolyTone::fit_with(tone.full(), &mut spare.poly_weight))
