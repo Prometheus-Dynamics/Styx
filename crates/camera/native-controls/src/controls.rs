@@ -371,6 +371,10 @@ impl NativeControls {
     /// The controls in force on `frame`, and what the frame measured. Timestamp is the frame's
     /// `CLOCK_MONOTONIC` nanoseconds. Values come from what was posted and the delays, not from the
     /// frame: `camera.sensor/1` has no per-frame read-back at the lock (Lemnos J4 adds it).
+    ///
+    /// On a free-running sensor a value may land one frame later than recorded here: the write
+    /// frame is taken as the last frame delivered, and the sensor may already be exposing the
+    /// next one. Until read-back exists, treat the recorded frame as the earliest it can land.
     pub fn metadata(&self, frame: u64, sensor_timestamp_ns: u64) -> FrameMetadata {
         let exposure = self.lanes[EXPOSURE].value_at(frame);
         let gain = self.lanes[GAIN].value_at(frame);
