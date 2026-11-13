@@ -1,0 +1,23 @@
+[package]
+name = "styx-ffmpeg"
+description = "FFmpeg as a Styx coverage backend: libavcodec loaded at run time (never linked), registered as the FFmpeg candidates of styx-core's registry."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# The FFmpeg backend. Off by default. Nothing links at build time: the libraries are opened with
+# dlopen when a codec is first used, and a machine without them skips the candidates with a reason.
+ffmpeg = []
+
+[dependencies]
+styx-core = { path = "../core" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+
+[lints]
+workspace = true
