@@ -16,6 +16,7 @@ usage:
   styx-measure read --socket <camera frame socket> (--frames N | --seconds S)
                     [--control <service control socket>] [--service-pid PID]
                     [--asked-fps FPS] [--soft-isp <FOURCC>[:WxH]] [--report <file.json>]
+                    [--trace <file.csv>] [--trace-frames N]
   styx-measure status --control <service control socket>
 
 read attaches to a camera's frame socket as a reader in this process and measures what it takes
@@ -39,6 +40,10 @@ pub struct ReadArgs {
     pub seconds: Option<f64>,
     pub soft_isp: Option<SoftIspArg>,
     pub report: Option<PathBuf>,
+    /// Where to write the first frames one by one (`id,capture_ns,reader_ns`), if asked.
+    pub trace: Option<PathBuf>,
+    /// How many frames the trace keeps.
+    pub trace_frames: usize,
     pub service_pid: Option<u32>,
     pub asked_fps_milli: Option<u32>,
 }
@@ -93,6 +98,8 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
     let mut seconds = None;
     let mut soft_isp = None;
     let mut report = None;
+    let mut trace = None;
+    let mut trace_frames = 20_000usize;
     let mut service_pid = None;
     let mut asked_fps_milli = None;
     let mut it = rest.iter();
@@ -120,6 +127,12 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
             }
             "--soft-isp" => soft_isp = Some(text(&mut it, flag)?.parse::<SoftIspArg>()?),
             "--report" => report = Some(value(&mut it, flag)?),
+            "--trace" => trace = Some(value(&mut it, flag)?),
+            "--trace-frames" => {
+                trace_frames = text(&mut it, flag)?
+                    .parse()
+                    .map_err(|_| "--trace-frames: a count".to_string())?;
+            }
             "--service-pid" => {
                 service_pid = Some(
                     text(&mut it, flag)?
@@ -142,6 +155,8 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
         seconds,
         soft_isp,
         report,
+        trace,
+        trace_frames,
         service_pid,
         asked_fps_milli,
     })
@@ -203,6 +218,17 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> ExitCod
         Ok(Command::Read(read)) => match read_run(&read) {
             Ok(report) => {
                 let _ = write!(out, "{}", report.table());
+                if let Some(path) = &read.trace {
+                    let mut csv = String::from("id,capture_ns,reader_ns\n");
+                    for [id, capture, now] in &report.frames.trace {
+                        csv.push_str(&format!("{id},{capture},{now}\n"));
+                    }
+                    if let Err(e) = std::fs::write(path, csv) {
+                        let _ = writeln!(err, "styx-measure: writing {}: {e}", path.display());
+                        return ExitCode::FAILURE;
+                    }
+                    let _ = writeln!(out, "trace: {}", path.display());
+                }
                 if let Some(path) = &read.report {
                     let json = report.to_json().render();
                     if let Err(e) = std::fs::write(path, format!("{json}\n")) {
@@ -322,6 +348,9 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
     let isp = args.soft_isp.clone().map(IspRunner::new);
     let mut session =
         Session::connect(&args.socket, isp).map_err(|e: SessionError| e.to_string())?;
+    if args.trace.is_some() {
+        session.stats.keep_trace(args.trace_frames);
+    }
     let reader0 = session.reader_start();
 
     let started = monotonic_ns();
