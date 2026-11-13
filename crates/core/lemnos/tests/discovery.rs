@@ -79,3 +79,25 @@ fn a_receiver_linked_to_a_non_isp_is_refused() {
         Err(ChainError::NotIsp { device, .. }) if device == "fan"
     ));
 }
+
+#[test]
+fn find_chains_gives_one_entry_per_sensor_in_listing_order() {
+    use styx_lemnos::find_chains;
+
+    let devices = [
+        device(0, "a", &["camera.sensor/1"], Some("rx")),
+        device(1, "b", &["camera.sensor/1"], None),
+        device(2, "rx", &["camera.receiver/1"], None),
+        device(3, "c", &["camera.sensor/1"], Some("rx")),
+    ];
+    let found = find_chains(&devices);
+    assert_eq!(found.len(), 3);
+    let first = found[0].as_ref().expect("a is a camera");
+    assert_eq!(first.sensor.name, "a");
+    assert_eq!(first.receiver.name, "rx");
+    assert_eq!(found[1], Err(ChainError::NotLinked("b".to_string())));
+    let third = found[2].as_ref().expect("c is a camera");
+    assert_eq!(third.sensor.name, "c");
+    assert_eq!(third.receiver.name, "rx");
+    assert!(find_chains(&[]).is_empty());
+}

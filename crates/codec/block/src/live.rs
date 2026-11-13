@@ -20,13 +20,10 @@
 //! pool. [`LiveSession::pool`] says which pool is the session's.
 //!
 //! Provenance: the job stream protocol is Lemnos's `codec.block/1` (`contracts/codec-block`, and
-//! `drivers/codec-jobs` for the block side). The mapping of a stream's buffers is the same as
-//! `styx_lemnos::open_frames`, which is read-only; a writable job stream needs this module's
-//! `Mapping`, which should move into `styx-lemnos` as an `open_job_stream` next to it.
+//! `drivers/codec-jobs` for the block side). The writable mapping of the stream is
+//! `styx_lemnos::open_job_stream`; this module only says what a job is.
 
-use std::io;
-use std::os::fd::{BorrowedFd, OwnedFd};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::fmt;
 use std::time::Duration;
 
 use lemnos_contract_codec_block::work::Work;
@@ -35,15 +32,10 @@ use lemnos_contract_codec_block::{
     MAX_STREAM_NAME,
 };
 use lemnos_core::{Decode, Encode, Reader, Writer};
-use lemnos_linux_stream::LinuxStreams;
-use lemnos_wire::ring::{ByteMemory, WordMemory};
 use styx_codec_api::{CodecError, FourCc};
 use styx_format::{MediaFormat, Resolution};
-use styx_frame::{FdMemory, FrameEntry, FramePool, Layouts, PlaneLayout};
-use styx_lemnos::{
-    Client, DeviceEntry, FrameStream, HeldFrame, StreamPlatform, each_memories, pool_over,
-    whole_memories,
-};
+use styx_frame::{FrameEntry, Layouts, PlaneLayout};
+use styx_lemnos::{Client, DeviceEntry, HeldFrame, JobStream, open_job_stream};
 
 use crate::decoder::Session;
 
@@ -53,20 +45,19 @@ pub const CODEC_TAG: &str = "codec.block/1";
 /// Most buffers one job can name. The contract's job stream holds at most this many.
 const MAX_NAMED: usize = 64;
 
-/// A `codec.block/1` device's job stream as a [`Session`], with the pool its buffers make.
+/// A `codec.block/1` device's job stream as a [`Session`]. Its buffers are the job stream's pool.
 pub struct LiveSession {
-    stream: FrameStream,
-    pool: FramePool<usize>,
+    stream: JobStream<usize>,
     /// Identity of the next job. Only the completion with this number is the job's.
     sequence: u64,
     timeout: Duration,
 }
 
-impl std::fmt::Debug for LiveSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for LiveSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LiveSession")
             .field("stream", &self.stream.name())
-            .field("buffers", &self.pool.buffers())
+            .field("buffers", &self.stream.buffers())
             .field("sequence", &self.sequence)
             .finish()
     }
@@ -84,29 +75,16 @@ impl LiveSession {
         timeout: Duration,
     ) -> Result<Self, CodecError> {
         let name = job_stream_name(client, device)?;
-        let platform = Arc::new(Mapping::default());
-        let stream = client
-            .open_stream_writable(device.index, &name, platform.clone())
+        let stream = open_job_stream::<usize>(client, device.index, &name)
             .map_err(|e| CodecError::Unavailable(format!("job stream {name}: {e}")))?;
-        let buffers = stream.layout().buffers as usize;
-        let buffer_bytes = stream.layout().buffer_bytes as usize;
-        if (stream.layout().job_bytes as usize) < JOB_BYTES {
+        if stream.job_bytes() < JOB_BYTES {
             return Err(CodecError::Unavailable(format!(
                 "job stream {name}: jobs are {} bytes, the contract's are {JOB_BYTES}",
-                stream.layout().job_bytes
+                stream.job_bytes()
             )));
         }
-        let mapped = std::mem::take(&mut *platform.lock());
-        let memories = match &mapped.whole {
-            Some(whole) => whole_memories(whole, buffers, buffer_bytes),
-            None => each_memories(&mapped.each, buffer_bytes),
-        }
-        .map_err(|e| CodecError::Unavailable(format!("job stream {name}: {e}")))?;
-        let pool = pool_over(memories, buffer_bytes)
-            .map_err(|e| CodecError::Unavailable(format!("job stream {name}: {e}")))?;
         Ok(Self {
             stream,
-            pool,
             sequence: 0,
             timeout,
         })
@@ -115,8 +93,8 @@ impl LiveSession {
     /// The pool over the job stream's buffers. Take the bitstream and picture leases from it;
     /// the session takes the work and result buffers from it as a job needs them.
     #[must_use]
-    pub fn pool(&self) -> &FramePool<usize> {
-        &self.pool
+    pub fn pool(&self) -> &styx_frame::FramePool<usize> {
+        self.stream.pool()
     }
 
     /// The job stream's name, as the device answered it.
@@ -130,7 +108,7 @@ impl LiveSession {
     fn completion(&mut self, identity: u64, result: u32) -> Result<u32, CodecError> {
         let frame = self
             .stream
-            .next_frame(self.timeout)
+            .wait(self.timeout)
             .map_err(|e| CodecError::Failed(format!("the job stream: {e}")))?
             .ok_or_else(|| {
                 CodecError::Failed(format!("no completion within {:?}", self.timeout))
@@ -161,7 +139,7 @@ fn job_stream_name(client: &Client, device: &DeviceEntry) -> Result<String, Code
 
 /// What a completion frame says about the job `identity` whose result is `result`.
 fn read_completion(
-    stream: &FrameStream,
+    stream: &JobStream<usize>,
     frame: &HeldFrame,
     identity: u64,
     result: u32,
@@ -222,9 +200,10 @@ impl Session for LiveSession {
             }
             named |= 1 << buffer;
         }
-        let count = self.pool.buffers();
+        let pool = self.stream.pool();
+        let count = pool.buffers();
         let free = |index: usize| {
-            index < count.min(MAX_NAMED) && named & (1 << index) == 0 && self.pool.is_free(index)
+            index < count.min(MAX_NAMED) && named & (1 << index) == 0 && pool.is_free(index)
         };
         let work_index = (0..count)
             .find(|&index| free(index))
@@ -241,8 +220,7 @@ impl Session for LiveSession {
         // the job; it is given up once the completion has been read.
         let work_layout = Layouts::new(&[PlaneLayout::new(0, work.len(), work.len())])
             .ok_or_else(|| CodecError::Rejected("the work is empty".into()))?;
-        let mut work_lease = self
-            .pool
+        let mut work_lease = pool
             .acquire_at(
                 work_index,
                 FrameEntry::new(identity, 0, format, work_layout),
@@ -258,8 +236,7 @@ impl Session for LiveSession {
 
         let result_layout = Layouts::new(&[PlaneLayout::new(0, DATA_OFFSET, DATA_OFFSET)])
             .ok_or_else(|| CodecError::Failed("the result layout".into()))?;
-        let _result = self
-            .pool
+        let _result = pool
             .acquire_at(
                 result_index,
                 FrameEntry::new(identity, 0, format, result_layout),
@@ -278,84 +255,11 @@ impl Session for LiveSession {
             .map_err(|_| CodecError::Failed("the job does not encode".into()))?;
         let posted = self
             .stream
-            .post_job(&encoded)
+            .post(&encoded)
             .map_err(|e| CodecError::Failed(format!("posting job {identity}: {e}")))?;
         if !posted {
             return Err(CodecError::Failed("the job queue is full".into()));
         }
         self.completion(identity, result_index as u32)
-    }
-}
-
-/// The platform a job stream is opened with: the descriptors go to [`LinuxStreams`] as they
-/// would for a reader, and each buffer's descriptor is also mapped here as an [`FdMemory`], so
-/// the frame pool and the stream read and write the same memory.
-#[derive(Debug)]
-struct Mapping {
-    inner: LinuxStreams,
-    mapped: Mutex<Mapped>,
-}
-
-impl Default for Mapping {
-    fn default() -> Self {
-        Self {
-            inner: LinuxStreams,
-            mapped: Mutex::new(Mapped::default()),
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-struct Mapped {
-    /// One memfd for every buffer, when the stream is shared memory.
-    whole: Option<Arc<FdMemory>>,
-    /// One dma-buf per buffer, when the stream is one.
-    each: Vec<Arc<FdMemory>>,
-}
-
-impl Mapping {
-    fn lock(&self) -> MutexGuard<'_, Mapped> {
-        self.mapped.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-}
-
-impl StreamPlatform for Mapping {
-    fn recv_with_descriptors(
-        &self,
-        socket: BorrowedFd<'_>,
-        buf: &mut [u8],
-        fds: &mut Vec<OwnedFd>,
-    ) -> io::Result<usize> {
-        self.inner.recv_with_descriptors(socket, buf, fds)
-    }
-
-    fn map_ring(&self, fd: BorrowedFd<'_>, bytes: usize) -> io::Result<Arc<dyn WordMemory>> {
-        self.inner.map_ring(fd, bytes)
-    }
-
-    fn map_buffers(
-        &self,
-        fd: BorrowedFd<'_>,
-        bytes: usize,
-        writable: bool,
-    ) -> io::Result<Box<dyn ByteMemory>> {
-        let mine = FdMemory::memfd(fd.try_clone_to_owned()?, bytes, writable)?;
-        self.lock().whole = Some(Arc::new(mine));
-        self.inner.map_buffers(fd, bytes, writable)
-    }
-
-    fn map_buffer(
-        &self,
-        fd: BorrowedFd<'_>,
-        bytes: usize,
-        writable: bool,
-    ) -> io::Result<Box<dyn ByteMemory>> {
-        let mine = FdMemory::dmabuf(fd.try_clone_to_owned()?, bytes, writable)?;
-        self.lock().each.push(Arc::new(mine));
-        self.inner.map_buffer(fd, bytes, writable)
-    }
-
-    fn wait_doorbell(&self, fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {
-        self.inner.wait_doorbell(fd, timeout)
     }
 }
