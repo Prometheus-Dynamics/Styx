@@ -1,0 +1,21 @@
+[package]
+name = "styx-preview"
+description = "Camera previews for user interfaces: a consumer of a camera's frames that encodes small JPEG frames at a capped rate with styx-jpeg and publishes them as its own shared ring (styx-socket). It never restarts the camera or takes its frames beyond the one it encodes; serving them to a browser is the application's job."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+styx-jpeg = { path = "../../codec/jpeg" }
+styx-socket = { path = "../../out/socket" }
+
+[dev-dependencies]
+shm-ring = { workspace = true }
+
+[lints]
+workspace = true

@@ -156,10 +156,9 @@ impl Running {
     }
 }
 
-/// Stops the sensor, then the receiver, then gives the frame stream back to Lemnos. Each is tried even
-/// when an earlier one refuses. Dropping a stream without closing it would hold it until the
-/// connection ends, so the next start could not open it.
-fn halt(client: &Client, mut running: Running) -> Result<(), String> {
+/// Stops the sensor, then the receiver, then closes the frame stream, which gives it back to Lemnos.
+/// Each is tried even when an earlier one refuses.
+fn halt(mut running: Running) -> Result<(), String> {
     let sensor = running
         .sensor
         .stop()
@@ -168,15 +167,16 @@ fn halt(client: &Client, mut running: Running) -> Result<(), String> {
         .receiver
         .stop()
         .map_err(|status| format!("receiver.stop refused: {status:?}"));
-    let closed = client
-        .close_stream(running.frames.into_stream())
+    let closed = running
+        .frames
+        .close()
         .map_err(|e| format!("closing the frame stream: {e}"));
     sensor.and(receiver).and(closed)
 }
 
 /// Stops what started, then reports the fault, with the stop's refusal if there was one.
-fn unwind(client: &Client, running: Running, fault: Fault) -> Fault {
-    match (halt(client, running), fault) {
+fn unwind(running: Running, fault: Fault) -> Fault {
+    match (halt(running), fault) {
         (Ok(()), fault) => fault,
         (Err(stop), Fault::Retry(text)) => Fault::Retry(format!("{text}; {stop}")),
         (Err(_), permanent) => permanent,
@@ -203,7 +203,7 @@ pub struct Session<'a, C: Clock> {
 impl<C: Clock> Drop for Session<'_, C> {
     fn drop(&mut self) {
         if let Some(running) = self.running.take() {
-            let _ = halt(self.client, running);
+            let _ = halt(running);
         }
     }
 }
@@ -273,7 +273,7 @@ impl<'a, C: Clock> Session<'a, C> {
         self.status.next_delay = None;
         self.status.retry_at = None;
         match self.running.take() {
-            Some(running) => halt(self.client, running).map_err(Error::Device),
+            Some(running) => halt(running).map_err(Error::Device),
             None => Ok(()),
         }
     }
@@ -316,7 +316,7 @@ impl<'a, C: Clock> Session<'a, C> {
     fn fault(&mut self, text: String) -> Result<(), Error> {
         self.stalls = 0;
         let text = match self.running.take() {
-            Some(running) => match halt(self.client, running) {
+            Some(running) => match halt(running) {
                 Ok(()) => text,
                 Err(stop) => format!("{text}; {stop}"),
             },
@@ -432,7 +432,7 @@ impl<'a, C: Clock> Session<'a, C> {
         };
         match running.start(mode.drop_frames, self.policy.frame_timeout) {
             Ok(()) => Ok(running),
-            Err(fault) => Err(unwind(self.client, running, fault)),
+            Err(fault) => Err(unwind(running, fault)),
         }
     }
 }

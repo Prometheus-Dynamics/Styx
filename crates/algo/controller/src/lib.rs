@@ -31,5 +31,5 @@ mod sensor;
 
 pub use controller::{Controller, Start, Step};
 pub use error::{ControllerError, Result};
-pub use isp::IspSettings;
 pub use sensor::SensorUpdates;
+pub use styx_settings::IspSettings;

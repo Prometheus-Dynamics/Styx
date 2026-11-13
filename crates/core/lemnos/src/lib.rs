@@ -1,10 +1,13 @@
 //! Styx's client for Lemnos cameras, over the `lemnos-client` socket.
 //!
 //! [`find_chain`] finds the `camera.sensor/1` device by tag and follows `link` to its receiver and,
-//! when it has one, its ISP. [`Frames`] opens the receiver's frame stream and turns each of its
-//! buffers into [`styx_frame`] buffers, once, so that every frame is a [`FrameLease`] over the
-//! memory Lemnos filled: no copy. Lemnos carries the frame identity and timestamp as opaque values;
-//! both reach the lease unchanged.
+//! when it has one, its ISP; [`find_chains`] does that for every sensor on the board. [`Frames`]
+//! opens the receiver's frame stream and turns each of its buffers into [`styx_frame`] buffers,
+//! once, so that every frame is a [`FrameLease`] over the memory Lemnos filled: no copy. Lemnos
+//! carries the frame identity and timestamp as opaque values; both reach the lease unchanged.
+//! [`open_job_stream`] is the writable form, for a job stream the consumer fills and posts on.
+//!
+//! A `Frames` or `JobStream` that drops closes its stream on the daemon, so the stream opens again.
 //!
 //! Lemnos does no 3A and holds no tuning. This crate is discovery and buffers only.
 
@@ -99,17 +102,13 @@ fn has_tag(device: &DeviceEntry, tag: &str) -> bool {
     device.tags.iter().any(|t| t == tag)
 }
 
-/// Finds the one sensor in `devices`, then its receiver and ISP by following `link`.
-///
-/// A sensor with no receiver is refused. A receiver with no link is a camera without an ISP,
-/// which is valid.
-pub fn find_chain(devices: &[DeviceEntry]) -> Result<Chain, ChainError> {
-    let sensors: Vec<&DeviceEntry> = devices.iter().filter(|d| has_tag(d, SENSOR_TAG)).collect();
-    let sensor = match sensors.as_slice() {
-        [] => return Err(ChainError::NoSensor),
-        [one] => (*one).clone(),
-        many => return Err(ChainError::SensorCount(many.len())),
-    };
+/// The sensors in `devices`, in listing order.
+fn sensors<'a>(devices: &'a [DeviceEntry]) -> impl Iterator<Item = &'a DeviceEntry> + 'a {
+    devices.iter().filter(|d| has_tag(d, SENSOR_TAG))
+}
+
+/// The chain that starts at `sensor`, following `link` through `devices`.
+fn chain_from(devices: &[DeviceEntry], sensor: &DeviceEntry) -> Result<Chain, ChainError> {
     let path = follow(devices, &sensor.name);
     let receiver = match path.get(1) {
         Some(device) => (*device).clone(),
@@ -133,10 +132,33 @@ pub fn find_chain(devices: &[DeviceEntry]) -> Result<Chain, ChainError> {
         None => None,
     };
     Ok(Chain {
-        sensor,
+        sensor: sensor.clone(),
         receiver,
         isp,
     })
+}
+
+/// Finds the one sensor in `devices`, then its receiver and ISP by following `link`.
+///
+/// A sensor with no receiver is refused. A receiver with no link is a camera without an ISP,
+/// which is valid. More than one sensor is [`ChainError::SensorCount`]: see [`find_chains`].
+pub fn find_chain(devices: &[DeviceEntry]) -> Result<Chain, ChainError> {
+    let mut found = sensors(devices);
+    match (found.next(), found.next()) {
+        (None, _) => Err(ChainError::NoSensor),
+        (Some(one), None) => chain_from(devices, one),
+        (Some(_), Some(_)) => Err(ChainError::SensorCount(sensors(devices).count())),
+    }
+}
+
+/// Every sensor in `devices`, in listing order, each with its chain or why it is not one.
+///
+/// One entry per `camera.sensor/1` device, so a board with two sensors gives two entries. Each
+/// chain is followed through the whole list, so a receiver shared by sensors resolves for each.
+pub fn find_chains(devices: &[DeviceEntry]) -> Vec<Result<Chain, ChainError>> {
+    sensors(devices)
+        .map(|sensor| chain_from(devices, sensor))
+        .collect()
 }
 
 /// Errors from opening and reading frame streams.
@@ -314,10 +336,105 @@ fn slice(base: &Arc<FdMemory>, offset: usize, len: usize) -> Result<Slice, Error
     })
 }
 
+/// A stream taken from the daemon. It is given back when this drops, or at [`Taken::close`] with
+/// the daemon's answer. A stream left open holds its name on the daemon until the connection ends,
+/// so the next open of the same stream would wait on it.
+struct Taken {
+    client: Client,
+    stream: Option<FrameStream>,
+}
+
+impl Taken {
+    fn stream(&self) -> &FrameStream {
+        self.stream
+            .as_ref()
+            .expect("a taken stream is held until it is closed or taken")
+    }
+
+    fn stream_mut(&mut self) -> &mut FrameStream {
+        self.stream
+            .as_mut()
+            .expect("a taken stream is held until it is closed or taken")
+    }
+
+    /// Gives the stream back to the daemon and returns its answer.
+    fn close(mut self) -> Result<(), Error> {
+        match self.stream.take() {
+            Some(stream) => self.client.close_stream(stream).map_err(Error::Client),
+            None => Ok(()),
+        }
+    }
+
+    /// Hands the stream to the caller, who must give it back (`Client::close_stream`).
+    fn into_stream(mut self) -> FrameStream {
+        self.stream
+            .take()
+            .expect("a taken stream is held until it is closed or taken")
+    }
+}
+
+impl Drop for Taken {
+    fn drop(&mut self) {
+        if let Some(stream) = self.stream.take() {
+            // The daemon's answer has nowhere to go from here; a failure leaves the stream to the
+            // connection's end, as it would have without this.
+            let _ = self.client.close_stream(stream);
+        }
+    }
+}
+
+impl fmt::Debug for Taken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Taken")
+            .field("stream", &self.stream.as_ref().map(|s| s.name()))
+            .finish()
+    }
+}
+
+/// Opens `stream` on `device` and maps its buffers into one pool. The stream is taken as its
+/// writable or read-only form; on any error after it is taken it is given back.
+fn open_mapped<M: Default + Send + Sync>(
+    client: &Client,
+    device: u32,
+    stream: &str,
+    writable: bool,
+) -> Result<(Taken, FramePool<M>), Error> {
+    let platform = Arc::new(MappingPlatform {
+        inner: LinuxStreams,
+        mapped: Mutex::new(Mapped::default()),
+    });
+    let opened = if writable {
+        client.open_stream_writable(device, stream, platform.clone())
+    } else {
+        client.open_stream(device, stream, platform.clone())
+    }
+    .map_err(Error::Client)?;
+    // From here the stream is given back on every error path: `Taken` does it on drop.
+    let taken = Taken {
+        client: client.clone(),
+        stream: Some(opened),
+    };
+    let mapped = std::mem::take(&mut *platform.lock());
+    let (buffers, buffer_bytes) = {
+        let layout = taken.stream().layout();
+        (layout.buffers as usize, layout.buffer_bytes as usize)
+    };
+    let memories = match &mapped.whole {
+        Some(whole) => whole_memories(whole, buffers, buffer_bytes)?,
+        None => each_memories(&mapped.each, buffer_bytes)?,
+    };
+    if memories.is_empty() {
+        return Err(Error::NoBuffers);
+    }
+    let pool = pool_over(memories, buffer_bytes)?;
+    Ok((taken, pool))
+}
+
 /// Opens `stream` on `device` and maps its buffers, as one pool. Frames are `code` at `width` x
 /// `height`. Each buffer's metadata is `M`, made once by the pool (`M::default()`).
 ///
 /// The buffer count and size are the stream's own, from the open reply ([`FrameStream::layout`]).
+/// Dropping the returned [`Frames`] gives the stream back to the daemon.
 pub fn open_frames<M: Default + Send + Sync>(
     client: &Client,
     device: u32,
@@ -351,17 +468,7 @@ fn open_frames_with<M: Default + Send + Sync>(
     height: u32,
     writable: bool,
 ) -> Result<Frames<M>, Error> {
-    let platform = Arc::new(MappingPlatform {
-        inner: LinuxStreams,
-        mapped: Mutex::new(Mapped::default()),
-    });
-    let opened = if writable {
-        client.open_stream_writable(device, stream, platform.clone())
-    } else {
-        client.open_stream(device, stream, platform.clone())
-    }
-    .map_err(Error::Client)?;
-    let mapped = std::mem::take(&mut *platform.lock());
+    let (taken, pool) = open_mapped::<M>(client, device, stream, writable)?;
     let format = MediaFormat::with_defaults(
         code,
         styx_format::Resolution::new(width, height).ok_or(Error::NoBuffers)?,
@@ -372,21 +479,9 @@ fn open_frames_with<M: Default + Send + Sync>(
     } else {
         Some(styx_frame::packed_layouts(code, width, height, None, None).map_err(Error::Layout)?)
     };
-    let (buffers, buffer_bytes) = {
-        let layout = opened.layout();
-        (layout.buffers as usize, layout.buffer_bytes as usize)
-    };
-    let memories = match &mapped.whole {
-        Some(whole) => whole_memories(whole, buffers, buffer_bytes)?,
-        None => each_memories(&mapped.each, buffer_bytes)?,
-    };
-    if memories.is_empty() {
-        return Err(Error::NoBuffers);
-    }
-    let pool = pool_over(memories, buffer_bytes)?;
     let count = pool.buffers();
     Ok(Frames {
-        stream: opened,
+        taken,
         pool,
         pending: (0..count).map(|_| None).collect(),
         format,
@@ -394,6 +489,20 @@ fn open_frames_with<M: Default + Send + Sync>(
         held_drops: 0,
         oversize_drops: 0,
     })
+}
+
+/// Opens `stream` on `device` for a job stream: the consumer writes the stream's buffers and posts
+/// jobs on it, so it is mapped writable. Its buffers are one pool, and each buffer's metadata is
+/// `M` (made once by the pool).
+///
+/// Give it back with [`JobStream::close`], or drop it.
+pub fn open_job_stream<M: Default + Send + Sync>(
+    client: &Client,
+    device: u32,
+    stream: &str,
+) -> Result<JobStream<M>, Error> {
+    let (taken, pool) = open_mapped::<M>(client, device, stream, true)?;
+    Ok(JobStream { taken, pool })
 }
 
 /// One memory per buffer, cut from a memfd holding every buffer at the ring's stride.
@@ -442,8 +551,11 @@ pub fn pool_over<M: Default + Send + Sync>(
 ///
 /// A compressed stream (`FourCc::is_compressed`) has no fixed layout: each lease is one plane at
 /// offset 0 whose length is that frame's `HeldFrame::len()`, so its bytes are the bitstream.
+///
+/// Dropping a `Frames` closes its stream on the daemon. [`Frames::close`] does the same and
+/// returns the daemon's answer.
 pub struct Frames<M = ()> {
-    stream: FrameStream,
+    taken: Taken,
     pool: FramePool<M>,
     /// The Lemnos frame of each buffer, until its lease has dropped.
     pending: Vec<Option<HeldFrame>>,
@@ -457,7 +569,7 @@ pub struct Frames<M = ()> {
 impl<M> fmt::Debug for Frames<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Frames")
-            .field("stream", &self.stream.name())
+            .field("stream", &self.taken.stream().name())
             .field("buffers", &self.pool.buffers())
             .field("held_drops", &self.held_drops)
             .finish()
@@ -493,7 +605,10 @@ impl<M> Frames<M> {
                 continue;
             }
             if let Some(frame) = self.pending[index].take() {
-                self.stream.release(frame).map_err(Error::Client)?;
+                self.taken
+                    .stream_mut()
+                    .release(frame)
+                    .map_err(Error::Client)?;
             }
         }
         Ok(())
@@ -502,7 +617,12 @@ impl<M> Frames<M> {
     /// Waits up to `timeout` for a frame and returns it as a lease over its buffer.
     pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<M>>, Error> {
         self.sweep()?;
-        let Some(frame) = self.stream.next_frame(timeout).map_err(Error::Client)? else {
+        let Some(frame) = self
+            .taken
+            .stream_mut()
+            .next_frame(timeout)
+            .map_err(Error::Client)?
+        else {
             return Ok(None);
         };
         self.lease_for(frame).map(Some)
@@ -511,7 +631,7 @@ impl<M> Frames<M> {
     /// Takes a frame if one is ready, without waiting.
     pub fn try_next(&mut self) -> Result<Option<FrameLease<M>>, Error> {
         self.sweep()?;
-        let Some(frame) = self.stream.try_next().map_err(Error::Client)? else {
+        let Some(frame) = self.taken.stream_mut().try_next().map_err(Error::Client)? else {
             return Ok(None);
         };
         self.lease_for(frame).map(Some)
@@ -526,7 +646,10 @@ impl<M> Frames<M> {
                 let payload = self.pool.buffer_size().payload;
                 if len > payload {
                     self.oversize_drops += 1;
-                    self.stream.release(frame).map_err(Error::Client)?;
+                    self.taken
+                        .stream_mut()
+                        .release(frame)
+                        .map_err(Error::Client)?;
                     return Err(Error::Oversize { len, payload });
                 }
                 Layouts::new(&[PlaneLayout::new(0, 0, len)])
@@ -541,11 +664,17 @@ impl<M> Frames<M> {
             }
             Err(AcquireError::Held { .. }) => {
                 self.held_drops += 1;
-                self.stream.release(frame).map_err(Error::Client)?;
+                self.taken
+                    .stream_mut()
+                    .release(frame)
+                    .map_err(Error::Client)?;
                 Err(Error::Held(index as u32))
             }
             Err(e) => {
-                self.stream.release(frame).map_err(Error::Client)?;
+                self.taken
+                    .stream_mut()
+                    .release(frame)
+                    .map_err(Error::Client)?;
                 Err(Error::Acquire(e))
             }
         }
@@ -556,8 +685,96 @@ impl<M> Frames<M> {
         drop(lease);
     }
 
-    /// Closes the stream; its frames are given back to the daemon.
+    /// Closes the stream on the daemon, so it can be opened again, and returns the daemon's
+    /// answer. Dropping the `Frames` does the same without the answer.
+    pub fn close(self) -> Result<(), Error> {
+        self.taken.close()
+    }
+
+    /// Hands the stream to the caller, who must close it with `Client::close_stream`. The frames
+    /// are not closed here.
     pub fn into_stream(self) -> FrameStream {
-        self.stream
+        self.taken.into_stream()
+    }
+}
+
+/// A writable job stream: one stream whose buffers the consumer fills and whose jobs it posts.
+///
+/// The buffers are one [`FramePool`]. The consumer takes a buffer by number with
+/// [`FramePool::acquire_at`] (the work it writes, the result the job fills), posts the job with
+/// [`JobStream::post`], and waits for the completion frame with [`JobStream::wait`]. A completion
+/// names its buffer with [`HeldFrame::buffer`], and its bytes are read with [`JobStream::bytes`].
+/// The frame is given back with [`JobStream::release`].
+///
+/// Dropping a `JobStream` closes its stream on the daemon, as [`Frames`] does.
+pub struct JobStream<M = ()> {
+    taken: Taken,
+    pool: FramePool<M>,
+}
+
+impl<M> fmt::Debug for JobStream<M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JobStream")
+            .field("stream", &self.taken.stream().name())
+            .field("buffers", &self.pool.buffers())
+            .finish()
+    }
+}
+
+impl<M> JobStream<M> {
+    /// The job stream's name, as the device answered it.
+    pub fn name(&self) -> &str {
+        self.taken.stream().name()
+    }
+
+    /// Buffers in the stream.
+    pub fn buffers(&self) -> usize {
+        self.pool.buffers()
+    }
+
+    /// Bytes in each buffer, as the stream's open reply gives them.
+    pub fn buffer_bytes(&self) -> usize {
+        self.taken.stream().layout().buffer_bytes as usize
+    }
+
+    /// Bytes in each posted job, as the stream's open reply gives them.
+    pub fn job_bytes(&self) -> usize {
+        self.taken.stream().layout().job_bytes as usize
+    }
+
+    /// The pool over the stream's buffers. Take leases from it with [`FramePool::acquire_at`].
+    pub fn pool(&self) -> &FramePool<M> {
+        &self.pool
+    }
+
+    /// Posts one job. `Ok(false)` means the job queue is full and nothing was posted.
+    pub fn post(&mut self, job: &[u8]) -> Result<bool, Error> {
+        self.taken.stream_mut().post_job(job).map_err(Error::Client)
+    }
+
+    /// Waits up to `timeout` for the next completion frame; `None` after the timeout.
+    pub fn wait(&mut self, timeout: Duration) -> Result<Option<HeldFrame>, Error> {
+        self.taken
+            .stream_mut()
+            .next_frame(timeout)
+            .map_err(Error::Client)
+    }
+
+    /// The bytes of a frame this stream handed out by [`JobStream::wait`].
+    pub fn bytes(&self, frame: &HeldFrame) -> &[u8] {
+        self.taken.stream().bytes(frame)
+    }
+
+    /// Gives a completion frame back to Lemnos.
+    pub fn release(&mut self, frame: HeldFrame) -> Result<(), Error> {
+        self.taken
+            .stream_mut()
+            .release(frame)
+            .map_err(Error::Client)
+    }
+
+    /// Closes the stream on the daemon and returns the daemon's answer.
+    pub fn close(self) -> Result<(), Error> {
+        self.taken.close()
     }
 }
