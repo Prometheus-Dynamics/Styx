@@ -23,6 +23,7 @@ gstreamer = []
 styx-format = { path = "../../core/format" }
 styx-frame = { path = "../../core/frame", features = ["std", "linux"] }
 styx-socket = { path = "../../out/socket" }
+shm-fdpass = { workspace = true }
 
 [dev-dependencies]
 shm-ring = { workspace = true }

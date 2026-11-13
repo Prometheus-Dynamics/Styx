@@ -17,12 +17,13 @@ styx-format = { path = "../../core/format", optional = true }
 styx-frame = { path = "../../core/frame", features = ["linux"], optional = true }
 styx-settings = { path = "../settings", optional = true }
 styx-soft = { path = "../soft", optional = true }
+styx-simd = { path = "../../core/simd", optional = true }
 thiserror = { version = "2.0.21", optional = true }
 
 [features]
 default = []
 # The GPU ISP. Off, the crate is empty and needs none of the above.
-vulkan = ["dep:ash", "dep:styx-aaa", "dep:styx-format", "dep:styx-frame", "dep:styx-settings", "dep:styx-soft", "dep:thiserror"]
+vulkan = ["dep:ash", "dep:styx-aaa", "dep:styx-format", "dep:styx-frame", "dep:styx-settings", "dep:styx-simd", "dep:styx-soft", "dep:thiserror"]
 
 [dev-dependencies]
 # `tests/dmabuf.rs`: a dma-buf from the system heap (Lemnos's dma-heap allocation).
