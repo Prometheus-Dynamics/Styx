@@ -37,10 +37,12 @@
 //!
 //! # Per camera. The key is the camera's id. Sizes and rates are passed to the backend as given.
 //! [camera."lemnos:sensor0"]
-//! width = 1332
-//! height = 990
-//! fps_milli = 30000      # thousandths of a frame per second, as the backend's request
-//!                        # (native: required, it is the mode's floor and the initial rate)
+//! width = 1280
+//! height = 800
+//! format = "pRAA"        # native: optional; the frame format the mode must have (pRAA is 10-bit
+//!                        # RGGB packed, RGGB is 8-bit). Asking for a format no mode has is an error.
+//! bit_depth = 10         # native: optional; the bit depth the mode must have
+//! fps_milli = 60000      # thousandths of a frame per second (native: required)
 //! exposure_us = 10000    # native: the sensor's initial exposure
 //! gain_milli = 1000      # native: the sensor's initial analogue gain (1000 is 1.0x)
 //! # force = "native"
@@ -54,8 +56,11 @@
 //! hardware_reserve = 4   # optional: pool buffers the camera keeps to stream (default: half, min 2)
 //! ```
 //!
-//! Native cameras take their format from the sensor's mode; `format` is for V4L2 and libcamera
-//! only, and a native camera that sets it gets an error at open.
+//! Native cameras: `width` and `height` are the smallest mode that is acceptable, and `format` and
+//! `bit_depth` pick the mode when they are set (only modes with that format or depth are
+//! candidates). With neither set, the highest bit depth that reaches `fps_milli` is taken, and a
+//! lower depth only when the rate needs it. A rate above the chosen mode's ceiling (its shortest
+//! frame) is answered with the ceiling. The status line says which mode, and why (`mode_reason`).
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
@@ -98,9 +103,13 @@ pub struct CameraConfig {
     /// Requested height in pixels. Native: the mode must be at least this tall (0 accepts any).
     #[serde(default)]
     pub height: Option<u32>,
-    /// Requested pixel format's four-character code. V4L2 and libcamera only.
+    /// Requested pixel format's four-character code. V4L2 and libcamera: the format. Native: the
+    /// format the sensor mode must have (`pRAA` for 10-bit RGGB, `RGGB` for 8-bit).
     #[serde(default)]
     pub format: Option<String>,
+    /// Native: the bit depth the sensor mode must have. Absent: the choice rule decides.
+    #[serde(default)]
+    pub bit_depth: Option<u8>,
     /// Requested frame rate in thousandths of a frame per second, passed as given.
     #[serde(default)]
     pub fps_milli: Option<u32>,

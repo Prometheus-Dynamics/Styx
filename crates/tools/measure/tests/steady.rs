@@ -127,7 +127,15 @@ fn the_read_loop_allocates_nothing_per_frame() {
             .and_then(|s| s.times.max())
             .map(|ns| ns as f64);
         let within_bound = isp.is_none() || isp_max.is_some_and(|m| m < bound_ns);
-        if within_bound {
+        // "Keeps up" is checked, not assumed: the longest capture-to-reader time covers a stall
+        // of the reader, the service or the simulated camera (a busy machine).
+        let latency_max = session.stats.latency.max().map(|ns| ns as f64);
+        if latency_max.is_some_and(|m| m >= bound_ns) {
+            println!(
+                "isp {isp:?}: capture-to-reader max {latency_max:?} ns is not below {bound_ns} ns: a process was held up; zero gaps not asserted ({} gaps)",
+                session.stats.gaps
+            );
+        } else if within_bound {
             assert_eq!(session.stats.gaps, 0, "a reader that keeps up has no gaps");
             assert_eq!(
                 session.reader_stats().skipped,

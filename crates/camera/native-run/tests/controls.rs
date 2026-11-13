@@ -56,8 +56,9 @@ fn request() -> Request {
     Request {
         width: 320,
         height: 40,
-        min_fps_milli: 60_000,
+        fps_milli: 60_000,
         bit_depth: Some(10),
+        format: None,
         bayer: Some(BayerOrder::Rggb),
     }
 }

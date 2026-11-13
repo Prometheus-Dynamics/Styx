@@ -121,7 +121,10 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
     while seen < 12 && Instant::now() < deadline {
         if let Some(lease) = frames.next(Duration::from_millis(200)).expect("next") {
             assert!(lease.timestamp_ns() > 0);
-            assert_ne!(Some(lease.id()), last_id, "identity repeated");
+            // The id is the frame's sequence in the stream: each frame is the one before plus 1.
+            if let Some(last) = last_id {
+                assert_eq!(lease.id(), last + 1, "frame ids must count the stream");
+            }
             last_id = Some(lease.id());
             let mapped = lease.read().expect("mapped for the CPU").plane(0).is_some();
             assert!(mapped);
@@ -186,7 +189,7 @@ fn compressed_stream_leases_are_one_plane_of_each_frames_bytes() {
     let mut lengths = std::collections::BTreeSet::new();
     while seen < 12 && Instant::now() < deadline {
         if let Some(lease) = frames.next(Duration::from_millis(200)).expect("next") {
-            // The sim's identity is its frame sequence, and its frame bytes follow from that.
+            // The lease id is the frame's sequence, and the sim's frame bytes follow from that.
             let expect = sim::frame_bytes(layout.size, lease.id()) as usize;
             {
                 let read = lease.read().expect("mapped for the CPU");

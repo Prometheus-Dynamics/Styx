@@ -259,6 +259,82 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
 }
 
 #[test]
+fn a_rate_above_the_mode_ceiling_is_answered_with_the_ceiling_and_the_status_says_why() {
+    let dir = test_dir("ceiling");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let recorder = Arc::new(Recorder::default());
+    // 240 fps is above both simulated modes (120 and 60 fps): the fastest candidate runs at its
+    // ceiling, and the status says what was asked, what it gives and why.
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
+         [camera.\"lemnos:cam0-sensor\"]\nwidth = 320\nheight = 40\nfps_milli = 240000\n\
+         exposure_us = 5000\n\
+         [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let service = start_service(&text, recorder, &lemnos_socket);
+    let control = service.control_socket().to_path_buf();
+    let cam = "lemnos:cam0-sensor";
+    wait_until("camera 0 streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 30
+    });
+    let line = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&line, "requested"), Some("240000"), "{line}");
+    assert_eq!(field(&line, "mode"), Some("0"), "{line}");
+    assert_eq!(field(&line, "format"), Some("pRAA"), "{line}");
+    assert_eq!(field(&line, "bits"), Some("10"), "{line}");
+    assert_eq!(
+        field(&line, "mode_reason"),
+        Some("rate_clamped_to_ceiling"),
+        "{line}"
+    );
+    let why = field(&line, "mode_text").expect("the mode's reason");
+    assert!(why.contains("asked_240.000_fps"), "{line}");
+    let achieved: u32 = field(&line, "achieved")
+        .and_then(|v| v.parse().ok())
+        .expect("the achieved rate");
+    assert!(
+        (100_000..240_000).contains(&achieved),
+        "achieved {achieved}: {line}"
+    );
+    service.shutdown();
+}
+
+#[test]
+fn an_unknown_format_is_a_status_error_that_names_the_formats_the_modes_have() {
+    let dir = test_dir("format");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let recorder = Arc::new(Recorder::default());
+    // The simulated modes are both 10-bit (pRAA): an 8-bit format is not among them.
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
+         [camera.\"lemnos:cam0-sensor\"]\nformat = \"RGGB\"\nfps_milli = 60000\n\
+         [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let service = start_service(&text, recorder, &lemnos_socket);
+    let control = service.control_socket().to_path_buf();
+    let cam = "lemnos:cam0-sensor";
+    // last_error is free text at the end of the line: everything after `last_error=`.
+    let error_of = |line: &str| line.split_once("last_error=").map(|(_, e)| e.to_string());
+    wait_until("camera 0's error", Duration::from_secs(20), || {
+        line_of(&control, cam)
+            .is_some_and(|l| error_of(&l).is_some_and(|e| e.contains("has format RGGB")))
+    });
+    let line = line_of(&control, cam).expect("listed");
+    assert_ne!(state_of(&control, cam), "streaming", "{line}");
+    assert!(
+        error_of(&line).is_some_and(|e| e.contains("the modes have pRAA")),
+        "{line}"
+    );
+    service.shutdown();
+}
+
+#[test]
 fn a_camera_that_leaves_and_returns_is_served_again_with_capped_backoff() {
     let dir = test_dir("leave");
     let lemnos_socket = dir.join("lemnos.sock");
