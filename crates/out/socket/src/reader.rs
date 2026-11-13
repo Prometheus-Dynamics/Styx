@@ -1,20 +1,21 @@
 //! The reader: a process that takes the producer's frames in place.
 
 use std::io;
-use std::os::fd::{AsFd, OwnedFd};
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
 use std::time::Duration;
 
 use shm_fdpass::{self as fdpass, MAX_FDS};
 use shm_ring::{FieldId, ReadMap, Reader as RingReader, SampleTime};
-use shm_ring_buffers::{Batch, BufferDesc, BufferReader, Held, MAX_BUFFERS, NextBatch, PoolView};
+use shm_ring_buffers::{Batch, BufferReader, Held, NextBatch, PoolView};
 use shm_ring_doorbell::{Doorbell, Wake};
 use shm_ring_holds::Marks;
 use styx_frame::{BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool};
 
 use crate::SocketError;
-use crate::wire::{ACK_LEN, CHUNK_LEN, OFFER_LEN, VERSION, decode_meta};
+use crate::geometry::Geometry;
+use crate::wire::{ACK_LEN, OFFER_LEN, Offer, VERSION, decode_meta, decode_offer};
 
 const FIELD: FieldId = FieldId(0);
 
@@ -148,6 +149,7 @@ pub struct Reader {
     marks: Arc<Marks>,
     frames: FramePool<()>,
     doorbell: Doorbell,
+    geometry: Geometry,
     counters: Counters,
 }
 
@@ -159,98 +161,59 @@ impl Reader {
     ///
     /// [`SocketError`] if the offer is not the one this build understands, or a mapping fails.
     pub fn connect(socket: UnixStream) -> Result<Self, SocketError> {
-        let mut offer = [0_u8; OFFER_LEN];
-        let received = fdpass::recv(socket.as_fd(), &mut offer, MAX_FDS, false)?.ok_or(
+        let mut offer_bytes = [0_u8; OFFER_LEN];
+        let received = fdpass::recv(socket.as_fd(), &mut offer_bytes, MAX_FDS, false)?.ok_or(
             SocketError::Protocol("the producer closed before its offer"),
         )?;
-        if received.len != OFFER_LEN || offer[0..4] != VERSION.to_le_bytes() {
+        if received.len != OFFER_LEN {
             return Err(SocketError::Protocol(
                 "the offer is not this protocol version",
             ));
         }
-        let buffers = u32::from_le_bytes(offer[4..8].try_into().unwrap_or([0; 4])) as usize;
-        let slot = u32::from_le_bytes(offer[8..12].try_into().unwrap_or([0; 4]));
-        let max_held = u32::from_le_bytes(offer[12..16].try_into().unwrap_or([0; 4]));
-        let payload = usize::try_from(u64::from_le_bytes(
-            offer[16..24].try_into().unwrap_or([0; 8]),
-        ))
-        .map_err(|_| SocketError::Protocol("a buffer is longer than this build can map"))?;
-        if buffers == 0 || buffers > MAX_BUFFERS as usize {
-            return Err(SocketError::Protocol("the offer names no usable buffers"));
-        }
-        if payload == 0 {
-            return Err(SocketError::Protocol("the offer's buffers are empty"));
-        }
+        let Offer {
+            slot,
+            max_held,
+            geometry,
+        } = decode_offer(&offer_bytes).ok_or(SocketError::Protocol(
+            "the offer is not one this build reads",
+        ))?;
 
         let mut fds = received.fds;
-        let first_count = fds.len();
-        if first_count < 2 || first_count - 2 > buffers {
+        if fds.len() != 3 {
             return Err(SocketError::Protocol(
                 "the offer carries the wrong descriptors",
             ));
         }
-        let (Some(ring_fd), Some(page_fd)) = (fds.take(0), fds.take(1)) else {
+        let (Some(ring_fd), Some(page_fd), Some(pool_fd)) = (fds.take(0), fds.take(1), fds.take(2))
+        else {
             return Err(SocketError::Protocol(
-                "the offer lacks the ring or the pool page",
+                "the offer lacks the ring, the pool page or the pool",
             ));
         };
-        let mut descriptors: Vec<OwnedFd> = Vec::with_capacity(buffers);
-        for index in 2..first_count {
-            descriptors.push(
-                fds.take(index)
-                    .ok_or(SocketError::Protocol("a buffer descriptor is missing"))?,
-            );
-        }
-        while descriptors.len() < buffers {
-            let mut chunk = [0_u8; CHUNK_LEN];
-            let received = fdpass::recv(socket.as_fd(), &mut chunk, MAX_FDS, false)?.ok_or(
-                SocketError::Protocol("the producer closed inside the buffers"),
-            )?;
-            let first = u32::from_le_bytes(chunk[4..8].try_into().unwrap_or([0; 4])) as usize;
-            if received.len != CHUNK_LEN
-                || chunk[0..4] != VERSION.to_le_bytes()
-                || first != descriptors.len()
-            {
-                return Err(SocketError::Protocol("a buffer message is out of order"));
-            }
-            let mut fds = received.fds;
-            let count = fds.len();
-            if count == 0 || descriptors.len() + count > buffers {
-                return Err(SocketError::Protocol(
-                    "a buffer message carries the wrong count",
-                ));
-            }
-            for index in 0..count {
-                descriptors.push(
-                    fds.take(index)
-                        .ok_or(SocketError::Protocol("a buffer descriptor is missing"))?,
-                );
-            }
-        }
 
-        // The ring's own view of the buffers: read-only, checked by the ring crate.
-        let descs: Vec<BufferDesc> = (0..buffers)
-            .map(|index| BufferDesc {
-                descriptor: index as u8,
-                offset: 0,
-                size: payload as u64,
-            })
-            .collect();
-        let view_fds = descriptors
-            .iter()
-            .map(OwnedFd::try_clone)
-            .collect::<io::Result<Vec<OwnedFd>>>()?;
-        let view = PoolView::attach(page_fd, view_fds, &descs)?;
+        // The ring's own view of the buffers: read-only, checked by the ring crate. Every buffer
+        // is a slice of the one pool memfd, at the offsets the geometry gives.
+        let descs = geometry.buffer_descs();
+        let frame_fd = pool_fd.try_clone()?;
+        let view = PoolView::attach(page_fd, vec![pool_fd], &descs)?;
         let ring = RingReader::attach(ring_fd)?;
-        let marks = Arc::new(Marks::create(buffers as u32, slot, max_held)?);
+        let marks = Arc::new(Marks::create(geometry.buffers() as u32, slot, max_held)?);
         let reader = BufferReader::new(ring, FIELD, view, Arc::clone(&marks));
 
-        // Our own FrameLease view of the same buffers, mapped read-only once.
-        let mut memories: Vec<Box<dyn BufferMemory>> = Vec::with_capacity(buffers);
-        for fd in descriptors {
-            memories.push(Box::new(FdMemory::memfd(fd, payload, false)?));
+        // Our own FrameLease view of the same buffers, mapped read-only, one per buffer.
+        let mut memories: Vec<Box<dyn BufferMemory>> = Vec::with_capacity(geometry.buffers());
+        for index in 0..geometry.buffers() {
+            memories.push(Box::new(FdMemory::memfd_at(
+                frame_fd.try_clone()?,
+                geometry.offset(index),
+                geometry.buffer_bytes(),
+                false,
+            )?));
         }
-        let frames = FramePool::new(BufferSize::new(payload, 0), memories)?;
+        let frames = FramePool::new(
+            BufferSize::new(geometry.payload(), geometry.slack()),
+            memories,
+        )?;
 
         let doorbell = Doorbell::create()?;
         let (eventfd, bell_page) = doorbell.bell_fds()?;
@@ -270,6 +233,7 @@ impl Reader {
             marks,
             frames,
             doorbell,
+            geometry,
             counters: Counters::default(),
         })
     }
@@ -354,6 +318,11 @@ impl Reader {
                 .checked_div(counters.delivered)
                 .unwrap_or(0),
         }
+    }
+
+    /// The producer's shape, as its handshake named it.
+    pub const fn geometry(&self) -> Geometry {
+        self.geometry
     }
 
     /// The socket this reader holds open. The producer counts the reader as alive while it is.
