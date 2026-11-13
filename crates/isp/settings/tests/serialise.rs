@@ -53,11 +53,18 @@ fn missing_optional_fields_take_their_defaults() {
 }
 
 #[test]
-fn controller_neutral_settings_convert_and_compare_as_json() {
-    let c = styx_controller::IspSettings::neutral(0.0625);
-    let want = serde_json::to_value(&c).unwrap();
-    let ours: IspSettings = c.into();
-    assert_eq!(serde_json::to_value(&ours).unwrap(), want);
+fn neutral_settings_serialise_as_the_controller_wrote_them() {
+    // The controller's `IspSettings::neutral(0.0625)` as it serialised before the type moved here.
+    const CONTROLLER_NEUTRAL: &str = concat!(
+        r#"{"from_frame":0,"black_level":0.0625,"wb":[1.0,1.0,1.0],"digital_gain":1.0,"#,
+        r#""flicker":1.0,"ccm":[1.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,1.0],"gamma":null,"#,
+        r#""lens_shading":null,"denoise":{"noise_constant":0.0,"noise_slope":0.0,"sdn":null,"#,
+        r#""cdn":null,"tdn":null,"geq":null,"dpc":0},"sharpen":null}"#
+    );
+    let neutral = IspSettings::neutral(0.0625);
+    assert_eq!(serde_json::to_string(&neutral).unwrap(), CONTROLLER_NEUTRAL);
+    let back: IspSettings = serde_json::from_str(CONTROLLER_NEUTRAL).unwrap();
+    assert_eq!(back, neutral);
 }
 
 #[test]

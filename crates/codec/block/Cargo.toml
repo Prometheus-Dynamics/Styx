@@ -17,10 +17,6 @@ lemnos-client = { workspace = true }
 lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
 lemnos-contract-codec-block = { workspace = true }
 lemnos-linux-sys = { workspace = true }
-# Not in the root workspace table at 04d09360's rev, declared here with the same URL and rev as
-# styx-lemnos declares them.
-lemnos-wire = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-linux-stream = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
 
 [dev-dependencies]
 # Styx's own H.264 encoder: the streams the H.264 parser's tests read.

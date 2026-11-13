@@ -11,7 +11,7 @@
 //! Finding a chain does not claim it. One backend owns a camera at a time, and two cameras may
 //! name the same receiver on a board; choosing between them is for the layer that opens a camera.
 
-use styx_lemnos::{Chain, ChainError, Client, DeviceEntry, Error, SENSOR_TAG, find_chain};
+use styx_lemnos::{Chain, ChainError, Client, DeviceEntry, Error, SENSOR_TAG, find_chains};
 
 /// A camera: a sensor and the receiver and ISP its `link` leads to, as Lemnos names them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,22 +60,12 @@ fn has_tag(device: &DeviceEntry, tag: &str) -> bool {
     device.tags.iter().any(|t| t == tag)
 }
 
-/// `devices` with every sensor but `sensor` left out, so [`find_chain`] sees exactly one sensor.
-/// Receivers and ISPs stay, since a chain may run through them.
-fn one_sensor_view(devices: &[DeviceEntry], sensor: &str) -> Vec<DeviceEntry> {
-    devices
-        .iter()
-        .filter(|d| d.name == sensor || !has_tag(d, SENSOR_TAG))
-        .cloned()
-        .collect()
-}
-
 /// Resolves every `camera.sensor/1` device in `devices` to its chain.
 pub fn cameras(devices: &[DeviceEntry]) -> Discovery {
     let mut found = Discovery::default();
-    for sensor in devices.iter().filter(|d| has_tag(d, SENSOR_TAG)) {
-        let view = one_sensor_view(devices, &sensor.name);
-        match find_chain(&view) {
+    let sensors = devices.iter().filter(|d| has_tag(d, SENSOR_TAG));
+    for (sensor, chain) in sensors.zip(find_chains(devices)) {
+        match chain {
             Ok(chain) => found.cameras.push(Camera { chain }),
             Err(why) => found.refused.push((sensor.name.clone(), why)),
         }

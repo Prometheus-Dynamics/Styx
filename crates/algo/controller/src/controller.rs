@@ -5,9 +5,10 @@ use styx_aaa::{
     CameraConfig, FrameMetadata, LensRequest, Params, Pipeline, SensorRequest, Statistics, Tuning,
     WarmStart,
 };
+use styx_settings::IspSettings;
 
 use crate::error::Result;
-use crate::isp::{IspSettings, lens_shading_with_bands};
+use crate::isp::{lens_shading_with_bands, scale_spatial_denoise, set_from_params};
 use crate::sensor::SensorUpdates;
 
 /// The start-up values: the sensor request for the first frames and the ISP settings before any
@@ -118,8 +119,8 @@ impl Controller {
         self.last_request = p.sensor;
         self.last_lens = p.lens.map(|l| l.position);
         self.started = true;
-        self.isp.set_from_params(&p, 0, 1.0);
-        self.isp.scale_spatial_denoise(self.spatial_denoise);
+        set_from_params(&mut self.isp, &p, 0, 1.0);
+        scale_spatial_denoise(&mut self.isp, self.spatial_denoise);
         Ok(Start {
             sensor: p.sensor,
             updates,
@@ -183,8 +184,8 @@ fn settings_for_frame(
     max_digital_gain: f64,
     spatial_denoise: f64,
 ) {
-    isp.set_from_params(params, meta.frame, 1.0);
-    isp.scale_spatial_denoise(spatial_denoise);
+    set_from_params(isp, params, meta.frame, 1.0);
+    scale_spatial_denoise(isp, spatial_denoise);
     let g = params.frame_gain(meta, max_digital_gain);
     isp.digital_gain = g.digital_gain * params.colour_gains[1].max(1e-6);
     isp.flicker = g.flicker;
