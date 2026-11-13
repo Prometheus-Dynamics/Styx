@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
-use styx_select::{Backend, Selected};
+use styx_select::{Backend, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
 
 use crate::config::CameraConfig;
@@ -92,6 +92,69 @@ impl fmt::Display for State {
     }
 }
 
+/// The frames the measured rate is taken over: the last this many capture timestamps.
+pub const RATE_WINDOW: usize = 32;
+
+/// The capture timestamps of the last [`RATE_WINDOW`] frames, in a fixed array: the measured rate
+/// is computed from them with no allocation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RateWindow {
+    stamps: [u64; RATE_WINDOW],
+    /// Frames pushed so far (the array is filled from index 0, then wraps).
+    count: u64,
+}
+
+impl RateWindow {
+    pub const fn new() -> Self {
+        Self {
+            stamps: [0; RATE_WINDOW],
+            count: 0,
+        }
+    }
+
+    /// Adds a frame's capture timestamp, `CLOCK_MONOTONIC` nanoseconds.
+    pub fn push(&mut self, timestamp_ns: u64) {
+        self.stamps[(self.count % RATE_WINDOW as u64) as usize] = timestamp_ns;
+        self.count += 1;
+    }
+
+    /// The rate over the window, in thousandths of a frame per second: the frames after the
+    /// oldest one, over the time from it to the newest. `None` with fewer than two frames, or with
+    /// no time between them.
+    pub fn measured_milli(&self) -> Option<u32> {
+        let n = self.count.min(RATE_WINDOW as u64);
+        if n < 2 {
+            return None;
+        }
+        let newest = self.stamps[((self.count - 1) % RATE_WINDOW as u64) as usize];
+        let oldest = self.stamps[((self.count - n) % RATE_WINDOW as u64) as usize];
+        let span = newest.checked_sub(oldest).filter(|span| *span > 0)?;
+        // (n - 1) frames over `span` ns, in milli-fps: (n - 1) * 1e12 / span.
+        let milli = u128::from(n - 1) * 1_000_000_000_000 / u128::from(span);
+        u32::try_from(milli).ok()
+    }
+}
+
+impl Default for RateWindow {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The frame ring's window for a camera: how many of the newest frames are kept for readers, the
+/// pool's buffers, the hardware reserve, and the frames given back after leaving the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct KeepWindow {
+    /// The keep window in force (0 until the camera publishes).
+    pub keep: usize,
+    /// Buffers in the camera's pool (0 until the camera publishes).
+    pub buffers: usize,
+    /// Buffers the camera keeps for itself to stream (0 until the camera publishes).
+    pub hardware_reserve: usize,
+    /// Frames given back to the pool after leaving the window.
+    pub reclaimed: u64,
+}
+
 /// The last frame a camera delivered: its identity and the metadata in force on it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameSummary {
@@ -140,6 +203,42 @@ pub struct CameraStatus {
     pub skipped: u64,
     /// The last frame delivered.
     pub last_frame: Option<FrameSummary>,
+    /// The frame rate asked for, in milli-fps: the config's `fps_milli`, or the last frame-rate
+    /// control accepted. `None` when nothing asks for one.
+    pub requested_milli: Option<u32>,
+    /// The rate the backend reports its frames run at, in milli-fps (`None` when it does not know).
+    pub achieved_milli: Option<u32>,
+    /// Whether the backend clamped the rate asked for to the sensor mode's limit.
+    pub rate_clamped: bool,
+    /// The achieved rate in the last frame's metadata, in milli-fps (`None` before a frame, or
+    /// when the metadata does not carry one).
+    pub achieved_meta_milli: Option<u32>,
+    /// The rate measured from the capture timestamps of the last [`RATE_WINDOW`] frames.
+    pub measured_milli: Option<u32>,
+    /// The frame ring's keep window, pool size, hardware reserve and reclaimed count.
+    pub keep: KeepWindow,
+    /// The capture timestamps the measured rate is taken over.
+    pub rate_window: RateWindow,
+}
+
+impl CameraStatus {
+    /// Why the achieved rate is not the requested one, in one line, when it is not. `None` when
+    /// they agree, or when there is nothing to compare.
+    pub fn rate_reason(&self) -> Option<String> {
+        match (self.requested_milli, self.achieved_milli) {
+            (None, _) => None,
+            (Some(asked), Some(got)) if asked != got => {
+                let why = if self.rate_clamped {
+                    "clamped to the sensor mode's frame length limit"
+                } else {
+                    "the frame length is whole lines, so the rate rounds"
+                };
+                Some(format!("asked {asked} milli-fps, runs at {got}: {why}"))
+            }
+            (Some(_), None) => Some("the backend does not report its rate".to_string()),
+            _ => None,
+        }
+    }
 }
 
 /// One camera's slot: its settings, its current selection, its status and its command queue.
@@ -201,6 +300,13 @@ impl Slot {
             frames: 0,
             skipped: 0,
             last_frame: None,
+            requested_milli: settings.fps_milli,
+            achieved_milli: None,
+            rate_clamped: false,
+            achieved_meta_milli: None,
+            measured_milli: None,
+            keep: KeepWindow::default(),
+            rate_window: RateWindow::new(),
         };
         Self {
             id,
@@ -303,6 +409,21 @@ impl Slot {
         lock(&self.status).readers = readers;
     }
 
+    pub(crate) fn set_requested(&self, milli: Option<u32>) {
+        lock(&self.status).requested_milli = milli;
+    }
+
+    /// The backend's rate, as it reports it now.
+    pub(crate) fn set_rate(&self, rate: RateReport) {
+        let mut status = lock(&self.status);
+        status.achieved_milli = rate.achieved_milli;
+        status.rate_clamped = rate.clamped;
+    }
+
+    pub(crate) fn set_keep(&self, keep: KeepWindow) {
+        lock(&self.status).keep = keep;
+    }
+
     pub(crate) fn published(&self, dropped: bool) {
         let mut status = lock(&self.status);
         if dropped {
@@ -323,6 +444,10 @@ impl Slot {
             status.skipped += id - last.id - 1;
         }
         status.frames += 1;
+        status.rate_window.push(lease.timestamp_ns());
+        status.measured_milli = status.rate_window.measured_milli();
+        status.achieved_meta_milli =
+            (meta.achieved_fps_milli != 0).then_some(meta.achieved_fps_milli);
         status.last_frame = Some(FrameSummary {
             id,
             timestamp_ns: lease.timestamp_ns(),
@@ -338,5 +463,75 @@ impl Slot {
     /// The last frame's control values, for `controls`.
     pub fn current_controls(&self) -> Option<[ControlValue; Control::COUNT]> {
         lock(&self.status).last_frame.map(|f| f.controls)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(requested: Option<u32>, achieved: Option<u32>, clamped: bool) -> CameraStatus {
+        let mut s = Slot::new(
+            "cam".to_string(),
+            CameraConfig::default(),
+            std::sync::mpsc::channel().0,
+        )
+        .snapshot();
+        s.requested_milli = requested;
+        s.achieved_milli = achieved;
+        s.rate_clamped = clamped;
+        s
+    }
+
+    #[test]
+    fn the_measured_rate_is_over_the_window_of_capture_timestamps() {
+        let mut window = RateWindow::new();
+        assert_eq!(window.measured_milli(), None);
+        // 120 fps: a frame each 8 333 333 ns, more frames than the window holds.
+        for i in 0..(RATE_WINDOW as u64 * 3) {
+            window.push(1_000_000_000 + i * 8_333_333);
+        }
+        let measured = window.measured_milli().expect("a rate");
+        // (n - 1) frames over the span: 31 intervals of 8 333 333 ns is 119.9999 fps.
+        assert!(
+            (measured as i64 - 120_000).abs() < 10,
+            "measured {measured}"
+        );
+    }
+
+    #[test]
+    fn a_window_with_no_time_between_frames_has_no_rate() {
+        let mut window = RateWindow::new();
+        window.push(5);
+        window.push(5);
+        assert_eq!(window.measured_milli(), None);
+    }
+
+    #[test]
+    fn the_reason_names_a_clamp_and_is_absent_when_the_rates_agree() {
+        assert_eq!(status(None, Some(119_880), true).rate_reason(), None);
+        assert_eq!(
+            status(Some(120_000), Some(120_000), false).rate_reason(),
+            None
+        );
+        let clamped = status(Some(120_000), Some(114_800), true)
+            .rate_reason()
+            .expect("a reason");
+        assert!(
+            clamped.contains("clamped to the sensor mode's frame length limit"),
+            "{clamped}"
+        );
+        assert!(
+            clamped.contains("asked 120000") && clamped.contains("114800"),
+            "{clamped}"
+        );
+        let rounded = status(Some(120_000), Some(119_984), false)
+            .rate_reason()
+            .expect("a reason");
+        assert!(rounded.contains("whole lines"), "{rounded}");
+        assert_eq!(
+            status(Some(120_000), None, false).rate_reason().as_deref(),
+            Some("the backend does not report its rate")
+        );
     }
 }

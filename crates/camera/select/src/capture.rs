@@ -46,6 +46,16 @@ impl fmt::Display for CaptureError {
 
 impl std::error::Error for CaptureError {}
 
+/// What the backend says about the frame rate its camera runs at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RateReport {
+    /// The rate the frames run at, in thousandths of a frame per second, as the backend knows it
+    /// (native: the frame length over the line time). `None` when the backend does not know.
+    pub achieved_milli: Option<u32>,
+    /// The backend clamped the rate asked for to the sensor mode's limit.
+    pub clamped: bool,
+}
+
 /// An opened camera. Dropping it stops it.
 pub trait Capture {
     /// The next frame, or `None` when none arrived within `timeout`.
@@ -61,6 +71,12 @@ pub trait Capture {
 
     /// What the camera is doing now.
     fn status(&self) -> Status;
+
+    /// The frame rate the backend reports. The default says nothing is known; a backend that
+    /// knows its rate overrides it.
+    fn rate(&self) -> RateReport {
+        RateReport::default()
+    }
 
     /// Stops the camera. Idempotent.
     fn stop(&mut self);

@@ -12,7 +12,7 @@ use styx_libcamera::{Capture as LibcameraStream, CaptureConfig, Error as Libcame
 use styx_native_run::{Clock, Session, State};
 use styx_v4l2::{State as V4l2State, Stream, StreamConfig};
 
-use crate::capture::{Capture, CaptureError, Status};
+use crate::capture::{Capture, CaptureError, RateReport, Status};
 
 impl<C: Clock> std::fmt::Debug for NativeCapture<'_, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -29,6 +29,8 @@ impl<C: Clock> std::fmt::Debug for NativeCapture<'_, C> {
 /// without it. [`Update::frame`] is honoured: the session applies each value from its frame.
 pub struct NativeCapture<'a, C: Clock> {
     session: Session<'a, C>,
+    /// The achieved rate of the last frame delivered, from its metadata (0 until one is).
+    achieved_milli: u32,
 }
 
 impl<'a, C: Clock> NativeCapture<'a, C> {
@@ -37,7 +39,10 @@ impl<'a, C: Clock> NativeCapture<'a, C> {
         session
             .start()
             .map_err(|e| CaptureError::Failed(e.to_string()))?;
-        Ok(Self { session })
+        Ok(Self {
+            session,
+            achieved_milli: 0,
+        })
     }
 }
 
@@ -46,10 +51,16 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<FrameLease<FrameMetadata>>, CaptureError> {
-        self.session.next_frame(timeout).map_err(|e| match e {
+        let lease = self.session.next_frame(timeout).map_err(|e| match e {
             styx_native_run::Error::Stopped => CaptureError::Stopped,
             other => CaptureError::Failed(other.to_string()),
-        })
+        })?;
+        if let Some(lease) = &lease
+            && lease.meta().achieved_fps_milli != 0
+        {
+            self.achieved_milli = lease.meta().achieved_fps_milli;
+        }
+        Ok(lease)
     }
 
     fn set_controls(&mut self, updates: &[Update]) -> Result<(), CaptureError> {
@@ -70,6 +81,19 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
             State::Off => Status::Failed {
                 reason: status.last_error.clone().unwrap_or_default(),
             },
+        }
+    }
+
+    fn rate(&self) -> RateReport {
+        // The rate in force on the last frame; before a frame, the rate the camera started at.
+        let start = self.session.frame_rate();
+        let achieved = match self.achieved_milli {
+            0 => start.map(|r| r.achieved_milli),
+            milli => Some(milli),
+        };
+        RateReport {
+            achieved_milli: achieved.filter(|milli| *milli != 0),
+            clamped: start.is_some_and(|r| r.clamped),
         }
     }
 

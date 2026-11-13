@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError};
 use std::time::Duration;
 
-use styx_controls::{FrameMetadata, Update, WIRE_BYTES};
+use styx_controls::{Control, ControlValue, FrameMetadata, Update, WIRE_BYTES};
 use styx_format::{FourCc, Interval};
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
@@ -27,7 +27,7 @@ use styx_v4l2::StreamConfig;
 use crate::config::CameraConfig;
 use crate::outlet::Outlet;
 use crate::service::Shared;
-use crate::slot::{Command, Health, Publish, Slot, State};
+use crate::slot::{Command, Health, KeepWindow, Publish, Slot, State};
 use lemnos_client::DeviceHealth;
 
 /// The client name the service gives the Lemnos daemon.
@@ -45,6 +45,21 @@ const HISTORY: u32 = 8;
 const DEFAULT_EXPOSURE_US: u32 = 10_000;
 /// The sensor's analogue gain when the config does not give one (native cameras).
 const DEFAULT_GAIN_MILLI: u32 = 1_000;
+
+/// The buffers a camera keeps to stream when the config does not say: half the pool's, at least
+/// two, and never more than the pool has. The frame ring holds the rest for readers, at most
+/// `HISTORY` of them.
+pub fn default_reserve(buffers: usize) -> usize {
+    (buffers / 2).max(2).min(buffers)
+}
+
+/// The keep window for a pool of `buffers` with `reserve` kept for the camera: the newest
+/// `min(HISTORY, buffers - reserve)` frames stay with the ring, and at least one does.
+pub fn keep_for(buffers: usize, reserve: usize) -> usize {
+    (HISTORY as usize)
+        .min(buffers.saturating_sub(reserve))
+        .max(1)
+}
 
 /// How one attempt at a camera ended.
 #[derive(Debug)]
@@ -335,6 +350,15 @@ fn size_of(selection: &Selected, settings: &CameraConfig) -> Result<(u32, u32), 
     }
 }
 
+/// Records a frame-rate control the camera accepted as the rate asked for, so the status shows it.
+fn note_requested(slot: &Slot, updates: &[Update]) {
+    for update in updates {
+        if let (Control::FrameRate, ControlValue::Manual(milli)) = (update.control, update.value) {
+            slot.set_requested(Some(milli));
+        }
+    }
+}
+
 /// Runs frames through the outlet, the socket and the status until the camera ends, and answers
 /// commands between frames.
 ///
@@ -355,6 +379,7 @@ fn pump(
     let mut publisher: Option<Producer<FrameMetadata>> = None;
     let mut generation = 0_u64;
     let mut unpublishable = false;
+    let mut window = KeepWindow::default();
     let ended = loop {
         if shared.shutdown.load(Ordering::Acquire) {
             break Ended::Stopped;
@@ -363,8 +388,21 @@ fn pump(
             Ok(Some(lease)) => {
                 delivered = true;
                 if publisher.is_none() && !unpublishable {
+                    let buffers = lease.pool().buffers();
                     match Producer::with_pool(lease.pool(), HISTORY) {
-                        Ok(producer) => {
+                        Ok(mut producer) => {
+                            let reserve = slot
+                                .settings
+                                .hardware_reserve
+                                .map_or(default_reserve(buffers), |r| (r as usize).min(buffers));
+                            let keep = producer.set_keep(keep_for(buffers, reserve));
+                            window = KeepWindow {
+                                keep,
+                                buffers,
+                                hardware_reserve: reserve,
+                                reclaimed: 0,
+                            };
+                            slot.set_keep(window);
                             generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
                             publisher = Some(producer);
                             slot.set_publish(Publish::Publishing);
@@ -383,8 +421,14 @@ fn pump(
                     let dropped = producer.publish_with(lease, &blob[..len]).is_err();
                     slot.published(dropped);
                     producer.reclaim();
-                    slot.set_readers(producer.stats().readers);
+                    let stats = producer.stats();
+                    slot.set_readers(stats.readers);
+                    if window.reclaimed != stats.reclaimed {
+                        window.reclaimed = stats.reclaimed;
+                        slot.set_keep(window);
+                    }
                 }
+                slot.set_rate(capture.rate());
             }
             Ok(None) => {}
             Err(error) => {
@@ -419,7 +463,11 @@ fn pump(
                 }
                 Ok(Command::Start) => {}
                 Ok(Command::Set { updates, reply }) => {
-                    let _ = reply.send(set(capture, &updates));
+                    let result = set(capture, &updates);
+                    if result.is_ok() {
+                        note_requested(slot, &updates);
+                    }
+                    let _ = reply.send(result);
                 }
                 Ok(Command::Handshake(reply)) => {
                     // The plan is made here, on the producer's thread; it is run elsewhere.
@@ -483,5 +531,28 @@ mod tests {
             native_health(DeviceHealth::Failed, ""),
             Health::Failed("no reason given".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod keep_tests {
+    use super::*;
+
+    #[test]
+    fn the_default_reserve_is_half_the_pool_and_at_least_two() {
+        assert_eq!(default_reserve(8), 4);
+        assert_eq!(default_reserve(5), 2);
+        assert_eq!(default_reserve(2), 2);
+        assert_eq!(default_reserve(1), 1);
+    }
+
+    #[test]
+    fn the_keep_window_is_the_history_or_what_the_camera_does_not_need_and_at_least_one() {
+        // 8 buffers, reserve 4: four frames for readers, below the history of 8.
+        assert_eq!(keep_for(8, 4), 4);
+        // 16 buffers, reserve 4: the history (8) is the limit.
+        assert_eq!(keep_for(16, 4), 8);
+        // The camera needs all of them: one frame is still kept.
+        assert_eq!(keep_for(4, 4), 1);
     }
 }

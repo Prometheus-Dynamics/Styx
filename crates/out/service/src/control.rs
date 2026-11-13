@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. last_error=..` line per camera, then `ok` |
+//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
 //! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
@@ -101,6 +101,7 @@ pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
                 .values()
                 .map(|slot| camera_line(&slot.snapshot()))
                 .collect();
+            out.extend(copy_lines());
             out.push("ok".to_string());
             out
         }
@@ -216,10 +217,37 @@ fn frame(slot: &Slot) -> Vec<String> {
     }
 }
 
+/// The copy counters of this process: every site where a frame's bytes are copied.
+fn copy_lines() -> Vec<String> {
+    styx_frame::copy_counters()
+        .iter()
+        .copied()
+        .chain(styx_v4l2::copy_counters().iter().copied())
+        .map(|c| {
+            // The site is last, as free text: it may hold spaces.
+            format!(
+                "copy copies={} bytes={} site={}",
+                c.copies(),
+                c.bytes(),
+                c.site()
+            )
+        })
+        .collect()
+}
+
 fn camera_line(status: &CameraStatus) -> String {
     let owner = status
         .owner
         .map_or_else(|| "-".to_string(), |b| b.to_string());
+    let milli = |v: Option<u32>| v.map_or_else(|| "none".to_string(), |v| v.to_string());
+    let requested = milli(status.requested_milli);
+    let achieved = status
+        .achieved_milli
+        .map_or_else(|| "unknown".to_string(), |v| v.to_string());
+    let reason = status
+        .rate_reason()
+        .map_or_else(|| "-".to_string(), |r| r.replace(' ', "_"));
+    let keep = status.keep;
     let last_id = status
         .last_frame
         .map_or_else(|| "-".to_string(), |f| f.id.to_string());
@@ -237,7 +265,7 @@ fn camera_line(status: &CameraStatus) -> String {
     // Free text in this line is one word (spaces become `_`), except `last_error`, which is last.
     let publish = status.publish.to_string().replace(' ', "_");
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -254,6 +282,16 @@ fn camera_line(status: &CameraStatus) -> String {
         status.published,
         status.publish_dropped,
         status.health.to_string().replace(' ', "_"),
+        requested,
+        achieved,
+        milli(status.achieved_meta_milli),
+        milli(status.measured_milli),
+        status.rate_clamped,
+        keep.keep,
+        keep.buffers,
+        keep.hardware_reserve,
+        keep.reclaimed,
+        reason,
         error,
     )
 }

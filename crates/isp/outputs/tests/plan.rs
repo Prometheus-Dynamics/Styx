@@ -178,10 +178,20 @@ fn three_distinct_asks_in_two_outputs_are_refused_together() {
 }
 
 #[test]
-fn an_isp_with_no_exposed_formats_refuses_every_format() {
-    let err = plan(&PISP, capture(), &[Ask::new(FourCc::NV12, res(64, 48))]).unwrap_err();
+fn pisp_plans_the_formats_it_writes_and_refuses_the_rest() {
+    // Its two outputs make the capture and any smaller size; the formats it writes are planned.
+    let asks = [
+        Ask::new(FourCc::NV12, res(64, 48)),
+        Ask::new(FourCc::RGB3, res(32, 24)),
+    ];
+    assert!(
+        plan(&PISP, capture(), &asks).is_ok(),
+        "NV12 full and RGB3 half on PiSP"
+    );
+    // A format the back end does not write is refused, and the reason names it.
+    let err = plan(&PISP, capture(), &[Ask::new(FourCc::NV16, res(32, 24))]).unwrap_err();
     let PlanError::Unserved { reason, .. } = err else {
         panic!("expected a refusal");
     };
-    assert!(reason.contains("no format exposed"), "{reason}");
+    assert!(reason.contains("NV16"), "{reason}");
 }

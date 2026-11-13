@@ -451,6 +451,7 @@ impl SimCamera {
             digital_gain_milli: DIGITAL_GAIN_MILLI,
             lux: None,
             colour_temperature_k: None,
+            achieved_fps_milli: 0,
         };
         Ok(Some(SimFrame { lease, meta }))
     }

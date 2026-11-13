@@ -30,6 +30,7 @@ fn sample() -> FrameMetadata {
         digital_gain_milli: 1_000,
         lux: Some(412.5),
         colour_temperature_k: Some(5_600),
+        achieved_fps_milli: 0,
     }
 }
 

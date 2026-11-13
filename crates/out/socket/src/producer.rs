@@ -206,6 +206,11 @@ pub struct ProducerStats {
     pub cut_off: usize,
     /// Readers whose socket closed (process exit or drop); their holds were removed.
     pub gone: u64,
+    /// The keep window: how many of the newest published frames are never given back.
+    pub keep: usize,
+    /// Frames that left the keep window and were given back to the pool by [`Producer::reclaim`].
+    /// Whether a reader read each one first is not visible here: the reader counts its own skips.
+    pub reclaimed: u64,
 }
 
 /// One connected reader, for reporting.
@@ -237,15 +242,20 @@ pub struct Producer<M = ()> {
     /// For each buffer, the lease on the frame the ring still holds in it. Kept until the ring
     /// takes the buffer back, so the buffer stays this producer's while any reader may read it.
     in_flight: Vec<Option<FrameLease<M>>>,
-    /// The buffer of the newest published frame. [`Producer::reclaim`] leaves it alone, so there
-    /// is always a frame for a reader to find (as the ring's own `take` does).
-    newest: Option<usize>,
+    /// How many of the newest published frames [`Producer::reclaim`] keeps, held by a reader or
+    /// not. A reader that is within `keep` frames of the newest finds its frame. See
+    /// [`Producer::set_keep`].
+    keep: usize,
+    /// For each buffer, the publish count (1-based) of the frame it holds: the frame's age is
+    /// `published - seq_of[buffer]`.
+    seq_of: Vec<u64>,
     /// The memory kind of each buffer, as the handshake names it.
     kinds: Vec<MemoryKind>,
     geometry: Geometry,
     published: u64,
     dropped: u64,
     gone: u64,
+    reclaimed: u64,
 }
 
 impl Producer<()> {
@@ -354,13 +364,34 @@ impl<M> Producer<M> {
                 })
                 .collect(),
             in_flight: (0..geometry.buffers()).map(|_| None).collect(),
-            newest: None,
+            keep: 1,
+            seq_of: vec![0; geometry.buffers()],
             kinds,
             geometry,
             published: 0,
             dropped: 0,
             gone: 0,
+            reclaimed: 0,
         })
+    }
+
+    /// Sets the keep window: the newest `keep` published frames are never given back by
+    /// [`Producer::reclaim`], whether or not a reader holds them, so a reader that is up to
+    /// `keep - 1` frame periods late still finds every frame. Frames older than that are given
+    /// back (unless a reader holds them). The camera service sets it to
+    /// `min(history, buffers - hardware_reserve)`.
+    ///
+    /// `keep` is clamped to `1..=min(history, buffers)`; the value in force is returned. The
+    /// default is 1 (the newest frame only, the ring's own policy).
+    pub fn set_keep(&mut self, keep: usize) -> usize {
+        let limit = (self.geometry.history() as usize).min(self.geometry.buffers());
+        self.keep = keep.clamp(1, limit.max(1));
+        self.keep
+    }
+
+    /// The keep window in force (see [`Producer::set_keep`]).
+    pub const fn keep(&self) -> usize {
+        self.keep
     }
 
     /// Hands a connected reader the ring and the pool, then registers the marks and the
@@ -496,6 +527,9 @@ impl<M> Producer<M> {
     /// [`Producer::publish`]. Memory reads and writes only; the producer never waits. With no
     /// buffer free the frame is dropped and counted.
     ///
+    /// When every buffer is held or in the keep window, the ring takes back its oldest frame
+    /// even inside the window (the window is for readers, and a frame is never refused for it).
+    ///
     /// # Errors
     ///
     /// [`BeginError::NoFreeBuffer`] when every buffer is published or held by a reader.
@@ -558,8 +592,8 @@ impl<M> Producer<M> {
             &meta[..len],
         )?;
         self.in_flight[index] = Some(lease);
-        self.newest = Some(index);
         self.published += 1;
+        self.seq_of[index] = self.published;
         for link in &mut self.links {
             link.bell.ring();
         }
@@ -571,18 +605,24 @@ impl<M> Producer<M> {
         Ok(seq)
     }
 
-    /// Gives back the buffers the ring no longer needs: each one no reader holds, except the newest
-    /// frame's (which readers must still find). Its lease is dropped, so a pool buffer that is free
-    /// after this can be given to a stream or a device again. Returns how many were given back.
-    /// Call it after publishing, so the next frame's buffer is free when the pool offers it.
+    /// Gives back the buffers of frames that have left the keep window and that no reader holds.
+    /// The newest `keep` frames are kept whether or not a reader holds them; a frame older than
+    /// that that a reader holds is given back when the reader lets go (it is retried here). A
+    /// given-back frame's lease is dropped, so its pool buffer is free for a stream or a device.
+    /// Returns how many were given back. Call it after publishing.
     pub fn reclaim(&mut self) -> usize {
         let mut given = 0;
         for index in 0..self.in_flight.len() {
-            if self.newest == Some(index) || self.in_flight[index].is_none() {
+            if self.in_flight[index].is_none() {
+                continue;
+            }
+            let age = self.published - self.seq_of[index];
+            if age < self.keep as u64 {
                 continue;
             }
             if self.writer.reclaim(BufferIndex(index as u32), &self.holds) {
                 self.in_flight[index] = None;
+                self.reclaimed += 1;
                 given += 1;
             }
         }
@@ -627,6 +667,8 @@ impl<M> Producer<M> {
             published: self.published,
             dropped: self.dropped,
             readers: self.links.len(),
+            keep: self.keep,
+            reclaimed: self.reclaimed,
             cut_off: self
                 .links
                 .iter()

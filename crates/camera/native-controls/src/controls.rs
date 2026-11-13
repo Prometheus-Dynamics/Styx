@@ -437,6 +437,7 @@ impl NativeControls {
             digital_gain_milli: DIGITAL_GAIN_MILLI,
             lux: None,
             colour_temperature_k: None,
+            achieved_fps_milli: self.limits.rate_of(fl),
         }
     }
 
