@@ -15,6 +15,6 @@ pub mod choose;
 pub mod listing;
 pub mod real;
 
-pub use capture::{Capture, CaptureError, Status};
+pub use capture::{Capture, CaptureError, RateReport, Status};
 pub use choose::{Config, Plan, Reason, Scope, SelectError, Selected, Skip, Skipped, plan, select};
 pub use listing::{Anchor, Backend, LibcameraLister, ListError, Listed, NativeLister, V4l2Lister};

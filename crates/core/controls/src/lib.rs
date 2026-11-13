@@ -35,4 +35,4 @@ pub use control::{
 };
 pub use device::{DEVICE_NAME_CAPACITY, DeviceControl, DeviceKind, DeviceName};
 pub use meta::FrameMetadata;
-pub use meta::{WIRE_BYTES, WIRE_VERSION};
+pub use meta::{WIRE_BYTES, WIRE_BYTES_V1, WIRE_VERSION};
