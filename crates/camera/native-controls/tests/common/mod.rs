@@ -6,8 +6,9 @@
 //! `exposure_delay`, `gain_delay` and `frame_length_delay` say. Each frame is rendered as one
 //! brightness value, exposure code times gain code, so the image shows which values were in force.
 //!
-//! `styx-sim` cannot be the sensor here: its mode has no delays and it lands controls on the frame
-//! identity they name, so a delay could not be seen there.
+//! `styx-sim` is the simulated sensor for the backend proof in `sim_backend.rs`; this double keeps
+//! the arithmetic of each test independent of the daemon. Its gain law is `Linear`, set by the test
+//! (the contract has no gain law at the lock).
 #![allow(dead_code)] // each test binary uses part of this.
 
 use lemnos_contract_camera_sensor::{
@@ -15,6 +16,7 @@ use lemnos_contract_camera_sensor::{
 };
 use lemnos_core::{Result, Status};
 use styx_controls::{Control, ControlValue, Update};
+pub use styx_native_controls::GainLaw;
 use styx_native_controls::{Error, Initial, NativeControls};
 
 /// Picoseconds per line: an a 728-clock line at 80 MHz.
@@ -70,7 +72,7 @@ pub struct Sensor {
     pub exposure: Vec<(u64, u32)>,
     pub gain: Vec<(u64, u32)>,
     pub frame_length: Vec<(u64, u32)>,
-    /// Frame each `post_values` was made in, with its identity.
+    /// Frame each `post_values` was made in, with the identity Styx passed (opaque to Lemnos).
     pub posts: Vec<(u64, u64)>,
 }
 
@@ -207,7 +209,7 @@ pub fn run(
     updates: &[Update],
     end: u64,
 ) -> std::result::Result<Run, Error> {
-    let mut controls = NativeControls::new(mode, START)?;
+    let mut controls = NativeControls::new(mode, START, GainLaw::Linear)?;
     let mut sensor = Sensor::new(mode);
     controls.prepare(&mut sensor)?;
     let mut landings = Vec::new();

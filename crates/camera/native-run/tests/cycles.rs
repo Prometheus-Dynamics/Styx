@@ -16,7 +16,14 @@ use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
 use lemnosd::{Config, Service};
 use styx_lemnos::Client;
-use styx_native_run::{Policy, Request, Session, State, SystemClock};
+use styx_native_run::{GainLaw, Initial, Policy, Request, Session, State, SystemClock};
+
+/// The sensor's initial values: exposure 8 ms, gain 1.0x, 60 fps.
+const CONTROLS: Initial = Initial {
+    exposure_us: 8_000,
+    gain_milli: 1_000,
+    frame_rate_milli: 60_000,
+};
 
 fn socket_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("styx-native-run-sim-{}", std::process::id()));
@@ -63,10 +70,12 @@ fn start_and_stop_100_times_on_the_simulated_backend() {
         bayer: Some(BayerOrder::Rggb),
     };
     let clock = SystemClock::default();
-    let mut session = Session::new(&client, camera, request, Policy::default(), &clock);
+    let mut session = Session::new(&client, camera, request, Policy::default(), &clock)
+        .with_controls(CONTROLS, GainLaw::Linear);
     let order = [
         "sensor.select_mode",
         "receiver.configure",
+        "sensor.set_controls",
         "receiver.start",
         "sensor.start",
         "sensor.stop",

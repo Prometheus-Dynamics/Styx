@@ -6,10 +6,17 @@
 //! doorbell once, over a Unix socket. After that every frame is one ring entry naming a buffer
 //! and carrying the frame's identity, format and planes as opaque bytes. Nothing is copied.
 //!
+//! - **Geometry**: [`Geometry`] is the one record of the ring's and pool's shape. The producer is
+//!   built from it, the handshake carries it, and the reader derives its buffers from it. All
+//!   buffers sit in one memfd at fixed offsets, so a pool is not limited by descriptor count.
 //! - **Handshake** ([`Producer::accept`], [`Reader::connect`]): the producer sends the ring's read
-//!   end, the pool page and every buffer's memfd (in messages of at most 16 descriptors); the
-//!   reader answers with its marks page and its doorbell. The producer registers the reader's
-//!   marks before it publishes anything, so no buffer a reader holds can be reused.
+//!   end, the pool page and the pool's memfd, with the geometry; the reader answers with its
+//!   marks page and its doorbell. The producer registers the reader's marks before it publishes
+//!   anything, so no buffer a reader holds can be reused.
+//! - **Doorbells**: [`Producer::add_bell`] adds a doorbell that is not a socket reader's (an
+//!   adopter's, say); every publish rings it with the readers'.
+//! - **Adopters**: [`Producer::ring`], [`Producer::pool`], [`Producer::holds`] and
+//!   [`Producer::geometry`] borrow the objects an adopter needs.
 //! - **Holds**: a reader marks each buffer of a frame before it checks the buffer's ticket
 //!   (`shm-ring-holds`). The producer keeps the frame's lease while the ring holds the buffer, and
 //!   takes a buffer back only when no reader marks it.
@@ -25,13 +32,17 @@
 
 #![cfg(target_os = "linux")]
 
+mod geometry;
 mod producer;
 mod reader;
 mod wire;
 
 use core::fmt;
 
-pub use producer::{BeginError, Producer, ProducerConfig, ProducerStats, ReaderInfo};
+pub use geometry::Geometry;
+pub use producer::{
+    BeginError, BellId, OUTSIDE_BELLS, Producer, ProducerConfig, ProducerStats, ReaderInfo,
+};
 pub use reader::{Frame, ReadError, Reader, ReaderStats};
 pub use shm_ring_holds::Limits;
 
@@ -56,6 +67,8 @@ pub enum SocketError {
     Config(&'static str),
     /// Every reader slot the ring has is taken.
     NoReaderSlot,
+    /// Every outside doorbell slot ([`OUTSIDE_BELLS`]) is in use.
+    NoBellSlot,
 }
 
 impl fmt::Display for SocketError {
@@ -70,6 +83,7 @@ impl fmt::Display for SocketError {
             Self::Protocol(why) => write!(f, "handshake: {why}"),
             Self::Config(why) => write!(f, "configuration: {why}"),
             Self::NoReaderSlot => f.write_str("every reader slot of the ring is taken"),
+            Self::NoBellSlot => f.write_str("every outside doorbell slot is in use"),
         }
     }
 }
