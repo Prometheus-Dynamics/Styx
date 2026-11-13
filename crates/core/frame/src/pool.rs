@@ -18,6 +18,10 @@ pub enum AcquireError {
     Exhausted,
     /// A plane of the entry ends past the buffer's payload (or its end overflows).
     TooSmall { needed: usize, len: usize },
+    /// [`FramePool::acquire_at`]: a lease on buffer `index` is still out.
+    Held { index: usize },
+    /// [`FramePool::acquire_at`]: the pool has no buffer `index`.
+    NoSuchBuffer { index: usize },
 }
 
 impl fmt::Display for AcquireError {
@@ -27,6 +31,8 @@ impl fmt::Display for AcquireError {
             Self::TooSmall { needed, len } => {
                 write!(f, "frame needs {needed} bytes, the buffer has {len}")
             }
+            Self::Held { index } => write!(f, "buffer {index} is still held"),
+            Self::NoSuchBuffer { index } => write!(f, "the pool has no buffer {index}"),
         }
     }
 }
@@ -188,39 +194,67 @@ impl<M> FramePool<M> {
     /// what the buffer's last frame left; set it with [`FrameLease::meta_mut`]. The buffer's bytes
     /// are what its last frame left too: nothing is cleared.
     pub fn acquire(&self, entry: FrameEntry) -> Result<FrameLease<M>, AcquireError> {
-        let slots = &self.shared.slots;
-        let count = slots.len();
+        let count = self.shared.slots.len();
         let start = self.shared.next.load(Ordering::Relaxed);
         for step in 0..count {
             let index = (start + step) % count;
-            let slot = &slots[index];
-            if slot
-                .refs
-                .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
-                .is_err()
-            {
-                continue;
+            match self.take(index, entry) {
+                Err(AcquireError::Held { .. }) => continue,
+                Ok(lease) => {
+                    self.shared
+                        .next
+                        .store((index + 1) % count, Ordering::Relaxed);
+                    return Ok(lease);
+                }
+                Err(error) => return Err(error),
             }
-            let len = self.shared.size.payload;
-            let fits = entry.layouts.span().filter(|&needed| needed <= len);
-            if fits.is_none() {
-                slot.refs.store(0, Ordering::Release);
-                return Err(AcquireError::TooSmall {
-                    needed: entry.layouts.span().unwrap_or(usize::MAX),
-                    len,
-                });
-            }
-            // SAFETY: this call moved `refs` from 0 to 1, so no lease holds the slot and nothing
-            // else reads or writes its entry until a lease for it exists.
-            unsafe { *slot.entry.get() = entry };
-            self.shared
-                .next
-                .store((index + 1) % count, Ordering::Relaxed);
-            self.shared.acquired.fetch_add(1, Ordering::Relaxed);
-            return Ok(FrameLease::new(self.shared.clone(), index));
         }
         self.shared.misses.fetch_add(1, Ordering::Relaxed);
         Err(AcquireError::Exhausted)
+    }
+
+    /// Buffer `index` for a new frame, holding `entry`: for a producer that is told which buffer
+    /// a frame landed in (a driver's dequeued buffer, a stream's ring entry). [`AcquireError::Held`]
+    /// when a lease on the buffer's last frame is still out: the producer wrote over a frame a
+    /// consumer holds, or must drop this one. Counted as a miss.
+    pub fn acquire_at(
+        &self,
+        index: usize,
+        entry: FrameEntry,
+    ) -> Result<FrameLease<M>, AcquireError> {
+        if index >= self.shared.slots.len() {
+            return Err(AcquireError::NoSuchBuffer { index });
+        }
+        let taken = self.take(index, entry);
+        if matches!(taken, Err(AcquireError::Held { .. })) {
+            self.shared.misses.fetch_add(1, Ordering::Relaxed);
+        }
+        taken
+    }
+
+    fn take(&self, index: usize, entry: FrameEntry) -> Result<FrameLease<M>, AcquireError> {
+        let slot = &self.shared.slots[index];
+        if slot
+            .refs
+            .compare_exchange(0, 1, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return Err(AcquireError::Held { index });
+        }
+        let len = self.shared.size.payload;
+        let fits = entry.layouts.span().filter(|&needed| needed <= len);
+        if fits.is_none() {
+            slot.refs.store(0, Ordering::Release);
+            return Err(AcquireError::TooSmall {
+                needed: entry.layouts.span().unwrap_or(usize::MAX),
+                len,
+            });
+        }
+        // SAFETY: this call moved `refs` from 0 to 1, so no lease holds the slot and nothing
+        // else reads or writes its entry until a lease for it exists.
+        unsafe { *slot.entry.get() = entry };
+        self.shared.acquired.fetch_add(1, Ordering::Relaxed);
+        Ok(FrameLease::new(self.shared.clone(), index))
     }
 
     /// Payload and slack of every buffer: what a GPU import is told the buffer's length is
