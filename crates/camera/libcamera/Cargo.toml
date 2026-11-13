@@ -1,0 +1,28 @@
+[package]
+name = "styx-libcamera"
+description = "libcamera capture backend: cameras, controls, and dma-buf frames as FrameLeases without copies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# The libcamera binding. Built only when pkg-config finds libcamera; otherwise a stub reports it
+# unavailable, so the feature is safe to enable on machines without the library.
+libcamera = ["dep:libc"]
+
+[dependencies]
+styx-controls = { path = "../../core/controls" }
+styx-format = { path = "../../core/format", default-features = false }
+styx-frame = { path = "../../core/frame", features = ["std", "linux"] }
+libc = { version = "0.2", optional = true }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[lints]
+workspace = true
