@@ -241,7 +241,8 @@ mod tests {
 
     #[test]
     fn common_curves_fit_within_a_code() {
-        let curves: [(&str, Box<dyn Fn(f32) -> f32>); 5] = [
+        type Named = (&'static str, Box<dyn Fn(f32) -> f32>);
+        let curves: [Named; 5] = [
             ("srgb", Box::new(srgb)),
             ("gamma 2.2", Box::new(gamma(2.2))),
             ("gamma 1.8", Box::new(gamma(1.8))),
