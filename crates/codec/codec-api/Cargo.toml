@@ -1,5 +1,5 @@
 [package]
-name = "styx-core"
+name = "styx-codec-api"
 description = "Codecs for Styx: one trait family for encoders, decoders and converters over frames, and a registry that picks native implementations before FFmpeg and says why."
 version.workspace = true
 edition.workspace = true
