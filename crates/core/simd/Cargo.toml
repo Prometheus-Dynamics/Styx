@@ -1,0 +1,33 @@
+[package]
+name = "styx-simd"
+description = "SIMD kernels for Styx's per-pixel work: swizzles, YUV to RGB, luma, box filters, JPEG and H.264 blocks, each checked against a scalar oracle."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[features]
+default = ["std", "neon", "x86", "rvv"]
+# Run-time CPU detection and the 32-bit Arm NEON leaves (which need `std`'s OnceLock).
+std = []
+# AArch64 NEON (part of the AArch64 baseline) and 32-bit Arm NEON with `std` (which reads the
+# auxiliary vector through libc, on Linux).
+neon = ["dep:libc"]
+# x86 SSE2, SSSE3 and AVX2 leaves, chosen per call from the CPU's features.
+x86 = []
+# RISC-V vector (RVV 1.0) leaves, used when the kernel reports the V extension (Linux).
+rvv = ["std", "dep:libc"]
+
+[target.'cfg(all(any(target_arch = "arm", target_arch = "riscv64"), target_os = "linux"))'.dependencies]
+libc = { version = "0.2", optional = true }
+
+[dependencies]
+styx-format = { path = "../format", default-features = false }
+
+[lints]
+workspace = true
