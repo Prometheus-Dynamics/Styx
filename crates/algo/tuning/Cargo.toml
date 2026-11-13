@@ -1,0 +1,16 @@
+[package]
+name = "styx-tuning"
+description = "Finds a camera's tuning file: the added directories, then the bundled install, then the generic tuning, and says which file was used."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-aaa = { path = "../aaa" }
+toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"] }
+
+[lints]
+workspace = true

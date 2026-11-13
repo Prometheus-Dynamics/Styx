@@ -297,3 +297,49 @@ fn acquire_at_takes_the_named_buffer_or_says_it_is_held() {
         a.buffer_index()
     );
 }
+
+#[test]
+fn buffers_first_seen_at_run_time_are_registered_once() {
+    let size = BufferSize::new(64, 0);
+    let pool: FramePool = FramePool::with_capacity(size, 2).unwrap();
+    assert_eq!((pool.buffers(), pool.capacity()), (0, 2));
+    // Nothing registered: nothing to acquire.
+    assert_eq!(
+        pool.acquire(grey(1, 8, 8)).unwrap_err(),
+        AcquireError::Exhausted
+    );
+    assert_eq!(
+        pool.acquire_at(0, grey(1, 8, 8)).unwrap_err(),
+        AcquireError::NoSuchBuffer { index: 0 }
+    );
+    assert!(pool.memory(0).is_none());
+    assert!(!pool.is_free(0));
+
+    let first = pool.register(Box::new(HostMemory::new(64))).unwrap();
+    assert_eq!(first, 0);
+    assert!(pool.is_free(0));
+    let frame = pool.acquire_at(first, grey(1, 8, 8)).unwrap();
+    assert!(!pool.is_free(0));
+    // A second buffer arrives while the first is held.
+    let second = pool.register(Box::new(HostMemory::new(64))).unwrap();
+    assert_eq!(second, 1);
+    assert_eq!(pool.acquire(grey(2, 8, 8)).unwrap().buffer_index(), 1);
+    assert_eq!(frame.id(), 1);
+
+    assert_eq!(
+        pool.register(Box::new(HostMemory::new(64))).unwrap_err(),
+        PoolError::Full { capacity: 2 }
+    );
+    assert_eq!(
+        FramePool::<()>::with_capacity(size, 1)
+            .unwrap()
+            .register(Box::new(HostMemory::new(63)))
+            .unwrap_err(),
+        PoolError::BufferTooShort {
+            index: 0,
+            len: 63,
+            needed: 64
+        }
+    );
+    assert_eq!(pool.stats().buffers, 2);
+}

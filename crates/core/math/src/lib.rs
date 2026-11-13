@@ -1,8 +1,8 @@
-//! Float functions `core` lacks, for `no_std` builds. A copy of `styx-math`'s `Float` (the shim
-//! the Styx crates share), private to this crate until `styx-math` is on `next`.
+//! Float functions `core` lacks, for `no_std` builds: the shim every Styx crate (and its
+//! consumers) can share.
 //!
 //! [`Float`] gives `f32` / `f64` std's float methods under the same names, through `libm`.
-//! Bring it into scope unnamed (`use crate::float::Float as _;`) and write `x.sqrt()` as with
+//! Bring it into scope unnamed (`use styx_math::Float as _;`) and write `x.sqrt()` as with
 //! std. Inherent methods win over trait methods, so wherever `std` is linked the std methods
 //! run exactly as before and the trait only answers in a build without `std`; importing it only
 //! there (`#[cfg(not(feature = "std"))]`) avoids an unused-import warning, nothing else. (std's
@@ -24,13 +24,15 @@
 //! The trait is sealed (implemented for `f32` and `f64` only), so later releases can add
 //! methods without breaking anyone.
 //!
-//! ```text
+//! ```
 //! #[allow(unused_imports)]
-//! use crate::float::Float as _;
+//! use styx_math::Float as _;
 //!
 //! assert_eq!(2.0f32.sqrt(), core::f32::consts::SQRT_2);
-//! assert_eq!(crate::float::Float::round(2.5f64), 3.0);
+//! assert_eq!(styx_math::Float::round(2.5f64), 3.0);
 //! ```
+
+#![no_std]
 
 mod sealed {
     pub trait Sealed {}
@@ -261,3 +263,6 @@ float_impl!(
 
 #[cfg(test)]
 extern crate std;
+
+#[cfg(test)]
+mod tests;
