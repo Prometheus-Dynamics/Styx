@@ -6,10 +6,11 @@
 //! ISP family's own mapping (Lemnos's layout builders for PiSP, Rockchip, K230 and ISP600, Styx's
 //! software and GPU ISPs) turns it into that ISP's values. Nothing here knows a register.
 //!
-//! Field names and the serialised shape match `styx_controller::IspSettings`, so a settings JSON
-//! from the controller reads here unchanged, and this type's JSON compares with it directly. The
-//! one addition is `outputs`, left out of the JSON when empty. [`From`] converts the controller's
-//! value (its `outputs` start empty).
+//! This is the one definition: `styx_controller` uses and re-exports it, and the field names and
+//! serialised shape are what the controller writes, so a settings JSON from the controller reads
+//! here unchanged. The one addition is `outputs`, left out of the JSON when empty; the controller
+//! never sets it. Cloning is in place where it can be: [`Clone::clone_from`] reuses this value's
+//! buffers, so a settings value kept from frame to frame is copied without allocating.
 //!
 //! Three operations, each in its own module:
 //!
@@ -23,7 +24,6 @@
 
 extern crate alloc;
 
-mod convert;
 mod diff;
 mod interp;
 
@@ -35,7 +35,7 @@ use styx_format::MediaFormat;
 
 /// What an ISP applies to a frame: everything normalised (full scale 1.0) and hardware
 /// independent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 pub struct IspSettings {
     /// The frame whose statistics produced these settings.
     pub from_frame: u64,
@@ -81,6 +81,50 @@ pub struct IspSettings {
 
 fn one() -> f64 {
     1.0
+}
+
+impl Clone for IspSettings {
+    fn clone(&self) -> Self {
+        let mut out = Self::neutral(0.0);
+        out.clone_from(self);
+        out
+    }
+
+    /// Copies `source` into this value, reusing its curve, table and list buffers (no allocation
+    /// once they have grown to `source`'s sizes). The destructuring makes a field added later fail
+    /// to compile here until it is copied.
+    fn clone_from(&mut self, source: &Self) {
+        let Self {
+            from_frame,
+            black_level,
+            black_channels,
+            wb,
+            digital_gain,
+            flicker,
+            flicker_bands,
+            ccm,
+            gamma,
+            lens_shading,
+            denoise,
+            sharpen,
+            histogram_weights,
+            outputs,
+        } = source;
+        self.from_frame = *from_frame;
+        self.black_level = *black_level;
+        self.black_channels = *black_channels;
+        self.wb = *wb;
+        self.digital_gain = *digital_gain;
+        self.flicker = *flicker;
+        self.flicker_bands.clone_from(flicker_bands);
+        self.ccm = *ccm;
+        self.gamma.clone_from(gamma);
+        self.lens_shading.clone_from(lens_shading);
+        self.denoise = *denoise;
+        self.sharpen = *sharpen;
+        self.histogram_weights.clone_from(histogram_weights);
+        self.outputs.clone_from(outputs);
+    }
 }
 
 impl IspSettings {
