@@ -1,0 +1,45 @@
+[package]
+name = "styx-measure"
+description = "The board-side reader for Styx's camera frame sockets: attaches to a camera's frames in another process, runs the software ISP on each raw frame if asked, and measures the rate, gaps, latency, copies, CPU and memory from the board's own clocks and counters. A binary (`styx-measure read`, `styx-measure status`) and a small library."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "styx-measure"
+path = "src/main.rs"
+
+[dependencies]
+libc = "0.2"
+styx-aaa = { path = "../../algo/aaa" }
+styx-controls = { path = "../../core/controls" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+styx-settings = { path = "../../isp/settings" }
+styx-soft = { path = "../../isp/soft" }
+styx-socket = { path = "../../out/socket" }
+styx-v4l2 = { path = "../../camera/v4l2" }
+
+[dev-dependencies]
+# The in-process service on the simulated camera (as crates/out/service's tests do).
+styx-service = { path = "../../out/service" }
+styx-native-run = { path = "../../camera/native-run" }
+styx-select = { path = "../../camera/select" }
+serde_json = "1"
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-hal = { workspace = true, features = ["std"] }
+lemnos-core = { workspace = true, features = ["std"] }
+lemnos-contract-camera-sensor = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
+lemnos-contract-camera-isp = { workspace = true }
+
+[lints]
+workspace = true
