@@ -18,9 +18,10 @@ default = ["std"]
 std = ["styx-aaa/std"]
 
 [dependencies]
-serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 styx-aaa = { path = "../aaa", default-features = false, features = ["serde"] }
 styx-controls = { path = "../../core/controls", default-features = false }
+# The neutral ISP settings the loop hands out: one definition, owned by styx-settings.
+styx-settings = { path = "../../isp/settings", default-features = false }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
