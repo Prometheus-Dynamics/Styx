@@ -1,0 +1,44 @@
+[package]
+name = "styx-daedalus"
+description = "Styx frames as Daedalus values: FrameLease as the styx:frame value in the dma-buf memory location, moved to the GPU by the planner's transfers, and read from the shared ring by a graph in another process. Feature `daedalus`, off by default."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# Daedalus values. The Daedalus crates are git dependencies at one rev (see the crate notes in
+# docs/prs/F4.md); a default build fetches none of them.
+daedalus = [
+    "dep:daedalus",
+    "dep:daedalus-dmabuf",
+    "dep:daedalus-types",
+    "dep:styx-socket",
+]
+
+[dependencies]
+styx-frame = { path = "../../core/frame" }
+styx-socket = { path = "../socket", optional = true }
+daedalus = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651", features = ["std"], optional = true }
+daedalus-dmabuf = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651", optional = true }
+daedalus-types = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651", optional = true }
+
+[dev-dependencies]
+styx-format = { path = "../../core/format" }
+lemnos-linux-sys = { workspace = true }
+styx-frame = { path = "../../core/frame", features = ["linux"] }
+daedalus = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651", features = ["std"] }
+daedalus-abi = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-backend = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-cpu = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-cpu-author = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-dmabuf = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-registry = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-runner = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+daedalus-types = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "90ec12e0648df3d6d69d4992cae6ec8895daa651" }
+
+[lints]
+workspace = true
