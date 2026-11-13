@@ -1,0 +1,41 @@
+[package]
+name = "styx-soft"
+description = "Software ISP for raw Bayer frames: unpacking, black level, white balance, lens shading, demosaic, colour, tone, RGB/NV12/I420/luma output and 3A statistics, from a FrameLease into a caller's FrameLease."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format", default-features = false }
+styx-frame = { path = "../../core/frame" }
+styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["std-core"] }
+styx-settings = { path = "../settings" }
+styx-simd = { path = "../../core/simd" }
+styx-math = { path = "../../core/math", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+thiserror = { version = "2.0.21", default-features = false }
+# `riscv_hwprobe` (Zvfh detection), with the `rvv` feature.
+libc = { version = "0.2", optional = true }
+
+[features]
+default = ["std", "neon", "x86", "rvv"]
+# The helper thread pool (`SoftIsp::with_threads`), run-time CPU feature detection, float maths
+# from std.
+std = ["styx-format/std", "styx-simd/std", "serde/std", "thiserror/std", "fp16", "poly-tone", "post"]
+# `Arithmetic::Half` (fp16 tables and kernels).
+fp16 = []
+# The output picture's denoise and sharpening.
+post = []
+# `Arithmetic::IntPolyTone` (the tone curve as quadratics).
+poly-tone = []
+# SIMD backends, as in `styx-simd`: AArch64 NEON, x86 SSE2/SSSE3/AVX2 chosen at run time.
+neon = ["styx-simd/neon"]
+x86 = ["styx-simd/x86"]
+# RISC-V vectors when the CPU has them (needs `std`).
+rvv = ["std", "styx-simd/rvv", "dep:libc"]
+
+[lints]
+workspace = true
