@@ -4,7 +4,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
-use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
@@ -17,6 +16,7 @@ use styx_select::listing::{LibcameraLister, ListError, Listed, NativeLister, V4l
 use styx_select::{Backend, Config as SelectConfig};
 use styx_socket::{HANDSHAKE_TIMEOUT, Limits};
 
+use crate::access::{self, Access};
 use crate::config::{CameraConfig, Config, ConfigError};
 use crate::outlet::Outlets;
 use crate::slot::{CameraStatus, Command, Publish, Slot};
@@ -59,6 +59,9 @@ pub(crate) struct Shared {
     pub(crate) lemnos_socket: Option<PathBuf>,
     pub(crate) outlets: Arc<dyn Outlets>,
     pub(crate) config: Config,
+    /// The group and modes every socket and socket directory gets.
+    pub(crate) access: Access,
+    pub(crate) control_socket: PathBuf,
     pub(crate) slots: Mutex<BTreeMap<String, Arc<Slot>>>,
     /// The last scan's errors, one line for the status. Empty when the scan worked.
     pub(crate) scan_errors: Mutex<String>,
@@ -118,10 +121,12 @@ impl Service {
         let backoff = config
             .backoff()
             .map_err(|e| Error::Config(ConfigError::Backoff(e)))?;
-        std::fs::create_dir_all(&config.socket_dir).map_err(Error::Io)?;
+        let access = Access::resolve(&config).map_err(Error::Config)?;
+        access::make_dir(&config.socket_dir, &access).map_err(Error::Io)?;
         let socket = config.control_socket();
         let _ = std::fs::remove_file(&socket);
-        let listener = UnixListener::bind(&socket).map_err(Error::Socket)?;
+        // Bound with the configured group and mode before it is reachable (see `access`).
+        let listener = access::bind(&socket, &access).map_err(Error::Socket)?;
         listener.set_nonblocking(true).map_err(Error::Socket)?;
 
         let shared = Arc::new(Shared {
@@ -132,6 +137,8 @@ impl Service {
             lemnos_socket: config.lemnos_socket.clone(),
             outlets: deps.outlets,
             config: config.clone(),
+            access,
+            control_socket: socket.clone(),
             slots: Mutex::new(BTreeMap::new()),
             scan_errors: Mutex::new(String::new()),
             scan_wake: Mutex::new(()),
@@ -378,7 +385,7 @@ pub fn camera_socket(socket_dir: &Path, id: &str) -> PathBuf {
 /// behind it on this camera's socket.
 fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, shared: &Shared) {
     if let Some(dir) = path.parent()
-        && let Err(e) = std::fs::create_dir_all(dir)
+        && let Err(e) = access::make_dir(dir, &shared.access)
     {
         slot.set_socket(
             None,
@@ -387,7 +394,7 @@ fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, sha
         return;
     }
     let _ = std::fs::remove_file(path);
-    let listener = match UnixListener::bind(path) {
+    let listener = match access::bind(path, &shared.access) {
         Ok(listener) => listener,
         Err(e) => {
             slot.set_socket(
