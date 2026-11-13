@@ -21,7 +21,7 @@ use lemnos_wire::ring::{BUFFER_ALIGN, ByteMemory, WordMemory};
 use styx_format::{FourCc, MediaFormat};
 use styx_frame::{
     AcquireError, BufferMemory, BufferSize, CpuAccess, FdMemory, FrameEntry, FrameLease, FramePool,
-    Layouts, MemoryKind, PoolError,
+    Layouts, MemoryKind, PlaneLayout, PoolError, PoolStats,
 };
 
 /// ISP600 layouts through the vendor vin driver (feature `isp600`).
@@ -152,6 +152,11 @@ pub enum Error {
     BadBuffer(u32),
     /// A frame named a buffer whose lease is still out; the frame was given back to Lemnos.
     Held(u32),
+    /// A compressed frame is longer than its buffer's payload; the frame was given back.
+    Oversize {
+        len: usize,
+        payload: usize,
+    },
     Pool(PoolError),
     Acquire(AcquireError),
     Layout(styx_format::LayoutError),
@@ -166,6 +171,9 @@ impl fmt::Display for Error {
             Self::NoBuffers => write!(f, "stream has no mappable buffers"),
             Self::BadBuffer(b) => write!(f, "frame names buffer {b}, which is out of range"),
             Self::Held(b) => write!(f, "buffer {b} still held; frame dropped"),
+            Self::Oversize { len, payload } => {
+                write!(f, "compressed frame of {len} bytes; buffers hold {payload}")
+            }
             Self::Pool(e) => write!(f, "frame pool: {e:?}"),
             Self::Acquire(e) => write!(f, "frame acquire: {e:?}"),
             Self::Layout(e) => write!(f, "frame layout: {e:?}"),
@@ -182,9 +190,6 @@ struct Mapped {
     whole: Option<Arc<FdMemory>>,
     /// One dma-buf per buffer.
     each: Vec<Arc<FdMemory>>,
-    /// The buffer count and size from the ring's header words.
-    buffers: u32,
-    buffer_bytes: u32,
 }
 
 /// Wraps [`LinuxStreams`] so the buffer descriptors the client maps are also mapped here, as
@@ -206,16 +211,7 @@ impl StreamPlatform for MappingPlatform {
     }
 
     fn map_ring(&self, fd: BorrowedFd<'_>, bytes: usize) -> io::Result<Arc<dyn WordMemory>> {
-        let ring = self.inner.map_ring(fd, bytes)?;
-        {
-            let words = ring.words();
-            let mut mapped = self.lock();
-            mapped.buffers =
-                words[ring_word::BUFFERS].load(std::sync::atomic::Ordering::Acquire) as u32;
-            mapped.buffer_bytes =
-                words[ring_word::BUFFER_BYTES].load(std::sync::atomic::Ordering::Acquire) as u32;
-        }
-        Ok(ring)
+        self.inner.map_ring(fd, bytes)
     }
 
     fn map_buffers(
@@ -251,11 +247,6 @@ impl MappingPlatform {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
-}
-
-/// Ring header word indices, as `lemnos-wire` lays them out.
-mod ring_word {
-    pub use lemnos_wire::ring::offsets::{BUFFER_BYTES, BUFFERS};
 }
 
 /// One buffer's bytes inside a mapping: the pool's view of it. Holds the mapping alive.
@@ -324,15 +315,17 @@ fn slice(base: &Arc<FdMemory>, offset: usize, len: usize) -> Result<Slice, Error
 }
 
 /// Opens `stream` on `device` and maps its buffers, as one pool. Frames are `code` at `width` x
-/// `height`.
-pub fn open_frames(
+/// `height`. Each buffer's metadata is `M`, made once by the pool (`M::default()`).
+///
+/// The buffer count and size are the stream's own, from the open reply ([`FrameStream::layout`]).
+pub fn open_frames<M: Default + Send + Sync>(
     client: &Client,
     device: u32,
     stream: &str,
     code: FourCc,
     width: u32,
     height: u32,
-) -> Result<Frames, Error> {
+) -> Result<Frames<M>, Error> {
     let platform = Arc::new(MappingPlatform {
         inner: LinuxStreams,
         mapped: Mutex::new(Mapped::default()),
@@ -345,11 +338,18 @@ pub fn open_frames(
         code,
         styx_format::Resolution::new(width, height).ok_or(Error::NoBuffers)?,
     );
-    let layouts =
-        styx_frame::packed_layouts(code, width, height, None, None).map_err(Error::Layout)?;
-    let buffer_bytes = mapped.buffer_bytes as usize;
+    // A compressed stream's frames are one plane each, sized per frame (see `lease_for`).
+    let layouts = if code.is_compressed() {
+        None
+    } else {
+        Some(styx_frame::packed_layouts(code, width, height, None, None).map_err(Error::Layout)?)
+    };
+    let (buffers, buffer_bytes) = {
+        let layout = opened.layout();
+        (layout.buffers as usize, layout.buffer_bytes as usize)
+    };
     let memories = match &mapped.whole {
-        Some(whole) => whole_memories(whole, mapped.buffers as usize, buffer_bytes)?,
+        Some(whole) => whole_memories(whole, buffers, buffer_bytes)?,
         None => each_memories(&mapped.each, buffer_bytes)?,
     };
     if memories.is_empty() {
@@ -364,6 +364,7 @@ pub fn open_frames(
         format,
         layouts,
         held_drops: 0,
+        oversize_drops: 0,
     })
 }
 
@@ -394,10 +395,10 @@ pub fn each_memories(
 
 /// One pool over all of a stream's buffers. Frames are acquired with
 /// [`FramePool::acquire_at`], at the buffer index the ring names.
-pub fn pool_over(
+pub fn pool_over<M: Default + Send + Sync>(
     memories: Vec<Box<dyn BufferMemory>>,
     buffer_bytes: usize,
-) -> Result<FramePool<usize>, Error> {
+) -> Result<FramePool<M>, Error> {
     let size = BufferSize {
         payload: buffer_bytes,
         gpu_slack: 0,
@@ -410,17 +411,22 @@ pub fn pool_over(
 /// A buffer goes back to Lemnos only when no lease on it is out: [`Frames::next`] first gives back
 /// every buffer whose lease has dropped, then waits for a frame. A frame that names a buffer whose
 /// lease is still out is counted in [`Frames::held_drops`] and given back at once, never waited on.
-pub struct Frames {
+///
+/// A compressed stream (`FourCc::is_compressed`) has no fixed layout: each lease is one plane at
+/// offset 0 whose length is that frame's `HeldFrame::len()`, so its bytes are the bitstream.
+pub struct Frames<M = ()> {
     stream: FrameStream,
-    pool: FramePool<usize>,
+    pool: FramePool<M>,
     /// The Lemnos frame of each buffer, until its lease has dropped.
     pending: Vec<Option<HeldFrame>>,
     format: MediaFormat,
-    layouts: Layouts,
+    /// The plane layout of an uncompressed stream; `None` for a compressed one.
+    layouts: Option<Layouts>,
     held_drops: u64,
+    oversize_drops: u64,
 }
 
-impl fmt::Debug for Frames {
+impl<M> fmt::Debug for Frames<M> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Frames")
             .field("stream", &self.stream.name())
@@ -430,7 +436,7 @@ impl fmt::Debug for Frames {
     }
 }
 
-impl Frames {
+impl<M> Frames<M> {
     /// Buffers in the stream.
     pub fn buffers(&self) -> usize {
         self.pool.buffers()
@@ -441,26 +447,32 @@ impl Frames {
         self.held_drops
     }
 
-    /// Gives back to Lemnos every buffer whose lease has dropped. A buffer is free when a probe
-    /// lease can be taken on it; the probe is dropped at once.
+    /// Compressed frames dropped because they were longer than a buffer's payload.
+    pub fn oversize_drops(&self) -> u64 {
+        self.oversize_drops
+    }
+
+    /// The frame pool's counts: leases acquired, acquires that found a buffer held.
+    pub fn stats(&self) -> PoolStats {
+        self.pool.stats()
+    }
+
+    /// Gives back to Lemnos every buffer whose lease has dropped: a buffer with a frame pending
+    /// and no lease on it is free.
     fn sweep(&mut self) -> Result<(), Error> {
         for index in 0..self.pending.len() {
-            if self.pending[index].is_none() {
+            if !self.pool.is_free(index) {
                 continue;
             }
-            let probe = FrameEntry::new(0, 0, self.format, self.layouts);
-            if let Ok(lease) = self.pool.acquire_at(index, probe) {
-                drop(lease);
-                if let Some(frame) = self.pending[index].take() {
-                    self.stream.release(frame).map_err(Error::Client)?;
-                }
+            if let Some(frame) = self.pending[index].take() {
+                self.stream.release(frame).map_err(Error::Client)?;
             }
         }
         Ok(())
     }
 
     /// Waits up to `timeout` for a frame and returns it as a lease over its buffer.
-    pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<usize>>, Error> {
+    pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<M>>, Error> {
         self.sweep()?;
         let Some(frame) = self.stream.next_frame(timeout).map_err(Error::Client)? else {
             return Ok(None);
@@ -469,7 +481,7 @@ impl Frames {
     }
 
     /// Takes a frame if one is ready, without waiting.
-    pub fn try_next(&mut self) -> Result<Option<FrameLease<usize>>, Error> {
+    pub fn try_next(&mut self) -> Result<Option<FrameLease<M>>, Error> {
         self.sweep()?;
         let Some(frame) = self.stream.try_next().map_err(Error::Client)? else {
             return Ok(None);
@@ -477,19 +489,25 @@ impl Frames {
         self.lease_for(frame).map(Some)
     }
 
-    fn lease_for(&mut self, frame: HeldFrame) -> Result<FrameLease<usize>, Error> {
+    fn lease_for(&mut self, frame: HeldFrame) -> Result<FrameLease<M>, Error> {
         let index = frame.buffer() as usize;
-        let entry = FrameEntry::new(
-            frame.identity(),
-            frame.timestamp_ns(),
-            self.format,
-            self.layouts,
-        );
-        match self.pool.acquire_at(index, entry) {
-            Ok(mut lease) => {
-                if let Some(meta) = lease.meta_mut() {
-                    *meta = index;
+        let layouts = match self.layouts {
+            Some(layouts) => layouts,
+            None => {
+                let len = frame.len();
+                let payload = self.pool.buffer_size().payload;
+                if len > payload {
+                    self.oversize_drops += 1;
+                    self.stream.release(frame).map_err(Error::Client)?;
+                    return Err(Error::Oversize { len, payload });
                 }
+                Layouts::new(&[PlaneLayout::new(0, 0, len)])
+                    .ok_or(Error::Layout(styx_format::LayoutError::Overflow))?
+            }
+        };
+        let entry = FrameEntry::new(frame.identity(), frame.timestamp_ns(), self.format, layouts);
+        match self.pool.acquire_at(index, entry) {
+            Ok(lease) => {
                 self.pending[index] = Some(frame);
                 Ok(lease)
             }
@@ -506,7 +524,7 @@ impl Frames {
     }
 
     /// Ends a lease. The buffer goes back to Lemnos on a later call, once the lease has dropped.
-    pub fn release(&mut self, lease: FrameLease<usize>) {
+    pub fn release(&mut self, lease: FrameLease<M>) {
         drop(lease);
     }
 
