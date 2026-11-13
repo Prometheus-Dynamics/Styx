@@ -20,6 +20,9 @@ trait Hold: Send + Sync {
     fn buffer_index(&self) -> usize;
     fn memory(&self) -> &dyn BufferMemory;
     fn holders(&self) -> u32;
+    /// The buffer's bytes on the host, when it is mapped here (host or memfd memory). A dma-buf is
+    /// not: its CPU access is bracketed by sync calls that a borrowed slice cannot hold.
+    fn host_bytes(&self) -> Option<&[u8]>;
 }
 
 impl<M: Send + Sync + 'static> Hold for FrameLease<M> {
@@ -41,6 +44,12 @@ impl<M: Send + Sync + 'static> Hold for FrameLease<M> {
     fn holders(&self) -> u32 {
         FrameLease::holders(self)
     }
+    fn host_bytes(&self) -> Option<&[u8]> {
+        match FrameLease::memory_kind(self) {
+            MemoryKind::Host | MemoryKind::Memfd => FrameLease::read(self).map(|read| read.bytes()),
+            MemoryKind::Dmabuf | MemoryKind::Gpu => None,
+        }
+    }
 }
 
 impl Hold for Frame {
@@ -61,6 +70,9 @@ impl Hold for Frame {
     }
     fn holders(&self) -> u32 {
         self.lease().holders()
+    }
+    fn host_bytes(&self) -> Option<&[u8]> {
+        self.lease().host_bytes()
     }
 }
 
@@ -151,6 +163,10 @@ impl Typed for StyxFrame {
 }
 
 impl DmaBufBacked for StyxFrame {
+    /// A Styx frame's fd is read-only where the producer hands it out so (Lemnos does), so the
+    /// planner may import it on a device that takes a read-only fd.
+    const READ_ONLY: bool = true;
+
     /// The dma-buf holding the frame, and the import length. `None` for a frame that is not in a
     /// dma-buf (host, memfd, GPU), for a dma-buf the frame starts past its start (several buffers
     /// in one descriptor: a dma-buf's size is its whole length, so the offset is not expressible
@@ -164,6 +180,13 @@ impl DmaBufBacked for StyxFrame {
             return None;
         }
         Some((memory.fd()?, self.import_len))
+    }
+
+    /// The frame's bytes when they are mapped on the host (host or memfd memory), borrowed from
+    /// the lease with no copy. A frame in a dma-buf with no bytes on the host is only ever imported
+    /// or copied from the dma-buf, so this is `None` for it.
+    fn bytes(&self) -> Option<&[u8]> {
+        self.hold.host_bytes()
     }
 }
 

@@ -47,6 +47,28 @@ fn a_host_frame_is_not_a_dmabuf() {
 }
 
 #[test]
+fn a_host_frame_has_its_bytes_and_a_dma_buf_frame_has_none_on_the_host() {
+    let pool: FramePool<()> = FramePool::host(1, support::SIZE).unwrap();
+    let mut lease = pool.acquire(support::entry(2)).unwrap();
+    lease.write().unwrap().bytes().fill(0x5a);
+    let frame = StyxFrame::from_lease(lease, pool.buffer_size()).unwrap();
+    let bytes = frame.bytes().expect("a host frame's bytes");
+    assert_eq!(bytes.len(), support::SIZE.allocation().unwrap());
+    assert!(bytes.iter().all(|&byte| byte == 0x5a));
+    assert!(frame.dmabuf().is_none());
+
+    let Some(pool) = support::dma_pool(1) else {
+        return;
+    };
+    let frame = StyxFrame::from_lease(pool.acquire(support::entry(3)).unwrap(), pool.buffer_size())
+        .unwrap();
+    assert!(
+        frame.bytes().is_none(),
+        "a dma-buf's bytes are reached through the import or the copy, not borrowed here"
+    );
+}
+
+#[test]
 fn a_frame_whose_buffer_is_not_at_the_start_of_its_dmabuf_is_not_expressible() {
     // Several buffers in one dma-buf: the offset is not part of Daedalus's dma-buf value, so the
     // value reports no dma-buf rather than one that starts in the wrong place.

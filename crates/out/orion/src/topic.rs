@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use orion::Orion;
-use orion::topics::{FieldId, FrameTime, Publisher, Subscriber, TopicDecl};
+use orion::topics::{FieldId, Publisher, Subscriber, TopicDecl};
 use shm_sample_time::SampleTime;
 use styx_socket::{Reader, SocketError};
 
@@ -31,6 +31,14 @@ pub enum OrionError {
     Io(io::Error),
     /// The producer's handshake failed.
     Socket(SocketError),
+    /// The ring's entries are too small for Orion's buffer topic header: the topic cannot be
+    /// declared over this ring.
+    Shape,
+    /// The frames of a buffer topic cannot be read: its pool cannot be mapped, or the publisher
+    /// cut this subscriber off or replaced its pool.
+    Frames(&'static str),
+    /// A frame pool refused its buffers.
+    Pool(styx_frame::PoolError),
 }
 
 impl fmt::Display for OrionError {
@@ -40,11 +48,28 @@ impl fmt::Display for OrionError {
             Self::Advert(err) => write!(f, "{err}"),
             Self::Io(err) => write!(f, "frame socket: {err}"),
             Self::Socket(err) => write!(f, "{err}"),
+            Self::Shape => {
+                f.write_str("the ring's entries are too small for an Orion buffer topic")
+            }
+            Self::Frames(why) => write!(f, "frames: {why}"),
+            Self::Pool(err) => write!(f, "{err}"),
         }
     }
 }
 
 impl std::error::Error for OrionError {}
+
+impl From<orion::ClientError> for OrionError {
+    fn from(err: orion::ClientError) -> Self {
+        Self::Orion(orion::Error::Client(err))
+    }
+}
+
+impl From<styx_frame::PoolError> for OrionError {
+    fn from(err: styx_frame::PoolError) -> Self {
+        Self::Pool(err)
+    }
+}
 
 impl From<orion::Error> for OrionError {
     fn from(err: orion::Error) -> Self {
@@ -98,7 +123,7 @@ impl Advertisement {
     pub fn update(&mut self, advert: &Advert) -> Result<(), OrionError> {
         let mut buffer = [0_u8; MAX_LEN];
         let len = advert.encode(&mut buffer)?;
-        let time = FrameTime::from_nanos(SampleTime::now().as_nanos());
+        let time = SampleTime::now();
         self.publisher.publish(RECORD, time, &buffer[..len])?;
         Ok(())
     }
