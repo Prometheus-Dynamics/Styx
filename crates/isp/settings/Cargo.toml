@@ -1,0 +1,26 @@
+[package]
+name = "styx-settings"
+description = "The neutral ISP settings every ISP maps from: black level, white balance, colour matrix, tone, denoise, sharpening and output formats, with comparison and interpolation between tunings."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["serde"] }
+styx-format = { path = "../../core/format", default-features = false, features = ["serde"] }
+# The controller's own neutral settings, for the conversion in `convert`. Dependency direction:
+# settings <- controller (the controller should re-export this type, see the PR text).
+styx-controller = { path = "../../algo/controller", default-features = false }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[lints]
+workspace = true
