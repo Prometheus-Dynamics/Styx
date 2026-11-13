@@ -1,0 +1,91 @@
+#version 450
+// Output stages, denoise (`styx-softisp`'s `post::denoise_band`): the sigma filter on the luma
+// plane (threshold per centre value from `sigma`, strength in Q8) and the low-pass on the
+// chroma planes, each over the 3x3 neighbourhood with the edges reflected. The planes (`pic_w`
+// x `pic_h` each, Y then Cb then Cr) are read from the source buffer and written to the other;
+// a stage that is off copies its plane.
+
+#extension GL_GOOGLE_include_directive : require
+#include "common.glsl"
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// Threshold (quarter codes) per luma centre value, one word each.
+layout(set = 0, binding = 4, std430) readonly buffer Sigma {
+    uint sigma[];
+};
+
+layout(set = 1, binding = 0, std430) readonly buffer Src {
+    uint8_t src[];
+};
+
+layout(set = 2, binding = 0, std430) writeonly buffer Dst {
+    uint8_t dst[];
+};
+
+// `round(65536 / n)`, as `simd::post::RCP`.
+const uint RCP[10] = uint[10](0u, 65535u, 32768u, 21845u, 16384u, 13107u, 10923u, 9362u, 8192u,
+    7282u);
+
+int at(uint k, uint x, uint y) {
+    return int(uint(src[k * P.pic_w * P.pic_h + y * P.pic_w + x]));
+}
+
+// One neighbour `v` of the centre `c`: counted when within the threshold `t` (quarter codes).
+void take(int v, int c, int t, inout int sum, inout int cnt) {
+    if (abs(v - c) * 4 <= t) {
+        sum += v;
+        cnt += 1;
+    }
+}
+
+// `post::sigma_at` of the luma sample at (x, y).
+int sigma_luma(uint x, uint y) {
+    uint l = reflect_into(int(x) - 1, P.pic_w), r = reflect_into(int(x) + 1, P.pic_w);
+    uint u = reflect_into(int(y) - 1, P.pic_h), d = reflect_into(int(y) + 1, P.pic_h);
+    int c = at(0u, x, y);
+    int t = int(sigma[uint(c)]);
+    int sum = c, cnt = 1;
+    take(at(0u, l, u), c, t, sum, cnt);
+    take(at(0u, x, u), c, t, sum, cnt);
+    take(at(0u, r, u), c, t, sum, cnt);
+    take(at(0u, l, y), c, t, sum, cnt);
+    take(at(0u, r, y), c, t, sum, cnt);
+    take(at(0u, l, d), c, t, sum, cnt);
+    take(at(0u, x, d), c, t, sum, cnt);
+    take(at(0u, r, d), c, t, sum, cnt);
+    int avg = (sum * int(RCP[cnt]) + (1 << 15)) >> 16;
+    return clamp(c + (((avg - c) * int(P.luma_strength) + 128) >> 8), 0, 255);
+}
+
+// The column sum `up + 2 cur + dn` of plane `k` at column `x` (rows `u`, `y`, `d`).
+int vsum(uint k, uint x, uint u, uint y, uint d) {
+    return at(k, x, u) + 2 * at(k, x, y) + at(k, x, d);
+}
+
+// `post::chroma_at` of the chroma sample of plane `k` at (x, y).
+int chroma_plane(uint k, uint x, uint y) {
+    uint l = reflect_into(int(x) - 1, P.pic_w), r = reflect_into(int(x) + 1, P.pic_w);
+    uint u = reflect_into(int(y) - 1, P.pic_h), d = reflect_into(int(y) + 1, P.pic_h);
+    int c = at(k, x, y);
+    int low = (vsum(k, l, u, y, d) + 2 * vsum(k, x, u, y, d) + vsum(k, r, u, y, d) + 8) >> 4;
+    bool ok = abs(low - c) * 4 <= int(P.chroma_threshold);
+    return clamp(c + (ok ? (((low - c) * int(P.chroma_strength) + 128) >> 8) : 0), 0, 255);
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;
+    if (x >= P.pic_w || y >= P.pic_h) {
+        return;
+    }
+    uint plane = P.pic_w * P.pic_h;
+    for (uint k = 0u; k < 3u; k++) {
+        int v = at(k, x, y);
+        if (k == 0u && P.denoise_luma != 0u) {
+            v = sigma_luma(x, y);
+        } else if (k != 0u && P.denoise_chroma != 0u) {
+            v = chroma_plane(k, x, y);
+        }
+        dst[k * plane + y * P.pic_w + x] = uint8_t(v);
+    }
+}

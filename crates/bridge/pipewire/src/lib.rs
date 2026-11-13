@@ -1,11 +1,15 @@
 //! A PipeWire video source for Styx frames: `Video/Source` node whose buffers are the producer's
 //! memfds, so frames reach PipeWire consumers (`pipewiresrc`, browsers, the portal) without a copy.
 //!
-//! - [`learn`]: the node learns each ring buffer's memfd from the first frames in it (a reader
-//!   sees a buffer's descriptor only through a frame), then releases those frames. Pure Rust.
+//! - [`link`]: the producer link. Connects, learns the buffers from the first frames each index
+//!   carries, and reconnects with backoff (250 ms doubling to 5 s) when the producer goes away or
+//!   comes back. Pure Rust, with the time passed in: tested with a fake clock.
+//! - [`learn`]: takes each ring buffer's descriptor from the frames, one frame at a time.
 //! - [`node`]: runs the PipeWire stream. The stream is C (`c_api/styx_pipewire.c`): SPA pods and
 //!   the stream API are C-only. Buffer `i` is ring buffer `i`; a frame is queued as that PipeWire
-//!   buffer, held until PipeWire gives it back, so the producer cannot reuse it meanwhile.
+//!   buffer, held until PipeWire gives it back, so the producer cannot reuse it meanwhile. The node
+//!   stays up while its producer is gone, and renegotiates the stream when a producer returns with
+//!   new buffers.
 //! - The shim is built by `build.rs` when the `pipewire` feature is on and pkg-config finds
 //!   libpipewire-0.3. Without it [`node::run`] returns [`node::NodeError::NotBuilt`].
 //!
@@ -17,7 +21,9 @@
 #![cfg(target_os = "linux")]
 
 pub mod learn;
+pub mod link;
 pub mod node;
 
-pub use learn::{Buffers, LearnError, connect, learn};
-pub use node::{NodeConfig, NodeError, NodeStats, node_built, run};
+pub use learn::{Buffers, LearnError, Learner};
+pub use link::{Backoff, Link, LinkState, LinkStatus};
+pub use node::{Control, NodeConfig, NodeError, NodeStats, NodeStatus, node_built, run};
