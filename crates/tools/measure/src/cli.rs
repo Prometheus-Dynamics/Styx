@@ -10,12 +10,14 @@ use crate::control::{CameraLine, ask, camera_for_socket};
 use crate::isp::{IspRunner, SoftIspArg};
 use crate::report::{CopySite, Process, Report, ServiceCamera};
 use crate::session::{Session, SessionError, Stop};
+use styx_soft::params::Paths;
 
 pub const USAGE: &str = "\
 usage:
   styx-measure read --socket <camera frame socket> (--frames N | --seconds S)
                     [--control <service control socket>] [--service-pid PID]
-                    [--asked-fps FPS] [--soft-isp <FOURCC>[:WxH]] [--report <file.json>]
+                    [--asked-fps FPS] [--soft-isp <FOURCC>[:WxH]] [--isp-variant <name>]
+                    [--report <file.json>]
   styx-measure status --control <service control socket>
 
 read attaches to a camera's frame socket as a reader in this process and measures what it takes
@@ -28,6 +30,9 @@ Report: requested, achieved (backend), achieved (metadata), measured (service an
 service's reason when they differ, read from the status and the frame metadata.
 --soft-isp: run the software ISP on each raw frame into an output picture of FOURCC (NV12, I420,
 RGB3, GREY) at full size, or at WxH (full or half of the raw size).
+--isp-variant: which equivalent row paths the software ISP takes: `current` (the default), `legacy`
+(the paths they replace), or a list such as `current,-direct-u8` (see styx_soft::params::Paths).
+The paths in effect are printed to stderr at the first frame.
 ";
 
 /// What `read` was asked to do.
@@ -38,6 +43,7 @@ pub struct ReadArgs {
     pub frames: Option<u64>,
     pub seconds: Option<f64>,
     pub soft_isp: Option<SoftIspArg>,
+    pub isp_variant: Option<Paths>,
     pub report: Option<PathBuf>,
     pub service_pid: Option<u32>,
     pub asked_fps_milli: Option<u32>,
@@ -92,6 +98,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
     let mut frames = None;
     let mut seconds = None;
     let mut soft_isp = None;
+    let mut isp_variant = None;
     let mut report = None;
     let mut service_pid = None;
     let mut asked_fps_milli = None;
@@ -119,6 +126,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
                 seconds = Some(s);
             }
             "--soft-isp" => soft_isp = Some(text(&mut it, flag)?.parse::<SoftIspArg>()?),
+            "--isp-variant" => isp_variant = Some(Paths::parse(&text(&mut it, flag)?)?),
             "--report" => report = Some(value(&mut it, flag)?),
             "--service-pid" => {
                 service_pid = Some(
@@ -132,6 +140,9 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
         }
     }
     let socket = socket.ok_or("read: --socket <camera frame socket> is required")?;
+    if isp_variant.is_some() && soft_isp.is_none() {
+        return Err("read: --isp-variant needs --soft-isp".into());
+    }
     if frames.is_none() && seconds.is_none() {
         return Err("read: give --frames N or --seconds S".into());
     }
@@ -141,6 +152,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
         frames,
         seconds,
         soft_isp,
+        isp_variant,
         report,
         service_pid,
         asked_fps_milli,
@@ -319,7 +331,11 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
     };
     let svc_mem0 = args.service_pid.and_then(|pid| memory_of(&pid.to_string()));
 
-    let isp = args.soft_isp.clone().map(IspRunner::new);
+    let paths = args.isp_variant.unwrap_or_default();
+    let isp = args
+        .soft_isp
+        .clone()
+        .map(|arg| IspRunner::new(arg).with_paths(paths));
     let mut session =
         Session::connect(&args.socket, isp).map_err(|e: SessionError| e.to_string())?;
     let reader0 = session.reader_start();
