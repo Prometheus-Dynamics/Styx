@@ -20,6 +20,16 @@
 //! `last_error`). Nothing turns a camera off by itself unless the config sets `auto_off_after`.
 //! A manual `stop` ends a camera until a manual `start`.
 //!
+//! # Shutdown and a sensor left started
+//!
+//! SIGTERM and SIGINT end the process through [`Service::shutdown`] (see `main.rs`): every camera's
+//! thread ends, and its session stops the sensor and the receiver through the Lemnos contract
+//! before the thread does. The sockets are removed last. A SIGKILL cannot be caught, so a sensor
+//! can be left streaming. The next start then gets a busy refusal from the sensor's mode selection:
+//! that camera's worker stops the sensor and receiver once through the contract and tries again
+//! once, in the same attempt. The stop is counted in the status (`recoveries`, `last_recovery`). A
+//! second refusal is an ordinary failure and backs off like any other.
+//!
 //! A device that reports itself degraded but still answers is usable: it is served, and its
 //! message is in the status. No current backend reports a degraded state through the `Capture`
 //! trait, so the status shows the backend's retry messages only (`state=retrying`).

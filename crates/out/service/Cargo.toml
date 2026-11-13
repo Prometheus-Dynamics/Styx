@@ -19,6 +19,10 @@ styx-native-run = { path = "../../camera/native-run" }
 styx-select = { path = "../../camera/select" }
 styx-socket = { path = "../socket" }
 lemnos-client = { workspace = true }
+lemnos-core = { workspace = true }
+lemnos-linux-sys = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
+lemnos-contract-camera-sensor = { workspace = true }
 styx-libcamera = { path = "../../camera/libcamera" }
 styx-v4l2 = { path = "../../camera/v4l2" }
 serde = { version = "1.0.229", features = ["derive"] }
@@ -31,8 +35,6 @@ lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }
 lemnos-hal = { workspace = true, features = ["std"] }
 lemnos-core = { workspace = true, features = ["std"] }
-lemnos-contract-camera-sensor = { workspace = true }
-lemnos-contract-camera-receiver = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }
 
 [lints]
