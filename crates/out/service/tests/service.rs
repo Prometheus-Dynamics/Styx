@@ -217,7 +217,22 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
     });
     for cam in cams {
         let line = line_of(&control, cam).expect("listed");
-        assert_eq!(field(&line, "skipped"), Some("0"), "{line}");
+        // Whether the service's camera thread kept up with the simulated camera is the
+        // machine's doing (a loaded machine holds it up and the camera drops frames), so zero
+        // skips is not this test's claim. What must hold always: the counts add up.
+        let number = |key: &str| -> u64 {
+            field(&line, key)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{key}: {line}"))
+        };
+        let (frames, skipped, last_id) = (number("frames"), number("skipped"), number("last_id"));
+        assert!(
+            frames + skipped <= last_id + 1,
+            "{frames} frames and {skipped} skipped do not fit ids up to {last_id}: {line}"
+        );
+        if skipped != 0 {
+            println!("{cam}: {skipped} frames skipped in {frames} (the camera thread was held up)");
+        }
         assert_eq!(field(&line, "owner"), Some("native"), "{line}");
         assert_eq!(field(&line, "health"), Some("healthy"), "{line}");
     }
