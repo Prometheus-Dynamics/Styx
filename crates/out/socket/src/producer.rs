@@ -1,21 +1,26 @@
 //! The producer: the camera service's end of the shared ring.
 
-use std::os::fd::{AsFd, OwnedFd};
+use std::io;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::fs::MetadataExt;
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
 use shm_fdpass as fdpass;
 use shm_ring::{FieldId, ReadMap, Ring, SampleTime, WriteMap};
-use shm_ring_buffers::{BufferIndex, BufferWriter, Dropped, Pool};
+use shm_ring_buffers::{BufferDesc, BufferIndex, BufferWriter, Dropped, Pool};
 use shm_ring_doorbell::Bell;
 use shm_ring_holds::{HoldTable, Limits};
 use styx_frame::{
-    AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool,
+    AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
 
 use crate::SocketError;
 use crate::geometry::Geometry;
-use crate::wire::{ACK_LEN, META_MAX, Offer, VERSION, encode_meta, encode_offer};
+use crate::wire::{
+    ACK_LEN, MAX_DESCRIPTORS, META_MAX, Offer, Record, VERSION, encode_meta, encode_offer,
+    encode_record,
+};
 
 /// How long a reader has to answer the handshake.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
@@ -119,6 +124,8 @@ pub struct Producer {
     /// For each buffer, the lease on the frame the ring still holds in it. Kept until the ring
     /// takes the buffer back, so the buffer stays this producer's while any reader may read it.
     in_flight: Vec<Option<FrameLease<()>>>,
+    /// The memory kind of each buffer, as the handshake names it.
+    kinds: Vec<MemoryKind>,
     geometry: Geometry,
     published: u64,
     dropped: u64,
@@ -127,15 +134,14 @@ pub struct Producer {
 
 impl Producer {
     /// A producer with `config`'s ring and buffers, all free and no readers yet. The buffers
-    /// all sit in one memfd, at [`Geometry::offset`] each. The outside bell set is allocated
-    /// here, [`OUTSIDE_BELLS`] long.
+    /// all sit in one memfd, at [`Geometry::offset`] each, and the memfd is sealed against
+    /// shrinking. The outside bell set is allocated here, [`OUTSIDE_BELLS`] long.
     ///
     /// # Errors
     ///
     /// [`SocketError`] if the shape is not allowed or the memory can't be made.
     pub fn new(config: ProducerConfig) -> Result<Self, SocketError> {
         let geometry = Geometry::new(config.payload, config.buffers, config.history)?;
-        let ring = Ring::create(&geometry.ring_spec())?;
         let pool_fd = shm_ring::sealed_memfd(geometry.pool_bytes())?;
         let mut memories: Vec<Box<dyn BufferMemory>> = Vec::with_capacity(geometry.buffers());
         for index in 0..geometry.buffers() {
@@ -150,12 +156,77 @@ impl Producer {
             BufferSize::new(geometry.payload(), geometry.slack()),
             memories,
         )?;
-        let pool = Pool::new(1, vec![pool_fd], geometry.buffer_descs())?;
-        let writer = BufferWriter::new(ring.writer()?, FIELD, pool);
+        Self::with_pool(frames, config.history)
+    }
+
+    /// A producer that publishes an existing pool's frames. Every buffer of `pool` must be
+    /// registered and fd-backed: a memfd (sealed against shrinking, as `shm_ring::sealed_memfd`
+    /// makes it) or a dma-buf, one descriptor per buffer or several buffers at offsets in one.
+    /// `history` is the ring's entries, as [`ProducerConfig::history`].
+    ///
+    /// The camera takes its frames from the pool through [`Producer::begin`], which picks the
+    /// buffer the ring can give, and fills the lease (or hands the buffer's descriptor to a
+    /// device, by [`FrameLease::buffer_index`]). [`Producer::publish`] keeps the lease until the
+    /// ring takes the buffer back, so a reader's hold keeps the frame in its buffer.
+    ///
+    /// The buffers the pool holds when it is given are the ones published; a buffer registered
+    /// later is not. Readers get the pool's buffers, descriptors and kinds once, in the handshake.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::Config`] when a buffer is not registered, has no descriptor, is host or
+    /// GPU memory, or the pool spans more than [`MAX_DESCRIPTORS`] descriptors.
+    /// [`SocketError::Ring`] or [`SocketError::Io`] when the ring or the descriptor identity
+    /// can't be made.
+    pub fn with_pool(pool: FramePool<()>, history: u32) -> Result<Self, SocketError> {
+        let size = pool.buffer_size();
+        let buffers = pool.buffers();
+        let geometry = Geometry::checked(history, META_MAX, buffers, size.payload, size.gpu_slack)?;
+        let mut fds: Vec<OwnedFd> = Vec::new();
+        let mut identities: Vec<(u64, u64)> = Vec::new();
+        let mut descs = Vec::with_capacity(buffers);
+        let mut kinds = Vec::with_capacity(buffers);
+        for index in 0..buffers {
+            let memory = pool.memory(index).ok_or(SocketError::Config(
+                "a buffer of the pool is not registered",
+            ))?;
+            let kind = memory.kind();
+            if !matches!(kind, MemoryKind::Memfd | MemoryKind::Dmabuf) {
+                return Err(SocketError::Config(
+                    "only memfd and dma-buf buffers cross to other processes",
+                ));
+            }
+            let fd = memory.fd().ok_or(SocketError::Config(
+                "a buffer of the pool has no descriptor",
+            ))?;
+            let identity = file_identity(fd)?;
+            let descriptor = match identities.iter().position(|known| *known == identity) {
+                Some(known) => known,
+                None => {
+                    if fds.len() == MAX_DESCRIPTORS {
+                        return Err(SocketError::Config(
+                            "a pool's buffers sit in at most 256 descriptors",
+                        ));
+                    }
+                    fds.push(fd.try_clone_to_owned()?);
+                    identities.push(identity);
+                    fds.len() - 1
+                }
+            };
+            descs.push(BufferDesc {
+                descriptor: descriptor as u8,
+                offset: memory.fd_offset() as u64,
+                size: memory.len() as u64,
+            });
+            kinds.push(kind);
+        }
+        let ring = Ring::create(&geometry.ring_spec())?;
+        let shm_pool = Pool::new(1, fds, descs)?;
+        let writer = BufferWriter::new(ring.writer()?, FIELD, shm_pool);
         Ok(Self {
             ring,
             writer,
-            frames,
+            frames: pool,
             holds: HoldTable::new(geometry.buffers() as u32),
             links: Vec::new(),
             bells: (0..OUTSIDE_BELLS)
@@ -165,6 +236,7 @@ impl Producer {
                 })
                 .collect(),
             in_flight: (0..geometry.buffers()).map(|_| None).collect(),
+            kinds,
             geometry,
             published: 0,
             dropped: 0,
@@ -176,6 +248,12 @@ impl Producer {
     /// doorbell it sends back. Returns the reader's slot. Blocks for the reader's reply, at most
     /// five seconds; call it from the control path, never from the frame path.
     ///
+    /// The handshake is the offer (the ring's read end, the pool page, the geometry and the
+    /// descriptor count), then one record per buffer: its descriptor, memory kind, offset and
+    /// length. A record carries its descriptor only when it is the buffer that first names it,
+    /// so a pool's buffers in one memfd cost one descriptor. Each message carries at most one
+    /// descriptor; that keeps every message well under the socket's per-message limit.
+    ///
     /// The reader's marks are registered before this returns, so no frame is published to it
     /// before its holds are visible.
     ///
@@ -185,22 +263,52 @@ impl Producer {
     pub fn accept(&mut self, socket: UnixStream, limits: Limits) -> Result<u32, SocketError> {
         let slot = self.holds.free_slot().ok_or(SocketError::NoReaderSlot)?;
         socket.set_read_timeout(Some(ANSWER_WITHIN))?;
+        socket.set_write_timeout(Some(ANSWER_WITHIN))?;
         let ring_fd = self.ring.read_fd()?;
         let page_fd = self.writer.pool().page_fd()?;
-        let pool_fd = self
-            .writer
-            .pool()
-            .descriptors()
-            .next()
-            .ok_or(SocketError::Protocol("the pool has no memfd"))?;
+        let descriptors: Vec<BorrowedFd<'_>> = self.writer.pool().descriptors().collect();
 
         let offer = encode_offer(&Offer {
             slot,
             max_held: limits.max_held,
             geometry: self.geometry,
+            descriptors: descriptors.len() as u32,
         });
-        let fds = [ring_fd.as_fd(), page_fd.as_fd(), pool_fd];
+        let fds = [ring_fd.as_fd(), page_fd.as_fd()];
         fdpass::send_on(&socket, &[&offer], &fds)?;
+
+        let mut named = 0_usize;
+        for (index, (desc, kind)) in self
+            .writer
+            .pool()
+            .buffers()
+            .iter()
+            .zip(&self.kinds)
+            .enumerate()
+        {
+            let record = encode_record(&Record {
+                index: index as u32,
+                descriptor: u32::from(desc.descriptor),
+                kind: *kind,
+                offset: desc.offset,
+                len: desc.size,
+            })
+            .ok_or(SocketError::Protocol(
+                "a buffer's kind does not cross processes",
+            ))?;
+            if usize::from(desc.descriptor) == named {
+                let fd = descriptors.get(named).ok_or(SocketError::Protocol(
+                    "a buffer names a descriptor that is not there",
+                ))?;
+                fdpass::send_on(&socket, &[&record], &[*fd])?;
+                named += 1;
+            } else {
+                fdpass::send_on(&socket, &[&record], &[])?;
+            }
+        }
+        if named != descriptors.len() {
+            return Err(SocketError::Protocol("a descriptor no buffer names"));
+        }
 
         let mut ack = [0_u8; ACK_LEN];
         let received = fdpass::recv(socket.as_fd(), &mut ack, 3, false)?.ok_or(
@@ -224,6 +332,7 @@ impl Producer {
         self.holds.add(slot, marks, limits)?;
         let bell = Bell::attach(eventfd, bell_page)?;
         socket.set_read_timeout(None)?;
+        socket.set_write_timeout(None)?;
         self.links.push(Link { slot, socket, bell });
         Ok(slot)
     }
@@ -305,6 +414,10 @@ impl Producer {
         let entry = *lease.entry();
         let mut meta = [0_u8; META_MAX];
         let len = encode_meta(&entry, &mut meta);
+        // The frame's CPU write window ends before the ring names its buffer, so a dma-buf's sync
+        // END is issued before any reader's START. A share taken and dropped at once ends the
+        // window (`FrameLease::share` closes it) and keeps the lease's one hold.
+        drop(lease.share());
         let seq = self.writer.publish(
             &[BufferIndex(index as u32)],
             SampleTime::from_nanos(entry.timestamp_ns),
@@ -350,6 +463,11 @@ impl Producer {
         &self.holds
     }
 
+    /// The same hold table, mutably: an adopter (Orion's subscriber, say) adds its marks here.
+    pub const fn holds_mut(&mut self) -> &mut HoldTable<ReadMap> {
+        &mut self.holds
+    }
+
     /// Counts, now.
     pub fn stats(&self) -> ProducerStats {
         ProducerStats {
@@ -390,6 +508,14 @@ impl Producer {
             }
         }
     }
+}
+
+/// The file a descriptor names, as device and inode: two buffers in one file have the same one,
+/// whichever descriptor number each holds.
+fn file_identity(fd: BorrowedFd<'_>) -> io::Result<(u64, u64)> {
+    let file = std::fs::File::from(fd.try_clone_to_owned()?);
+    let meta = file.metadata()?;
+    Ok((meta.dev(), meta.ino()))
 }
 
 /// Whether the peer has closed its end. A reader never sends after its answer, so anything it

@@ -6,6 +6,7 @@
 
 #include <libcamera/control_ids.h>
 #include <libcamera/geometry.h>
+#include <libcamera/property_ids.h>
 #include <libcamera/pixel_format.h>
 
 // The numbers the Rust side passes across the boundary (src/sys.rs) are libcamera's own. These
@@ -72,6 +73,13 @@ unsigned int styx_control_id(unsigned int which) {
     case 3: return libcamera::controls::SensorTimestamp.id();
     case 4: return libcamera::controls::AeEnable.id();
     case 5: return libcamera::controls::FrameDuration.id();
+    default: return 0;
+    }
+}
+
+unsigned int styx_property_id(unsigned int which) {
+    switch (which) {
+    case 0: return libcamera::properties::ScalerCropMaximum.id();
     default: return 0;
     }
 }

@@ -25,6 +25,11 @@ pub enum Error {
     Io(std::io::Error),
     /// The stream has stopped, so it takes no more commands.
     Stopped,
+    /// The node has no control with this id.
+    NoDeviceControl(u32),
+    /// A passthrough value the device control does not take: read-only, not settable, out of
+    /// range, or a control that is mapped to a Styx control (set that one instead).
+    DeviceValue(String),
 }
 
 impl fmt::Display for Error {
@@ -42,6 +47,8 @@ impl fmt::Display for Error {
             }
             Error::Io(e) => write!(f, "v4l2: {e}"),
             Error::Stopped => f.write_str("v4l2 stream has stopped"),
+            Error::NoDeviceControl(id) => write!(f, "v4l2: no control with id {id:#010x}"),
+            Error::DeviceValue(why) => write!(f, "v4l2 device control: {why}"),
         }
     }
 }
