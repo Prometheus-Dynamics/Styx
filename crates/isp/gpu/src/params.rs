@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
+use styx_simd::isp::poly::{PolyTone, SEGMENTS};
+use styx_simd::isp::{RowKind, ToneLut, YuvCoeffs};
 use styx_soft::shared::{grid_map_into, q12, stage_tables};
-use styx_soft::simd::poly::{PolyTone, SEGMENTS};
-use styx_soft::simd::{RowKind, ToneLut, YuvCoeffs};
 use styx_soft::{
     Arithmetic, CfaPattern, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig,
     YuvMatrix,
@@ -263,7 +263,7 @@ impl Tables {
                 b.black[y * 2 + x] = black_cells[pattern.cell_at(x, y)] as u32;
                 b.flat_gain[y * 2 + x] = q12(cell_gain(x, y)) as u32;
             }
-            let kind = RowKind::of(pattern, y);
+            let kind = RowKind::of(pattern.into(), y);
             b.green_even[y] = kind.green_even as u32;
             b.x_is_red[y] = kind.x_is_red as u32;
         }

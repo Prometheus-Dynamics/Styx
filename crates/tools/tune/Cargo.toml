@@ -1,0 +1,27 @@
+[package]
+name = "styx-tune"
+description = "Camera calibration for Styx: black level, noise, lens shading, AWB curve and colour matrices from raw captures of standard targets, written as the tuning file Styx's tuning search reads. A library and the styx-tune binary."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "styx-tune"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive", "std"] }
+styx-aaa = { path = "../../algo/aaa" }
+styx-soft = { path = "../../isp/soft" }
+styx-tuning = { path = "../../algo/tuning" }
+thiserror = { version = "2.0.21", default-features = false, features = ["std"] }
+toml = { version = "1.1", default-features = false, features = ["serde", "parse", "display"] }
+
+[lints]
+workspace = true
