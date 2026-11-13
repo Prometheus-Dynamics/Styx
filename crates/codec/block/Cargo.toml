@@ -1,0 +1,19 @@
+[package]
+name = "styx-block"
+description = "Hardware codec blocks for Styx: the HEVC bitstream (parser and stateless controls) and the decode job that Lemnos's codec.block/1 contract runs. Styx builds the work; Lemnos runs the block. Registers as styx-codec-api decoders."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-codec-api = { path = "../codec-api" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+lemnos-contract-codec-block = { workspace = true }
+lemnos-linux-sys = { workspace = true }
+
+[lints]
+workspace = true
