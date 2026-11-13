@@ -13,7 +13,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{GainLaw, START, code_for_milli, code_for_us, us_for_code};
+use common::{START, code_for_milli, code_for_us, us_for_code};
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_native_controls::NativeControls;
 use styx_sim::{SensorTiming, SimCamera, SimFrame};
@@ -104,7 +104,7 @@ fn run(timing: SensorTiming) {
     assert_eq!(mode.exposure_delay, timing.exposure_delay);
     assert_eq!(mode.gain_delay, timing.gain_delay);
 
-    let mut controls = NativeControls::new(&mode, START, GainLaw::Linear).expect("native controls");
+    let mut controls = NativeControls::new(&mode, START).expect("native controls");
     controls.prepare(cam.sensor()).expect("initial values");
 
     let steps = schedule();

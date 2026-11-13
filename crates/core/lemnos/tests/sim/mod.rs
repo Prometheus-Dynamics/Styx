@@ -259,7 +259,7 @@ impl CameraReceiver for SimReceiver {
     }
 
     fn layout(&mut self) -> Result<Option<lemnos_contract_camera_receiver::FrameLayout>> {
-        Ok(None)
+        Ok(self.layout)
     }
 
     fn limits(&mut self) -> Result<Limits> {
