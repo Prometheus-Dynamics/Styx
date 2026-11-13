@@ -1,9 +1,10 @@
 //! The native controls of one camera: what is posted, when, and what is in force.
 
-use lemnos_contract_camera_sensor::{CameraSensor, Controls, FrameValues, Mode};
+use lemnos_contract_camera_sensor::{CameraSensor, Controls, FrameValues, GainRange, Mode};
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 
 use crate::error::{Error, Limit};
+use crate::gain::{self, GainLaw};
 use crate::schedule::Lane;
 use crate::units;
 
@@ -84,10 +85,8 @@ struct Limits {
     fraction_bits: u8,
     exposure_min: u32,
     exposure_margin: u32,
-    gain_min: u32,
-    gain_max: u32,
-    gain_unity: u32,
-    gain_step: u32,
+    gain: GainRange,
+    law: GainLaw,
     fl_min: u32,
     fl_max: u32,
 }
@@ -106,8 +105,10 @@ impl Limits {
         units::exposure_us(u64::from(code), self.line_time_ps, self.fraction_bits)
     }
 
+    /// Thousandths of gain for a code. Only called with a code this crate made, under a law that
+    /// [`NativeControls::new`] has already accepted, so the conversion cannot be refused.
     fn gain_milli(&self, code: u32) -> u32 {
-        units::gain_milli(u64::from(code), self.gain_unity)
+        gain::code_to_gain(self.law, &self.gain, code).unwrap_or(0)
     }
 
     fn frame_rate(&self, lines: u32) -> u32 {
@@ -155,31 +156,25 @@ impl Limits {
 
     /// The gain code for `milli`, if the sensor has that code.
     fn gain(&self, milli: u32) -> Result<u32, Error> {
-        let gain = lemnos_contract_camera_sensor::GainRange {
-            min: self.gain_min,
-            max: self.gain_max,
-            unity: self.gain_unity,
-            step: self.gain_step,
-        };
-        let code =
-            units::gain_code(milli, &gain).ok_or(Error::Mode("analogue gain has no unity code"))?;
-        if code < u64::from(self.gain_min) || code > u64::from(self.gain_max) {
+        let code = gain::gain_to_code(self.law, &self.gain, milli)?;
+        if code < self.gain.min || code > self.gain.max {
             return Err(Error::Limit(Limit {
                 control: Control::Gain,
                 requested: milli,
-                min: self.gain_milli(self.gain_min),
-                max: self.gain_milli(self.gain_max),
+                min: self.gain_milli(self.gain.min),
+                max: self.gain_milli(self.gain.max),
                 frame_lines: None,
             }));
         }
-        Ok(code as u32)
+        Ok(code)
     }
 }
 
 impl NativeControls {
-    /// The controls of a sensor in `mode`, starting at `initial`. Refuses an initial value the
-    /// sensor cannot take, and a mode with no line time or no gain unity code.
-    pub fn new(mode: &Mode, initial: Initial) -> Result<Self, Error> {
+    /// The controls of a sensor in `mode`, starting at `initial`, with gain converted by `law`.
+    /// Refuses an initial value the sensor cannot take, a mode with no line time or no gain unity
+    /// code, and [`GainLaw::Unknown`] ([`Error::GainLaw`]): no gain code is assumed.
+    pub fn new(mode: &Mode, initial: Initial, law: GainLaw) -> Result<Self, Error> {
         if mode.line_time_ps == 0 {
             return Err(Error::Mode("line_time_ps is zero"));
         }
@@ -191,10 +186,8 @@ impl NativeControls {
             fraction_bits: mode.exposure_fraction_bits,
             exposure_min: mode.exposure_min,
             exposure_margin: mode.exposure_margin,
-            gain_min: mode.analogue_gain.min,
-            gain_max: mode.analogue_gain.max,
-            gain_unity: mode.analogue_gain.unity,
-            gain_step: mode.analogue_gain.step,
+            gain: mode.analogue_gain,
+            law,
             fl_min: mode.frame_length_min,
             fl_max: mode.frame_length_max,
         };
@@ -361,6 +354,7 @@ impl NativeControls {
             };
             sensor
                 .post_values(FrameValues {
+                    // Opaque to Lemnos: the post frame is kept here as a record, not as the landing.
                     identity: frame,
                     controls,
                 })
@@ -375,7 +369,12 @@ impl NativeControls {
     }
 
     /// The controls in force on `frame`, and what the frame measured. Timestamp is the frame's
-    /// `CLOCK_MONOTONIC` nanoseconds. Values come from what was posted, not from the frame.
+    /// `CLOCK_MONOTONIC` nanoseconds. Values come from what was posted and the delays, not from the
+    /// frame: `camera.sensor/1` has no per-frame read-back at the lock (Lemnos J4 adds it).
+    ///
+    /// On a free-running sensor a value may land one frame later than recorded here: the write
+    /// frame is taken as the last frame delivered, and the sensor may already be exposing the
+    /// next one. Until read-back exists, treat the recorded frame as the earliest it can land.
     pub fn metadata(&self, frame: u64, sensor_timestamp_ns: u64) -> FrameMetadata {
         let exposure = self.lanes[EXPOSURE].value_at(frame);
         let gain = self.lanes[GAIN].value_at(frame);

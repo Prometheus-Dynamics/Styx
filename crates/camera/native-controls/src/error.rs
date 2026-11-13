@@ -72,6 +72,9 @@ pub enum Error {
     NotStreaming,
     /// The sensor refused a call. Nothing was recorded for it.
     Sensor(Status),
+    /// The gain law is unknown, so no gain code can be made. The contract at the lock has no
+    /// gain law; Lemnos J4 adds it.
+    GainLaw,
 }
 
 impl fmt::Display for Error {
@@ -85,6 +88,10 @@ impl fmt::Display for Error {
             Error::Mode(why) => write!(f, "sensor mode cannot take controls: {why}"),
             Error::NotStreaming => write!(f, "no frame has started"),
             Error::Sensor(s) => write!(f, "sensor refused the call: {s:?}"),
+            Error::GainLaw => write!(
+                f,
+                "gain law unknown: Lemnos J4 adds it to the contract; set GainLaw::Linear only for a sensor known to be linear"
+            ),
         }
     }
 }

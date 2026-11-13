@@ -52,19 +52,9 @@ fn sensitivity(x: u32, y: u32) -> f32 {
     }
 }
 
-/// The exposure and gain a frame is rendered at, from the controls in force. `Auto` (the sensor
-/// has no automatic exposure here) and an unset control hold the reference value.
-pub fn resolve(exposure: Option<u32>, gain: Option<u32>) -> (u32, u32) {
-    (
-        exposure.unwrap_or(REFERENCE_EXPOSURE_US),
-        gain.unwrap_or(REFERENCE_GAIN_MILLI),
-    )
-}
-
-/// The 10-bit sample on photosite `(x, y)` of a frame at `exposure_us` and `gain_milli`.
-pub fn sample(light: f32, x: u32, y: u32, exposure_us: u32, gain_milli: u32) -> u16 {
-    let scale = exposure_us as f32 / REFERENCE_EXPOSURE_US as f32
-        * (gain_milli as f32 / REFERENCE_GAIN_MILLI as f32);
+/// The 10-bit sample on photosite `(x, y)` of a frame whose brightness scale against the reference
+/// exposure and gain is `scale`.
+pub fn sample(light: f32, x: u32, y: u32, scale: f32) -> u16 {
     let value = light * sensitivity(x, y) * 0.5 * scale * f32::from(FULL_SCALE);
     value.round().clamp(0.0, f32::from(FULL_SCALE)) as u16
 }

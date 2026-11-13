@@ -13,5 +13,8 @@ styx-controls = { path = "../../core/controls" }
 lemnos-contract-camera-sensor = { workspace = true }
 lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
 
+[dev-dependencies]
+styx-sim = { path = "../sim" }
+
 [lints]
 workspace = true

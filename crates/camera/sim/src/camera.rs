@@ -3,13 +3,20 @@
 //! [`SimCamera::start`] runs `lemnosd` in this process with the simulated drivers, finds the chain
 //! by tag and link, starts it with contract calls in the order the Lemnos contracts set, and reads
 //! the receiver's frames as `FrameLease`s. The simulated receiver makes frames but no pixels, so
-//! each frame is rendered here, into the lease's own buffer, at the exposure and gain in force on
-//! it. Controls are scheduled by frame identity: an update applies from the frame it names on.
+//! each frame is rendered here, into the lease's own buffer, at the exposure and gain the sensor
+//! latched on it.
+//!
+//! Time is the camera's frame clock (see `silicon`): [`SimCamera::next`] grants the next frame and
+//! waits for it, so the values a write lands on are fixed by the frame it is written in and the
+//! sensor's delay for its control. [`SimCamera::set_control`] names the frame a value must show
+//! on, and the camera posts it through the sensor's contract during the frame before that by the
+//! delay.
 
 use std::collections::VecDeque;
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
@@ -29,12 +36,16 @@ use styx_lemnos::{ChainError, Frames, find_chain, open_frames_writable};
 
 use crate::drivers::{self, SimIsp, SimReceiver, SimSensor};
 use crate::scene::{self, Scene};
+use crate::silicon::{self, InForce, SensorTiming, Silicon};
 
 /// The simulated camera's name for the daemon and its client.
 const NAME: &str = "styx-sim";
 
 /// Digital gain is not simulated: every frame reports unity.
 const DIGITAL_GAIN_MILLI: u32 = 1_000;
+
+/// How long [`SimCamera::next`] waits for the frame clock to grant a frame, at most.
+const GRANT_WAIT: Duration = Duration::from_secs(10);
 
 /// Errors from starting a simulated camera, setting a control and reading a frame.
 #[derive(Debug)]
@@ -53,8 +64,16 @@ pub enum Error {
     Scene(String),
     /// The value is not one the control takes.
     Value(ValueError),
-    /// The frame named is not after the last frame rendered (`rendered`), so it cannot apply.
+    /// The frame named cannot take the value: the write it needs is during a frame already past.
+    /// `rendered` is the last frame latched.
     Late { frame: u64, rendered: u64 },
+    /// The control is not one the simulated camera takes (exposure and gain).
+    Unsupported(Control),
+    /// A sensor delay of zero was asked for. A value written during a frame would have to show on
+    /// that frame, which is already latched; delays are one frame or more.
+    Timing,
+    /// No settings were latched for a frame that was read.
+    NoRecord(u64),
     /// The chain has no ISP; the simulated camera needs one to take its input.
     NoIsp,
     /// The frame's buffer cannot be written by the CPU.
@@ -73,8 +92,14 @@ impl fmt::Display for Error {
             Error::Value(e) => write!(f, "control value: {e:?}"),
             Error::Late { frame, rendered } => write!(
                 f,
-                "frame {frame} is not after the last frame rendered ({rendered})"
+                "frame {frame} cannot take a value: the last frame latched is {rendered}"
             ),
+            Error::Unsupported(c) => write!(f, "{} is not taken by the simulated camera", c.name()),
+            Error::Timing => write!(
+                f,
+                "a sensor delay of zero cannot be honoured: delays are one frame or more"
+            ),
+            Error::NoRecord(id) => write!(f, "no settings were latched for frame {id}"),
             Error::NoIsp => write!(f, "the simulated chain has no ISP"),
             Error::NotWritable => write!(f, "frame buffer is not writable by the CPU"),
         }
@@ -121,6 +146,13 @@ impl fmt::Debug for SimFrame {
     }
 }
 
+/// A value waiting for its write frame: posted in frame `frame - delay`.
+#[derive(Debug, Clone, Copy)]
+struct Pending {
+    update: Update,
+    delay: i64,
+}
+
 /// A simulated camera. Dropping it stops its drivers and the daemon.
 pub struct SimCamera {
     sensor: Bound<dyn CameraSensor, RemoteCaller>,
@@ -132,12 +164,15 @@ pub struct SimCamera {
     scene: Scene,
     width: u32,
     height: u32,
-    /// The controls in force, by [`Control::index`]: the last update applied to each.
-    in_force: [ControlValue; Control::COUNT],
-    /// Updates not yet applied, in frame order.
-    pending: VecDeque<Update>,
-    /// The identity of the last frame rendered.
-    last_id: Option<u64>,
+    silicon: Arc<Silicon>,
+    /// Frames granted to the stream so far: the next one to grant is `taken` when all were read.
+    allowed: u64,
+    /// Frames read so far.
+    taken: u64,
+    /// Updates not yet posted, in the order they were set.
+    pending: VecDeque<Pending>,
+    /// The name the drivers' config gives this camera's clock.
+    token: String,
     dir: PathBuf,
     /// Kept running for the drivers; last, so the daemon stops after the client and drivers.
     _service: Service,
@@ -148,7 +183,7 @@ impl fmt::Debug for SimCamera {
         f.debug_struct("SimCamera")
             .field("width", &self.width)
             .field("height", &self.height)
-            .field("last_id", &self.last_id)
+            .field("taken", &self.taken)
             .field("pending", &self.pending.len())
             .field("frames", &self.frames)
             .finish()
@@ -162,29 +197,43 @@ fn unique_dir() -> PathBuf {
     std::env::temp_dir().join(format!("styx-sim-{}-{n}", std::process::id()))
 }
 
-fn manual(value: ControlValue) -> Option<u32> {
-    match value {
-        ControlValue::Manual(v) => Some(v),
-        _ => None,
-    }
-}
-
 impl SimCamera {
     /// Starts the simulated camera in `mode` (0 is 320 by 40 at 120 frames a second, 1 is 640 by
-    /// 40 at 60), showing `scene`.
+    /// 40 at 60), showing `scene`, with the default sensor timing: exposure two frames on, gain
+    /// one, frame length two.
     pub fn start(scene: Scene, mode: u16) -> Result<Self, Error> {
+        Self::start_with(scene, mode, SensorTiming::default())
+    }
+
+    /// Starts the simulated camera with the sensor's delays in `timing`.
+    pub fn start_with(scene: Scene, mode: u16, timing: SensorTiming) -> Result<Self, Error> {
+        if !timing.is_honourable() {
+            return Err(Error::Timing);
+        }
         let dir = unique_dir();
         fs::create_dir_all(&dir).map_err(|e| Error::Daemon(e.to_string()))?;
-        let result = Self::start_in(&dir, scene, mode);
+        let token = dir
+            .file_name()
+            .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
+        let silicon = Arc::new(Silicon::new(timing));
+        silicon::register(&token, Arc::clone(&silicon));
+        let result = Self::start_in(&dir, scene, mode, &token, silicon);
+        silicon::unregister(&token);
         if result.is_err() {
             let _ = fs::remove_dir_all(&dir);
         }
         result
     }
 
-    fn start_in(dir: &Path, scene: Scene, mode: u16) -> Result<Self, Error> {
+    fn start_in(
+        dir: &Path,
+        scene: Scene,
+        mode: u16,
+        token: &str,
+        silicon: Arc<Silicon>,
+    ) -> Result<Self, Error> {
         let socket = dir.join("sock");
-        let board = parse(&drivers::board(Some("csi0")))
+        let board = parse(&drivers::board(token, Some("csi0")))
             .map_err(|e| Error::Daemon(format!("board: {e:?}")))?;
         let config = Config {
             socket: socket.clone(),
@@ -249,10 +298,6 @@ impl SimCamera {
         receiver.start().map_err(Error::Contract)?;
         sensor.start().map_err(Error::Contract)?;
 
-        let mut in_force = [ControlValue::Auto; Control::COUNT];
-        for control in Control::ALL {
-            in_force[control.index()] = control.spec().default;
-        }
         Ok(Self {
             sensor,
             receiver,
@@ -262,9 +307,11 @@ impl SimCamera {
             scene,
             width: layout.width,
             height: layout.height,
-            in_force,
+            silicon,
+            allowed: 0,
+            taken: 0,
             pending: VecDeque::new(),
-            last_id: None,
+            token: token.to_string(),
             dir: dir.to_path_buf(),
             _service: service,
         })
@@ -280,74 +327,126 @@ impl SimCamera {
         self.height
     }
 
+    /// The sensor's delays, as the mode reports them.
+    pub fn timing(&self) -> SensorTiming {
+        self.silicon.timing()
+    }
+
+    /// The camera's sensor, as its `camera.sensor/1` contract. A caller may post values to it
+    /// directly: they are written during the last frame read, as [`SimCamera::next`] describes.
+    pub fn sensor(&mut self) -> &mut dyn CameraSensor {
+        &mut self.sensor
+    }
+
     /// Frames the stream gave up because the consumer held every buffer.
     pub fn held_drops(&self) -> u64 {
         self.frames.held_drops()
     }
 
-    /// Sets `update.control` to `update.value` from frame `update.frame` on. The sensor gets the
-    /// value for that frame through its contract; the frame is rendered with it when it is read.
+    /// Sets `update.control` to `update.value` from frame `update.frame` on. The camera posts it
+    /// through the sensor's contract during frame `update.frame - delay`, so it shows on that frame
+    /// (the delay is the sensor's, per control).
     ///
-    /// Fails with [`Error::Late`] when `update.frame` has already been rendered, and with
-    /// [`Error::Value`] when the control does not take the value. `Auto` on exposure or gain holds
-    /// the reference value (the simulated sensor has no automatic exposure).
+    /// Fails with [`Error::Late`] when the write frame has passed, and with [`Error::Value`] when
+    /// the control does not take the value. `Auto` on exposure or gain holds the reference value.
     pub fn set_control(&mut self, update: Update) -> Result<(), Error> {
+        let lane = silicon::lane_of(update.control).ok_or(Error::Unsupported(update.control))?;
         update
             .control
             .validate(update.value)
             .map_err(Error::Value)?;
-        if let Some(rendered) = self.last_id
-            && update.frame <= rendered
-        {
+        let delay = self.silicon.timing().delay(lane) as i64;
+        let cur = self.silicon.granted() as i64 - 1;
+        if update.frame as i64 - delay < cur {
             return Err(Error::Late {
                 frame: update.frame,
-                rendered,
+                rendered: cur.max(0) as u64,
             });
         }
-        let controls = match update.control {
-            Control::Exposure => Controls {
-                exposure: Some(manual(update.value).unwrap_or(scene::REFERENCE_EXPOSURE_US)),
-                ..Controls::default()
-            },
-            Control::Gain => Controls {
-                analogue_gain: Some(manual(update.value).unwrap_or(scene::REFERENCE_GAIN_MILLI)),
-                ..Controls::default()
-            },
-            _ => Controls::default(),
-        };
-        if controls != Controls::default() {
+        let at = self
+            .pending
+            .partition_point(|p| p.update.frame <= update.frame);
+        self.pending.insert(at, Pending { update, delay });
+        Ok(())
+    }
+
+    /// Posts each pending value whose write frame is `cur`, the last frame latched.
+    fn post_due(&mut self, cur: i64) -> Result<(), Error> {
+        let mut i = 0;
+        while i < self.pending.len() {
+            let p = self.pending[i];
+            if p.update.frame as i64 - p.delay != cur {
+                i += 1;
+                continue;
+            }
+            self.pending.remove(i);
+            let code = match p.update.value {
+                ControlValue::Manual(us_or_milli) => match p.update.control {
+                    Control::Exposure => silicon::exposure_code(us_or_milli),
+                    _ => silicon::gain_code(us_or_milli),
+                },
+                _ => match p.update.control {
+                    Control::Exposure => silicon::exposure_code(scene::REFERENCE_EXPOSURE_US),
+                    _ => silicon::gain_code(scene::REFERENCE_GAIN_MILLI),
+                },
+            };
+            let controls = match p.update.control {
+                Control::Exposure => Controls {
+                    exposure: Some(code),
+                    ..Controls::default()
+                },
+                _ => Controls {
+                    analogue_gain: Some(code),
+                    ..Controls::default()
+                },
+            };
             self.sensor
                 .post_values(FrameValues {
-                    identity: update.frame,
+                    identity: p.update.frame,
                     controls,
                 })
                 .map_err(Error::Contract)?;
         }
-        let at = self.pending.partition_point(|u| u.frame <= update.frame);
-        self.pending.insert(at, update);
         Ok(())
     }
 
-    /// Waits up to `timeout` for the next frame, renders it at the controls in force on it and
-    /// returns it. `None` when no frame came in time.
+    /// Grants the next frame, waits up to `timeout` for it, renders it at the settings the sensor
+    /// latched on it and returns it. `None` when no frame came in time.
+    ///
+    /// Values posted through the contract (or by [`SimCamera::set_control`]) since the last frame
+    /// was read are written during that frame; the frame latched next shows the ones due on it.
     pub fn next(&mut self, timeout: Duration) -> Result<Option<SimFrame>, Error> {
+        let granted = self
+            .silicon
+            .await_granted(self.allowed, timeout.min(GRANT_WAIT));
+        if granted < self.allowed {
+            return Ok(None);
+        }
+        self.post_due(granted as i64 - 1)?;
+        self.allowed = self.taken + 1;
+        self.silicon.allow(self.allowed);
         let Some(mut lease) = self.frames.next(timeout).map_err(Error::Stream)? else {
             return Ok(None);
         };
         let id = lease.id();
-        while let Some(update) = self.pending.front().copied()
-            && update.frame <= id
-        {
-            self.pending.pop_front();
-            self.in_force[update.control.index()] = update.value;
+        let in_force = self.silicon.in_force(id).ok_or(Error::NoRecord(id))?;
+        let (exposure_code, gain_code) = codes_in_force(in_force);
+        self.render(&mut lease, id, exposure_code, gain_code)?;
+        self.taken = id + 1;
+        let exposure_us = silicon::exposure_us(exposure_code);
+        let gain_milli = silicon::gain_milli(gain_code);
+        let mut controls = [ControlValue::Auto; Control::COUNT];
+        for control in Control::ALL {
+            controls[control.index()] = control.spec().default;
         }
-        let exposure_us = manual(self.in_force[Control::Exposure.index()]);
-        let gain_milli = manual(self.in_force[Control::Gain.index()]);
-        let (exposure_us, gain_milli) = scene::resolve(exposure_us, gain_milli);
-        self.render(&mut lease, id, exposure_us, gain_milli)?;
-        self.last_id = Some(id);
+        controls[Control::Exposure.index()] = in_force
+            .exposure
+            .map_or(ControlValue::Auto, |_| ControlValue::Manual(exposure_us));
+        controls[Control::Gain.index()] = in_force
+            .gain
+            .map_or(ControlValue::Auto, |_| ControlValue::Manual(gain_milli));
         let meta = FrameMetadata {
-            controls: self.in_force,
+            controls,
             sensor_timestamp_ns: lease.timestamp_ns(),
             exposure_us,
             analogue_gain_milli: gain_milli,
@@ -363,16 +462,18 @@ impl SimCamera {
         self.frames.release(frame.lease);
     }
 
-    /// Writes frame `id` into the lease's buffer as `pRAA` samples at the given exposure and gain.
+    /// Writes frame `id` into the lease's buffer as `pRAA` samples at the scale the codes in force
+    /// give against the reference exposure and gain.
     fn render(
         &self,
         lease: &mut FrameLease,
         id: u64,
-        exposure_us: u32,
-        gain_milli: u32,
+        exposure_code: u32,
+        gain_code: u32,
     ) -> Result<(), Error> {
         let (width, height) = (self.width, self.height);
         let row = scene::row_bytes(width);
+        let scale = scale_of(exposure_code, gain_code);
         let mut planes = lease.write().ok_or(Error::NotWritable)?;
         let mut plane = planes.plane(0).ok_or(Error::NotWritable)?;
         for y in 0..height {
@@ -384,7 +485,7 @@ impl SimCamera {
                 for (i, sample) in samples.iter_mut().enumerate() {
                     let x = group as u32 * 4 + i as u32;
                     let light = self.scene.light(id, x, y, width);
-                    *sample = scene::sample(light, x, y, exposure_us, gain_milli);
+                    *sample = scene::sample(light, x, y, scale);
                 }
                 scene::pack_quad(samples, out);
             }
@@ -393,11 +494,31 @@ impl SimCamera {
     }
 }
 
+/// The exposure and gain codes in force on a frame, with the reference for an automatic control.
+fn codes_in_force(in_force: InForce) -> (u32, u32) {
+    (
+        in_force
+            .exposure
+            .unwrap_or_else(|| silicon::exposure_code(scene::REFERENCE_EXPOSURE_US)),
+        in_force
+            .gain
+            .unwrap_or_else(|| silicon::gain_code(scene::REFERENCE_GAIN_MILLI)),
+    )
+}
+
+/// The brightness scale of a frame against the reference exposure and gain.
+fn scale_of(exposure_code: u32, gain_code: u32) -> f32 {
+    let ref_exposure = silicon::exposure_code(scene::REFERENCE_EXPOSURE_US);
+    let ref_gain = silicon::gain_code(scene::REFERENCE_GAIN_MILLI);
+    exposure_code as f32 / ref_exposure as f32 * (gain_code as f32 / ref_gain as f32)
+}
+
 impl Drop for SimCamera {
     fn drop(&mut self) {
         let _ = self.sensor.stop();
         let _ = self.receiver.stop();
         let _ = self.isp.stop();
+        silicon::unregister(&self.token);
         let _ = fs::remove_dir_all(&self.dir);
     }
 }
