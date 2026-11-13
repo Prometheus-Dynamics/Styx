@@ -16,6 +16,7 @@ styx-aaa = { path = "../../algo/aaa", optional = true }
 styx-format = { path = "../../core/format", optional = true }
 styx-frame = { path = "../../core/frame", features = ["linux"], optional = true }
 styx-settings = { path = "../settings", optional = true }
+styx-simd = { path = "../../core/simd", optional = true }
 styx-soft = { path = "../soft", optional = true }
 styx-simd = { path = "../../core/simd", optional = true }
 thiserror = { version = "2.0.21", optional = true }

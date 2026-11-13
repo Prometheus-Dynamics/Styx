@@ -323,7 +323,15 @@ impl Tables {
                 tone.set_curve(|x| curve.eval(x));
                 let mut lut = writable(&mut spare.luts);
                 let words = Arc::get_mut(&mut lut).expect("unshared");
-                let poly = (params.arithmetic == Arithmetic::IntPolyTone)
+                // `Auto` resolves as `styx-soft` does on this host: quadratics where the CPU
+                // prefers them (AVX2) and they fit the curve. The quadratics are within one
+                // code of the table, not equal to it, so the choice decides the bits.
+                let want_poly = match params.arithmetic {
+                    Arithmetic::IntPolyTone => true,
+                    Arithmetic::Auto => styx_simd::isp::poly_preferred(),
+                    Arithmetic::Int | Arithmetic::Half => false,
+                };
+                let poly = want_poly
                     .then(|| PolyTone::fit_with(tone.full(), &mut spare.poly_weight))
                     .flatten();
                 b.tone_lut = match poly {
