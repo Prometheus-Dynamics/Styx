@@ -64,6 +64,13 @@ pub unsafe trait BufferMemory: Send + Sync {
     fn fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
         None
     }
+
+    /// Where the buffer starts in [`BufferMemory::fd`]: several buffers may share one descriptor.
+    /// Default 0.
+    #[cfg(all(feature = "std", unix))]
+    fn fd_offset(&self) -> usize {
+        0
+    }
 }
 
 impl fmt::Debug for dyn BufferMemory {

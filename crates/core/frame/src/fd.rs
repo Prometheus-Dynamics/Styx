@@ -21,33 +21,54 @@ pub struct FdMemory {
     mapping: Option<Mapping>,
     kind: MemoryKind,
     len: usize,
+    /// Where the buffer starts in the descriptor.
+    offset: usize,
+    /// Where the buffer starts in the mapping (the mapping begins at an aligned offset).
+    lead: usize,
     writable: bool,
     sync_errors: AtomicUsize,
 }
 
+/// Mappings start at a multiple of this, which every page size in use divides (4, 16, 64 KiB).
+const MAP_ALIGN: usize = 64 * 1024;
+
 impl FdMemory {
     /// A memfd of `len` bytes, mapped (read-write when `writable`).
     pub fn memfd(fd: OwnedFd, len: usize, writable: bool) -> io::Result<Self> {
-        let mapping = Mapping::new(fd.as_fd(), len, 0, writable)?;
-        Ok(Self::with(
-            fd,
-            Some(mapping),
-            MemoryKind::Memfd,
-            len,
-            writable,
-        ))
+        Self::mapped(fd, MemoryKind::Memfd, 0, len, writable)
+    }
+
+    /// `len` bytes at `offset` in a memfd, mapped: one buffer of several kept in one descriptor.
+    pub fn memfd_at(fd: OwnedFd, offset: usize, len: usize, writable: bool) -> io::Result<Self> {
+        Self::mapped(fd, MemoryKind::Memfd, offset, len, writable)
     }
 
     /// A dma-buf of `len` bytes, mapped (read-write when `writable`).
     pub fn dmabuf(fd: OwnedFd, len: usize, writable: bool) -> io::Result<Self> {
-        let mapping = Mapping::new(fd.as_fd(), len, 0, writable)?;
-        Ok(Self::with(
-            fd,
-            Some(mapping),
-            MemoryKind::Dmabuf,
-            len,
-            writable,
-        ))
+        Self::mapped(fd, MemoryKind::Dmabuf, 0, len, writable)
+    }
+
+    /// `len` bytes at `offset` in a dma-buf, mapped.
+    pub fn dmabuf_at(fd: OwnedFd, offset: usize, len: usize, writable: bool) -> io::Result<Self> {
+        Self::mapped(fd, MemoryKind::Dmabuf, offset, len, writable)
+    }
+
+    fn mapped(
+        fd: OwnedFd,
+        kind: MemoryKind,
+        offset: usize,
+        len: usize,
+        writable: bool,
+    ) -> io::Result<Self> {
+        let lead = offset % MAP_ALIGN;
+        let span = len
+            .checked_add(lead)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let mapping = Mapping::new(fd.as_fd(), span, (offset - lead) as u64, writable)?;
+        let mut memory = Self::with(fd, Some(mapping), kind, len, writable);
+        memory.offset = offset;
+        memory.lead = lead;
+        Ok(memory)
     }
 
     /// A dma-buf of `len` bytes the CPU does not map: handed on by descriptor only.
@@ -67,6 +88,8 @@ impl FdMemory {
             mapping,
             kind,
             len,
+            offset: 0,
+            lead: 0,
             writable,
             sync_errors: AtomicUsize::new(0),
         }
@@ -121,7 +144,9 @@ unsafe impl BufferMemory for FdMemory {
 
     fn cpu_ptr(&self) -> Option<NonNull<u8>> {
         let mapping = self.mapping.as_ref()?;
-        NonNull::new(mapping.as_ptr().cast_mut())
+        // SAFETY: the mapping is `lead + len` bytes (made so in `mapped`; `lead` is 0 otherwise),
+        // so the offset pointer is inside it.
+        NonNull::new(unsafe { mapping.as_ptr().add(self.lead) }.cast_mut())
     }
 
     fn cpu_writable(&self) -> bool {
@@ -138,5 +163,9 @@ unsafe impl BufferMemory for FdMemory {
 
     fn fd(&self) -> Option<BorrowedFd<'_>> {
         Some(self.fd.as_fd())
+    }
+
+    fn fd_offset(&self) -> usize {
+        self.offset
     }
 }

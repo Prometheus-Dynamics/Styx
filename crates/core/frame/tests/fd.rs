@@ -74,3 +74,31 @@ fn libc_seal_shrink() -> i32 {
     // F_SEAL_SHRINK
     0x0002
 }
+
+#[test]
+fn several_buffers_share_one_memfd_at_offsets() {
+    // Three 8192-byte buffers in one memfd, the second and third at offsets that are not
+    // multiples of the mapping alignment.
+    let total = 3 * LEN;
+    let fd = dma_buf::sealed_memfd(c"styx-frame-offsets", total as u64).unwrap();
+    let memories: Vec<Box<dyn BufferMemory>> = (0..3)
+        .map(|i| {
+            let part = FdMemory::memfd_at(fd.try_clone().unwrap(), i * LEN, LEN, true).unwrap();
+            assert_eq!(part.fd_offset(), i * LEN);
+            Box::new(part) as Box<dyn BufferMemory>
+        })
+        .collect();
+    let pool: FramePool = FramePool::new(SIZE, memories).unwrap();
+    for i in 0..3u8 {
+        let mut frame = pool
+            .acquire_at(usize::from(i), entry(u64::from(i)))
+            .unwrap();
+        frame.write().unwrap().bytes().fill(i + 1);
+    }
+    // One mapping of the whole descriptor sees each buffer's bytes at its offset, and only there.
+    let view = lemnos_linux_sys::mmap::Mapping::new(fd.as_fd(), total, 0, false).unwrap();
+    for i in 0..3usize {
+        let part = &view.as_slice()[i * LEN..(i + 1) * LEN];
+        assert!(part.iter().all(|&b| b == i as u8 + 1), "buffer {i}");
+    }
+}
