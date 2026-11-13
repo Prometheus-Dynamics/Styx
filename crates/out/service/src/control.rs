@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
 //! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
@@ -23,6 +23,7 @@
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc;
@@ -100,13 +101,15 @@ pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
     };
     match (verb, args) {
         ("list", []) => {
-            let mut out: Vec<String> = shared
-                .slots
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .values()
-                .map(|slot| camera_line(&slot.snapshot()))
-                .collect();
+            let mut out = vec![control_line(shared)];
+            out.extend(
+                shared
+                    .slots
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .values()
+                    .map(|slot| camera_line(&slot.snapshot())),
+            );
             out.extend(copy_lines());
             out.push("ok".to_string());
             out
@@ -223,6 +226,17 @@ fn frame(slot: &Slot) -> Vec<String> {
     }
 }
 
+/// The control socket's effective mode and group. The group is its name when `/etc/group` has one.
+fn control_line(shared: &Shared) -> String {
+    format!(
+        "control socket={} mode={:04o} group={} gid={}",
+        clip(&shared.control_socket.display().to_string()),
+        shared.access.socket_mode,
+        shared.access.group,
+        shared.access.gid,
+    )
+}
+
 /// The copy counters of this process: every site where a frame's bytes are copied.
 fn copy_lines() -> Vec<String> {
     styx_frame::copy_counters()
@@ -302,7 +316,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} exposure_requested={} exposure_applied={} exposure_clamp={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -336,11 +350,199 @@ fn camera_line(status: &CameraStatus) -> String {
         mode_reason,
         mode_text,
         recovery,
+        status.empty_frames,
         exposure_requested,
         exposure_applied,
         exposure_clamp,
         error,
     )
+}
+
+// Reading the answers: the client side of this protocol, next to the formatting above. A client
+// (the C surface, the measure tool) uses these instead of splitting the lines itself. Unknown line
+// kinds and unknown fields are skipped, so a later addition to the service does not break an older
+// client. A field the line does not carry, or carries as `-`, is `None`.
+
+/// One `camera <id> key=value ...` line of a `list` answer.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct CameraLine {
+    pub id: String,
+    /// The camera's state word (`streaming`, `backoff`, ...).
+    pub state: Option<String>,
+    /// The owning backend (`native`, `libcamera`, `v4l2`), `None` before a scan lists it.
+    pub owner: Option<String>,
+    /// The camera's frame socket, when it is publishing.
+    pub socket: Option<PathBuf>,
+    pub frames: Option<u64>,
+    pub last_id: Option<u64>,
+    /// The publish state as one word (`waiting`, `publishing`, `not-publishable_(why)`).
+    pub publish: Option<String>,
+    /// The health as one word, as the service writes it (spaces are `_`).
+    pub health: Option<String>,
+    pub readers: Option<u64>,
+    pub published: Option<u64>,
+    /// The rate asked for, in milli-fps (`None` when nothing asks for one).
+    pub requested_milli: Option<u32>,
+    /// The backend's reported rate, in milli-fps (`None` when unknown).
+    pub achieved_milli: Option<u32>,
+    /// The achieved rate in the last frame's metadata, in milli-fps.
+    pub achieved_meta_milli: Option<u32>,
+    /// The rate measured from the capture timestamps, in milli-fps.
+    pub measured_milli: Option<u32>,
+    pub rate_clamped: Option<bool>,
+    /// Why the rates differ, as the service writes it (one word: spaces are `_`).
+    pub rate_reason: Option<String>,
+    /// The last failure's message: the free text at the end of the line.
+    pub last_error: Option<String>,
+}
+
+/// One `copy copies=.. bytes=.. site=..` line of a `list` answer: a site where frame bytes were
+/// copied, in the service's process.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CopyLine {
+    pub copies: u64,
+    pub bytes: u64,
+    /// The site's name (free text: it may hold spaces).
+    pub site: String,
+}
+
+/// The lines of a `list` answer that a client reads. Anything else (the `ok`, an `err`, a kind a
+/// later service adds) is skipped.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Listing {
+    pub cameras: Vec<CameraLine>,
+    pub copies: Vec<CopyLine>,
+}
+
+/// Reads a `list` answer (its lines, with or without the closing `ok`).
+pub fn parse_list<S: AsRef<str>>(lines: &[S]) -> Listing {
+    let mut listing = Listing::default();
+    for line in lines {
+        let line = line.as_ref();
+        if line.starts_with("camera ") {
+            listing.cameras.extend(parse_camera_line(line));
+        } else if line.starts_with("copy ") {
+            listing.copies.extend(parse_copy_line(line));
+        }
+    }
+    listing
+}
+
+/// One camera line. The free text `last_error` is everything after its key.
+pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
+    let (head, last_error) = match line.find(" last_error=") {
+        Some(at) => (&line[..at], Some(&line[at + " last_error=".len()..])),
+        None => (line, None),
+    };
+    let mut words = head.split_ascii_whitespace();
+    if words.next()? != "camera" {
+        return None;
+    }
+    let mut camera = CameraLine {
+        id: words.next()?.to_string(),
+        ..CameraLine::default()
+    };
+    let mut seen = Vec::new();
+    for word in words {
+        let Some((key, value)) = word.split_once('=') else {
+            continue;
+        };
+        if seen.contains(&key) {
+            continue;
+        }
+        seen.push(key);
+        let dash = value == "-";
+        let text = (!dash).then(|| value.to_string());
+        let number = value.parse::<u64>().ok();
+        let milli = value.parse::<u32>().ok();
+        match key {
+            "state" => camera.state = text,
+            "owner" => camera.owner = text,
+            "socket" => camera.socket = text.map(PathBuf::from),
+            "frames" => camera.frames = number,
+            "last_id" => camera.last_id = number,
+            "publish" => camera.publish = text,
+            "health" => camera.health = text,
+            "readers" => camera.readers = number,
+            "published" => camera.published = number,
+            "requested" => camera.requested_milli = milli,
+            "achieved" => camera.achieved_milli = milli,
+            "achieved_meta" => camera.achieved_meta_milli = milli,
+            "measured" => camera.measured_milli = milli,
+            "rate_clamped" => camera.rate_clamped = value.parse::<bool>().ok(),
+            "rate_reason" => camera.rate_reason = text,
+            _ => {}
+        }
+    }
+    camera.last_error = last_error.filter(|text| *text != "-").map(str::to_string);
+    Some(camera)
+}
+
+/// One copy line: `copy copies=.. bytes=.. site=<free text>`.
+pub fn parse_copy_line(line: &str) -> Option<CopyLine> {
+    let rest = line.strip_prefix("copy ")?;
+    let (head, site) = rest.split_once(" site=")?;
+    let (mut copies, mut bytes) = (None, None);
+    for word in head.split_ascii_whitespace() {
+        match word.split_once('=') {
+            Some(("copies", v)) => copies = v.parse().ok(),
+            Some(("bytes", v)) => bytes = v.parse().ok(),
+            _ => {}
+        }
+    }
+    Some(CopyLine {
+        copies: copies?,
+        bytes: bytes?,
+        site: site.to_string(),
+    })
+}
+
+/// One control's line of a `controls` answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ControlLine {
+    /// The control's name, as `Control::name` gives it.
+    pub name: String,
+    pub value: Shown,
+}
+
+/// A control's value as the `controls` answer shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Shown {
+    /// `-`: no frame has arrived, so there is no value yet.
+    NoFrame,
+    /// `rect`: a crop, which the answer does not give a number for.
+    Rect,
+    Value(ControlValue),
+}
+
+/// Reads a `controls` answer (its lines, with or without the closing `ok`).
+pub fn parse_controls<S: AsRef<str>>(lines: &[S]) -> Vec<ControlLine> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            let mut words = line.as_ref().split_ascii_whitespace();
+            if words.next()? != "control" {
+                return None;
+            }
+            let name = words.next()?.to_string();
+            let value = words
+                .find_map(|word| word.strip_prefix("value="))
+                .and_then(parse_shown)?;
+            Some(ControlLine { name, value })
+        })
+        .collect()
+}
+
+/// The `value=` word of a `controls` line, as `show` writes it.
+fn parse_shown(text: &str) -> Option<Shown> {
+    Some(match text {
+        "-" => Shown::NoFrame,
+        "rect" => Shown::Rect,
+        "auto" => Shown::Value(ControlValue::Auto),
+        "on" => Shown::Value(ControlValue::Flag(true)),
+        "off" => Shown::Value(ControlValue::Flag(false)),
+        number => Shown::Value(ControlValue::Manual(number.parse().ok()?)),
+    })
 }
 
 fn control_named(name: &str) -> Option<Control> {
@@ -393,4 +595,120 @@ fn clip(text: &str) -> String {
         end -= 1;
     }
     format!("{}...", &text[..end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::CameraConfig;
+    use crate::slot::Slot;
+
+    fn slot(id: &str) -> Slot {
+        let (tx, _rx) = mpsc::channel();
+        let settings = CameraConfig {
+            fps_milli: Some(60_000),
+            ..CameraConfig::default()
+        };
+        Slot::new(id.to_string(), settings, tx)
+    }
+
+    #[test]
+    fn a_camera_line_the_service_writes_reads_back_field_for_field() {
+        let slot = slot("lemnos:cam0");
+        let line = camera_line(&slot.snapshot());
+        let cam = parse_camera_line(&line).expect("a camera line");
+        assert_eq!(cam.id, "lemnos:cam0");
+        assert_eq!(cam.state.as_deref(), Some("absent"));
+        assert_eq!(cam.owner, None, "no owner before a scan lists the camera");
+        assert_eq!(cam.socket, None);
+        assert_eq!(cam.frames, Some(0));
+        assert_eq!(cam.requested_milli, Some(60_000));
+        assert_eq!(cam.achieved_milli, None, "`unknown` reads as absent");
+        assert_eq!(cam.measured_milli, None, "`none` reads as absent");
+        assert_eq!(cam.last_error, None);
+    }
+
+    #[test]
+    fn free_text_at_the_end_keeps_its_spaces_and_a_socket_is_read() {
+        let mut status = slot("cam").snapshot();
+        status.socket = Some(PathBuf::from("/run/s/cam-1.sock"));
+        status.state = crate::slot::State::Streaming;
+        status.last_error = Some("the camera failed: no link at all".to_string());
+        status.achieved_milli = Some(119_990);
+        status.achieved_meta_milli = Some(119_988);
+        status.rate_clamped = true;
+        let line = camera_line(&status);
+        let cam = parse_camera_line(&line).expect("a camera line");
+        assert_eq!(cam.socket, Some(PathBuf::from("/run/s/cam-1.sock")));
+        assert_eq!(cam.state.as_deref(), Some("streaming"));
+        assert_eq!(cam.achieved_milli, Some(119_990));
+        assert_eq!(cam.achieved_meta_milli, Some(119_988));
+        assert_eq!(cam.rate_clamped, Some(true));
+        assert!(
+            cam.rate_reason.is_some(),
+            "the rates differ, so there is a reason"
+        );
+        assert_eq!(
+            cam.last_error.as_deref(),
+            Some("the camera failed: no link at all")
+        );
+    }
+
+    #[test]
+    fn unknown_kinds_and_fields_are_skipped_not_errors() {
+        let lines = [
+            "camera a state=streaming some_future_field=7 owner=native",
+            "gizmo 1 2 3",
+            "copy copies=4 bytes=64 site=a site with spaces",
+            "copy copies=x bytes=1 site=broken",
+            "ok",
+        ];
+        let listing = parse_list(&lines);
+        assert_eq!(listing.cameras.len(), 1);
+        assert_eq!(listing.cameras[0].owner.as_deref(), Some("native"));
+        assert_eq!(
+            listing.copies,
+            vec![CopyLine {
+                copies: 4,
+                bytes: 64,
+                site: "a site with spaces".to_string()
+            }]
+        );
+    }
+
+    #[test]
+    fn the_copy_lines_the_service_writes_read_back() {
+        let lines = copy_lines();
+        let listing = parse_list(&lines);
+        assert_eq!(listing.copies.len(), lines.len());
+        for (line, copy) in lines.iter().zip(&listing.copies) {
+            assert!(line.contains(&copy.site), "{line}");
+        }
+    }
+
+    #[test]
+    fn a_control_value_round_trips_through_its_shown_form() {
+        for value in [
+            ControlValue::Auto,
+            ControlValue::Manual(5000),
+            ControlValue::Flag(true),
+            ControlValue::Flag(false),
+        ] {
+            assert_eq!(parse_shown(&show(value)), Some(Shown::Value(value)));
+        }
+        assert_eq!(parse_shown("-"), Some(Shown::NoFrame));
+        assert_eq!(parse_shown("rect"), Some(Shown::Rect));
+        assert_eq!(parse_shown("banana"), None);
+    }
+
+    #[test]
+    fn the_controls_answer_the_service_writes_reads_back_by_name() {
+        let slot = slot("cam");
+        let mut lines = controls(&slot);
+        lines.push("ok".to_string());
+        let parsed = parse_controls(&lines);
+        assert_eq!(parsed.len(), Control::COUNT);
+        assert!(parsed.iter().all(|c| c.value == Shown::NoFrame));
+        assert!(parsed.iter().any(|c| c.name == "exposure"));
+    }
 }

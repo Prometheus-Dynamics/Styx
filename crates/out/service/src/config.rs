@@ -7,6 +7,14 @@
 //! socket_dir = "/run/styx"
 //! # control_socket = "/run/styx/control.sock"
 //!
+//! # Who may connect. Every socket (control and per-camera) gets this group and mode, whatever the
+//! # umask. Default: group = the service's own group, mode = "660" (owner and group only). The
+//! # directories holding the sockets get the traversal bits that mode needs (750 by default). A
+//! # group name is looked up in /etc/group; a number is used as given. The service's user must be
+//! # in the group, or starting fails naming the key.
+//! # socket_group = "styx"
+//! # socket_mode = "660"
+//!
 //! # The Lemnos daemon that holds the native cameras. Without it no native camera is listed.
 //! lemnos_socket = "/run/lemnos/lemnosd.sock"
 //!
@@ -133,6 +141,15 @@ pub struct CameraConfig {
     pub hardware_reserve: Option<u32>,
 }
 
+/// A socket group as the config names it: a number (`socket_group = 1001`), or a name looked up
+/// in `/etc/group` (`socket_group = "styx"`). A string of digits is a number too.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+pub enum GroupSpec {
+    Gid(u32),
+    Name(String),
+}
+
 /// The whole config file.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -142,6 +159,12 @@ pub struct Config {
     /// The control socket. The default is `<socket_dir>/control.sock`.
     #[serde(default)]
     pub control_socket: Option<PathBuf>,
+    /// The group of every socket: a group name, or a numeric gid. Default: the service's own.
+    #[serde(default)]
+    pub socket_group: Option<GroupSpec>,
+    /// The mode of every socket, in octal (for example "660"). Default: "660".
+    #[serde(default)]
+    pub socket_mode: Option<String>,
     /// The Lemnos daemon for native cameras.
     #[serde(default)]
     pub lemnos_socket: Option<PathBuf>,
@@ -197,6 +220,8 @@ pub enum ConfigError {
     Backoff(BackoffError),
     /// A camera's format is not a four-character code.
     Format { camera: String, format: String },
+    /// A socket setting (`socket_group` or `socket_mode`) cannot be used.
+    Socket { key: &'static str, message: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -209,6 +234,7 @@ impl std::fmt::Display for ConfigError {
                 f,
                 "camera {camera}: format {format:?} is not a four-character code"
             ),
+            ConfigError::Socket { key, message } => write!(f, "config {key}: {message}"),
         }
     }
 }
@@ -229,9 +255,16 @@ impl Config {
         Ok(config)
     }
 
-    /// Checks what parsing cannot: the backoff and the format codes.
+    /// Checks what parsing cannot: the backoff, the format codes, and the socket mode's syntax.
+    /// The group is looked up when the service starts (see `access`).
     pub fn check(&self) -> Result<(), ConfigError> {
         self.backoff().map_err(ConfigError::Backoff)?;
+        if let Some(mode) = &self.socket_mode {
+            crate::access::parse_mode(mode).map_err(|message| ConfigError::Socket {
+                key: "socket_mode",
+                message,
+            })?;
+        }
         for (camera, settings) in &self.camera {
             if let Some(format) = &settings.format
                 && format.parse::<styx_format::FourCc>().is_err()

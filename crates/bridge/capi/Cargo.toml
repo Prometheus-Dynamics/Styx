@@ -1,0 +1,39 @@
+[package]
+name = "styx-capi"
+description = "Styx's C surface: cameras, controls and frames from C, in process (through styx-select and the Lemnos daemon) or over the camera service's control socket and frame sockets. A versioned header (include/styx.h), opaque handles, a status on every call, no panic across the boundary. Built as an rlib, a cdylib and a staticlib."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+styx-controls = { path = "../../core/controls" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame", features = ["linux"] }
+styx-lemnos = { path = "../../core/lemnos" }
+styx-native = { path = "../../camera/native" }
+styx-native-run = { path = "../../camera/native-run" }
+styx-select = { path = "../../camera/select" }
+styx-service = { path = "../../out/service" }
+styx-socket = { path = "../../out/socket" }
+styx-counters = { path = "../../tools/counters" }
+
+[dev-dependencies]
+# The simulated backend, as the camera service's tests run it: lemnosd in this process on
+# lemnos-sim (test code only, see tests/sim), and the service itself for the socket path.
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-hal = { workspace = true, features = ["std"] }
+lemnos-core = { workspace = true, features = ["std"] }
+lemnos-contract-camera-sensor = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
+lemnos-contract-camera-isp = { workspace = true }
+
+[lints]
+workspace = true
