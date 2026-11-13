@@ -1,0 +1,29 @@
+[package]
+name = "styx-frame"
+description = "The Styx frame: buffers registered once, per-frame entries in them, read-only shares and counted copies."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[features]
+default = ["std"]
+# `std::error::Error` for the error types, and file descriptors on the memory trait (unix).
+std = ["styx-format/std"]
+# memfd and dma-buf memory on Linux: mapped through Lemnos's library crate, dma-buf CPU access
+# bracketed with its `DMA_BUF_IOCTL_SYNC` wrapper. Styx carries no ioctl of its own.
+linux = ["std", "dep:lemnos-linux-sys"]
+
+[dependencies]
+styx-format = { path = "../format", default-features = false }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+lemnos-linux-sys = { workspace = true, optional = true }
+
+[lints]
+workspace = true
