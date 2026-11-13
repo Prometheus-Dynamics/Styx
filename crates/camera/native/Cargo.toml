@@ -15,11 +15,11 @@ styx-lemnos = { path = "../../core/lemnos" }
 lemnos-client = { workspace = true }
 # The simulated backend: lemnosd in this process, its drivers and board (test only). Same pins as
 # styx-lemnos's dev-dependencies.
-lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
-lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-core = { workspace = true, features = ["std"] }
+lemnos-hal = { workspace = true, features = ["std"] }
 lemnos-contract-camera-sensor = { workspace = true }
 lemnos-contract-camera-receiver = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }

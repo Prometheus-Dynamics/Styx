@@ -13,15 +13,15 @@ styx-format = { path = "../../core/format" }
 styx-frame = { path = "../../core/frame", features = ["std", "linux"] }
 styx-lemnos = { path = "../../core/lemnos" }
 lemnos-client = { workspace = true }
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-camera-frames = { workspace = true }
 
 [dev-dependencies]
 # The simulated backend: lemnosd in this process with a simulated camera.frames/1 driver (test only).
-lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
-lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+lemnos-hal = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true
