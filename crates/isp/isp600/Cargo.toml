@@ -1,0 +1,21 @@
+[package]
+name = "styx-isp600"
+description = "The ISP600 (the A733's ISP) as a Styx ISP family: the load image and statistics layouts from Lemnos's isp600 library, its isp.isp600/1 numbering, and the camera.isp/1 job it is posted as. Settings the library cannot encode yet are reported, not guessed."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-lemnos = { path = "../../core/lemnos", features = ["isp600"] }
+styx-settings = { path = "../settings" }
+styx-aaa = { path = "../../algo/aaa" }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-contract-camera-isp = { workspace = true }
+# Not in the root workspace table at 04d09360's rev, declared here with the same URL and rev.
+lemnos-contract-isp-isp600 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+
+[lints]
+workspace = true
