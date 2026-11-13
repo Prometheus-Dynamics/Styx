@@ -325,7 +325,8 @@ fn work(
     let request = Request {
         width: options.width,
         height: options.height,
-        min_fps_milli: options.fps_milli,
+        fps_milli: options.fps_milli,
+        format: None,
         bit_depth: None,
         bayer: None,
     };
