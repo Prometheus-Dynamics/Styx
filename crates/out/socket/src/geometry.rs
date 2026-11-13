@@ -10,7 +10,7 @@ use shm_ring::Spec;
 use shm_ring_buffers::MAX_BUFFERS;
 
 use crate::SocketError;
-use crate::wire::META_MAX;
+use crate::wire::{FRAME_META_MAX, META_MAX, USER_MAX};
 
 /// The most entries a ring keeps (the ring's own limit).
 const MAX_HISTORY: u32 = shm_ring::MAX_HISTORY;
@@ -83,6 +83,13 @@ impl Geometry {
     /// The most metadata bytes one ring entry carries (the entry's size, less its header).
     pub const fn meta_max(&self) -> usize {
         self.meta_max
+    }
+
+    /// The most opaque bytes a frame may carry ([`crate::Producer::publish_with`]): the entry's
+    /// metadata room less the frame's own part and its length, capped at [`crate::USER_MAX`].
+    pub const fn user_max(&self) -> usize {
+        let room = self.meta_max.saturating_sub(FRAME_META_MAX + 2);
+        if room < USER_MAX { room } else { USER_MAX }
     }
 
     /// Buffers in the pool.
