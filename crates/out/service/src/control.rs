@@ -7,13 +7,16 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
+//! | `list` | one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. buffers=.. reserve=.. reclaimed=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
 //! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
 //! | `start <id>` / `stop <id>` | `ok`. Starts or stops the camera by hand |
 //!
-//! `last_error` and the other free text come last on their line.
+//! `mode` is the sensor mode's index (`-` when none), `format` its frame format, `bits` its bit
+//! depth, `mode_reason` one word (`exact`, `rate_clamped_to_ceiling`, `rate_clamped_to_floor`,
+//! `depth_lowered_for_rate`) and `mode_text` the reason in a sentence. `last_error` and the other
+//! free text come last on their line; `mode_text` and `rate_reason` are one word (spaces are `_`).
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -264,8 +267,24 @@ fn camera_line(status: &CameraStatus) -> String {
         .map_or_else(|| "-".to_string(), |p| p.display().to_string());
     // Free text in this line is one word (spaces become `_`), except `last_error`, which is last.
     let publish = status.publish.to_string().replace(' ', "_");
+    let (mode, format, bits, mode_reason, mode_text) = match &status.mode {
+        Some(chosen) => (
+            chosen.mode.to_string(),
+            chosen.format.to_string(),
+            chosen.bit_depth.to_string(),
+            chosen.reason.name().to_string(),
+            one_line(&chosen.text).replace(' ', "_"),
+        ),
+        None => (
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+            "-".to_string(),
+        ),
+    };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -292,6 +311,11 @@ fn camera_line(status: &CameraStatus) -> String {
         keep.hardware_reserve,
         keep.reclaimed,
         reason,
+        mode,
+        format,
+        bits,
+        mode_reason,
+        mode_text,
         error,
     )
 }
