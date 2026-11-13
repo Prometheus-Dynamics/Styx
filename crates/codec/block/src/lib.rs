@@ -10,7 +10,11 @@
 //! - Decoding is stateless HEVC, one IDR slice per frame, Annex B in, NV12 out. Inter slices
 //!   are refused: their reference picture sets are not parsed yet.
 //! - Recovery, with the backoff of Lemnos's stateless decoder, lives in [`decoder`].
-//! - Encoding is not here yet, and H.264 is not moved: Lemnos has no H.264 parser at its lock.
+//! - H.264 decodes by slice as well ([`h264`]): its parser, reference tracker and controls are
+//!   here, and its controls are Lemnos's V4L2 H.264 structures.
+//! - Encoding is not here yet.
+//! - Each job is stamped by its decoder, a whole number of microseconds and unique ([`work::Stamps`]),
+//!   and a reference picture is named in the controls by its stamp, never as a slot.
 //!
 //! No `unsafe` in this crate. The one the kernel's structures need is in `lemnos-linux-sys`,
 //! and the byte views of the controls are its safe `as_bytes`.

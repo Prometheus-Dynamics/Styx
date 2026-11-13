@@ -1,15 +1,14 @@
-//! The H.264 decoder over a simulated block session: the job's work, what the block is given,
-//! the reference buffers a P frame names, the tracker after each job, and the recovery after a
-//! failed or refused job. The simulated session reads the work back with the contract's own
-//! parser, as the HEVC test does.
+//! The H.264 decoder over a simulated block session: the job's work, the controls it carries
+//! (read back with Lemnos's own V4L2 H.264 structures), the references a P frame names by the
+//! stamp of the job that decoded them, and the recovery after a failed or refused job.
 
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use lemnos_contract_codec_block::BufferRef;
 use lemnos_contract_codec_block::work::Work;
-use styx_block::h264::controls::{Controls, Layout, SliceView};
-use styx_block::h264::work::{REFERENCE_SLOT, SLOT_PICTURE, SLOT_SOURCE, TAG_SETUP, TAG_STAMP};
+use lemnos_linux_sys::v4l2::h264 as sys;
+use styx_block::h264::work::{SLOT_PICTURE, SLOT_SOURCE, TAG_SETUP, TAG_STAMP};
 use styx_block::h264::{self, H264Decoder};
 use styx_block::{Session, backoff_ns};
 use styx_codec_api::{
@@ -20,8 +19,6 @@ use styx_frame::{BufferSize, FrameEntry, FramePool, Layouts, PlaneLayout, packed
 use styx_h264::{StyxH264, StyxH264Input};
 
 const STREAM: &[u8] = include_bytes!("../src/h264/fixtures/openh264_cbp.h264");
-/// The control the test layout writes: the slice's type, frame number and list 0's DPB slots.
-const LAYOUT_TAG: u32 = 0x0098_0100;
 
 #[derive(Clone, Copy)]
 enum Step {
@@ -65,40 +62,12 @@ impl Session for Sim {
     }
 }
 
-/// The test layout: writes the slice's type, frame number and list 0 (DPB slots) as one control.
-struct Lists;
-
-impl Layout for Lists {
-    fn write(&mut self, slice: &SliceView<'_>, out: &mut Controls) -> Result<(), CodecError> {
-        let mut bytes = vec![slice.header.nal_unit_type];
-        bytes.extend_from_slice(&slice.header.frame_num.to_le_bytes());
-        bytes.push(slice.lists.len[0]);
-        bytes.extend_from_slice(slice.lists.list(0));
-        out.push(LAYOUT_TAG, &bytes);
-        Ok(())
-    }
-}
-
-/// A layout that refuses every slice, as a layout that cannot express the controls does.
-struct Refuse;
-
-impl Layout for Refuse {
-    fn write(&mut self, _: &SliceView<'_>, _: &mut Controls) -> Result<(), CodecError> {
-        Err(CodecError::Rejected(
-            "this layout writes no controls".into(),
-        ))
-    }
-}
-
-fn decoder(state: &Arc<Mutex<State>>, layout: impl Layout + 'static) -> H264Decoder {
+fn decoder(state: &Arc<Mutex<State>>) -> H264Decoder {
     let state = state.clone();
-    H264Decoder::new(
-        move || {
-            state.lock().unwrap().opens += 1;
-            Ok(Box::new(Sim(state.clone())) as Box<dyn Session>)
-        },
-        layout,
-    )
+    H264Decoder::new(move || {
+        state.lock().unwrap().opens += 1;
+        Ok(Box::new(Sim(state.clone())) as Box<dyn Session>)
+    })
 }
 
 /// The access units of the fixture's slices: each one's start code and slice NAL unit.
@@ -114,7 +83,7 @@ fn fixture_slices() -> Vec<Vec<u8>> {
 }
 
 fn pool() -> FramePool {
-    FramePool::host(16, BufferSize::new(64 * 1024, 0)).unwrap()
+    FramePool::host(32, BufferSize::new(64 * 1024, 0)).unwrap()
 }
 
 fn bitstream(pool: &FramePool, au: &[u8], stamp: u64) -> FrameLease {
@@ -142,12 +111,25 @@ fn item(seen: &Seen, tag: u32) -> &[u8] {
         .unwrap_or_else(|| panic!("no item {tag:#x}"))
 }
 
+fn tags(seen: &Seen) -> Vec<u32> {
+    seen.items.iter().map(|(tag, _)| *tag).collect()
+}
+
 fn word(bytes: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(bytes[at * 4..at * 4 + 4].try_into().unwrap())
 }
 
-/// Decodes one access unit, keeping its picture held as a reference would be. Returns the
-/// picture's buffer number.
+/// One of the structures, read from a control's bytes: they are its fields in order.
+fn read<T: Default>(bytes: &[u8], as_bytes_mut: fn(&mut T) -> &mut [u8]) -> T {
+    let mut value = T::default();
+    let dst = as_bytes_mut(&mut value);
+    assert_eq!(dst.len(), bytes.len(), "a control's size");
+    dst.copy_from_slice(bytes);
+    value
+}
+
+/// Decodes one slice, keeping its picture held as a reference would be. Returns the picture's
+/// buffer number.
 fn decode(
     decoder: &mut H264Decoder,
     pool: &FramePool,
@@ -174,109 +156,211 @@ fn decode_sized(
     Ok(index)
 }
 
+fn assert_stamp_ok(stamp: u64) {
+    assert_eq!(
+        stamp % 1_000,
+        0,
+        "a stamp is a whole number of microseconds"
+    );
+    assert_ne!(stamp, 0);
+}
+
 #[test]
-fn an_idr_frame_runs_one_job_with_no_reference_pictures() {
+fn an_idr_slice_runs_one_job_with_its_controls_and_no_references() {
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder.set_parameter_sets(STREAM).unwrap();
     let pool = pool();
     let mut held = Vec::new();
     let slices = fixture_slices();
-    let index = decode(&mut decoder, &pool, &mut held, &slices[0], 1_000).unwrap();
+    let index = decode(&mut decoder, &pool, &mut held, &slices[0], 7).unwrap();
 
     let state = state.lock().unwrap();
     assert_eq!((state.opens, state.jobs.len()), (1, 1));
     let seen = &state.jobs[0];
     let slots: Vec<u32> = seen.refs.iter().map(|r| r.slot).collect();
     assert_eq!(slots, [SLOT_SOURCE, SLOT_PICTURE]);
+    assert_eq!(seen.refs[0].length as usize, slices[0].len());
     assert_eq!(seen.refs[1].buffer as usize, index);
+
     // Setup: the H.264 slice format in, 96x64 NV12 out, one plane.
     let setup = item(seen, TAG_SETUP);
-    assert_eq!(word(setup, 0), u32::from_le_bytes(*b"S264"));
+    assert_eq!(word(setup, 0), sys::PIX_FMT_H264_SLICE);
     assert_eq!((word(setup, 1), word(setup, 2)), (96, 64));
     assert_eq!(word(setup, 3), FourCc::NV12.to_u32());
     assert_eq!(word(setup, 4), 1);
-    assert_eq!(item(seen, TAG_STAMP), 1_000u64.to_le_bytes());
-    // The layout's control: an IDR (nal_unit_type 5), frame 0, no list entries.
-    assert_eq!(item(seen, LAYOUT_TAG), [5, 0, 0, 0, 0, 0]);
+    // The stamp is the decoder's, a whole number of microseconds: the first job's.
+    let stamp = u64::from_le_bytes(item(seen, TAG_STAMP).try_into().unwrap());
+    assert_eq!(stamp, 1_000);
+
+    // The controls: slice based, Annex B, the parameter sets, then the slice and its DPB.
+    let tags = tags(seen);
+    assert_eq!(tags[..2], [TAG_SETUP, TAG_STAMP]);
+    assert_eq!(
+        tags[2..6],
+        [
+            sys::CID_DECODE_MODE,
+            sys::CID_START_CODE,
+            sys::CID_SPS,
+            sys::CID_PPS
+        ]
+    );
+    assert_eq!(
+        tags[tags.len() - 2..],
+        [sys::CID_SLICE_PARAMS, sys::CID_DECODE_PARAMS]
+    );
+    assert_eq!(
+        word(item(seen, sys::CID_DECODE_MODE), 0) as i32,
+        sys::DECODE_MODE_SLICE_BASED
+    );
+    assert_eq!(
+        word(item(seen, sys::CID_START_CODE), 0) as i32,
+        sys::START_CODE_ANNEX_B
+    );
+
+    let sps: sys::Sps = read(item(seen, sys::CID_SPS), sys::Sps::as_bytes_mut);
+    assert_eq!(
+        sps.pic_width_in_mbs_minus1, 5,
+        "96 luma samples is 6 macroblocks"
+    );
+    assert_eq!(sps.pic_height_in_map_units_minus1, 3, "64 is 4 macroblocks");
+    assert_eq!(sps.profile_idc, 66, "the fixture is a baseline stream");
+
+    let slice: sys::SliceParams = read(
+        item(seen, sys::CID_SLICE_PARAMS),
+        sys::SliceParams::as_bytes_mut,
+    );
+    assert_eq!(slice.slice_type, sys::SLICE_TYPE_I);
+    assert_ne!(slice.header_bit_size, 0);
+    assert_eq!(slice.num_ref_idx_l0_active_minus1, 0);
+
+    let decode: sys::DecodeParams = read(
+        item(seen, sys::CID_DECODE_PARAMS),
+        sys::DecodeParams::as_bytes_mut,
+    );
+    assert_ne!(decode.flags & sys::decode_flags::IDR_PIC, 0);
+    assert!(
+        decode
+            .dpb
+            .iter()
+            .all(|e| e.flags & sys::dpb_flags::VALID == 0),
+        "an IDR names no reference"
+    );
     drop(state);
+
+    // The picture is in the tracker once the next picture starts, or on flush.
+    assert_eq!(decoder.dpb().frames().count(), 0);
+    decoder.flush();
     let dpb = decoder.dpb();
     assert_eq!(dpb.frames().count(), 1);
-    assert_eq!(dpb.get(0).unwrap().buffer as usize, index);
+    assert_eq!(dpb.get(0).unwrap().stamp_ns, 1_000);
 }
 
 #[test]
-fn a_p_frame_names_its_reference_by_slot_and_buffer() {
+fn a_p_slice_names_its_reference_by_the_stamp_of_the_job_that_decoded_it() {
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder.set_parameter_sets(STREAM).unwrap();
     let pool = pool();
     let mut held = Vec::new();
     let slices = fixture_slices();
-    let idr = decode(&mut decoder, &pool, &mut held, &slices[0], 1).unwrap();
+    decode(&mut decoder, &pool, &mut held, &slices[0], 1).unwrap();
     decode(&mut decoder, &pool, &mut held, &slices[1], 2).unwrap();
 
     let state = state.lock().unwrap();
     assert_eq!(state.jobs.len(), 2);
+    let idr_stamp = u64::from_le_bytes(item(&state.jobs[0], TAG_STAMP).try_into().unwrap());
     let p = &state.jobs[1];
-    // The P frame's list 0 is the one DPB slot, and that slot's reference is the IDR's buffer.
-    assert_eq!(item(p, LAYOUT_TAG), [1, 1, 0, 0, 0, 1, 0]);
-    let reference = p
-        .refs
-        .iter()
-        .find(|r| r.slot == REFERENCE_SLOT)
-        .expect("the reference slot of DPB slot 0");
-    assert_eq!(reference.buffer as usize, idr);
+    let slice: sys::SliceParams = read(
+        item(p, sys::CID_SLICE_PARAMS),
+        sys::SliceParams::as_bytes_mut,
+    );
+    let decode: sys::DecodeParams = read(
+        item(p, sys::CID_DECODE_PARAMS),
+        sys::DecodeParams::as_bytes_mut,
+    );
+    assert_eq!(slice.slice_type, sys::SLICE_TYPE_P);
+    assert_eq!(slice.num_ref_idx_l0_active_minus1, 0);
+
+    // List 0's one entry is a DPB index, and that entry is the IDR, named by its stamp.
+    let entry = slice.ref_pic_list0[0];
+    assert_eq!(entry.fields, sys::FRAME_REF);
+    let dpb_entry = decode.dpb[usize::from(entry.index)];
+    assert_ne!(dpb_entry.flags & sys::dpb_flags::VALID, 0);
+    assert_ne!(dpb_entry.flags & sys::dpb_flags::ACTIVE, 0);
+    assert_eq!(dpb_entry.reference_ts, idr_stamp);
+    assert_eq!(dpb_entry.frame_num, 0);
+    // The job's own stamp is not the reference: it is the next one.
+    let own = u64::from_le_bytes(item(p, TAG_STAMP).try_into().unwrap());
+    assert_eq!(own, idr_stamp + 1_000);
+    assert_stamp_ok(own);
 }
 
 #[test]
-fn the_gop_decodes_every_frame_and_each_picture_is_the_next_frames_reference() {
+fn every_frame_is_a_job_with_a_unique_stamp_and_each_p_frame_names_the_previous_one() {
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder.set_parameter_sets(STREAM).unwrap();
     let pool = pool();
     let mut held = Vec::new();
-    let mut pictures = Vec::new();
-    for (i, au) in fixture_slices().iter().enumerate() {
-        pictures.push(decode(&mut decoder, &pool, &mut held, au, i as u64).unwrap());
+    for au in fixture_slices().iter() {
+        decode(&mut decoder, &pool, &mut held, au, 0).unwrap();
     }
     let state = state.lock().unwrap();
     assert_eq!(state.jobs.len(), 9);
+
+    let stamps: Vec<u64> = state
+        .jobs
+        .iter()
+        .map(|job| u64::from_le_bytes(item(job, TAG_STAMP).try_into().unwrap()))
+        .collect();
+    assert!(stamps.iter().all(|&s| s % 1_000 == 0 && s != 0));
+    assert_eq!(stamps.iter().collect::<HashSet<_>>().len(), stamps.len());
+
     for i in 1..9 {
-        let reference = state.jobs[i].refs.iter().find(|r| r.slot == REFERENCE_SLOT);
+        let slice: sys::SliceParams = read(
+            item(&state.jobs[i], sys::CID_SLICE_PARAMS),
+            sys::SliceParams::as_bytes_mut,
+        );
+        let decode: sys::DecodeParams = read(
+            item(&state.jobs[i], sys::CID_DECODE_PARAMS),
+            sys::DecodeParams::as_bytes_mut,
+        );
         if i % 4 == 0 {
-            // An IDR takes no reference.
-            assert!(reference.is_none(), "frame {i}");
+            assert_eq!(slice.slice_type, sys::SLICE_TYPE_I, "frame {i}");
         } else {
+            let entry = slice.ref_pic_list0[0];
             assert_eq!(
-                reference.unwrap().buffer as usize,
-                pictures[i - 1],
-                "frame {i}"
+                decode.dpb[usize::from(entry.index)].reference_ts,
+                stamps[i - 1],
+                "frame {i} names frame {}",
+                i - 1
             );
         }
     }
     drop(state);
+    decoder.flush();
     assert_eq!(decoder.dpb().frames().count(), 1);
 }
 
 #[test]
 fn a_failed_job_leaves_the_tracker_as_it_was_and_backs_off() {
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder.set_parameter_sets(STREAM).unwrap();
     let pool = pool();
     let mut held = Vec::new();
     let slices = fixture_slices();
-    let idr = decode(&mut decoder, &pool, &mut held, &slices[0], 1).unwrap();
+    decode(&mut decoder, &pool, &mut held, &slices[0], 1).unwrap();
     state.lock().unwrap().script = VecDeque::from([Step::Fail]);
     let err = decode(&mut decoder, &pool, &mut held, &slices[1], 2).unwrap_err();
     assert!(matches!(err, CodecError::Failed(_)));
     assert_eq!(decoder.failures(), 1);
     assert!(!decoder.is_open());
-    // The P frame did not enter the tracker: the IDR is still the one reference.
+    // The IDR completed, so it is in the tracker; the P frame did not complete, so it is not.
     let dpb = decoder.dpb();
     assert_eq!(dpb.frames().count(), 1);
-    assert_eq!(dpb.get(0).unwrap().buffer as usize, idr);
+    assert_eq!(dpb.get(0).unwrap().stamp_ns, 1_000);
     // Inside the backoff nothing reaches the block.
     let again = decode(&mut decoder, &pool, &mut held, &slices[1], 3).unwrap_err();
     assert!(matches!(again, CodecError::Unavailable(_)));
@@ -287,7 +371,7 @@ fn a_failed_job_leaves_the_tracker_as_it_was_and_backs_off() {
 #[test]
 fn a_refused_job_changes_nothing_and_keeps_the_session() {
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder.set_parameter_sets(STREAM).unwrap();
     let pool = pool();
     let mut held = Vec::new();
@@ -296,13 +380,14 @@ fn a_refused_job_changes_nothing_and_keeps_the_session() {
     assert!(matches!(err, CodecError::Rejected(_)));
     assert!(decoder.is_open());
     assert_eq!(decoder.failures(), 0);
+    decoder.flush();
     assert_eq!(decoder.dpb().frames().count(), 0);
 }
 
 #[test]
 fn a_slice_the_parser_refuses_never_reaches_the_block() {
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder.set_parameter_sets(STREAM).unwrap();
     let pool = pool();
     let mut held = Vec::new();
@@ -320,7 +405,7 @@ fn a_slice_the_parser_refuses_never_reaches_the_block() {
 #[test]
 fn a_p_slice_with_no_reference_is_refused() {
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder.set_parameter_sets(STREAM).unwrap();
     let pool = pool();
     let mut held = Vec::new();
@@ -331,21 +416,6 @@ fn a_p_slice_with_no_reference_is_refused() {
 }
 
 #[test]
-fn a_layout_that_refuses_runs_no_job() {
-    let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Refuse);
-    decoder.set_parameter_sets(STREAM).unwrap();
-    let pool = pool();
-    let mut held = Vec::new();
-    assert!(matches!(
-        decode(&mut decoder, &pool, &mut held, &fixture_slices()[0], 1),
-        Err(CodecError::Rejected(_))
-    ));
-    assert_eq!(state.lock().unwrap().jobs.len(), 0);
-    assert_eq!(decoder.dpb().frames().count(), 0);
-}
-
-#[test]
 fn the_candidate_is_chosen_as_a_native_h264_decoder() {
     let state = Arc::new(Mutex::new(State::default()));
     let open = {
@@ -353,7 +423,7 @@ fn the_candidate_is_chosen_as_a_native_h264_decoder() {
         move || Ok(Box::new(Sim(state.clone())) as Box<dyn Session>)
     };
     let mut registry = Registry::<()>::new();
-    registry.register(h264::candidate(open, || Box::new(Lists) as Box<dyn Layout>));
+    registry.register(h264::candidate(open));
     let selection = registry
         .select(Request::new(CodecKind::Decoder, FourCc::H264, FourCc::NV12))
         .unwrap();
@@ -397,7 +467,7 @@ fn an_encoded_stream_from_styx_h264_decodes_frame_by_frame() {
     assert_eq!(kinds, [true, false, false, true, false]);
 
     let state = Arc::new(Mutex::new(State::default()));
-    let mut decoder = decoder(&state, Lists);
+    let mut decoder = decoder(&state);
     decoder
         .set_parameter_sets(&parameter_sets.unwrap())
         .unwrap();
@@ -407,5 +477,6 @@ fn an_encoded_stream_from_styx_h264_decodes_frame_by_frame() {
         decode_sized(&mut decoder, &pool, &mut held, au, i as u64, (48, 32)).unwrap();
     }
     assert_eq!(state.lock().unwrap().jobs.len(), 5);
+    // The IDR of frame 3 is in the tracker; frame 4 is the picture still open.
     assert_eq!(decoder.dpb().frames().count(), 1);
 }

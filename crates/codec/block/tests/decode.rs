@@ -154,8 +154,8 @@ fn an_idr_frame_runs_one_job_with_its_setup_and_controls() {
     assert_eq!(word(setup, 3), FourCc::NV12.to_u32());
     assert_eq!(word(setup, 4), 1);
 
-    // The stamp is the input's timestamp.
-    assert_eq!(item(seen, TAG_STAMP), 5_000u64.to_le_bytes());
+    // The stamp is the decoder's: the first job's, a whole number of microseconds.
+    assert_eq!(item(seen, TAG_STAMP), 1_000u64.to_le_bytes());
 
     // The SPS and PPS controls are the parsed headers, in the kernel's layout.
     let nals = stream_nals(STREAM);
@@ -207,7 +207,8 @@ fn a_second_frame_reuses_the_open_session() {
     let state = state.lock().unwrap();
     assert_eq!(state.opens, 1);
     assert_eq!(state.jobs.len(), 2);
-    assert_eq!(item(&state.jobs[1], TAG_STAMP), 20u64.to_le_bytes());
+    assert_eq!(item(&state.jobs[0], TAG_STAMP), 1_000u64.to_le_bytes());
+    assert_eq!(item(&state.jobs[1], TAG_STAMP), 2_000u64.to_le_bytes());
 }
 
 #[test]

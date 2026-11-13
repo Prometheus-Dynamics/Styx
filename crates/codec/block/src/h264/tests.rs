@@ -593,11 +593,11 @@ fn the_openh264_reference_lists_name_the_previous_frame() {
                 .get(usize::from(entry))
                 .expect("the list names a DPB frame");
             // With one reference frame, the previous picture is the only candidate.
-            assert_eq!(frame.buffer as usize, index - 1);
+            assert_eq!(frame.stamp_ns as usize, index - 1);
             assert_eq!(frame.frame_num, h.frame_num - 1);
         }
         state.commit(h, &pic);
-        dpb.mark(h, &sps, index as u32, pic.stored());
+        dpb.mark(h, &sps, index as u64, pic.stored());
     }
     assert_eq!(dpb.frames().count(), 1);
 }
@@ -1006,7 +1006,7 @@ fn a_b_frame_lists_order_by_order_count_and_list_1_starts_with_the_later_frame()
         let h = ctx.header(&spec);
         let pic = state.compute(&h, &ctx.sps).unwrap();
         state.commit(&h, &pic);
-        dpb.mark(&h, &ctx.sps, i as u32, pic.stored());
+        dpb.mark(&h, &ctx.sps, i as u64, pic.stored());
     }
     let mut b = SliceSpec::p(pps, 2);
     b.slice_type = 6;
@@ -1016,9 +1016,9 @@ fn a_b_frame_lists_order_by_order_count_and_list_1_starts_with_the_later_frame()
     let h = ctx.header(&b);
     let pic = state.compute(&h, &ctx.sps).unwrap();
     let lists = dpb.lists(&h, &ctx.sps, pic.poc).unwrap();
-    let buffer = |list: &[u8]| -> Vec<u32> {
+    let buffer = |list: &[u8]| -> Vec<u64> {
         list.iter()
-            .map(|&s| dpb.get(usize::from(s)).unwrap().buffer)
+            .map(|&s| dpb.get(usize::from(s)).unwrap().stamp_ns)
             .collect()
     };
     assert_eq!(buffer(lists.list(0)), [0, 1]);
@@ -1045,7 +1045,7 @@ fn list_1_identical_to_list_0_has_its_first_two_switched() {
         let h = ctx.header(&spec);
         let pic = state.compute(&h, &ctx.sps).unwrap();
         state.commit(&h, &pic);
-        dpb.mark(&h, &ctx.sps, i, pic.stored());
+        dpb.mark(&h, &ctx.sps, u64::from(i), pic.stored());
     }
     let mut b = SliceSpec::p(pps, 2);
     b.slice_type = 6;
@@ -1055,9 +1055,9 @@ fn list_1_identical_to_list_0_has_its_first_two_switched() {
     let h = ctx.header(&b);
     let pic = state.compute(&h, &ctx.sps).unwrap();
     let lists = dpb.lists(&h, &ctx.sps, pic.poc).unwrap();
-    let frame = |list: &[u8]| -> Vec<u32> {
+    let frame = |list: &[u8]| -> Vec<u64> {
         list.iter()
-            .map(|&s| dpb.get(usize::from(s)).unwrap().buffer)
+            .map(|&s| dpb.get(usize::from(s)).unwrap().stamp_ns)
             .collect()
     };
     assert_eq!(frame(lists.list(0)), [1, 0]);
@@ -1079,7 +1079,7 @@ fn a_list_modification_moves_the_named_frame_to_the_front() {
         let h = ctx.header(&s);
         let pic = state.compute(&h, &ctx.sps).unwrap();
         state.commit(&h, &pic);
-        dpb.mark(&h, &ctx.sps, fnum, pic.stored());
+        dpb.mark(&h, &ctx.sps, u64::from(fnum), pic.stored());
     }
     // The current frame is 3. Abs diff minus one 2 gives picture number 0: the IDR, which the
     // list would otherwise have last.
@@ -1122,7 +1122,7 @@ fn the_sliding_window_keeps_the_newest_max_num_ref_frames() {
         let mut s = SliceSpec::p(PpsSpec::plain(0), fnum);
         s.ref_idc = 2;
         let h = ctx.header(&s);
-        dpb.mark(&h, &ctx.sps, fnum, Poc::default());
+        dpb.mark(&h, &ctx.sps, u64::from(fnum), Poc::default());
     }
     let mut kept: Vec<u32> = dpb.frames().map(|(_, f)| f.frame_num).collect();
     kept.sort_unstable();

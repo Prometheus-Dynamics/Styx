@@ -203,8 +203,8 @@ struct Pending {
 }
 
 /// Decodes a stream's syntax, reference lists and display order with this crate's parser, and
-/// checks each against the expectation. A picture's buffer is its number in decode order, so a
-/// list entry (a DPB slot) is compared as the number of the picture it holds.
+/// checks each against the expectation. A picture's stamp in the tracker is its number in decode
+/// order, so a list entry (a DPB slot) is compared as the number of the picture it holds.
 fn check_stream(name: &str, stream: &[u8], expect: &str) {
     let (expected, display) = expectations(expect);
     let mut spss: Vec<Sps> = Vec::new();
@@ -219,7 +219,7 @@ fn check_stream(name: &str, stream: &[u8], expect: &str) {
 
     fn finish(dpb: &mut Dpb, pocs: &mut PocState, pending: &mut Option<Pending>) {
         if let Some(p) = pending.take() {
-            dpb.mark(&p.header, &p.sps, p.picture as u32, p.pic.stored());
+            dpb.mark(&p.header, &p.sps, p.picture as u64, p.pic.stored());
             pocs.commit(&p.header, &p.pic);
         }
     }
@@ -306,7 +306,7 @@ fn check_stream(name: &str, stream: &[u8], expect: &str) {
                             assert_ne!(slot, NONE, "{ctx}: list {list} has an empty entry");
                             dpb.get(usize::from(slot))
                                 .expect("slot holds a frame")
-                                .buffer as i64
+                                .stamp_ns as i64
                         })
                         .collect();
                     assert_eq!(got, e.lists[list], "{ctx}: reference picture list {list}");
