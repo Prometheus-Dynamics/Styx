@@ -19,6 +19,8 @@
 
 pub mod decoder;
 pub mod hevc;
+pub mod live;
 pub mod work;
 
 pub use decoder::{HevcDecoder, Session, backoff_ns, candidate, descriptor};
+pub use live::LiveSession;
