@@ -4,7 +4,7 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use styx_core::{
+use styx_codec_api::{
     Backend, Candidate, Codec, CodecDescriptor, CodecError, CodecKind, Converter, FourCc,
     FrameLease, Implementation, Registry, Request,
 };
