@@ -12,11 +12,19 @@ use crate::geometry::Geometry;
 const HEADER: usize = 24;
 /// Bytes of one plane: offset, stride and length, each a `u64`.
 const PLANE: usize = 24;
-/// The most metadata bytes one frame's ring entry carries.
-pub(crate) const META_MAX: usize = HEADER + MAX_PLANES * PLANE;
+/// The most bytes of a frame's own metadata: its identity, format and planes.
+pub(crate) const FRAME_META_MAX: usize = HEADER + MAX_PLANES * PLANE;
+/// The most opaque bytes a producer may attach to a frame ([`crate::Producer::publish_with`]).
+/// This crate does not read them: the producer's type writes them, the reader's type reads them.
+pub const USER_MAX: usize = 512;
+/// Bytes of the opaque part's length, after the planes.
+const USER_LEN: usize = 2;
+/// The most metadata bytes one frame's ring entry carries: the frame's own, then the opaque part.
+pub(crate) const META_MAX: usize = FRAME_META_MAX + USER_LEN + USER_MAX;
 
-/// Version of the handshake messages. A reader refuses any other.
-pub(crate) const VERSION: u32 = 3;
+/// Version of the handshake messages and of the ring entry's layout. A reader refuses any other.
+/// Version 4 added the opaque per-frame part after the planes.
+pub(crate) const VERSION: u32 = 4;
 /// The offer: version, buffers, the reader's slot, the most buffers it may hold, history, the
 /// metadata size, the payload, the slack and the number of descriptors the pool's buffers sit in.
 /// Its descriptors are the ring's read end and the pool page, in that order. One [`Record`]
@@ -161,7 +169,7 @@ fn range_from_code(code: u8) -> Option<ColorRange> {
 }
 
 /// Writes `entry`'s identity, format and plane layouts into `out`; returns the length.
-pub(crate) fn encode_meta(entry: &FrameEntry, out: &mut [u8; META_MAX]) -> usize {
+pub(crate) fn encode_meta(entry: &FrameEntry, out: &mut [u8; FRAME_META_MAX]) -> usize {
     let planes = entry.layouts.len();
     out[0..8].copy_from_slice(&entry.id.to_le_bytes());
     out[8..12].copy_from_slice(&entry.format.code.bytes());
@@ -178,6 +186,37 @@ pub(crate) fn encode_meta(entry: &FrameEntry, out: &mut [u8; META_MAX]) -> usize
         out[at + 16..at + 24].copy_from_slice(&(plane.len as u64).to_le_bytes());
     }
     HEADER + planes * PLANE
+}
+
+/// Writes a frame's entry: [`encode_meta`]'s part, then the opaque part as a length (u16) and its
+/// bytes. Returns the length written, or `None` when `user` is longer than [`USER_MAX`].
+pub(crate) fn encode_entry(
+    entry: &FrameEntry,
+    user: &[u8],
+    out: &mut [u8; META_MAX],
+) -> Option<usize> {
+    if user.len() > USER_MAX {
+        return None;
+    }
+    let mut frame = [0_u8; FRAME_META_MAX];
+    let len = encode_meta(entry, &mut frame);
+    out[..len].copy_from_slice(&frame[..len]);
+    out[len..len + USER_LEN].copy_from_slice(&(user.len() as u16).to_le_bytes());
+    out[len + USER_LEN..len + USER_LEN + user.len()].copy_from_slice(user);
+    Some(len + USER_LEN + user.len())
+}
+
+/// The opaque part of a frame's entry, read back: the bytes a producer attached.
+pub(crate) fn decode_user(bytes: &[u8]) -> Option<&[u8]> {
+    let planes = usize::from(*bytes.get(22)?);
+    let at = HEADER + planes * PLANE;
+    let len = usize::from(u16::from_le_bytes(
+        bytes.get(at..at + USER_LEN)?.try_into().ok()?,
+    ));
+    if len > USER_MAX {
+        return None;
+    }
+    bytes.get(at + USER_LEN..at + USER_LEN + len)
 }
 
 /// What [`encode_meta`] wrote, read back. `None` for bytes this build does not understand.
@@ -226,7 +265,7 @@ mod tests {
         let layouts =
             styx_frame::packed_layouts(FourCc::NV12, 640, 480, None, None).expect("layouts");
         let entry = FrameEntry::new(42, 1_234_567, format, layouts);
-        let mut out = [0_u8; META_MAX];
+        let mut out = [0_u8; FRAME_META_MAX];
         let len = encode_meta(&entry, &mut out);
         let (id, decoded, planes) = decode_meta(&out[..len]).expect("decodes");
         assert_eq!(id, 42);
