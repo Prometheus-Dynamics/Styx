@@ -1,0 +1,31 @@
+[package]
+name = "styx-decode"
+description = "MJPEG decoders and raw YUV converters for Styx frames: native codec implementations, registered in styx-core's registry."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = []
+# MJPEG through the system libturbojpeg (2.x API), found by build.rs. Without the library the
+# candidate reports itself unavailable and the registry falls back to zune-jpeg. Nothing is
+# downloaded or built from source.
+turbojpeg = []
+
+[dependencies]
+styx-core = { path = "../core" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+# Pure Rust MJPEG (zune-jpeg 0.5.15, zune-core 0.5.3: the versions dev pins).
+zune-core = "0.5.3"
+zune-jpeg = "0.5.15"
+
+[dev-dependencies]
+# Reference decoder for the MJPEG tests (dev uses the same one).
+jpeg-decoder = { version = "0.3.2", default-features = false }
+
+[lints]
+workspace = true
