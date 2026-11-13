@@ -1,0 +1,28 @@
+[package]
+name = "styx-sim"
+description = "A simulated Styx camera on Lemnos's simulated backend: lemnosd in this process with simulated sensor, receiver and ISP drivers, raw Bayer frames rendered at each frame's exposure and gain, and controls that land on the frame they name."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame", features = ["linux"] }
+styx-controls = { path = "../../core/controls" }
+styx-lemnos = { path = "../../core/lemnos" }
+lemnos-client = { workspace = true }
+lemnos-contract-camera-sensor = { workspace = true }
+lemnos-contract-camera-receiver = { workspace = true }
+lemnos-contract-camera-isp = { workspace = true }
+# The simulated backend and its daemon run in this process (see `drivers` and `camera`).
+lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9" }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+
+[lints]
+workspace = true
