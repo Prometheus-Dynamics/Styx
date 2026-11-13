@@ -1,0 +1,22 @@
+[package]
+name = "styx-nostd-smoke"
+description = "A no_std smoke crate: Styx's format and frame crates built and run for bare-metal targets (docs/mcu.md)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+publish = false
+
+[package.metadata.styx]
+no_std = true
+
+# Both crates without their default `std` feature. Their dependencies come from the same
+# path, so nothing outside this crate is linked.
+[dependencies]
+styx-format = { path = "../format", default-features = false }
+styx-frame = { path = "../frame", default-features = false }
+
+[lints]
+workspace = true
