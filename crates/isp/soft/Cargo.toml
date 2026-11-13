@@ -17,8 +17,6 @@ styx-simd = { path = "../../core/simd" }
 styx-math = { path = "../../core/math", default-features = false }
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 thiserror = { version = "2.0.21", default-features = false }
-# `riscv_hwprobe` (Zvfh detection), with the `rvv` feature.
-libc = { version = "0.2", optional = true }
 
 [features]
 default = ["std", "neon", "x86", "rvv"]
@@ -35,7 +33,7 @@ poly-tone = []
 neon = ["styx-simd/neon"]
 x86 = ["styx-simd/x86"]
 # RISC-V vectors when the CPU has them (needs `std`).
-rvv = ["std", "styx-simd/rvv", "dep:libc"]
+rvv = ["std", "styx-simd/rvv"]
 
 [lints]
 workspace = true
