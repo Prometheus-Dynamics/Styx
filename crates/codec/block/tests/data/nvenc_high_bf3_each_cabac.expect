@@ -1,0 +1,17 @@
+slice pic=0 first=0 nal=5 ref=3 kind=I frame_num=0 poc=0 n0=0 n1=0 l0=- l1=- mmco=- mod0=- mod1=- wp=- cabac=1 data=44
+slice pic=1 first=0 nal=1 ref=3 kind=P frame_num=1 poc=8 n0=1 n1=0 l0=0 l1=- mmco=- mod0=- mod1=- wp=- cabac=1 data=44
+slice pic=2 first=0 nal=1 ref=3 kind=B frame_num=2 poc=2 n0=2 n1=2 l0=0,1 l1=1,0 mmco=- mod0=- mod1=- wp=- cabac=1 data=53
+slice pic=3 first=0 nal=1 ref=3 kind=B frame_num=3 poc=4 n0=3 n1=3 l0=2,0,1 l1=1,2,0 mmco=- mod0=- mod1=- wp=- cabac=1 data=53
+slice pic=4 first=0 nal=1 ref=3 kind=B frame_num=4 poc=6 n0=4 n1=4 l0=3,2,0,1 l1=1,3,2,0 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=5 first=0 nal=1 ref=3 kind=P frame_num=5 poc=16 n0=4 n1=0 l0=1,4,3,2 l1=- mmco=- mod0=0:3;1:2;0:0 mod1=- wp=- cabac=1 data=62
+slice pic=6 first=0 nal=1 ref=3 kind=B frame_num=6 poc=10 n0=4 n1=4 l0=1,4,3,2 l1=5,1,4,3 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=7 first=0 nal=1 ref=3 kind=B frame_num=7 poc=12 n0=4 n1=4 l0=6,1,4,3 l1=5,6,1,4 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=8 first=0 nal=1 ref=3 kind=B frame_num=8 poc=14 n0=4 n1=4 l0=7,6,1,4 l1=5,7,6,1 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=9 first=0 nal=1 ref=3 kind=P frame_num=9 poc=24 n0=4 n1=0 l0=5,8,7,6 l1=- mmco=- mod0=0:3;1:2;0:0 mod1=- wp=- cabac=1 data=62
+slice pic=10 first=0 nal=1 ref=3 kind=B frame_num=10 poc=18 n0=4 n1=4 l0=5,8,7,6 l1=9,5,8,7 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=11 first=0 nal=1 ref=3 kind=B frame_num=11 poc=20 n0=4 n1=4 l0=10,5,8,7 l1=9,10,5,8 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=12 first=0 nal=1 ref=3 kind=B frame_num=12 poc=22 n0=4 n1=4 l0=11,10,5,8 l1=9,11,10,5 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=13 first=0 nal=1 ref=3 kind=P frame_num=13 poc=30 n0=4 n1=0 l0=9,12,11,10 l1=- mmco=- mod0=0:3;1:2;0:0 mod1=- wp=- cabac=1 data=62
+slice pic=14 first=0 nal=1 ref=3 kind=B frame_num=14 poc=26 n0=4 n1=4 l0=9,12,11,10 l1=13,9,12,11 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+slice pic=15 first=0 nal=1 ref=3 kind=B frame_num=15 poc=28 n0=4 n1=4 l0=14,9,12,11 l1=13,14,9,12 mmco=- mod0=- mod1=- wp=- cabac=1 data=47
+display pic=0 pic=2 pic=3 pic=4 pic=1 pic=6 pic=7 pic=8 pic=5 pic=10 pic=11 pic=12 pic=9 pic=14 pic=15 pic=13

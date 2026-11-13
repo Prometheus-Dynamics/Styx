@@ -1,11 +1,13 @@
 //! The shape of one producer's ring and buffers: the one place its numbers live.
 //!
-//! The producer is built from a [`Geometry`]; the handshake carries it to readers; a reader
-//! derives its buffer layout and its frame pool from it. Nothing else holds a copy of these
-//! numbers.
+//! The producer is built from a [`Geometry`]; the handshake carries it to readers. Where each
+//! buffer sits (its descriptor, offset and length) is the handshake's buffer table, not this
+//! record: a pool built by [`Producer::new`](crate::Producer::new) has its buffers at fixed
+//! offsets in one memfd, and a pool given to [`Producer::with_pool`](crate::Producer::with_pool)
+//! has whatever layout its memory has.
 
 use shm_ring::Spec;
-use shm_ring_buffers::{BufferDesc, MAX_BUFFERS};
+use shm_ring_buffers::MAX_BUFFERS;
 
 use crate::SocketError;
 use crate::wire::META_MAX;
@@ -15,8 +17,7 @@ const MAX_HISTORY: u32 = shm_ring::MAX_HISTORY;
 
 /// The shape of a producer's ring and its buffers.
 ///
-/// Every buffer sits at a fixed offset in the pool's one memfd: buffer `i` starts at
-/// `i * buffer_bytes()`, and its first `payload()` bytes are the frame's.
+/// Each buffer's first `payload()` bytes are a frame's, and it holds `buffer_bytes()` in all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Geometry {
     history: u32,
@@ -104,12 +105,13 @@ impl Geometry {
         self.payload + self.slack
     }
 
-    /// Where buffer `index` starts in the pool's memfd.
+    /// Where buffer `index` starts in the pool's memfd, when the pool is one memfd of equal
+    /// buffers ([`Producer::new`](crate::Producer::new)).
     pub const fn offset(&self, index: usize) -> usize {
         index * self.buffer_bytes()
     }
 
-    /// The size of the pool's memfd: every buffer.
+    /// The size of a [`Producer::new`](crate::Producer::new) pool's memfd: every buffer.
     pub fn pool_bytes(&self) -> usize {
         self.offset(self.buffers)
     }
@@ -127,17 +129,6 @@ impl Geometry {
             expiry_ms: 0,
         }
     }
-
-    /// Where each buffer is, as the pool and the ring describe it: all in descriptor 0.
-    pub(crate) fn buffer_descs(&self) -> Vec<BufferDesc> {
-        (0..self.buffers)
-            .map(|index| BufferDesc {
-                descriptor: 0,
-                offset: self.offset(index) as u64,
-                size: self.buffer_bytes() as u64,
-            })
-            .collect()
-    }
 }
 
 #[cfg(test)]
@@ -145,15 +136,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn buffers_sit_at_fixed_offsets_in_one_pool() {
+    fn buffers_of_a_new_pool_sit_at_fixed_offsets_in_one_memfd() {
         let geometry = Geometry::new(2048, 300, 8).expect("geometry");
         assert_eq!(geometry.offset(0), 0);
         assert_eq!(geometry.offset(299), 299 * 2048);
         assert_eq!(geometry.pool_bytes(), 300 * 2048);
-        let descs = geometry.buffer_descs();
-        assert_eq!(descs.len(), 300);
-        assert!(descs.iter().all(|desc| desc.descriptor == 0));
-        assert_eq!(descs[1].offset, 2048);
     }
 
     #[test]
