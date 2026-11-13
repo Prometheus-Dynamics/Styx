@@ -1,0 +1,21 @@
+[package]
+name = "styx-socket"
+description = "Frames to other processes over the shared ring: the producer hands each reader the buffers, the ring and a doorbell once over a Unix socket, then one ring entry per frame. Readers hold by marks; the producer drops and never waits."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame", features = ["linux"] }
+shm-ring = { workspace = true }
+shm-ring-buffers = { workspace = true }
+shm-ring-doorbell = { workspace = true }
+shm-ring-holds = { workspace = true }
+shm-fdpass = { workspace = true }
+
+[lints]
+workspace = true
