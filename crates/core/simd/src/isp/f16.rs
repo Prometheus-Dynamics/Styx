@@ -4,9 +4,11 @@
 //! `Arithmetic::Half` kernels, and their fallback without FP16
 //! hardware.
 //!
-//! Exactness: sums and products of two fp16 values are exact in `f64`, and `a + b c` is exact
-//! as long as the terms span fewer than 53 bits (always for the values the ISP produces:
-//! magnitudes between 2^-24 and 2^18).
+//! Exactness: sums and products of two fp16 values are exact in `f64`, so `add`, `sub` and `mul`
+//! round once. `fma` rounds the exact product into an f64 sum before the fp16 rounding; for fp16
+//! operands that second rounding cannot change the result (the product has 22 significant bits,
+//! so the f64 sum is exact unless the terms are far apart, and then the sum cannot land on an
+//! fp16 tie). `fma_is_the_exact_fused_result` checks this against an integer reference.
 
 #[cfg(not(feature = "std"))]
 use styx_math::Float as _;
@@ -179,6 +181,114 @@ mod tests {
         assert_eq!(
             fma(from_f64(1.0), from_f64(3.0), from_f64(0.5)),
             from_f64(2.5)
+        );
+    }
+
+    /// `a + b c` for finite, non-zero fp16 `a`, `b`, `c`, rounded once from the exact integer
+    /// sum (no intermediate rounding at all): the reference [`fma`] is checked against.
+    fn exact_fma(a: u16, b: u16, c: u16) -> u16 {
+        // (sign, mantissa, exponent): the value is (-1)^sign * mantissa * 2^exponent.
+        fn parts(h: u16) -> (bool, i128, i32) {
+            let sign = h & 0x8000 != 0;
+            let e = i32::from((h >> 10) & 0x1F);
+            let m = i128::from(h & 0x3FF);
+            if e == 0 {
+                (sign, m, -24)
+            } else {
+                (sign, m | 0x400, e - 25)
+            }
+        }
+        let (sa, ma, ea) = parts(a);
+        let (sb, mb, eb) = parts(b);
+        let (sc, mc, ec) = parts(c);
+        let (sp, mp, ep) = (sb ^ sc, mb * mc, eb + ec);
+        let e0 = ea.min(ep);
+        let term = |neg: bool, m: i128, shift: i32| {
+            let v = m << shift;
+            if neg { -v } else { v }
+        };
+        let sum = term(sa, ma, ea - e0) + term(sp, mp, ep - e0);
+        let sign = if sum < 0 { 0x8000 } else { 0 };
+        let u = sum.unsigned_abs();
+        if u == 0 {
+            return 0;
+        }
+        // Round to the fp16 grid: 11 significant bits at normal values, 2^-24 below 2^-14.
+        let top = 127 - u.leading_zeros() as i32 + e0;
+        let q = (top - 10).max(-24);
+        let shift = q - e0;
+        let mut mant = if shift <= 0 {
+            u << -shift
+        } else {
+            let (kept, rest, half) = (u >> shift, u & ((1 << shift) - 1), 1 << (shift - 1));
+            kept + u128::from(rest > half || (rest == half && kept & 1 == 1))
+        };
+        let mut q = q;
+        if mant == 2048 {
+            mant = 1024;
+            q += 1;
+        }
+        if mant == 0 {
+            return sign;
+        }
+        let mant = mant as u16;
+        if mant < 1024 {
+            return sign | mant;
+        }
+        let e = q + 25;
+        if e > 30 {
+            return sign | INF;
+        }
+        sign | ((e as u16) << 10) | (mant - 1024)
+    }
+
+    /// The software `fma` equals the exact fused result on finite inputs across the whole
+    /// range (the fp16 leaves are fused: NEON `fmla`, RVV `vfmacc`). The oracle computes the
+    /// product exactly and the sum in f64: that is one rounding, not two, for these inputs.
+    #[test]
+    fn fma_is_the_exact_fused_result() {
+        let mut x = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x
+        };
+        // A finite, non-zero fp16 in any binade, subnormals included.
+        let mut finite = || loop {
+            let h = next() as u16;
+            if (h >> 10) & 0x1F != 0x1F && h & 0x7FFF != 0 {
+                return h;
+            }
+        };
+        let mut checked = 0u32;
+        for _ in 0..400_000 {
+            let (a, b, c) = (finite(), finite(), finite());
+            assert_eq!(
+                fma(a, b, c),
+                exact_fma(a, b, c),
+                "fma({a:#06x}, {b:#06x}, {c:#06x})"
+            );
+            checked += 1;
+        }
+        // Cancellation: a + b c with the product equal to -a (the exact sum is then zero or
+        // the tiny residue the rounding keeps).
+        for _ in 0..50_000 {
+            let (a, b) = (finite(), finite());
+            let c = from_f64(-to_f64(a) / to_f64(b));
+            if (c >> 10) & 0x1F == 0x1F || c & 0x7FFF == 0 {
+                continue;
+            }
+            assert_eq!(
+                fma(a, b, c),
+                exact_fma(a, b, c),
+                "cancel {a:#06x} {b:#06x} {c:#06x}"
+            );
+            checked += 1;
+        }
+        eprintln!(
+            "fma: {checked} random triples equal the exact fused result (fp16 hardware here: {})",
+            crate::isp::half::hardware()
         );
     }
 }

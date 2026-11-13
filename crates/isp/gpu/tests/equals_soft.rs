@@ -41,10 +41,6 @@ enum Kind {
 }
 
 impl Kind {
-    fn is_luma(self) -> bool {
-        matches!(self, Kind::Luma)
-    }
-
     fn code(self) -> FourCc {
         match self {
             Kind::Rgb => FourCc::RGB3,
@@ -167,55 +163,24 @@ fn gpu_equals_soft_and_goldens_bit_for_bit() {
             packed(&cpu_out, case.kind, w as usize, h as usize),
             packed(&gpu_out, case.kind, w as usize, h as usize),
         );
-        if case.kind.is_luma() {
-            // Open gap (see the PR): the full-size luma path is within one code of the soft ISP,
-            // not yet bit for bit. Counted and bounded here, not hidden.
-            let differ = cpu_bytes
+        assert!(
+            cpu_bytes == gpu_bytes,
+            "{}: GPU picture differs from soft ({} of {} bytes)",
+            case.name,
+            cpu_bytes
                 .iter()
                 .zip(&gpu_bytes)
                 .filter(|(a, b)| a != b)
-                .count();
-            let worst = cpu_bytes
-                .iter()
-                .zip(&gpu_bytes)
-                .map(|(a, b)| a.abs_diff(*b))
-                .max()
-                .unwrap_or(0);
-            eprintln!(
-                "{}: luma differs from soft on {differ} of {} samples, worst {worst} code(s)",
-                case.name,
-                cpu_bytes.len()
-            );
-            assert!(
-                worst <= 1,
-                "{}: luma more than one code from soft",
-                case.name
-            );
-            let want = data(&format!("{}.out", case.name));
-            let worst_golden = gpu_bytes
-                .iter()
-                .zip(&want)
-                .map(|(a, b)| a.abs_diff(*b))
-                .max()
-                .unwrap_or(0);
-            assert!(
-                worst_golden <= 1,
-                "{}: luma more than one code from the golden",
-                case.name
-            );
-        } else {
-            assert!(
-                cpu_bytes == gpu_bytes,
-                "{}: GPU picture differs from soft",
-                case.name
-            );
-            let want = data(&format!("{}.out", case.name));
-            assert!(
-                gpu_bytes == want,
-                "{}: GPU picture differs from the golden",
-                case.name
-            );
-        }
+                .count(),
+            cpu_bytes.len()
+        );
+        let want = data(&format!("{}.out", case.name));
+        assert!(
+            gpu_bytes == want,
+            "{}: GPU picture differs from the golden",
+            case.name
+        );
+        eprintln!("{}: equal to soft and the golden", case.name);
 
         if case.stats {
             assert_eq!(
@@ -231,8 +196,33 @@ fn gpu_equals_soft_and_goldens_bit_for_bit() {
                 case.name
             );
         }
-        if !case.kind.is_luma() {
-            eprintln!("{}: equal to soft and the golden", case.name);
-        }
     }
+}
+
+/// The opt-in approximation runs on the GPU too: `ApproxTone`'s quadratics, bit for bit with
+/// `styx-soft`'s and its golden (the luma case, where the default sRGB curve's quadratics differ
+/// from the table).
+#[test]
+fn gpu_approx_tone_equals_soft_bit_for_bit() {
+    let Some(ctx) = device() else { return };
+    let raw_pool = picture_pool(RAW, W, H, 1);
+    let raw = raw_lease(&raw_pool, 1);
+    let settings = settings(true, false);
+    let mut options = options(Demosaic::Bilinear, YuvMatrix::Bt709Limited, false);
+    options.arithmetic = styx_soft::params::Arithmetic::ApproxTone;
+    let mut cpu = SoftIspStage::new(RAW, W, H, &settings, options.clone()).unwrap();
+    let mut gpu = GpuIspStage::with_context(Some(&ctx), RAW, W, H, &settings, options).unwrap();
+    let out_pool = picture_pool(FourCc::GREY, W, H, 2);
+    let mut cpu_out = picture(&out_pool, FourCc::GREY, W, H, 2);
+    let mut gpu_out = picture(&out_pool, FourCc::GREY, W, H, 3);
+    cpu.process(&raw, &mut cpu_out, None).unwrap();
+    gpu.process(&raw, &mut gpu_out, None).unwrap();
+    let cpu_bytes = packed(&cpu_out, Kind::Luma, W as usize, H as usize);
+    let gpu_bytes = packed(&gpu_out, Kind::Luma, W as usize, H as usize);
+    assert!(cpu_bytes == gpu_bytes, "ApproxTone: GPU differs from soft");
+    assert!(
+        gpu_bytes == data("luma_full.approx.out"),
+        "ApproxTone: golden"
+    );
+    eprintln!("luma_full ApproxTone: equal to soft and the golden");
 }

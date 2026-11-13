@@ -6,17 +6,25 @@
 //! doorbell once, over a Unix socket. After that every frame is one ring entry naming a buffer
 //! and carrying the frame's identity, format and planes as opaque bytes. Nothing is copied.
 //!
-//! - **Geometry**: [`Geometry`] is the one record of the ring's and pool's shape. The producer is
-//!   built from it, the handshake carries it, and the reader derives its buffers from it. All
-//!   buffers sit in one memfd at fixed offsets, so a pool is not limited by descriptor count.
-//! - **Handshake** ([`Producer::accept`], [`Reader::connect`]): the producer sends the ring's read
-//!   end, the pool page and the pool's memfd, with the geometry; the reader answers with its
-//!   marks page and its doorbell. The producer registers the reader's marks before it publishes
-//!   anything, so no buffer a reader holds can be reused.
+//! - **Pools**: [`Producer::new`] makes its own pool, every buffer at a fixed offset in one
+//!   memfd. [`Producer::with_pool`] publishes an existing [`FramePool`] whose buffers are
+//!   fd-backed: memfds (sealed against shrinking) or dma-bufs, one descriptor per buffer or
+//!   several buffers at offsets in one. Such a pool may hold up to 256 descriptors.
+//! - **Geometry**: [`Geometry`] is the one record of the ring's and pool's shape: payload, slack,
+//!   buffers and history. The handshake carries it, and the reader builds its frame pool from it.
+//! - **Handshake** ([`Producer::accept`], [`Reader::connect`]): the producer sends the offer (the
+//!   geometry, the reader's slot and the ring's read end and pool page), then one record per
+//!   buffer: its descriptor, memory kind, offset and length. A descriptor is sent with the first
+//!   buffer that names it, one per message. The reader maps each buffer read-only as a
+//!   `FrameLease` of its own pool, so a dma-buf frame is `MemoryKind::Dmabuf` there and names its
+//!   dma-buf for a GPU import. The reader answers with its marks page and its doorbell. The
+//!   producer registers the reader's marks before it publishes anything, so no buffer a reader
+//!   holds can be reused.
 //! - **Doorbells**: [`Producer::add_bell`] adds a doorbell that is not a socket reader's (an
 //!   adopter's, say); every publish rings it with the readers'.
 //! - **Adopters**: [`Producer::ring`], [`Producer::pool`], [`Producer::holds`] and
-//!   [`Producer::geometry`] borrow the objects an adopter needs.
+//!   [`Producer::geometry`] borrow the objects an adopter needs; [`Producer::holds_mut`] lends
+//!   the hold table for an adopter to add a subscriber's marks.
 //! - **Holds**: a reader marks each buffer of a frame before it checks the buffer's ticket
 //!   (`shm-ring-holds`). The producer keeps the frame's lease while the ring holds the buffer, and
 //!   takes a buffer back only when no reader marks it.
@@ -28,7 +36,8 @@
 //!   its marks at once. Its buffers come back on the next [`Producer::begin`].
 //!
 //! Linux only: the ring is a Linux shared-memory layout. Everything here is a safe wrapper over
-//! Lemnos's `shm-*` crates and Styx's frame pool; this crate holds no `unsafe`.
+//! Lemnos's `shm-*` crates and Styx's frame pool, except one `BufferMemory` wrapper in the reader
+//! that counts dma-buf sync brackets and only forwards them (its `SAFETY` comment says why).
 
 #![cfg(target_os = "linux")]
 

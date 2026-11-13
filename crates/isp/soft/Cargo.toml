@@ -27,7 +27,7 @@ std = ["styx-format/std", "styx-simd/std", "serde/std", "thiserror/std", "fp16",
 fp16 = []
 # The output picture's denoise and sharpening.
 post = []
-# `Arithmetic::IntPolyTone` (the tone curve as quadratics).
+# `Arithmetic::ApproxTone` (the tone curve as quadratics, approximate).
 poly-tone = []
 # SIMD backends, as in `styx-simd`: AArch64 NEON, x86 SSE2/SSSE3/AVX2 chosen at run time.
 neon = ["styx-simd/neon"]
