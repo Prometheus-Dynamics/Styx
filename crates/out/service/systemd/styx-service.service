@@ -1,0 +1,20 @@
+# The Styx camera service: one process per board, holding every camera.
+#
+# No start limits: the unit is restarted however often it fails. A camera that leaves is served
+# again by the service itself (with capped backoff); this unit only covers the process.
+#
+# The config is /etc/styx/service.toml (see the crate documentation for every key).
+
+[Unit]
+Description=Styx camera service
+After=network.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/styx-service /etc/styx/service.toml
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
