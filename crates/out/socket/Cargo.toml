@@ -17,5 +17,8 @@ shm-ring-doorbell = { workspace = true }
 shm-ring-holds = { workspace = true }
 shm-fdpass = { workspace = true }
 
+[dev-dependencies]
+lemnos-linux-sys = { workspace = true }
+
 [lints]
 workspace = true
