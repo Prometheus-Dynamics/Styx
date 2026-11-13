@@ -4,7 +4,7 @@
 use core::num::NonZeroU32;
 
 use styx_format::{ColorRange, ColorSpace, FourCc, MAX_PLANES, MediaFormat, Resolution};
-use styx_frame::{FrameEntry, Layouts, PlaneLayout};
+use styx_frame::{FrameEntry, Layouts, MemoryKind, PlaneLayout};
 
 use crate::geometry::Geometry;
 
@@ -16,20 +16,27 @@ const PLANE: usize = 24;
 pub(crate) const META_MAX: usize = HEADER + MAX_PLANES * PLANE;
 
 /// Version of the handshake messages. A reader refuses any other.
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 /// The offer: version, buffers, the reader's slot, the most buffers it may hold, history, the
-/// metadata size, the payload and the slack. Its descriptors are the ring's read end, the pool
-/// page and the pool's one memfd, in that order.
-pub(crate) const OFFER_LEN: usize = 4 * 6 + 8 * 2;
+/// metadata size, the payload, the slack and the number of descriptors the pool's buffers sit in.
+/// Its descriptors are the ring's read end and the pool page, in that order. One [`Record`]
+/// message per buffer follows it.
+pub(crate) const OFFER_LEN: usize = 4 * 6 + 8 * 2 + 4;
+/// One buffer's record: index, descriptor, kind, offset and length. Its descriptor is attached
+/// only on the buffer that first names it.
+pub(crate) const RECORD_LEN: usize = 28;
 /// The reader's reply: version and its slot.
 pub(crate) const ACK_LEN: usize = 8;
+/// The most descriptors a pool's buffers may sit in: a buffer names its descriptor in one byte.
+pub(crate) const MAX_DESCRIPTORS: usize = 256;
 
-/// What an offer names: the reader's slot and limit, and the geometry.
+/// What an offer names: the reader's slot and limit, the geometry and the descriptor count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Offer {
     pub slot: u32,
     pub max_held: u32,
     pub geometry: Geometry,
+    pub descriptors: u32,
 }
 
 /// Writes `offer` into `out`.
@@ -44,6 +51,7 @@ pub(crate) fn encode_offer(offer: &Offer) -> [u8; OFFER_LEN] {
     out[20..24].copy_from_slice(&(geometry.meta_max() as u32).to_le_bytes());
     out[24..32].copy_from_slice(&(geometry.payload() as u64).to_le_bytes());
     out[32..40].copy_from_slice(&(geometry.slack() as u64).to_le_bytes());
+    out[40..44].copy_from_slice(&offer.descriptors.to_le_bytes());
     out
 }
 
@@ -65,10 +73,73 @@ pub(crate) fn decode_offer(bytes: &[u8]) -> Option<Offer> {
         usize::try_from(u64_at(32)?).ok()?,
     )
     .ok()?;
+    let descriptors = u32_at(40)?;
+    if descriptors == 0 || descriptors as usize > MAX_DESCRIPTORS {
+        return None;
+    }
     Some(Offer {
         slot: u32_at(8)?,
         max_held: u32_at(12)?,
         geometry,
+        descriptors,
+    })
+}
+
+/// One buffer of the pool as a reader maps it: which descriptor holds it, what kind of memory
+/// that is, and where in the descriptor it starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Record {
+    pub index: u32,
+    pub descriptor: u32,
+    pub kind: MemoryKind,
+    pub offset: u64,
+    pub len: u64,
+}
+
+fn kind_code(kind: MemoryKind) -> Option<u8> {
+    match kind {
+        MemoryKind::Memfd => Some(0),
+        MemoryKind::Dmabuf => Some(1),
+        MemoryKind::Host | MemoryKind::Gpu => None,
+    }
+}
+
+fn kind_from_code(code: u8) -> Option<MemoryKind> {
+    match code {
+        0 => Some(MemoryKind::Memfd),
+        1 => Some(MemoryKind::Dmabuf),
+        _ => None,
+    }
+}
+
+/// Writes `record` into `out`. A kind that cannot cross processes is an error for the caller
+/// to report; this returns `None` for it.
+pub(crate) fn encode_record(record: &Record) -> Option<[u8; RECORD_LEN]> {
+    let mut out = [0_u8; RECORD_LEN];
+    out[0..4].copy_from_slice(&record.index.to_le_bytes());
+    out[4..8].copy_from_slice(&record.descriptor.to_le_bytes());
+    out[8] = kind_code(record.kind)?;
+    out[12..20].copy_from_slice(&record.offset.to_le_bytes());
+    out[20..28].copy_from_slice(&record.len.to_le_bytes());
+    Some(out)
+}
+
+/// Reads a record; `None` for bytes this build does not understand.
+pub(crate) fn decode_record(bytes: &[u8]) -> Option<Record> {
+    if bytes.len() != RECORD_LEN {
+        return None;
+    }
+    let u32_at = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    let u64_at = |at: usize| Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?));
+    if bytes[9..12] != [0, 0, 0] {
+        return None;
+    }
+    Some(Record {
+        index: u32_at(0)?,
+        descriptor: u32_at(4)?,
+        kind: kind_from_code(bytes[8])?,
+        offset: u64_at(12)?,
+        len: u64_at(20)?,
     })
 }
 
@@ -164,17 +235,50 @@ mod tests {
     }
 
     #[test]
-    fn an_offer_round_trips_its_slot_limit_and_geometry() {
+    fn an_offer_round_trips_its_slot_limit_geometry_and_descriptors() {
         let geometry = crate::geometry::Geometry::new(4096, 300, 8).expect("geometry");
         let offer = Offer {
             slot: 3,
             max_held: 5,
             geometry,
+            descriptors: 2,
         };
         assert_eq!(decode_offer(&encode_offer(&offer)), Some(offer));
         let mut bytes = encode_offer(&offer);
-        bytes[0] = 1;
+        bytes[0] = 2;
         assert!(decode_offer(&bytes).is_none(), "another version is refused");
+        let mut none = encode_offer(&offer);
+        none[40..44].copy_from_slice(&0_u32.to_le_bytes());
+        assert!(
+            decode_offer(&none).is_none(),
+            "a pool with no descriptor is refused"
+        );
+    }
+
+    #[test]
+    fn a_buffer_record_round_trips_and_refuses_what_cannot_cross_processes() {
+        let record = Record {
+            index: 7,
+            descriptor: 1,
+            kind: MemoryKind::Dmabuf,
+            offset: 4096,
+            len: 8192,
+        };
+        let bytes = encode_record(&record).expect("a dma-buf crosses");
+        assert_eq!(decode_record(&bytes), Some(record));
+        assert!(
+            encode_record(&Record {
+                kind: MemoryKind::Host,
+                ..record
+            })
+            .is_none()
+        );
+        let mut junk = bytes;
+        junk[10] = 1;
+        assert!(decode_record(&junk).is_none(), "reserved bytes are zero");
+        let mut bad_kind = bytes;
+        bad_kind[8] = 9;
+        assert!(decode_record(&bad_kind).is_none());
     }
 
     #[test]
