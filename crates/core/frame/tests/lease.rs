@@ -269,3 +269,31 @@ fn buffers_carry_gpu_slack_that_frames_never_use() {
         }
     );
 }
+
+#[test]
+fn acquire_at_takes_the_named_buffer_or_says_it_is_held() {
+    let pool: FramePool = FramePool::host(3, BufferSize::new(64, 0)).unwrap();
+    let frame = pool.acquire_at(2, grey(1, 8, 8)).unwrap();
+    assert_eq!(frame.buffer_index(), 2);
+    let hold = frame.share();
+    drop(frame);
+    // The producer got buffer 2 back from its driver while a consumer still holds its frame.
+    assert_eq!(
+        pool.acquire_at(2, grey(2, 8, 8)).unwrap_err(),
+        AcquireError::Held { index: 2 }
+    );
+    assert_eq!(hold.id(), 1);
+    assert_eq!(pool.stats().misses, 1);
+    drop(hold);
+    assert_eq!(pool.acquire_at(2, grey(2, 8, 8)).unwrap().id(), 2);
+    assert_eq!(
+        pool.acquire_at(3, grey(3, 8, 8)).unwrap_err(),
+        AcquireError::NoSuchBuffer { index: 3 }
+    );
+    // `acquire` still skips held buffers.
+    let a = pool.acquire_at(0, grey(4, 8, 8)).unwrap();
+    assert_ne!(
+        pool.acquire(grey(5, 8, 8)).unwrap().buffer_index(),
+        a.buffer_index()
+    );
+}
