@@ -346,7 +346,7 @@ impl Worker {
                 }
                 Err(q) => {
                     let (t, b) = q.rows(&self.slots, &self.dec, col);
-                    half::quad_colour_row(t, b, out, n, &h.quad, p.pattern, &h.tone);
+                    half::quad_colour_row(t, b, out, n, &h.quad, p.pattern.into(), &h.tone);
                 }
             }
             return;
@@ -356,7 +356,7 @@ impl Worker {
         };
         match g.sample {
             Sample::Full => {
-                let kind = RowKind::of(p.pattern, my);
+                let kind = RowKind::of(p.pattern.into(), my);
                 match p.demosaic {
                     Demosaic::Bilinear => {
                         let s = self.window::<3>(p, src, g, my);
@@ -382,7 +382,7 @@ impl Worker {
                 let q = self.quad_rows(p, src, g, oy);
                 let (t, b) = q.rows(&self.slots, &self.dec, col);
                 let [rr, gg, bb] = &mut self.rgb16;
-                simd::quad_rgb_row(t, b, [rr, gg, bb], n, p.pattern);
+                simd::quad_rgb_row(t, b, [rr, gg, bb], n, p.pattern.into());
             }
         }
         let [r, g, b] = &mut self.rgb16;
@@ -456,10 +456,21 @@ impl Worker {
         let [r, g, bl] = &mut self.quad;
         let (t, b) = (&self.slots[t][PAD..], &self.slots[b][PAD..]);
         match &p.arith {
-            Arith::Int(_) => drop(simd::quad_rgb_row(t, b, [r, g, bl], p.width / 2, p.pattern)),
-            Arith::Half(h) => {
-                half::quad_stats_row(t, b, [r, g, bl], p.width / 2, p.pattern, h.stats_scale)
-            }
+            Arith::Int(_) => drop(simd::quad_rgb_row(
+                t,
+                b,
+                [r, g, bl],
+                p.width / 2,
+                p.pattern.into(),
+            )),
+            Arith::Half(h) => half::quad_stats_row(
+                t,
+                b,
+                [r, g, bl],
+                p.width / 2,
+                p.pattern.into(),
+                h.stats_scale,
+            ),
         }
         let acc = self.stats.as_mut().expect("checked above");
         acc.add_row(setup, qy, [&self.quad[0], &self.quad[1], &self.quad[2]]);

@@ -136,7 +136,7 @@ impl HalfPrep {
             black,
             gain,
             lsc,
-            colour: [0, 1].map(|y| ColourCoeffs::new(&m, RowKind::of(pattern, y))),
+            colour: [0, 1].map(|y| ColourCoeffs::new(&m, RowKind::of(pattern.into(), y))),
             quad: core::array::from_fn(|i| f16::from_f32(m[i / 3][i % 3])),
             tone,
             stats_scale: f16::from_f64(4096.0 * full / (full + 1.0) / half::FULL),
