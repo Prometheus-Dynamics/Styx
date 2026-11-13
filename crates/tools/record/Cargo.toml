@@ -1,0 +1,22 @@
+[package]
+name = "styx-record"
+description = "Recordings: one format (styxrec) for raw frames and their per-frame metadata, replay of it as a camera that hands out FrameLeases as recorded, and import of MCAP recordings into it."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-controls = { path = "../../core/controls" }
+styx-frame = { path = "../../core/frame" }
+
+[dev-dependencies]
+# Writes MCAP files the way the Styx recorder lays them out, so the importer is tested against
+# the real writer. No compression: the importer reads uncompressed chunks only.
+mcap = { version = "0.25", default-features = false }
+
+[lints]
+workspace = true
