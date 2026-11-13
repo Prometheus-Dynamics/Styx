@@ -6,6 +6,8 @@ use core::num::NonZeroU32;
 use styx_format::{ColorRange, ColorSpace, FourCc, MAX_PLANES, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, Layouts, PlaneLayout};
 
+use crate::geometry::Geometry;
+
 /// Bytes of a frame's ring metadata before its planes.
 const HEADER: usize = 24;
 /// Bytes of one plane: offset, stride and length, each a `u64`.
@@ -14,14 +16,61 @@ const PLANE: usize = 24;
 pub(crate) const META_MAX: usize = HEADER + MAX_PLANES * PLANE;
 
 /// Version of the handshake messages. A reader refuses any other.
-pub(crate) const VERSION: u32 = 1;
-/// The first handshake message's header: version, buffer count, the reader's slot, the most
-/// buffers it may hold, and each buffer's length in bytes.
-pub(crate) const OFFER_LEN: usize = 4 * 4 + 8;
-/// A later handshake message's header: version and the index of its first buffer.
-pub(crate) const CHUNK_LEN: usize = 8;
+pub(crate) const VERSION: u32 = 2;
+/// The offer: version, buffers, the reader's slot, the most buffers it may hold, history, the
+/// metadata size, the payload and the slack. Its descriptors are the ring's read end, the pool
+/// page and the pool's one memfd, in that order.
+pub(crate) const OFFER_LEN: usize = 4 * 6 + 8 * 2;
 /// The reader's reply: version and its slot.
 pub(crate) const ACK_LEN: usize = 8;
+
+/// What an offer names: the reader's slot and limit, and the geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Offer {
+    pub slot: u32,
+    pub max_held: u32,
+    pub geometry: Geometry,
+}
+
+/// Writes `offer` into `out`.
+pub(crate) fn encode_offer(offer: &Offer) -> [u8; OFFER_LEN] {
+    let geometry = &offer.geometry;
+    let mut out = [0_u8; OFFER_LEN];
+    out[0..4].copy_from_slice(&VERSION.to_le_bytes());
+    out[4..8].copy_from_slice(&(geometry.buffers() as u32).to_le_bytes());
+    out[8..12].copy_from_slice(&offer.slot.to_le_bytes());
+    out[12..16].copy_from_slice(&offer.max_held.to_le_bytes());
+    out[16..20].copy_from_slice(&geometry.history().to_le_bytes());
+    out[20..24].copy_from_slice(&(geometry.meta_max() as u32).to_le_bytes());
+    out[24..32].copy_from_slice(&(geometry.payload() as u64).to_le_bytes());
+    out[32..40].copy_from_slice(&(geometry.slack() as u64).to_le_bytes());
+    out
+}
+
+/// Reads an offer; `None` for one this build does not understand or whose geometry it refuses.
+pub(crate) fn decode_offer(bytes: &[u8]) -> Option<Offer> {
+    if bytes.len() != OFFER_LEN {
+        return None;
+    }
+    let u32_at = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
+    let u64_at = |at: usize| Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?));
+    if u32_at(0)? != VERSION {
+        return None;
+    }
+    let geometry = Geometry::checked(
+        u32_at(16)?,
+        usize::try_from(u32_at(20)?).ok()?,
+        usize::try_from(u32_at(4)?).ok()?,
+        usize::try_from(u64_at(24)?).ok()?,
+        usize::try_from(u64_at(32)?).ok()?,
+    )
+    .ok()?;
+    Some(Offer {
+        slot: u32_at(8)?,
+        max_held: u32_at(12)?,
+        geometry,
+    })
+}
 
 fn range_code(range: ColorRange) -> u8 {
     match range {
@@ -112,6 +161,20 @@ mod tests {
         assert_eq!(id, 42);
         assert_eq!(decoded, format);
         assert_eq!(planes, layouts);
+    }
+
+    #[test]
+    fn an_offer_round_trips_its_slot_limit_and_geometry() {
+        let geometry = crate::geometry::Geometry::new(4096, 300, 8).expect("geometry");
+        let offer = Offer {
+            slot: 3,
+            max_held: 5,
+            geometry,
+        };
+        assert_eq!(decode_offer(&encode_offer(&offer)), Some(offer));
+        let mut bytes = encode_offer(&offer);
+        bytes[0] = 1;
+        assert!(decode_offer(&bytes).is_none(), "another version is refused");
     }
 
     #[test]

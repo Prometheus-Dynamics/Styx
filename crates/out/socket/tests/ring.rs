@@ -18,9 +18,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use shm_ring::SampleTime;
+use shm_ring_doorbell::{Doorbell, Wake};
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, FrameLease, copy_counters, packed_layouts};
-use styx_socket::{BeginError, Limits, Producer, ProducerConfig, ReadError, Reader, ReaderStats};
+use styx_socket::{
+    BeginError, Limits, OUTSIDE_BELLS, Producer, ProducerConfig, ReadError, Reader, ReaderStats,
+    SocketError,
+};
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 32;
@@ -371,5 +375,127 @@ fn latest_passes_over_older_frames_and_counts_them() {
     );
     drop(newest);
     assert_eq!(reader.stats().held, 0);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn an_outside_bell_is_rung_on_publish_until_it_is_removed() {
+    let mut producer = Producer::new(ProducerConfig {
+        payload: PAYLOAD,
+        buffers: 4,
+        history: 8,
+    })
+    .expect("producer");
+    let mut doorbell = Doorbell::create().expect("doorbell");
+    let (eventfd, page) = doorbell.bell_fds().expect("the doorbell's descriptors");
+    let bell = producer.add_bell(eventfd, page).expect("add the bell");
+
+    doorbell.arm();
+    assert!(publish(&mut producer, 1), "frame 1 is published");
+    assert_eq!(
+        doorbell.wait(Some(Duration::ZERO), || false).expect("wait"),
+        Wake::Rung,
+        "the outside bell is rung on publish"
+    );
+
+    producer.remove_bell(bell);
+    doorbell.arm();
+    assert!(publish(&mut producer, 2), "frame 2 is published");
+    assert_eq!(
+        doorbell.wait(Some(Duration::ZERO), || false).expect("wait"),
+        Wake::TimedOut,
+        "a removed bell is not rung"
+    );
+}
+
+#[test]
+fn outside_bells_are_a_fixed_set_and_a_stale_id_does_nothing() {
+    let mut producer = Producer::new(ProducerConfig {
+        payload: PAYLOAD,
+        buffers: 4,
+        history: 8,
+    })
+    .expect("producer");
+    let mut bells = Vec::new();
+    for _ in 0..OUTSIDE_BELLS {
+        let doorbell = Doorbell::create().expect("doorbell");
+        let (eventfd, page) = doorbell.bell_fds().expect("fds");
+        bells.push(producer.add_bell(eventfd, page).expect("a free slot"));
+    }
+    let doorbell = Doorbell::create().expect("doorbell");
+    let (eventfd, page) = doorbell.bell_fds().expect("fds");
+    assert!(
+        matches!(
+            producer.add_bell(eventfd, page),
+            Err(SocketError::NoBellSlot)
+        ),
+        "the set does not grow"
+    );
+
+    let first = bells[0];
+    producer.remove_bell(first);
+    let doorbell = Doorbell::create().expect("doorbell");
+    let (eventfd, page) = doorbell.bell_fds().expect("fds");
+    let reused = producer.add_bell(eventfd, page).expect("the freed slot");
+    assert_ne!(reused, first, "a reused slot has a new id");
+    producer.remove_bell(first);
+    let (eventfd, page) = doorbell.bell_fds().expect("fds");
+    assert!(
+        matches!(
+            producer.add_bell(eventfd, page),
+            Err(SocketError::NoBellSlot)
+        ),
+        "the stale id did not free the reused slot"
+    );
+}
+
+#[test]
+fn a_pool_past_256_buffers_is_one_memfd_and_the_geometry_round_trips() {
+    const BUFFERS: usize = 300;
+    let path = socket_path("many");
+    let listener = UnixListener::bind(&path).expect("bind");
+    let config = ProducerConfig {
+        payload: PAYLOAD,
+        buffers: BUFFERS,
+        history: 8,
+    };
+    let mut producer = Producer::new(config).expect("producer with 300 buffers");
+    assert_eq!(producer.pool().descriptors().len(), 1, "one memfd");
+    assert_eq!(producer.pool().buffers().len(), BUFFERS);
+    assert_eq!(producer.ring().geometry().history(), 8);
+
+    let connecting = thread::spawn({
+        let path = path.clone();
+        move || Reader::connect(UnixStream::connect(path).expect("connect")).expect("connect")
+    });
+    let (stream, _) = listener.accept().expect("accept");
+    producer
+        .accept(stream, Limits::default())
+        .expect("handshake");
+    let mut reader = connecting.join().expect("reader");
+
+    assert_eq!(
+        reader.geometry(),
+        producer.geometry(),
+        "the geometry round-trips"
+    );
+    assert_eq!(reader.geometry().buffers(), BUFFERS);
+    assert_eq!(
+        producer.holds().readers(),
+        1,
+        "the reader's marks are registered"
+    );
+
+    for id in 1..=3 {
+        assert!(publish(&mut producer, id), "frame {id} is published");
+    }
+    let mut seen = 0;
+    while let Some(frame) = reader.next_frame().expect("not cut off") {
+        check_bytes(frame.lease());
+        assert!(frame.buffer() < BUFFERS);
+        seen += 1;
+    }
+    assert_eq!(seen, 3);
+    assert!(no_copies());
     let _ = std::fs::remove_file(&path);
 }

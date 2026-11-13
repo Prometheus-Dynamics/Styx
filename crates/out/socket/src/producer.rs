@@ -1,12 +1,12 @@
 //! The producer: the camera service's end of the shared ring.
 
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
 
-use shm_fdpass::{self as fdpass, MAX_FDS};
-use shm_ring::{FieldId, ReadMap, Ring, SampleTime, Spec, WriteMap};
-use shm_ring_buffers::{BufferDesc, BufferIndex, BufferWriter, Dropped, MAX_BUFFERS, Pool, entry};
+use shm_fdpass as fdpass;
+use shm_ring::{FieldId, ReadMap, Ring, SampleTime, WriteMap};
+use shm_ring_buffers::{BufferIndex, BufferWriter, Dropped, Pool};
 use shm_ring_doorbell::Bell;
 use shm_ring_holds::{HoldTable, Limits};
 use styx_frame::{
@@ -14,21 +14,24 @@ use styx_frame::{
 };
 
 use crate::SocketError;
-use crate::wire::{self, ACK_LEN, CHUNK_LEN, META_MAX, OFFER_LEN, VERSION};
+use crate::geometry::Geometry;
+use crate::wire::{ACK_LEN, META_MAX, Offer, VERSION, encode_meta, encode_offer};
 
-/// Descriptors the shared ring's buffer topic can name: its descriptor numbers are a byte.
-const MAX_DESCRIPTORS: usize = 256;
 /// How long a reader has to answer the handshake.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
 /// The ring's field carrying the frames.
 const FIELD: FieldId = FieldId(0);
+/// Doorbells a producer can ring besides its socket readers' (see [`Producer::add_bell`]). Its
+/// set is allocated in [`Producer::new`]; adding past this is refused, never grown.
+pub const OUTSIDE_BELLS: usize = 16;
 
-/// The shape of a producer's ring and buffers.
+/// The shape of a producer's ring and buffers, as asked for. [`Producer::geometry`] is the
+/// resolved shape the producer runs with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProducerConfig {
     /// Bytes in each buffer. Frames may use all of them.
     pub payload: usize,
-    /// Buffers in the pool: one memfd each. At most 256.
+    /// Buffers in the pool. They all sit in one memfd at fixed offsets. At most 1024.
     pub buffers: usize,
     /// Ring entries kept. A reader that falls further behind than this loses frames.
     pub history: u32,
@@ -54,12 +57,27 @@ impl core::fmt::Display for BeginError {
 
 impl std::error::Error for BeginError {}
 
+/// A doorbell the producer rings on every publish, from [`Producer::add_bell`]. Used to remove
+/// it. A stale id (already removed, or its slot reused) does nothing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BellId {
+    slot: u32,
+    generation: u32,
+}
+
 /// One connected reader.
 #[derive(Debug)]
 struct Link {
     slot: u32,
     socket: UnixStream,
     bell: Bell,
+}
+
+/// One slot of the outside bell set.
+#[derive(Debug)]
+struct BellSlot {
+    generation: u32,
+    bell: Option<Bell>,
 }
 
 /// Counts for a producer, for reporting.
@@ -89,7 +107,7 @@ pub struct ReaderInfo {
 /// Publishes frames to any number of readers in other processes.
 ///
 /// Hold it on one thread: [`Producer::begin`] and [`Producer::publish`] are the frame path and
-/// make no system call beyond one eventfd write per reader that is asleep.
+/// make no system call beyond one eventfd write per doorbell that is asleep.
 #[derive(Debug)]
 pub struct Producer {
     ring: Ring,
@@ -97,76 +115,64 @@ pub struct Producer {
     frames: FramePool<()>,
     holds: HoldTable<ReadMap>,
     links: Vec<Link>,
+    bells: Vec<BellSlot>,
     /// For each buffer, the lease on the frame the ring still holds in it. Kept until the ring
     /// takes the buffer back, so the buffer stays this producer's while any reader may read it.
     in_flight: Vec<Option<FrameLease<()>>>,
-    payload: usize,
+    geometry: Geometry,
     published: u64,
     dropped: u64,
     gone: u64,
 }
 
 impl Producer {
-    /// A producer with `config`'s ring and buffers, all free and no readers yet.
+    /// A producer with `config`'s ring and buffers, all free and no readers yet. The buffers
+    /// all sit in one memfd, at [`Geometry::offset`] each. The outside bell set is allocated
+    /// here, [`OUTSIDE_BELLS`] long.
     ///
     /// # Errors
     ///
     /// [`SocketError`] if the shape is not allowed or the memory can't be made.
     pub fn new(config: ProducerConfig) -> Result<Self, SocketError> {
-        let ProducerConfig {
-            payload,
-            buffers,
-            history,
-        } = config;
-        if payload == 0 {
-            return Err(SocketError::Config("a buffer holds at least one byte"));
+        let geometry = Geometry::new(config.payload, config.buffers, config.history)?;
+        let ring = Ring::create(&geometry.ring_spec())?;
+        let pool_fd = shm_ring::sealed_memfd(geometry.pool_bytes())?;
+        let mut memories: Vec<Box<dyn BufferMemory>> = Vec::with_capacity(geometry.buffers());
+        for index in 0..geometry.buffers() {
+            memories.push(Box::new(FdMemory::memfd_at(
+                pool_fd.try_clone()?,
+                geometry.offset(index),
+                geometry.buffer_bytes(),
+                true,
+            )?));
         }
-        if buffers == 0 || buffers > MAX_BUFFERS as usize {
-            return Err(SocketError::Config("a pool holds 1 to 1024 buffers"));
-        }
-        if buffers > MAX_DESCRIPTORS {
-            return Err(SocketError::Config(
-                "one memfd per buffer: at most 256 buffers (the ring's descriptor numbers are a byte)",
-            ));
-        }
-        let ring = Ring::create(&Spec {
-            fields: 1,
-            history,
-            max_payload: entry::len(1, META_MAX) as u32,
-            expiry_ms: 0,
-        })?;
-        let mut memories: Vec<Box<dyn BufferMemory>> = Vec::with_capacity(buffers);
-        let mut descriptors: Vec<OwnedFd> = Vec::with_capacity(buffers);
-        for _ in 0..buffers {
-            let fd = shm_ring::sealed_memfd(payload)?;
-            descriptors.push(fd.try_clone()?);
-            memories.push(Box::new(FdMemory::memfd(fd, payload, true)?));
-        }
-        let frames: FramePool<()> = FramePool::new(BufferSize::new(payload, 0), memories)?;
-        let buffer_descs: Vec<BufferDesc> = (0..buffers)
-            .map(|index| BufferDesc {
-                descriptor: index as u8,
-                offset: 0,
-                size: payload as u64,
-            })
-            .collect();
-        let pool = Pool::new(1, descriptors, buffer_descs)?;
+        let frames: FramePool<()> = FramePool::new(
+            BufferSize::new(geometry.payload(), geometry.slack()),
+            memories,
+        )?;
+        let pool = Pool::new(1, vec![pool_fd], geometry.buffer_descs())?;
         let writer = BufferWriter::new(ring.writer()?, FIELD, pool);
         Ok(Self {
             ring,
             writer,
             frames,
-            holds: HoldTable::new(buffers as u32),
+            holds: HoldTable::new(geometry.buffers() as u32),
             links: Vec::new(),
-            in_flight: (0..buffers).map(|_| None).collect(),
-            payload,
+            bells: (0..OUTSIDE_BELLS)
+                .map(|_| BellSlot {
+                    generation: 0,
+                    bell: None,
+                })
+                .collect(),
+            in_flight: (0..geometry.buffers()).map(|_| None).collect(),
+            geometry,
             published: 0,
             dropped: 0,
             gone: 0,
         })
     }
 
-    /// Hands a connected reader the ring and the buffers, then registers the marks and the
+    /// Hands a connected reader the ring and the pool, then registers the marks and the
     /// doorbell it sends back. Returns the reader's slot. Blocks for the reader's reply, at most
     /// five seconds; call it from the control path, never from the frame path.
     ///
@@ -181,30 +187,20 @@ impl Producer {
         socket.set_read_timeout(Some(ANSWER_WITHIN))?;
         let ring_fd = self.ring.read_fd()?;
         let page_fd = self.writer.pool().page_fd()?;
-        let descriptors: Vec<BorrowedFd<'_>> = self.writer.pool().descriptors().collect();
-        let total = descriptors.len();
+        let pool_fd = self
+            .writer
+            .pool()
+            .descriptors()
+            .next()
+            .ok_or(SocketError::Protocol("the pool has no memfd"))?;
 
-        let mut offer = [0_u8; OFFER_LEN];
-        offer[0..4].copy_from_slice(&VERSION.to_le_bytes());
-        offer[4..8].copy_from_slice(&(total as u32).to_le_bytes());
-        offer[8..12].copy_from_slice(&slot.to_le_bytes());
-        offer[12..16].copy_from_slice(&limits.max_held.to_le_bytes());
-        offer[16..24].copy_from_slice(&(self.payload as u64).to_le_bytes());
-        let first = total.min(MAX_FDS - 2);
-        let mut fds = vec![ring_fd.as_fd(), page_fd.as_fd()];
-        fds.extend_from_slice(&descriptors[..first]);
+        let offer = encode_offer(&Offer {
+            slot,
+            max_held: limits.max_held,
+            geometry: self.geometry,
+        });
+        let fds = [ring_fd.as_fd(), page_fd.as_fd(), pool_fd];
         fdpass::send_on(&socket, &[&offer], &fds)?;
-        drop(fds);
-
-        let mut next = first;
-        while next < total {
-            let count = (total - next).min(MAX_FDS);
-            let mut chunk = [0_u8; CHUNK_LEN];
-            chunk[0..4].copy_from_slice(&VERSION.to_le_bytes());
-            chunk[4..8].copy_from_slice(&(next as u32).to_le_bytes());
-            fdpass::send_on(&socket, &[&chunk], &descriptors[next..next + count])?;
-            next += count;
-        }
 
         let mut ack = [0_u8; ACK_LEN];
         let received = fdpass::recv(socket.as_fd(), &mut ack, 3, false)?.ok_or(
@@ -230,6 +226,43 @@ impl Producer {
         socket.set_read_timeout(None)?;
         self.links.push(Link { slot, socket, bell });
         Ok(slot)
+    }
+
+    /// Adds a doorbell that does not belong to one of this producer's socket readers: an
+    /// Orion subscriber's, say. It is rung with the readers' on every [`Producer::publish`],
+    /// until [`Producer::remove_bell`]. `eventfd` and `page` are the doorbell's two descriptors
+    /// ([`shm_ring_doorbell::Doorbell::bell_fds`]). [`Producer::remove_bell`] drops the bell and
+    /// closes its descriptors.
+    ///
+    /// # Errors
+    ///
+    /// [`SocketError::NoBellSlot`] when all [`OUTSIDE_BELLS`] are in use;
+    /// [`SocketError::Ring`] when the page can't be mapped. Nothing is added then.
+    pub fn add_bell(&mut self, eventfd: OwnedFd, page: OwnedFd) -> Result<BellId, SocketError> {
+        let slot = self
+            .bells
+            .iter()
+            .position(|slot| slot.bell.is_none())
+            .ok_or(SocketError::NoBellSlot)?;
+        let bell = Bell::attach(eventfd, page)?;
+        let entry = &mut self.bells[slot];
+        entry.generation = entry.generation.wrapping_add(1);
+        entry.bell = Some(bell);
+        Ok(BellId {
+            slot: slot as u32,
+            generation: entry.generation,
+        })
+    }
+
+    /// Removes an outside doorbell added by [`Producer::add_bell`]: it is not rung again, and
+    /// its descriptors are closed. An id that is no longer current does nothing.
+    pub fn remove_bell(&mut self, bell: BellId) {
+        let Some(entry) = self.bells.get_mut(bell.slot as usize) else {
+            return;
+        };
+        if entry.generation == bell.generation {
+            entry.bell = None;
+        }
     }
 
     /// Takes a free buffer for `entry`'s frame and returns its lease, to be filled and passed to
@@ -261,8 +294,8 @@ impl Producer {
     }
 
     /// Publishes a frame whose lease came from [`Producer::begin`] and has been filled. Writes one
-    /// ring entry and rings each sleeping reader's doorbell once. The lease is kept until the
-    /// ring takes the buffer back.
+    /// ring entry and rings each sleeping doorbell once: the readers' and the outside ones. The
+    /// lease is kept until the ring takes the buffer back.
     ///
     /// # Errors
     ///
@@ -271,7 +304,7 @@ impl Producer {
         let index = lease.buffer_index();
         let entry = *lease.entry();
         let mut meta = [0_u8; META_MAX];
-        let len = wire::encode_meta(&entry, &mut meta);
+        let len = encode_meta(&entry, &mut meta);
         let seq = self.writer.publish(
             &[BufferIndex(index as u32)],
             SampleTime::from_nanos(entry.timestamp_ns),
@@ -282,12 +315,39 @@ impl Producer {
         for link in &mut self.links {
             link.bell.ring();
         }
+        for slot in &mut self.bells {
+            if let Some(bell) = slot.bell.as_mut() {
+                bell.ring();
+            }
+        }
         Ok(seq)
+    }
+
+    /// The shape the producer runs with: what [`Producer::new`] was asked for, resolved.
+    pub const fn geometry(&self) -> Geometry {
+        self.geometry
     }
 
     /// The payload size of each buffer.
     pub const fn payload(&self) -> usize {
-        self.payload
+        self.geometry.payload()
+    }
+
+    /// The ring this producer writes. Borrowed: an adopter (Orion's topic, say) takes its own
+    /// descriptors of it and reads and writes the same ring.
+    pub const fn ring(&self) -> &Ring {
+        &self.ring
+    }
+
+    /// The buffer pool this producer fills. Borrowed, like [`Producer::ring`].
+    pub fn pool(&self) -> &Pool {
+        self.writer.pool()
+    }
+
+    /// The hold table: which reader holds which buffer, and the limits. Borrowed, like
+    /// [`Producer::ring`].
+    pub const fn holds(&self) -> &HoldTable<ReadMap> {
+        &self.holds
     }
 
     /// Counts, now.
