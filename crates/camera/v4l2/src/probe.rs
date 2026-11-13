@@ -1,43 +1,257 @@
-//! Probing: which capture nodes exist, and what each one offers.
+//! Probing: which video nodes exist (from sysfs, opening none), and what one node offers (a full
+//! probe, which opens that node once).
+//!
+//! Listing never opens a node. Opening a node can start a virtual camera's output, wake a camera or
+//! take a device that allows one open at a time, so a node is opened only when a camera is brought
+//! up ([`crate::Stream::start`]) or when a caller names it for a full probe ([`probe_node`],
+//! [`probe_card`], [`probe_input`]).
 
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use styx_controls::{Control, DeviceControl, DeviceKind, DeviceName};
 use styx_format::{FourCc, Interval};
 use styx_lemnos::v4l2::v4l2::{
     BufType, CapabilityFlags, ControlFlags, ControlInfo, ControlType, Controls, FrameIntervals,
-    FrameSizes, MenuValue, VideoDevice, list_video_nodes,
+    FrameSizes, MenuValue, VideoDevice,
 };
 
 use crate::Error;
 use crate::controls::{Table, control_of};
 
-/// Every capture node on this machine, and the nodes that failed to answer.
+/// The sysfs class directory of video nodes.
+pub const SYSFS_CLASS: &str = "/sys/class/video4linux";
+/// The device directory the nodes are named in.
+pub const DEV_DIR: &str = "/dev";
+
+/// Every video node the sysfs class lists. Nothing is opened to list them: a node's role (capture or
+/// output) is not in sysfs, so it stays unknown until the node is probed.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Probe {
-    pub devices: Vec<Device>,
-    /// `path: why` for each node that could not be probed. Nodes that are not capture nodes
-    /// are left out without a line here.
-    pub errors: Vec<String>,
+pub struct Listing {
+    pub nodes: Vec<Node>,
 }
 
-/// Probes every video node. Nodes that are not capture nodes are skipped quietly.
-pub fn probe() -> Probe {
-    let mut out = Probe::default();
-    for path in list_video_nodes() {
-        match probe_node(&path) {
-            Ok(Some(device)) => out.devices.push(device),
-            Ok(None) => {}
-            Err(e) => out.errors.push(format!("{}: {e}", path.display())),
+/// A video node as sysfs describes it, without opening it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Node {
+    /// The `/dev` path of the node.
+    pub path: PathBuf,
+    /// The sysfs `name` (the card name for most drivers, for example `vivid-000-vid-cap`).
+    pub name: String,
+    /// The sysfs `index`: the node's index within its device.
+    pub index: Option<u32>,
+    /// The bound driver's name (the basename of the `device/driver` link), when bound.
+    pub driver: Option<String>,
+    /// The canonical sysfs device directory (the `device` link): the bus or parent device.
+    pub device_path: Option<PathBuf>,
+    /// A virtual node: its device lives under `/sys/devices/virtual`, or a loopback driver feeds it.
+    /// Another program produces its frames. Listed, never opened by listing.
+    pub virtual_node: bool,
+    /// Which queue the node uses. `None`: sysfs does not say, and it is known only once the node is
+    /// probed.
+    pub queue: Option<Queue>,
+    /// Whether this listing opened the node. Always `false`: listing opens nothing.
+    pub opened: bool,
+}
+
+/// Opens a node. The production opener opens the node; a test opener records the calls.
+pub trait Opener {
+    /// Opens `path`: read-only for a full probe, read-write when an input must be selected.
+    fn open(&self, path: &Path, write: bool) -> Result<VideoDevice, Error>;
+}
+
+/// The production opener: the node itself.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct System;
+
+impl Opener for System {
+    fn open(&self, path: &Path, write: bool) -> Result<VideoDevice, Error> {
+        if write {
+            Ok(VideoDevice::open(path)?)
+        } else {
+            Ok(VideoDevice::open_read_only(path)?)
         }
     }
-    out
 }
 
-/// Probes one node: `None` when it is not a capture node.
+/// Lists and probes video nodes through an [`Opener`], from a sysfs class directory.
+#[derive(Debug)]
+pub struct Prober<O: Opener> {
+    opener: O,
+    sysfs: PathBuf,
+    dev: PathBuf,
+}
+
+impl Prober<System> {
+    /// The machine's video nodes: `/sys/class/video4linux`, nodes under `/dev`.
+    pub fn system() -> Self {
+        Self::new(System, SYSFS_CLASS, DEV_DIR)
+    }
+}
+
+impl<O: Opener> Prober<O> {
+    /// A prober over `sysfs` (a video class directory) and `dev` (the directory its nodes are in).
+    pub fn new(opener: O, sysfs: impl Into<PathBuf>, dev: impl Into<PathBuf>) -> Self {
+        Self {
+            opener,
+            sysfs: sysfs.into(),
+            dev: dev.into(),
+        }
+    }
+
+    /// Lists the nodes from sysfs. Opens nothing: the opener is not called.
+    pub fn list(&self) -> Listing {
+        let mut names: Vec<String> = fs::read_dir(&self.sysfs)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        names.sort_by_key(|name| natural_key(name));
+        Listing {
+            nodes: names
+                .into_iter()
+                .map(|name| {
+                    let info = SysInfo::read(&self.sysfs.join(&name));
+                    Node {
+                        path: self.dev.join(&name),
+                        name: info.name,
+                        index: info.index,
+                        driver: info.driver,
+                        device_path: info.device_path,
+                        virtual_node: info.virtual_node,
+                        queue: None,
+                        opened: false,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    /// Fully probes one node: its formats, sizes, intervals and controls. `None` when the node is
+    /// not a capture node. Opens the node once, read-only.
+    pub fn probe_node(&self, path: &Path) -> Result<Option<Device>, Error> {
+        let dev = self.opener.open(path, false)?;
+        let sys = SysInfo::read(&self.sysfs_dir_of(path));
+        describe(&dev, path, &sys, None)
+    }
+
+    /// Fully probes one node after selecting input `input` on it. Opens the node once, read-write
+    /// (an input is selected by `VIDIOC_S_INPUT`, which a read-only handle may not do). `None` when
+    /// the node is not a capture node.
+    pub fn probe_input(&self, path: &Path, input: u32) -> Result<Option<Device>, Error> {
+        let dev = self.opener.open(path, true)?;
+        dev.set_input(input)?;
+        let sys = SysInfo::read(&self.sysfs_dir_of(path));
+        describe(&dev, path, &sys, Some(input))
+    }
+
+    /// Fully probes the one node whose sysfs name is `card` (matched by name, never by number).
+    /// `Ok(None)` when no node has that name or the node is not a capture node; an error when more
+    /// than one node has it.
+    pub fn probe_card(&self, card: &str) -> Result<Option<Device>, Error> {
+        let listing = self.list();
+        let mut named = listing.nodes.iter().filter(|node| node.name == card);
+        let Some(node) = named.next() else {
+            return Ok(None);
+        };
+        if named.next().is_some() {
+            return Err(Error::Unsupported(format!(
+                "more than one video node is named {card:?}; name the node by path"
+            )));
+        }
+        self.probe_node(&node.path)
+    }
+
+    fn sysfs_dir_of(&self, path: &Path) -> PathBuf {
+        self.sysfs.join(path.file_name().unwrap_or_default())
+    }
+}
+
+/// Lists the machine's video nodes from sysfs. Opens nothing.
+pub fn probe() -> Listing {
+    Prober::system().list()
+}
+
+/// Fully probes one node by path: `None` when it is not a capture node. Opens that node once.
 pub fn probe_node(path: &Path) -> Result<Option<Device>, Error> {
-    let dev = VideoDevice::open_read_only(path)?;
-    let Some((queue, buf_type)) = queue_of(&dev) else {
+    Prober::system().probe_node(path)
+}
+
+/// Fully probes the one node named `card` in sysfs. Opens that node once.
+pub fn probe_card(card: &str) -> Result<Option<Device>, Error> {
+    Prober::system().probe_card(card)
+}
+
+/// Fully probes one node after selecting `input` on it. Opens that node once, read-write.
+pub fn probe_input(path: &Path, input: u32) -> Result<Option<Device>, Error> {
+    Prober::system().probe_input(path, input)
+}
+
+/// What sysfs says about one node, read without opening it.
+#[derive(Debug, Default)]
+struct SysInfo {
+    name: String,
+    index: Option<u32>,
+    driver: Option<String>,
+    device_path: Option<PathBuf>,
+    virtual_node: bool,
+}
+
+impl SysInfo {
+    fn read(dir: &Path) -> SysInfo {
+        let name = read_trimmed(&dir.join("name")).unwrap_or_default();
+        let index = read_trimmed(&dir.join("index")).and_then(|s| s.parse().ok());
+        let driver = fs::read_link(dir.join("device/driver"))
+            .ok()
+            .and_then(|link| link.file_name().map(|n| n.to_string_lossy().into_owned()));
+        let device_path = fs::canonicalize(dir.join("device")).ok();
+        // A virtual node may have no device link at all (OBS's loopback camera has none): its class
+        // directory itself lives under /sys/devices/virtual.
+        let class_path = fs::canonicalize(dir).ok();
+        let virtual_node = is_virtual(
+            class_path.as_deref(),
+            device_path.as_deref(),
+            driver.as_deref(),
+        );
+        SysInfo {
+            name,
+            index,
+            driver,
+            device_path,
+            virtual_node,
+        }
+    }
+}
+
+fn read_trimmed(path: &Path) -> Option<String> {
+    fs::read_to_string(path).ok().map(|s| s.trim().to_string())
+}
+
+/// A node is virtual when its class directory or its device lives under `/sys/devices/virtual`, or a
+/// loopback driver feeds it.
+fn is_virtual(class_path: Option<&Path>, device_path: Option<&Path>, driver: Option<&str>) -> bool {
+    let under_virtual = |p: Option<&Path>| p.is_some_and(|p| p.starts_with("/sys/devices/virtual"));
+    under_virtual(class_path)
+        || under_virtual(device_path)
+        || driver.is_some_and(|d| d.to_ascii_lowercase().contains("loopback"))
+}
+
+/// Sort key: the name's text, then its trailing number (`video2` before `video10`).
+fn natural_key(name: &str) -> (String, u32) {
+    let digits = name.trim_end_matches(|c: char| c.is_ascii_digit());
+    let number = name[digits.len()..].parse().unwrap_or(0);
+    (digits.to_string(), number)
+}
+
+/// Describes an open node: `None` when it has no capture queue.
+fn describe(
+    dev: &VideoDevice,
+    path: &Path,
+    sys: &SysInfo,
+    input: Option<u32>,
+) -> Result<Option<Device>, Error> {
+    let Some((queue, buf_type)) = queue_of(dev) else {
         return Ok(None);
     };
     let mut errors = Vec::new();
@@ -48,7 +262,7 @@ pub fn probe_node(path: &Path) -> Result<Option<Device>, Error> {
             .map(|desc| {
                 let code = styx_code(desc.fourcc.to_bytes());
                 let sizes = match dev.frame_sizes(desc.fourcc) {
-                    Ok(sizes) => sizes_of(&dev, desc.fourcc, sizes),
+                    Ok(sizes) => sizes_of(dev, desc.fourcc, sizes),
                     Err(e) => {
                         errors.push(format!("{code}: frame sizes: {e}"));
                         Sizes::Discrete(Vec::new())
@@ -67,19 +281,21 @@ pub fn probe_node(path: &Path) -> Result<Option<Device>, Error> {
         }
     };
     let infos = dev.query_controls().unwrap_or_default();
-    let table = Table::from_infos(&dev, &infos, buf_type);
+    let table = Table::from_infos(dev, &infos, buf_type);
     let raw_controls = infos
         .iter()
-        .map(|info| RawControl::from_info(&dev, info))
+        .map(|info| RawControl::from_info(dev, info))
         .collect::<Vec<_>>();
-    let virtual_node =
-        caps.driver.contains("loopback") || caps.card.to_ascii_lowercase().contains("virtual");
+    let virtual_node = sys.virtual_node
+        || is_virtual(None, None, Some(&caps.driver))
+        || caps.card.to_ascii_lowercase().contains("virtual");
     Ok(Some(Device {
         path: path.to_path_buf(),
         card: caps.card,
         driver: caps.driver,
         bus_info: caps.bus_info,
         queue,
+        input,
         formats,
         controls: table.supported(),
         raw_controls,
@@ -96,6 +312,8 @@ pub struct Device {
     pub driver: String,
     pub bus_info: String,
     pub queue: Queue,
+    /// The input this node was probed on (see [`probe_input`]); `None` for the driver's own.
+    pub input: Option<u32>,
     pub formats: Vec<Format>,
     /// The Styx controls this node maps, in [`Control::ALL`] order.
     pub controls: Vec<Control>,
