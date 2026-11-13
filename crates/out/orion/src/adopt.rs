@@ -6,7 +6,7 @@
 //! caller wakes Orion's subscribers after each publish with [`Published::wake`].
 
 use orion::Orion;
-use orion::buffers::{AdoptedBuffers, HoldTable, Pool};
+use orion::buffers::{AdoptedBuffers, HoldTable};
 use shm_ring_buffers::entry;
 use styx_socket::Producer;
 
@@ -17,18 +17,13 @@ use crate::topic::OrionError;
 /// `max_payload` of `entry::len(1, meta)`, so the metadata Orion is told is that less this.
 const ENTRY_OVERHEAD: u32 = 72;
 
-/// A producer's ring and pool, published as an Orion buffer topic. Dropping it leaves the topic
-/// until the session ends.
+/// A producer's ring and pool, published as an Orion buffer topic.
 ///
-/// # Not yet wired (draft, see the PR)
+/// Orion's subscribers are rung by [`Published::wake`], which Orion itself does for its own
+/// subscribers' doorbells: one eventfd write for each that is asleep. Orion gives no doorbell
+/// events, so the producer's [`styx_socket::Producer::add_bell`] is not used for them.
 ///
-/// - [`Published::poll`] takes the producer's hold table, which Orion needs mutably to add a
-///   subscriber's marks. `styx_socket::Producer` only lends it out immutably, so a caller cannot
-///   run this against a live producer until the socket crate gives a `&mut` to it.
-/// - Orion's subscribers' doorbells are rung by [`Published::wake`] (Orion's own bells). Rev
-///   181e139 has no doorbell add/remove events, so [`styx_socket::Producer::add_bell`] is not
-///   used.
-/// - The withdraw hook for a camera that leaves is not here: rev 181e139 has no `withdraw`.
+/// Dropping it leaves the topic until the session ends; [`Published::withdraw`] ends it now.
 #[derive(Debug)]
 pub struct Published {
     adopted: AdoptedBuffers,
@@ -41,11 +36,13 @@ pub struct Published {
 /// for each of the 64; zero lets it use any. Direct socket readers take the lowest free slot, so
 /// a caller that also has direct readers should give Orion the high bits only.
 ///
+/// Adopting again under the same name from the same session resumes the same memory. Another
+/// ring is checked against the declaration, and refused as malformed when its shape differs.
+///
 /// # Errors
 ///
 /// [`OrionError::Shape`] when the ring's entries are too small for a topic header, or
-/// [`OrionError::Orion`] when the session is not on the board or the comm core refuses (a ring of
-/// another shape than the topic is refused as malformed).
+/// [`OrionError::Orion`] when the session is not on the board or the comm core refuses.
 pub fn publish(
     orion: &Orion,
     name: &str,
@@ -69,8 +66,8 @@ pub fn publish(
 }
 
 impl Published {
-    /// Wakes Orion's subscribers that are asleep, after the producer published. No system call for
-    /// one that is awake.
+    /// Rings Orion's subscribers that are asleep, after the producer published. Call it after each
+    /// [`styx_socket::Producer::publish`]. No system call for one that is awake.
     pub fn wake(&mut self) {
         self.adopted.wake();
     }
@@ -81,14 +78,31 @@ impl Published {
         self.adopted.subscribers()
     }
 
-    /// Looks at what the comm core has sent: Orion's subscribers that came, with their marks, put
-    /// in `holds`, or went, taken out. `holds` must be the producer's hold table and `pool` its
-    /// pool; a subscriber gets no frames until this has run. It does not wait.
+    /// Looks at what the comm core has sent: Orion's subscribers that came, with their marks,
+    /// added to the producer's hold table, or went, taken out. A subscriber gets no frames until
+    /// this has run. It does not wait; call it when a frame is published or the producer is idle.
+    ///
+    /// The producer's table is taken out of the producer for the call, so the pool and the table
+    /// can be borrowed together, and put back after it, whatever the result.
     ///
     /// # Errors
     ///
     /// [`OrionError::Orion`] when the connection broke or a subscriber's marks cannot be added.
-    pub fn poll(&mut self, pool: &Pool, holds: &mut HoldTable) -> Result<(), OrionError> {
-        Ok(self.adopted.poll(pool, holds)?)
+    pub fn poll(&mut self, producer: &mut Producer) -> Result<(), OrionError> {
+        let mut holds = std::mem::replace(producer.holds_mut(), HoldTable::new(0));
+        let result = self.adopted.poll(producer.pool(), &mut holds);
+        *producer.holds_mut() = holds;
+        Ok(result?)
+    }
+
+    /// Withdraws the topic (a camera that leaves): Orion's subscribers are told the publisher is
+    /// gone, and what they hold they keep until they let it go. The producer's own readers go on
+    /// reading.
+    ///
+    /// # Errors
+    ///
+    /// [`OrionError::Orion`] when the comm core refuses or the connection broke.
+    pub fn withdraw(self) -> Result<(), OrionError> {
+        Ok(self.adopted.withdraw()?)
     }
 }

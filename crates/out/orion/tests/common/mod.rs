@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 
 use orion_broker::{Broker, BrokerConfig};
+use orion_broker_buffers::BrokerBuffers;
 use orion_server::{Admits, Comm, Limits as CommLimits, Policy, Security};
 use orion_unix::UnixCarrier;
 use shm_sample_time::SampleTime;
@@ -46,7 +47,9 @@ pub fn comm_core(socket: PathBuf) -> (mpsc::Receiver<()>, tokio::sync::oneshot::
                 subscribe: anyone,
                 ..BrokerConfig::default()
             };
-            comm.add_service(Broker::new("board".parse().expect("name"), config));
+            let broker = Broker::new("board".parse().expect("name"), config);
+            comm.add_service(BrokerBuffers::new(&broker, anyone));
+            comm.add_service(broker);
             let unix = UnixCarrier::bind(&socket, Some(0o600), &[]).expect("socket");
             tokio::task::spawn_local({
                 let comm = comm.clone();

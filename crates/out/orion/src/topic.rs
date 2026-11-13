@@ -34,6 +34,11 @@ pub enum OrionError {
     /// The ring's entries are too small for Orion's buffer topic header: the topic cannot be
     /// declared over this ring.
     Shape,
+    /// The frames of a buffer topic cannot be read: its pool cannot be mapped, or the publisher
+    /// cut this subscriber off or replaced its pool.
+    Frames(&'static str),
+    /// A frame pool refused its buffers.
+    Pool(styx_frame::PoolError),
 }
 
 impl fmt::Display for OrionError {
@@ -46,11 +51,25 @@ impl fmt::Display for OrionError {
             Self::Shape => {
                 f.write_str("the ring's entries are too small for an Orion buffer topic")
             }
+            Self::Frames(why) => write!(f, "frames: {why}"),
+            Self::Pool(err) => write!(f, "{err}"),
         }
     }
 }
 
 impl std::error::Error for OrionError {}
+
+impl From<orion::ClientError> for OrionError {
+    fn from(err: orion::ClientError) -> Self {
+        Self::Orion(orion::Error::Client(err))
+    }
+}
+
+impl From<styx_frame::PoolError> for OrionError {
+    fn from(err: styx_frame::PoolError) -> Self {
+        Self::Pool(err)
+    }
+}
 
 impl From<orion::Error> for OrionError {
     fn from(err: orion::Error) -> Self {

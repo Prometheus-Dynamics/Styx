@@ -28,9 +28,15 @@ pub use advert::{Advert, AdvertError, MAX_LEN, MAX_SOCKET, VERSION};
 #[cfg(feature = "orion")]
 mod adopt;
 #[cfg(feature = "orion")]
+mod meta;
+#[cfg(feature = "orion")]
+mod reader;
+#[cfg(feature = "orion")]
 mod topic;
 
 #[cfg(feature = "orion")]
 pub use adopt::{Published, publish};
+#[cfg(feature = "orion")]
+pub use reader::{OrionFrame, Subscription, subscribe};
 #[cfg(feature = "orion")]
 pub use topic::{Advertisement, Discovered, OrionError, advertise, discover};
