@@ -183,17 +183,23 @@ pub fn bind(path: &Path, access: &Access) -> io::Result<UnixListener> {
     let dir = path
         .parent()
         .ok_or_else(|| io::Error::other(format!("{} has no directory", path.display())))?;
-    let file = path
-        .file_name()
-        .ok_or_else(|| io::Error::other(format!("{} has no file name", path.display())))?;
+    if path.file_name().is_none() {
+        return Err(io::Error::other(format!(
+            "{} has no file name",
+            path.display()
+        )));
+    }
+    // A socket address holds about a hundred bytes of path, and the final path may be close to
+    // that. The staged path is kept shorter than the final one: a short directory name and a
+    // one-letter socket name, whenever the socket's own name is longer than those.
     let staging = dir.join(format!(
-        ".bind-{}-{}",
+        ".b{:x}-{:x}",
         std::process::id(),
         STAGED.fetch_add(1, Ordering::Relaxed)
     ));
     // Owner only, under any umask: nobody else can reach the socket in here.
     DirBuilder::new().mode(0o700).create(&staging)?;
-    let made = bind_inside(&staging.join(file), path, access);
+    let made = bind_inside(&staging.join("s"), path, access);
     // The socket has moved out on success, so only the empty staging directory is left. On
     // failure this removes the socket too.
     let _ = std::fs::remove_dir_all(&staging);
@@ -223,6 +229,28 @@ fn group_error(path: &Path, access: &Access, e: &io::Error) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_socket_whose_path_is_near_the_address_limit_binds() {
+        // 100 bytes of final path: a staged path longer than the final one would not fit a
+        // socket address.
+        let base = std::env::temp_dir().join(format!("sx-acc-{}", std::process::id()));
+        std::fs::create_dir_all(&base).expect("dir");
+        let room = 100 - base.as_os_str().len() - 1;
+        let path = base.join("n".repeat(room));
+        assert_eq!(path.as_os_str().len(), 100);
+        let config = Config::parse("socket_dir = \"/tmp\"\ncameras = []\n").expect("config");
+        let access = Access::resolve(&config).expect("default access");
+        let listener = bind(&path, &access);
+        let left: Vec<_> = std::fs::read_dir(&base)
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        let _ = std::fs::remove_dir_all(&base);
+        listener.expect("binds at a 100-byte path");
+        assert_eq!(left.len(), 1, "only the socket is left: {left:?}");
+    }
 
     #[test]
     fn modes_parse_as_octal_and_nothing_wider_than_777_is_accepted() {

@@ -383,34 +383,39 @@ pub fn camera_socket(socket_dir: &Path, id: &str) -> PathBuf {
 /// dropped; a reader that connects while the camera is not publishing is closed, and connects
 /// again. One handshake runs at a time per camera, so a stuck reader delays only the readers
 /// behind it on this camera's socket.
-fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, shared: &Shared) {
-    if let Some(dir) = path.parent()
-        && let Err(e) = access::make_dir(dir, &shared.access)
-    {
-        slot.set_socket(
-            None,
-            Publish::NotPublishable(format!("socket directory: {e}")),
-        );
-        return;
+/// Makes the camera socket at `path`: its directory, the socket with the configured access, and
+/// a listener that can be polled.
+fn listen(path: &Path, shared: &Shared) -> Result<std::os::unix::net::UnixListener, String> {
+    if let Some(dir) = path.parent() {
+        access::make_dir(dir, &shared.access).map_err(|e| format!("socket directory: {e}"))?;
     }
     let _ = std::fs::remove_file(path);
-    let listener = match access::bind(path, &shared.access) {
-        Ok(listener) => listener,
-        Err(e) => {
-            slot.set_socket(
-                None,
-                Publish::NotPublishable(format!("socket {}: {e}", path.display())),
-            );
-            return;
+    let listener = access::bind(path, &shared.access)
+        .map_err(|e| format!("socket {}: {e}", path.display()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| format!("socket: cannot poll: {e}"))?;
+    Ok(listener)
+}
+
+fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, shared: &Shared) {
+    // A socket that cannot be made is tried again, with the reason in the status meanwhile: the
+    // wait doubles up to five seconds and never ends by itself.
+    let mut delay = Duration::from_millis(250);
+    let listener = loop {
+        match listen(path, shared) {
+            Ok(listener) => break listener,
+            Err(why) => slot.set_socket(None, Publish::NotPublishable(why)),
         }
+        let until = std::time::Instant::now() + delay;
+        while std::time::Instant::now() < until {
+            if shared.shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        delay = (delay * 2).min(Duration::from_secs(5));
     };
-    if listener.set_nonblocking(true).is_err() {
-        slot.set_socket(
-            None,
-            Publish::NotPublishable("socket: cannot poll".to_string()),
-        );
-        return;
-    }
     slot.set_socket(Some(path.to_path_buf()), Publish::Waiting);
     while !shared.shutdown.load(Ordering::Acquire) {
         let stream = match listener.accept() {

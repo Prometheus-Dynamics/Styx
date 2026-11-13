@@ -421,7 +421,13 @@ impl Slot {
     }
 
     pub(crate) fn set_publish(&self, publish: Publish) {
-        lock(&self.status).publish = publish;
+        let mut status = lock(&self.status);
+        // With no socket there is nothing to publish on: the reason the socket could not be
+        // made stays in the status until a socket exists.
+        if status.socket.is_none() && matches!(status.publish, Publish::NotPublishable(_)) {
+            return;
+        }
+        status.publish = publish;
     }
 
     pub(crate) fn set_health(&self, health: Health) {
