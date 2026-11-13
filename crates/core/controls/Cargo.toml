@@ -1,0 +1,30 @@
+[package]
+name = "styx-controls"
+description = "Styx controls: the one control set every backend maps to, with ranges, defaults and the per-frame metadata."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[package.metadata.styx]
+no_std = true
+
+[features]
+default = ["std"]
+# `std::error::Error` for the error type.
+std = []
+# Serde for the control types and the per-frame metadata, as plain data.
+serde = ["dep:serde"]
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive"], optional = true }
+
+[dev-dependencies]
+serde_json = "1"
+styx-format = { path = "../format" }
+styx-frame = { path = "../frame" }
+
+[lints]
+workspace = true
