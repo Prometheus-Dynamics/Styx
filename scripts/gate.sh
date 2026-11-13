@@ -43,4 +43,7 @@ fi
 # One lock per outside repository: crates name git dependencies through the workspace only.
 step "git dependencies are named in the workspace only" bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
 
+# One copy of the shared ring: every shm-* crate from one version and one source.
+step "one source for every shm crate" python3 scripts/one-shm.py
+
 echo "gate passed"
