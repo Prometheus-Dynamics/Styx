@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use orion::Orion;
-use orion::topics::{FieldId, FrameTime, Publisher, Subscriber, TopicDecl};
+use orion::topics::{FieldId, Publisher, Subscriber, TopicDecl};
 use shm_sample_time::SampleTime;
 use styx_socket::{Reader, SocketError};
 
@@ -31,6 +31,9 @@ pub enum OrionError {
     Io(io::Error),
     /// The producer's handshake failed.
     Socket(SocketError),
+    /// The ring's entries are too small for Orion's buffer topic header: the topic cannot be
+    /// declared over this ring.
+    Shape,
 }
 
 impl fmt::Display for OrionError {
@@ -40,6 +43,9 @@ impl fmt::Display for OrionError {
             Self::Advert(err) => write!(f, "{err}"),
             Self::Io(err) => write!(f, "frame socket: {err}"),
             Self::Socket(err) => write!(f, "{err}"),
+            Self::Shape => {
+                f.write_str("the ring's entries are too small for an Orion buffer topic")
+            }
         }
     }
 }
@@ -98,7 +104,7 @@ impl Advertisement {
     pub fn update(&mut self, advert: &Advert) -> Result<(), OrionError> {
         let mut buffer = [0_u8; MAX_LEN];
         let len = advert.encode(&mut buffer)?;
-        let time = FrameTime::from_nanos(SampleTime::now().as_nanos());
+        let time = SampleTime::now();
         self.publisher.publish(RECORD, time, &buffer[..len])?;
         Ok(())
     }

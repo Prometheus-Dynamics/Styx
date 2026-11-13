@@ -10,22 +10,25 @@ homepage.workspace = true
 
 [features]
 default = []
-# The Orion client: declare the topic, find it by name.
-orion = ["dep:orion"]
+# The Orion client: declare the topic, find it by name, and adopt a producer's ring as a buffer topic.
+orion = ["dep:orion", "dep:shm-ring-buffers"]
 
 [dependencies]
 styx-format = { path = "../../core/format" }
 styx-socket = { path = "../socket" }
 shm-sample-time = { workspace = true }
-orion = { workspace = true, optional = true, features = ["topics"] }
+shm-ring-buffers = { workspace = true, optional = true }
+# DRAFT PIN: this crate builds against Orion rev 181e139 (the rev that has `Topics::adopt` and
+# `Buffers::adopt`, Orion's C16) while the workspace lock is still ae4d6bcd. Revert to
+# `workspace = true` when the workspace lock moves to a rev with C16.
+orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "181e13943d0afccb5dfffaf185e342ae4291ff1c", default-features = false, features = ["topics", "buffers"], optional = true }
 
 [dev-dependencies]
 styx-frame = { path = "../../core/frame", features = ["linux"] }
-# The in-process comm core the Orion test starts, as Orion's own tests do. Pinned to the rev the
-# root Cargo.toml locks for `orion`.
-orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "ae4d6bcd71066c9c17e7c22df994a654573a7d65", package = "orion-broker" }
-orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "ae4d6bcd71066c9c17e7c22df994a654573a7d65", package = "orion-server" }
-orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "ae4d6bcd71066c9c17e7c22df994a654573a7d65", package = "orion-unix" }
+# DRAFT PIN, as above: the in-process comm core the Orion tests start, at the same rev as `orion`.
+orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "181e13943d0afccb5dfffaf185e342ae4291ff1c", package = "orion-broker" }
+orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "181e13943d0afccb5dfffaf185e342ae4291ff1c", package = "orion-server" }
+orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "181e13943d0afccb5dfffaf185e342ae4291ff1c", package = "orion-unix" }
 tokio = { version = "1.53.2", default-features = false, features = ["rt", "macros", "net", "time", "sync"] }
 
 [lints]

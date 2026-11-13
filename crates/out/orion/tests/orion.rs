@@ -11,6 +11,8 @@
 
 #![cfg(all(target_os = "linux", feature = "orion"))]
 
+mod common;
+
 use std::num::NonZeroU32;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -20,73 +22,16 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use orion::{Address, Orion};
-use orion_broker::{Broker, BrokerConfig};
-use orion_server::{Admits, Comm, Limits as CommLimits, Policy, Security};
-use orion_unix::UnixCarrier;
-use shm_sample_time::SampleTime;
-use styx_format::{FourCc, MediaFormat, Resolution};
-use styx_frame::{FrameEntry, copy_counters, packed_layouts};
+use styx_format::FourCc;
+use styx_frame::copy_counters;
 use styx_orion::{Advert, advertise, discover};
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
+use common::{HEIGHT, PAYLOAD, WIDTH, comm_core, dir, entry};
+
 const TOPIC: &str = "camera.front";
-const WIDTH: u32 = 64;
-const HEIGHT: u32 = 32;
-/// One GREY frame.
-const PAYLOAD: usize = (WIDTH * HEIGHT) as usize;
 const BUFFERS: u32 = 4;
 const FRAMES: u64 = 200;
-
-fn dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-orion-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("dir");
-    dir
-}
-
-/// The comm core: Orion's broker on a Unix socket, until `stop` is sent.
-fn comm_core(socket: PathBuf) -> (mpsc::Receiver<()>, tokio::sync::oneshot::Sender<()>) {
-    let (ready, started) = mpsc::channel();
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("runtime");
-        tokio::task::LocalSet::new().block_on(&runtime, async move {
-            let comm = Comm::new(
-                "board".parse().expect("name"),
-                Security::Off,
-                None,
-                CommLimits::default(),
-            );
-            let anyone = Policy::new(Admits::ANYONE).without_grant();
-            let config = BrokerConfig {
-                declare: anyone,
-                subscribe: anyone,
-                ..BrokerConfig::default()
-            };
-            comm.add_service(Broker::new("board".parse().expect("name"), config));
-            let unix = UnixCarrier::bind(&socket, Some(0o600), &[]).expect("socket");
-            tokio::task::spawn_local({
-                let comm = comm.clone();
-                async move { comm.serve(unix).await }
-            });
-            ready.send(()).expect("ready");
-            let _ = stopped.await;
-        });
-    });
-    (started, stop)
-}
-
-fn entry(id: u64) -> FrameEntry {
-    let format = MediaFormat::with_defaults(
-        FourCc::GREY,
-        Resolution::new(WIDTH, HEIGHT).expect("resolution"),
-    );
-    let layouts = packed_layouts(FourCc::GREY, WIDTH, HEIGHT, None, None).expect("layouts");
-    FrameEntry::new(id, SampleTime::now().as_nanos(), format, layouts)
-}
 
 /// The camera: declares the topic, then serves its frame ring to the one reader that connects.
 fn camera(
