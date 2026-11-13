@@ -26,4 +26,6 @@ pub use clock::{Clock, SystemClock};
 pub use frames::{Frames, Lease};
 pub use modes::{ModeError, Reason, Request, Selection, fourcc_for, select_mode};
 pub use session::{Error, Session, State, Status, StopHandle};
-pub use styx_native_controls::{FrameRate, Initial, Landing, Landings};
+pub use styx_native_controls::{
+    Clamp, ClampReason, ExposureReport, FrameRate, Initial, Landing, Landings,
+};

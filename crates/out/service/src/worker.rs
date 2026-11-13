@@ -18,7 +18,9 @@ use styx_format::{FourCc, Interval};
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
 use styx_native::{Camera, discover};
-use styx_native_run::{AutoOff, Clock, Initial, Policy, Request, Selection, Session};
+use styx_native_run::{
+    AutoOff, Clock, ExposureReport, Initial, Policy, Request, Selection, Session,
+};
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
 use styx_select::{Capture, CaptureError, Selected, Status};
 use styx_socket::Producer;
@@ -211,8 +213,8 @@ fn attempt(
     outlet: &mut dyn Outlet,
     selection: &Selected,
 ) -> Ended {
-    let opened = open(selection, slot, shared, |capture, selections| {
-        pump(capture, slot, commands, shared, outlet, selections)
+    let opened = open(selection, slot, shared, |capture, reports| {
+        pump(capture, slot, commands, shared, outlet, reports)
     });
     match opened {
         Ok(ended) => ended,
@@ -231,7 +233,7 @@ fn open<R>(
     selection: &Selected,
     slot: &Slot,
     shared: &Shared,
-    run: impl FnOnce(&mut dyn Capture, Option<&Receiver<Selection>>) -> R,
+    run: impl FnOnce(&mut dyn Capture, Option<&Reports>) -> R,
 ) -> Result<R, String> {
     use styx_select::Backend;
     let settings = &slot.settings;
@@ -285,10 +287,12 @@ fn open<R>(
             };
             let clock: &dyn Clock = &*shared.clock;
             let (choices, chosen) = channel();
+            let (exposure_sink, exposures) = channel();
             let session = || {
                 Session::new(&client, camera, request, native_policy(shared), clock)
                     .with_controls(initial)
                     .with_selection_sink(choices.clone())
+                    .with_exposure_sink(exposure_sink.clone())
             };
             let mut capture = match NativeCapture::start(session()) {
                 Ok(capture) => capture,
@@ -303,7 +307,11 @@ fn open<R>(
                 }
                 Err(e) => return Err(e.to_string()),
             };
-            Ok(run(&mut capture, Some(&chosen)))
+            let reports = Reports {
+                modes: chosen,
+                exposures,
+            };
+            Ok(run(&mut capture, Some(&reports)))
         }
         Backend::Libcamera => {
             let code = format_of(selection, settings)?;
@@ -425,6 +433,13 @@ fn size_of(selection: &Selected, settings: &CameraConfig) -> Result<(u32, u32), 
     }
 }
 
+/// What a native session reports while it runs: the mode each start chose, and the exposure
+/// (asked, applied, and the clamp with its reason).
+pub(crate) struct Reports {
+    modes: Receiver<Selection>,
+    exposures: Receiver<ExposureReport>,
+}
+
 /// Records a frame-rate control the camera accepted as the rate asked for, so the status shows it.
 fn note_requested(slot: &Slot, updates: &[Update]) {
     for update in updates {
@@ -448,7 +463,7 @@ fn pump(
     commands: &Receiver<Command>,
     shared: &Shared,
     outlet: &mut dyn Outlet,
-    selections: Option<&Receiver<Selection>>,
+    reports: Option<&Reports>,
 ) -> Ended {
     slot.started();
     let mut delivered = false;
@@ -461,9 +476,13 @@ fn pump(
             break Ended::Stopped;
         }
         // The mode each start chose (a native camera restarts inside its session on a fault).
-        if let Some(chosen) = selections {
-            for mode in chosen.try_iter() {
+        // The exposure in force, as the native session reports it when it changes.
+        if let Some(reports) = reports {
+            for mode in reports.modes.try_iter() {
                 slot.set_mode(mode);
+            }
+            for exposure in reports.exposures.try_iter() {
+                slot.set_exposure(exposure);
             }
         }
         match capture.next_frame(FRAME_WAIT) {

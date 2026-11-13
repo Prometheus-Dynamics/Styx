@@ -318,6 +318,97 @@ fn a_rate_above_the_mode_ceiling_is_answered_with_the_ceiling_and_the_status_say
 }
 
 #[test]
+fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_backoff() {
+    let dir = test_dir("exposure-ceiling");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let recorder = Arc::new(Recorder::default());
+    // 240 fps is past mode 0's ceiling, so the frame is its shortest: 915 lines. Its exposure
+    // ceiling is (915 - 25) lines of 9.1 us, 8 099 us. The 10 ms asked is moved to it, and the
+    // camera streams: a clamp is not a failure.
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
+         [camera.\"lemnos:cam0-sensor\"]\nwidth = 320\nheight = 40\nfps_milli = 240000\n\
+         exposure_us = 10000\n\
+         [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let service = start_service(&text, recorder, &lemnos_socket);
+    let control = service.control_socket().to_path_buf();
+    let cam = "lemnos:cam0-sensor";
+    wait_until("camera 0 streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 30
+    });
+    let line = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&line, "state"), Some("streaming"), "{line}");
+    assert_eq!(field(&line, "failures"), Some("0"), "{line}");
+    assert_eq!(field(&line, "total_failures"), Some("0"), "{line}");
+    assert_eq!(field(&line, "starts"), Some("1"), "{line}");
+    assert_eq!(field(&line, "exposure_requested"), Some("10000"), "{line}");
+    assert_eq!(field(&line, "exposure_applied"), Some("8099"), "{line}");
+    let why = field(&line, "exposure_clamp").expect("the clamp's reason");
+    assert!(why.contains("the_frame_is_915_lines"), "{line}");
+    assert!(why.contains("at_most_8099_us"), "{line}");
+    // The frames show what was applied.
+    let frame = ask(&control, &format!("frame {cam}"));
+    assert_eq!(field(&frame[0], "exposure_us"), Some("8099"), "{frame:?}");
+    service.shutdown();
+}
+
+#[test]
+fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
+    let dir = test_dir("exposure-set");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let recorder = Arc::new(Recorder::default());
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
+         [camera.\"lemnos:cam0-sensor\"]\nwidth = 320\nheight = 40\nfps_milli = 240000\n\
+         exposure_us = 5000\n\
+         [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let service = start_service(&text, recorder, &lemnos_socket);
+    let control = service.control_socket().to_path_buf();
+    let cam = "lemnos:cam0-sensor";
+    wait_until("camera 0 streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 30
+    });
+    let line = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&line, "exposure_clamp"), Some("-"), "{line}");
+    assert_eq!(field(&line, "exposure_applied"), Some("5000"), "{line}");
+
+    // 20 ms, a few frames on: past the frame's ceiling. The answer is ok, not an error.
+    let last: u64 = field(&line, "last_id")
+        .and_then(|v| v.parse().ok())
+        .expect("last_id");
+    let frame = last + 30;
+    assert_eq!(
+        ask(&control, &format!("set {cam} exposure 20000 {frame}")),
+        vec!["ok"]
+    );
+    wait_until("the clamp in status", Duration::from_secs(20), || {
+        line_of(&control, cam).is_some_and(|l| field(&l, "exposure_requested") == Some("20000"))
+    });
+    wait_until("8099 us on frames", Duration::from_secs(20), || {
+        ask(&control, &format!("frame {cam}"))
+            .iter()
+            .any(|l| field(l, "exposure_us") == Some("8099"))
+    });
+    let line = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&line, "exposure_applied"), Some("8099"), "{line}");
+    assert!(
+        field(&line, "exposure_clamp").is_some_and(|c| c.contains("at_most_8099_us")),
+        "{line}"
+    );
+    assert_eq!(field(&line, "state"), Some("streaming"), "{line}");
+    assert_eq!(field(&line, "total_failures"), Some("0"), "{line}");
+    service.shutdown();
+}
+
+#[test]
 fn an_unknown_format_is_a_status_error_that_names_the_formats_the_modes_have() {
     let dir = test_dir("format");
     let lemnos_socket = dir.join("lemnos.sock");

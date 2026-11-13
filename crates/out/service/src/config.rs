@@ -51,7 +51,7 @@
 //!                        # RGGB packed, RGGB is 8-bit). Asking for a format no mode has is an error.
 //! bit_depth = 10         # native: optional; the bit depth the mode must have
 //! fps_milli = 60000      # thousandths of a frame per second (native: required)
-//! exposure_us = 10000    # native: the sensor's initial exposure
+//! exposure_us = 10000    # native: the sensor's initial exposure (clamped to what the frame allows)
 //! gain_milli = 1000      # native: the sensor's initial analogue gain (1000 is 1.0x)
 //! # force = "native"
 //!
@@ -69,6 +69,10 @@
 //! candidates). With neither set, the highest bit depth that reaches `fps_milli` is taken, and a
 //! lower depth only when the rate needs it. A rate above the chosen mode's ceiling (its shortest
 //! frame) is answered with the ceiling. The status line says which mode, and why (`mode_reason`).
+//! An exposure the chosen mode's frame cannot hold (its shortest frame less the sensor's margin) is
+//! moved to that ceiling, and the status says so (`exposure_clamp`); the frame rate keeps its
+//! priority, so a frame is never lengthened for an exposure. A control request past the limit is
+//! answered `ok` with the value applied (see `frame` and `list`), not refused.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
