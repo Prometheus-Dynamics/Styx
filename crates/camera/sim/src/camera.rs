@@ -25,7 +25,7 @@ use lemnosd::{Config, Service};
 use styx_controls::{Control, ControlValue, FrameMetadata, Update, ValueError};
 use styx_format::FourCc;
 use styx_frame::FrameLease;
-use styx_lemnos::{ChainError, Frames, find_chain, open_frames};
+use styx_lemnos::{ChainError, Frames, find_chain, open_frames_writable};
 
 use crate::drivers::{self, SimIsp, SimReceiver, SimSensor};
 use crate::scene::{self, Scene};
@@ -85,7 +85,7 @@ impl std::error::Error for Error {}
 
 /// One frame: its lease over the rendered buffer and the metadata in force on it.
 pub struct SimFrame {
-    lease: FrameLease<usize>,
+    lease: FrameLease,
     meta: FrameMetadata,
 }
 
@@ -106,7 +106,7 @@ impl SimFrame {
     }
 
     /// The frame's lease, to read its planes or share it.
-    pub fn lease(&self) -> &FrameLease<usize> {
+    pub fn lease(&self) -> &FrameLease {
         &self.lease
     }
 }
@@ -237,7 +237,7 @@ impl SimCamera {
                 )));
             }
         }
-        let frames = open_frames(
+        let frames = open_frames_writable(
             &client,
             chain.receiver.index,
             "frames",
@@ -366,7 +366,7 @@ impl SimCamera {
     /// Writes frame `id` into the lease's buffer as `pRAA` samples at the given exposure and gain.
     fn render(
         &self,
-        lease: &mut FrameLease<usize>,
+        lease: &mut FrameLease,
         id: u64,
         exposure_us: u32,
         gain_milli: u32,

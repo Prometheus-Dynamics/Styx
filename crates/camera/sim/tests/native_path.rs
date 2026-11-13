@@ -53,11 +53,7 @@ fn in_force(schedule: &[Update], control: Control, n: u64) -> Option<u32> {
     value
 }
 
-// The three tests below are ignored until styx-lemnos maps the frame stream writable for the
-// simulated camera: `open_frames` uses `open_stream`, so the CPU cannot render into a buffer.
-// Run them with a local writable mapping: `cargo test -p styx-sim -- --include-ignored`.
 #[test]
-#[ignore = "needs a writable frame stream from styx-lemnos (open_frames maps read-only)"]
 fn thousand_frames_native_path_controls_land_on_their_frames_and_nothing_is_copied() {
     let mut cam = SimCamera::start(Scene::Pattern, 0).expect("start the simulated camera");
     assert_eq!((cam.width(), cam.height()), (WIDTH as u32, HEIGHT as u32));
@@ -144,7 +140,6 @@ fn thousand_frames_native_path_controls_land_on_their_frames_and_nothing_is_copi
 }
 
 #[test]
-#[ignore = "needs a writable frame stream from styx-lemnos (open_frames maps read-only)"]
 fn a_late_update_and_a_bad_value_are_refused() {
     let mut cam = SimCamera::start(Scene::Pattern, 0).expect("start");
     let frame = cam
@@ -179,7 +174,6 @@ fn a_late_update_and_a_bad_value_are_refused() {
 }
 
 #[test]
-#[ignore = "needs a writable frame stream from styx-lemnos (open_frames maps read-only)"]
 fn replayed_raw_frames_loop_and_scale_with_exposure() {
     let a = vec![512u16; WIDTH * HEIGHT];
     let b = vec![256u16; WIDTH * HEIGHT];
