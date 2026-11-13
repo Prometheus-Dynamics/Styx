@@ -1,10 +1,11 @@
 //! The per-frame call allocates nothing: a converter over pool leases, run in a loop, under a
-//! counting allocator. This file holds one test, so no other test's allocations are counted.
+//! counting allocator. The count is per thread: the test harness's own threads allocate at any
+//! time and are not this test's.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::cell::Cell;
 
-use styx_core::{
+use styx_codec_api::{
     Backend, Candidate, Codec, CodecDescriptor, CodecError, CodecKind, Converter, FourCc,
     FrameLease, Implementation, Registry, Request,
 };
@@ -13,15 +14,23 @@ use styx_frame::{BufferSize, FrameEntry, FramePool, packed_layouts};
 
 struct Counting;
 
-static COUNTING: AtomicBool = AtomicBool::new(false);
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static COUNTING: Cell<bool> = const { Cell::new(false) };
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
+
+fn count() {
+    let _ = COUNTING.try_with(|on| {
+        if on.get() {
+            let _ = ALLOCATIONS.try_with(|n| n.set(n.get() + 1));
+        }
+    });
+}
 
 // SAFETY: forwards every call to the system allocator unchanged; only adds a counter.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if COUNTING.load(Ordering::SeqCst) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        }
+        count();
         // SAFETY: the caller upholds GlobalAlloc::alloc's contract; System is the allocator.
         unsafe { System.alloc(layout) }
     }
@@ -32,9 +41,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        if COUNTING.load(Ordering::SeqCst) {
-            ALLOCATIONS.fetch_add(1, Ordering::SeqCst);
-        }
+        count();
         // SAFETY: as dealloc; System reallocates the block the caller owns.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -108,17 +115,13 @@ fn a_converter_call_over_pool_leases_allocates_nothing() {
     codec.convert(&input, &mut output).unwrap();
 
     const FRAMES: usize = 1000;
-    ALLOCATIONS.store(0, Ordering::SeqCst);
-    COUNTING.store(true, Ordering::SeqCst);
+    ALLOCATIONS.with(|n| n.set(0));
+    COUNTING.with(|on| on.set(true));
     for _ in 0..FRAMES {
         codec.convert(&input, &mut output).unwrap();
     }
-    COUNTING.store(false, Ordering::SeqCst);
+    COUNTING.with(|on| on.set(false));
 
-    assert_eq!(
-        ALLOCATIONS.load(Ordering::SeqCst),
-        0,
-        "per-frame calls allocated"
-    );
+    assert_eq!(ALLOCATIONS.with(Cell::get), 0, "per-frame calls allocated");
     assert_eq!(pool.stats().misses, 0);
 }

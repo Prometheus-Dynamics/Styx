@@ -3,7 +3,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use styx_core::{
+use styx_codec_api::{
     Backend, Candidate, Codec, CodecDescriptor, CodecError, CodecKind, Encoder, FourCc, FrameLease,
     Implementation, Registry, Request, SelectError, Verdict,
 };
