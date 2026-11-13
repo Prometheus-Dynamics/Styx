@@ -12,7 +12,7 @@ use lemnos_core::Bound;
 use styx_controls::{FrameMetadata, Update};
 use styx_lemnos::{Geometry, open_frames_at};
 use styx_native::Camera;
-use styx_native_controls::{Initial, Landings, NativeControls};
+use styx_native_controls::{FrameRate, Initial, Landings, NativeControls};
 
 use crate::backoff::{AutoOff, Policy};
 use crate::clock::Clock;
@@ -288,6 +288,16 @@ impl<'a, C: Clock> Session<'a, C> {
             .controls
             .request(&mut running.sensor, updates)
             .map_err(Error::Controls)
+    }
+
+    /// The frame rate the running camera started at, as the native controls give it: the frame
+    /// length, the rate that length gives, and whether the sensor's limits clamped the request.
+    /// `None` while the session is not running. Later requests change the frame length; the frame
+    /// metadata carries the rate in force on each frame.
+    pub fn frame_rate(&self) -> Option<FrameRate> {
+        self.running
+            .as_ref()
+            .map(|running| running.controls.initial_rate())
     }
 
     /// What the session is doing, and the backoff if it is waiting.

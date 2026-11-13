@@ -51,6 +51,7 @@
 //! format = "YUYV"        # V4L2 and libcamera: the pixel format's four-character code
 //! fps_milli = 30000
 //! buffers = 4            # V4L2 and libcamera: buffers requested
+//! hardware_reserve = 4   # optional: pool buffers the camera keeps to stream (default: half, min 2)
 //! ```
 //!
 //! Native cameras take their format from the sensor's mode; `format` is for V4L2 and libcamera
@@ -112,6 +113,11 @@ pub struct CameraConfig {
     /// V4L2 and libcamera: buffers requested from the driver.
     #[serde(default)]
     pub buffers: Option<u32>,
+    /// Buffers of the camera's pool the camera keeps to stream, which the frame ring never holds
+    /// for readers. Default: half the pool's buffers, at least 2 (at most the pool's size). The
+    /// ring keeps `min(history, buffers - hardware_reserve)` newest frames for readers.
+    #[serde(default)]
+    pub hardware_reserve: Option<u32>,
 }
 
 /// The whole config file.

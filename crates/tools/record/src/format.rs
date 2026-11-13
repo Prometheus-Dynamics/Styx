@@ -307,6 +307,7 @@ fn get_meta(p: &mut Parser<'_>) -> Result<FrameMetadata, RecordError> {
         digital_gain_milli,
         lux,
         colour_temperature_k,
+        achieved_fps_milli: 0,
     })
 }
 

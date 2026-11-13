@@ -21,8 +21,11 @@ usage:
 read attaches to a camera's frame socket as a reader in this process and measures what it takes
 (see the crate's docs/board-run.md). status prints the service's `list` answer as it is.
 
---asked-fps: the rate the camera was asked for, as the config's fps_milli / 1000 (for example
-120.00). The status line does not carry a requested rate, so it comes from the operator.
+--asked-fps: an override for the rate the camera was asked for (for example 120.00). Without it
+the requested rate is read from the service's status (`requested=`, the config's fps_milli or the
+last frame-rate control accepted).
+Report: requested, achieved (backend), achieved (metadata), measured (service and reader) and the
+service's reason when they differ, read from the status and the frame metadata.
 --soft-isp: run the software ISP on each raw frame into an output picture of FOURCC (NV12, I420,
 RGB3, GREY) at full size, or at WxH (full or half of the raw size).
 ";
@@ -219,12 +222,13 @@ pub fn run(args: &[String], out: &mut dyn Write, err: &mut dyn Write) -> ExitCod
 }
 
 /// The camera's status line now, if a control socket was given and the service lists the camera.
-fn status_of(
-    control: Option<&Path>,
-    socket: &Path,
-) -> Result<(Option<String>, Option<CameraLine>), String> {
+/// The control socket's answer for one camera: the control socket's name, the camera's line, and
+/// the service's copy counters.
+type StatusOf = (Option<String>, Option<CameraLine>, Vec<CopySite>);
+
+fn status_of(control: Option<&Path>, socket: &Path) -> Result<StatusOf, String> {
     let Some(control) = control else {
-        return Ok((None, None));
+        return Ok((None, None, Vec::new()));
     };
     let lines = ask(control, "list").map_err(|e| format!("control {}: {e}", control.display()))?;
     if lines.last().map(String::as_str) != Some("ok") {
@@ -235,10 +239,41 @@ fn status_of(
         ));
     }
     let cam = camera_for_socket(&lines, socket);
-    Ok((Some(control.display().to_string()), cam))
+    let copies = copy_sites(&lines);
+    Ok((Some(control.display().to_string()), cam, copies))
+}
+
+/// The service's copy-site lines (`copy site=.. copies=.. bytes=..`) of a `list` answer.
+fn copy_sites(lines: &[String]) -> Vec<CopySite> {
+    lines
+        .iter()
+        .filter_map(|line| {
+            // `copy copies=N bytes=N site=<free text>`: the site is everything after ` site=`.
+            let rest = line.strip_prefix("copy ")?;
+            let (head, site) = rest.split_once(" site=")?;
+            let (mut copies, mut bytes) = (None, None);
+            for word in head.split_ascii_whitespace() {
+                match word.split_once('=')? {
+                    ("copies", v) => copies = v.parse().ok(),
+                    ("bytes", v) => bytes = v.parse().ok(),
+                    _ => {}
+                }
+            }
+            Some(CopySite {
+                site: site.to_string(),
+                copies: copies?,
+                bytes: bytes?,
+            })
+        })
+        .collect()
 }
 
 fn service_camera(cam: &CameraLine) -> ServiceCamera {
+    // `none` and `unknown` are words, not numbers: they read as absent.
+    let reason = cam
+        .get("rate_reason")
+        .filter(|r| *r != "-")
+        .map(|r| r.replace('_', " "));
     ServiceCamera {
         id: cam.id.clone(),
         state: cam.get("state").unwrap_or("-").to_string(),
@@ -250,6 +285,16 @@ fn service_camera(cam: &CameraLine) -> ServiceCamera {
         published: cam.number("published"),
         publish_dropped: cam.number("publish_dropped"),
         health: cam.get("health").unwrap_or("-").to_string(),
+        requested_milli: cam.number("requested"),
+        achieved_milli: cam.number("achieved"),
+        achieved_meta_milli: cam.number("achieved_meta"),
+        measured_milli: cam.number("measured"),
+        rate_clamped: cam.get("rate_clamped").map(|v| v == "true"),
+        rate_reason: reason,
+        keep: cam.number("keep"),
+        buffers: cam.number("buffers"),
+        hardware_reserve: cam.number("reserve"),
+        reclaimed: cam.number("reclaimed"),
         raw: cam.raw.clone(),
     }
 }
@@ -261,7 +306,7 @@ fn wanted(frames: Option<u64>) -> impl FnMut(&crate::stats::FrameStats) -> bool 
 
 /// The read command, end to end.
 pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
-    let (control, start_line) = status_of(args.control.as_deref(), &args.socket)?;
+    let (control, start_line, _) = status_of(args.control.as_deref(), &args.socket)?;
     let service_start = start_line.as_ref().map(service_camera);
 
     let own_cpu0 = own_cpu_ns();
@@ -290,7 +335,8 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
     let own_mem1 = memory_of("self");
     let svc_cpu1 = args.service_pid.and_then(cpu_of);
     let svc_mem1 = args.service_pid.and_then(|pid| memory_of(&pid.to_string()));
-    let (_, end_line) = status_of(args.control.as_deref(), &args.socket)?;
+    let (_, end_line, service_copies) = status_of(args.control.as_deref(), &args.socket)?;
+    let service_end = end_line.as_ref().map(service_camera);
     let reader1 = session.reader_stats();
 
     let copies = styx_frame::copy_counters()
@@ -318,6 +364,19 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
         asked_frames: args.frames,
         asked_seconds: args.seconds,
         asked_fps_milli: args.asked_fps_milli,
+        requested_source: match (
+            args.asked_fps_milli,
+            service_end.as_ref().or(service_start.as_ref()),
+        ) {
+            (Some(_), _) => "--asked-fps",
+            (None, Some(c)) if c.requested_milli.is_some() => "status",
+            _ => "none",
+        },
+        achieved_metadata_milli: session
+            .metadata
+            .map(|m| m.achieved_fps_milli)
+            .filter(|m| *m != 0),
+        service_copies,
         frames: session.stats.clone(),
         skipped: reader1.skipped.saturating_sub(reader0.skipped),
         superseded: reader1.superseded.saturating_sub(reader0.superseded),
@@ -328,7 +387,7 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
             .saturating_sub(reader0.dma_sync_errors),
         held_at_end: reader1.held,
         service_start,
-        service_end: end_line.as_ref().map(service_camera),
+        service_end,
         copies,
         own: Process {
             cpu_ns: Some(own_cpu1.saturating_sub(own_cpu0)),

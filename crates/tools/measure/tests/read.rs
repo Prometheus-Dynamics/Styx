@@ -1,9 +1,9 @@
 //! `styx-measure read` and `status` as child processes, against the service in this process on
 //! the simulated camera (120 fps, 320 x 40 raw Bayer, RGGB10P).
 //!
-//! Gaps: the service's ring can skip frames for a reader (its buffers are reclaimed after each
-//! publish). The run measures that and does not hide it; the test asserts that every gap is a
-//! counted skip, and reports both.
+//! Gaps: the service's ring keeps the newest frames for readers (its keep window), so a reader that
+//! keeps up sees every frame: the test asserts no gap and no skip. A reader later than the window
+//! would be counted as skips; this one is not.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -144,11 +144,13 @@ fn check_report(path: &std::path::Path, isp: bool) {
     }
 
     assert_eq!(json_u64(&v, &["frames", "delivered"]), FRAMES, "{text}");
-    // Every missing id is one the ring skipped (see the note in the test's header): a gap with no
-    // skip would be a frame the reader lost by itself.
+    // The claim: a reader that keeps up gets every frame, no gap and no skip. Without the ISP it
+    // always applies. With the ISP it applies while the ISP's time per frame is below (keep - 1)
+    // frame periods, the window the ring keeps for the reader (checked below, with the ISP's
+    // numbers). Where the bound is exceeded, the reader itself is late: the gaps must still be
+    // counted skips, and that is what is asserted instead.
     let gaps = json_u64(&v, &["frames", "gaps"]);
     let skipped = json_u64(&v, &["frames", "skipped_by_ring"]);
-    assert!(gaps <= skipped, "{gaps} gaps but {skipped} skips: {text}");
     assert_eq!(json_u64(&v, &["frames", "duplicates"]), 0, "{text}");
     assert_eq!(json_u64(&v, &["frames", "out_of_order"]), 0, "{text}");
     assert_eq!(json_u64(&v, &["frames", "metadata_refused"]), 0, "{text}");
@@ -177,6 +179,49 @@ fn check_report(path: &std::path::Path, isp: bool) {
     assert!(json_f64(&v, &["cpu", "reader_ns_per_frame"]) > 0.0);
     assert!(v["service_camera"]["start"].is_object(), "{text}");
     assert_eq!(v["service_camera"]["end"]["state"], "streaming", "{text}");
+
+    // The rates: requested (the config's 120 fps, or the operator's override), achieved by the
+    // backend and in the metadata, and measured by the service, all within 1 % of 120 fps.
+    let near_120 = |v: f64| (v - 120.0).abs() / 120.0 < 0.01;
+    assert_eq!(json_f64(&v, &["rate", "requested_fps"]), 120.0, "{text}");
+    for key in [
+        "achieved_backend_fps",
+        "achieved_metadata_fps",
+        "measured_service_fps",
+    ] {
+        let rate = json_f64(&v, &["rate", key]);
+        assert!(near_120(rate), "{key} {rate}: {text}");
+    }
+    // The backend runs at 119.967 fps (the frame length rounds to whole lines), so the reason says so.
+    let reason = v["rate"]["rate_reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("whole lines") && reason.contains("119967"),
+        "{text}"
+    );
+    // The service's copies, from its status: none on the frame path.
+    assert_eq!(json_u64(&v, &["copies", "service_total"]), 0, "{text}");
+    let period_ns = 1e9 / 120.0;
+    let keep = json_u64(&v, &["service_camera", "end", "keep"]) as f64;
+    assert_eq!(
+        keep, 4.0,
+        "keep is min(history 8, buffers 8 - reserve 4): {text}"
+    );
+    let isp_max = if isp {
+        json_u64(&v, &["isp", "time_ns", "max"]) as f64
+    } else {
+        0.0
+    };
+    let bound_ns = (keep - 1.0) * period_ns;
+    if !isp || isp_max < bound_ns {
+        assert_eq!(gaps, 0, "a reader that keeps up has no gaps: {text}");
+        assert_eq!(skipped, 0, "the ring skipped no frame: {text}");
+    } else {
+        println!(
+            "soft ISP max {isp_max} ns is not below (keep - 1) frame periods ({bound_ns} ns): \
+             zero gaps is not asserted for this run ({gaps} gaps, {skipped} skips)"
+        );
+        assert!(gaps <= skipped, "{gaps} gaps but {skipped} skips: {text}");
+    }
 
     if isp {
         assert_eq!(v["isp"]["output"], "NV12", "{text}");

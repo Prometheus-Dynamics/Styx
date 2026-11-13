@@ -20,6 +20,21 @@ pub struct ServiceCamera {
     pub published: Option<u64>,
     pub publish_dropped: Option<u64>,
     pub health: String,
+    /// The rate asked for, in milli-fps (`None` for `none` in the status).
+    pub requested_milli: Option<u64>,
+    /// The rate the backend reports, in milli-fps (`None` for `unknown`).
+    pub achieved_milli: Option<u64>,
+    /// The rate in the last frame's metadata, in milli-fps (`None` for none).
+    pub achieved_meta_milli: Option<u64>,
+    /// The rate measured by the service from the last frames' capture timestamps.
+    pub measured_milli: Option<u64>,
+    pub rate_clamped: Option<bool>,
+    /// The service's one-line reason the achieved rate differs from the requested, if it does.
+    pub rate_reason: Option<String>,
+    pub keep: Option<u64>,
+    pub buffers: Option<u64>,
+    pub hardware_reserve: Option<u64>,
+    pub reclaimed: Option<u64>,
     pub raw: String,
 }
 
@@ -62,6 +77,12 @@ pub struct Report {
     pub service_start: Option<ServiceCamera>,
     pub service_end: Option<ServiceCamera>,
     pub copies: Vec<CopySite>,
+    /// The service's own copy counters, from its status (its process, not this one).
+    pub service_copies: Vec<CopySite>,
+    /// Where the requested rate came from: the operator's `--asked-fps`, the status, or none.
+    pub requested_source: &'static str,
+    /// The rate the reader's last frame metadata reports, in milli-fps.
+    pub achieved_metadata_milli: Option<u32>,
     pub own: Process,
     pub service: Process,
     pub isp: Option<IspStats>,
@@ -102,8 +123,28 @@ fn camera_json(c: &Option<ServiceCamera>) -> Json {
             ("published", Json::opt_int(c.published)),
             ("publish_dropped", Json::opt_int(c.publish_dropped)),
             ("health", Json::Str(c.health.clone())),
+            ("requested_fps_milli", Json::opt_int(c.requested_milli)),
+            ("achieved_fps_milli", Json::opt_int(c.achieved_milli)),
+            (
+                "achieved_metadata_fps_milli",
+                Json::opt_int(c.achieved_meta_milli),
+            ),
+            ("measured_fps_milli", Json::opt_int(c.measured_milli)),
+            (
+                "rate_clamped",
+                c.rate_clamped.map_or(Json::Null, Json::Bool),
+            ),
+            ("rate_reason", Json::opt_str(c.rate_reason.as_deref())),
+            ("keep", Json::opt_int(c.keep)),
+            ("buffers", Json::opt_int(c.buffers)),
+            ("hardware_reserve", Json::opt_int(c.hardware_reserve)),
+            ("reclaimed", Json::opt_int(c.reclaimed)),
         ]),
     }
+}
+
+fn milli_json(milli: Option<u64>) -> Json {
+    Json::opt_float(milli.map(|m| m as f64 / 1000.0))
 }
 
 impl Report {
@@ -176,6 +217,13 @@ impl Report {
                 ("interval_max_ns", Json::opt_int(f.intervals.max())),
                 ("interval_p99_ns", Json::opt_int(f.intervals.quantile(0.99))),
                 ("asked_fps", Json::opt_float(self.asked_fps_milli.map(|m| f64::from(m) / 1000.0))),
+                ("requested_fps", milli_json(self.requested_milli().map(u64::from))),
+                ("requested_source", Json::Str(self.requested_source.into())),
+                ("achieved_backend_fps", milli_json(self.achieved_milli().map(u64::from))),
+                ("achieved_metadata_fps", milli_json(self.achieved_metadata_milli.map(u64::from))),
+                ("measured_service_fps", milli_json(self.service_measured_milli().map(u64::from))),
+                ("measured_reader_fps", Json::opt_float(f.measured_fps())),
+                ("rate_reason", Json::opt_str(self.rate_reason().as_deref())),
                 ("sensor_fps", Json::opt_float(Self::SENSOR_RATE)),
                 ("sensor_fps_source", Json::Str(Self::SENSOR_RATE_SOURCE.into())),
                 ("service_status_frames_delta", Json::opt_int(service_frames_delta)),
@@ -196,7 +244,12 @@ impl Report {
                     ("copies", Json::Int(c.copies as u64)),
                     ("bytes", Json::Int(c.bytes as u64)),
                 ])).collect())),
-                ("service", Json::Str("not in the status line; read the service's own counters in-process (its tests check zero)".into())),
+                ("service_total", Json::Int(self.service_copies.iter().map(|c| c.copies as u64).sum())),
+                ("service", Json::Array(self.service_copies.iter().map(|c| Json::Object(vec![
+                    ("site", Json::Str(c.site.clone())),
+                    ("copies", Json::Int(c.copies as u64)),
+                    ("bytes", Json::Int(c.bytes as u64)),
+                ])).collect())),
             ])),
             ("cpu", Json::Object(vec![
                 ("reader_total_ns", Json::opt_int(self.own.cpu_ns)),
@@ -262,9 +315,26 @@ impl Report {
             ),
         );
         row(
-            "asked rate (fps)",
-            self.asked_fps_milli.map_or("not given".to_string(), |m| {
-                format!("{:.3}", f64::from(m) / 1000.0)
+            "requested rate (fps)",
+            fmt_milli(self.requested_milli().map(u64::from)),
+        );
+        row(
+            "achieved, backend (fps)",
+            fmt_milli(self.achieved_milli().map(u64::from)),
+        );
+        row(
+            "achieved, metadata (fps)",
+            fmt_milli(self.achieved_metadata_milli.map(u64::from)),
+        );
+        row(
+            "measured, service (fps)",
+            fmt_milli(self.service_measured_milli().map(u64::from)),
+        );
+        row("measured, reader (fps)", fmt_opt(f.measured_fps(), 3));
+        row(
+            "rate reason",
+            self.rate_reason().unwrap_or_else(|| {
+                "none (requested and achieved agree, or nothing to compare)".to_string()
             }),
         );
         row(
@@ -283,6 +353,8 @@ impl Report {
         );
         let copies: usize = self.copies.iter().map(|c| c.copies).sum();
         row("copies (this process)", copies.to_string());
+        let service_copies: usize = self.service_copies.iter().map(|c| c.copies).sum();
+        row("copies (service)", service_copies.to_string());
         row(
             "reader CPU per frame (ns)",
             fmt_opt(Self::ns_per_frame(self.own.cpu_ns, f.delivered), 0),
@@ -311,6 +383,16 @@ impl Report {
                 "service state",
                 format!("{} (health {})", c.state, c.health),
             );
+            row(
+                "service keep window",
+                format!(
+                    "keep {} of {} buffers, hardware reserve {}, reclaimed {}",
+                    fmt_int(c.keep),
+                    fmt_int(c.buffers),
+                    fmt_int(c.hardware_reserve),
+                    fmt_int(c.reclaimed)
+                ),
+            );
         }
         if let Some(mem) = self.own.memory_end {
             row(
@@ -328,6 +410,48 @@ impl Report {
         }
         out
     }
+}
+
+impl Report {
+    /// The rate asked for, in milli-fps: the operator's override, else the status's.
+    pub fn requested_milli(&self) -> Option<u32> {
+        self.asked_fps_milli.or_else(|| {
+            self.service_end
+                .as_ref()
+                .or(self.service_start.as_ref())
+                .and_then(|c| c.requested_milli)
+                .and_then(|m| u32::try_from(m).ok())
+        })
+    }
+
+    /// The rate the backend reports, from the status (the end of the run, else the start).
+    pub fn achieved_milli(&self) -> Option<u32> {
+        self.service_end
+            .as_ref()
+            .or(self.service_start.as_ref())
+            .and_then(|c| c.achieved_milli)
+            .and_then(|m| u32::try_from(m).ok())
+    }
+
+    /// The rate the service measured from its capture timestamps, at the end of the run.
+    pub fn service_measured_milli(&self) -> Option<u32> {
+        self.service_end
+            .as_ref()?
+            .measured_milli
+            .and_then(|m| u32::try_from(m).ok())
+    }
+
+    /// The service's reason the achieved rate differs from the requested one, or `None`.
+    pub fn rate_reason(&self) -> Option<String> {
+        self.service_end
+            .as_ref()
+            .and_then(|c| c.rate_reason.clone())
+            .map(|r| r.replace('_', " "))
+    }
+}
+
+fn fmt_milli(v: Option<u64>) -> String {
+    v.map_or("n/a".to_string(), |m| format!("{:.3}", m as f64 / 1000.0))
 }
 
 fn fmt_opt(v: Option<f64>, places: usize) -> String {

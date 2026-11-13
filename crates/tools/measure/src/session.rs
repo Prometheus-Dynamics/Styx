@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use styx_controls::{FrameMetadata, WIRE_BYTES};
+use styx_controls::FrameMetadata;
 use styx_socket::{Frame, ReadError, Reader, ReaderStats};
 
 use crate::clock::monotonic_ns;
@@ -151,8 +151,9 @@ impl Session {
     fn handle(&mut self, frame: &Frame) -> Result<(), SessionError> {
         let now = monotonic_ns();
         let lease = frame.lease();
+        // Version 1 and version 2 metadata both read; anything else is refused and counted.
         let meta = FrameMetadata::from_bytes(frame.user());
-        let metadata_ok = meta.is_some() && frame.user().len() == WIRE_BYTES;
+        let metadata_ok = meta.is_some();
         if let Some(meta) = meta {
             self.metadata = Some(meta);
         }

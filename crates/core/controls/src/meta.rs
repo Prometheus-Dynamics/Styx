@@ -2,15 +2,17 @@
 
 use crate::control::{Control, ControlValue, Rect};
 
-/// Version of the metadata's byte layout (see [`FrameMetadata::to_bytes`]). A reader refuses any
-/// other.
-pub const WIRE_VERSION: u8 = 1;
+/// Version of the metadata's byte layout (see [`FrameMetadata::to_bytes`]). Version 2 adds the
+/// achieved frame rate at the end. [`FrameMetadata::from_bytes`] reads version 1 too (its frames
+/// have no achieved rate: 0), and refuses any other.
+pub const WIRE_VERSION: u8 = 2;
 
 /// Bytes of one control's value on the wire: a tag, then 17 bytes of payload.
 const VALUE_BYTES: usize = 18;
-/// Bytes of [`FrameMetadata::to_bytes`]'s output, and the only length [`FrameMetadata::from_bytes`]
-/// takes.
-pub const WIRE_BYTES: usize = 32 + Control::COUNT * VALUE_BYTES;
+/// Bytes of a version 1 blob: the length [`FrameMetadata::from_bytes`] still reads.
+pub const WIRE_BYTES_V1: usize = 32 + Control::COUNT * VALUE_BYTES;
+/// Bytes of [`FrameMetadata::to_bytes`]'s output, and the length of a version 2 blob.
+pub const WIRE_BYTES: usize = WIRE_BYTES_V1 + 4;
 
 /// Metadata of one frame. Fixed size, plain data, no heap: it is the `M` of a
 /// `styx_frame::FramePool<M>`, so writing it for every frame allocates nothing.
@@ -34,6 +36,9 @@ pub struct FrameMetadata {
     pub lux: Option<f32>,
     /// Colour temperature of the scene in kelvin, when the backend has one.
     pub colour_temperature_k: Option<u32>,
+    /// The frame rate this frame was captured at, in thousandths of a frame per second, as the
+    /// backend reports it (native: the frame length over the line time). 0 when unknown.
+    pub achieved_fps_milli: u32,
 }
 
 impl FrameMetadata {
@@ -52,13 +57,14 @@ impl FrameMetadata {
     /// gain (u32), digital gain (u32), lux (present byte, then f32 bits), colour temperature
     /// (present byte, then u32), then each control in [`Control::index`] order as a tag (0 auto,
     /// 1 manual, 2 flag, 3 crop) and 17 bytes of payload (a u32, a flag byte, or a crop's present
-    /// byte and four u32s), zero where unused.
+    /// byte and four u32s), zero where unused; then (version 2) the achieved frame rate (u32).
     pub fn to_bytes(&self, out: &mut [u8]) -> usize {
         let Some(out) = out.get_mut(..WIRE_BYTES) else {
             return 0;
         };
         out.fill(0);
         out[0] = WIRE_VERSION;
+        out[WIRE_BYTES_V1..WIRE_BYTES].copy_from_slice(&self.achieved_fps_milli.to_le_bytes());
         out[2..10].copy_from_slice(&self.sensor_timestamp_ns.to_le_bytes());
         out[10..14].copy_from_slice(&self.exposure_us.to_le_bytes());
         out[14..18].copy_from_slice(&self.analogue_gain_milli.to_le_bytes());
@@ -99,10 +105,18 @@ impl FrameMetadata {
         WIRE_BYTES
     }
 
-    /// Reads metadata written by [`FrameMetadata::to_bytes`]. `None` for another length, another
+    /// Reads metadata written by [`FrameMetadata::to_bytes`], version 2, or version 1 (whose frames
+    /// have no achieved rate: `achieved_fps_milli` is 0). `None` for another length, another
     /// version, a reserved byte that is not zero, or a tag or flag this version does not know.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
-        if bytes.len() != WIRE_BYTES || bytes[0] != WIRE_VERSION || bytes[1] != 0 {
+        let achieved_fps_milli = match (bytes.len(), bytes.first()) {
+            (WIRE_BYTES, Some(&WIRE_VERSION)) => {
+                u32::from_le_bytes(bytes[WIRE_BYTES_V1..WIRE_BYTES].try_into().ok()?)
+            }
+            (WIRE_BYTES_V1, Some(&1)) => 0,
+            _ => return None,
+        };
+        if bytes[1] != 0 {
             return None;
         }
         let u32_at = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
@@ -150,6 +164,7 @@ impl FrameMetadata {
             digital_gain_milli: u32_at(18)?,
             lux,
             colour_temperature_k,
+            achieved_fps_milli,
         })
     }
 }
@@ -177,7 +192,29 @@ mod wire_tests {
             digital_gain_milli: 1_000,
             lux: Some(312.5),
             colour_temperature_k: Some(5_600),
+            achieved_fps_milli: 119_880,
         }
+    }
+
+    #[test]
+    fn a_version_one_blob_still_reads_and_its_achieved_rate_is_unknown() {
+        let meta = sample();
+        let mut v2 = [0_u8; WIRE_BYTES];
+        meta.to_bytes(&mut v2);
+        let mut v1 = v2[..WIRE_BYTES_V1].to_vec();
+        v1[0] = 1;
+        let read = FrameMetadata::from_bytes(&v1).expect("version 1 reads");
+        assert_eq!(read.achieved_fps_milli, 0);
+        assert_eq!(
+            FrameMetadata {
+                achieved_fps_milli: 0,
+                ..meta
+            },
+            read
+        );
+        let mut v1_long = v1.clone();
+        v1_long.push(0);
+        assert_eq!(FrameMetadata::from_bytes(&v1_long), None);
     }
 
     #[test]

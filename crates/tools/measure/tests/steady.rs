@@ -1,6 +1,9 @@
 //! The read loop allocates nothing per frame, in steady state: the reader takes frames from the
 //! service in this process, with and without the soft ISP, and the allocations this thread makes
 //! while the loop runs are counted. Other threads (the service's) are not counted.
+//!
+//! A reader that keeps up sees every frame: no gap, with and without the soft ISP, as long as the
+//! ISP's time per frame is below (keep - 1) frame periods (the window the service keeps for it).
 
 #[path = "support/mod.rs"]
 mod support;
@@ -9,9 +12,22 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use styx_measure::cli::parse_fps_milli;
+use styx_measure::control::CameraLine;
 use styx_measure::isp::{IspRunner, SoftIspArg};
 use styx_measure::session::Session;
-use support::{daemon, socket_of, start_service, test_dir, wait_publishing};
+use styx_service::Service;
+use support::{CAMERA, daemon, list, socket_of, start_service, test_dir, wait_publishing};
+
+/// The camera's keep window, from the service's status.
+fn keep_of(service: &Service) -> u64 {
+    let lines = list(service);
+    let line = lines
+        .iter()
+        .filter_map(|l| CameraLine::parse(l))
+        .find(|c| c.id == CAMERA)
+        .expect("the camera is listed");
+    line.number("keep").expect("keep in the status")
+}
 
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
@@ -76,6 +92,9 @@ fn the_read_loop_allocates_nothing_per_frame() {
     wait_publishing(&service);
     let socket = socket_of(&dir);
     let _ = parse_fps_milli("120.00").expect("the rate parses");
+    // One frame each 8 333 333 ns at 120 fps; the keep window is read from the status.
+    let period_ns = 1e9 / 120.0;
+    let keep = keep_of(&service);
 
     for isp in [None, Some("NV12")] {
         let arg = isp.map(|c| c.parse::<SoftIspArg>().expect("arg"));
@@ -93,13 +112,34 @@ fn the_read_loop_allocates_nothing_per_frame() {
         });
         assert_eq!(session.stats.delivered, 1200);
         println!(
-            "steady state (isp {isp:?}): 1000 frames, {made} allocations on the read loop, {} gaps",
+            "steady state (isp {isp:?}): 1000 frames, {made} allocations on the read loop, {} gaps, keep {keep}",
             session.stats.gaps
         );
         assert_eq!(
             made, 0,
             "the read loop made {made} allocations for 1000 frames"
         );
+        // The claim: no gap and no skip for a reader that keeps up. With the ISP it applies while
+        // the ISP's time per frame is below (keep - 1) frame periods.
+        let bound_ns = (keep as f64 - 1.0) * period_ns;
+        let isp_max = session
+            .isp_stats()
+            .and_then(|s| s.times.max())
+            .map(|ns| ns as f64);
+        let within_bound = isp.is_none() || isp_max.is_some_and(|m| m < bound_ns);
+        if within_bound {
+            assert_eq!(session.stats.gaps, 0, "a reader that keeps up has no gaps");
+            assert_eq!(
+                session.reader_stats().skipped,
+                0,
+                "the ring skipped no frame"
+            );
+        } else {
+            println!(
+                "isp {isp:?}: soft ISP max {isp_max:?} ns is not below {bound_ns} ns; zero gaps not asserted ({} gaps)",
+                session.stats.gaps
+            );
+        }
         assert!(stop.is_some());
     }
     service.shutdown();
