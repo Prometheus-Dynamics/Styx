@@ -65,8 +65,9 @@ fn start_and_stop_100_times_on_the_simulated_backend() {
     let request = Request {
         width: 320,
         height: 40,
-        min_fps_milli: 60_000,
+        fps_milli: 60_000,
         bit_depth: Some(10),
+        format: None,
         bayer: Some(BayerOrder::Rggb),
     };
     let clock = SystemClock::default();

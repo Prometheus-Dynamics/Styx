@@ -139,7 +139,8 @@ impl Isp {
             FourCc::GREY,
             STATISTICS_BYTES as u32,
             1,
-        )?;
+        )?
+        .numbered_by_job();
         Ok(Self {
             config,
             statistics,

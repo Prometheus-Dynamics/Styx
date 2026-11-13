@@ -26,6 +26,20 @@ use crate::wire::{
 
 const FIELD: FieldId = FieldId(0);
 
+/// Where a reader starts in the ring. Chosen at connect, by [`Reader::connect_with`]; the
+/// default ([`Reader::connect`]) is [`Start::Newest`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Start {
+    /// The newest frame the ring still holds, delivered at once if there is one, then every frame
+    /// published after it. A reader that attaches mid-stream gets a frame without waiting for a
+    /// bell. With nothing published yet it waits for the first frame, as `NextNew` does.
+    #[default]
+    Newest,
+    /// Only the frames published after the reader attaches. Everything already in the ring is
+    /// skipped (and not counted as lost: the reader did not ask for it).
+    NextNew,
+}
+
 /// Why [`Reader::next_frame`] stopped delivering frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadError {
@@ -256,14 +270,27 @@ pub struct Reader {
 }
 
 impl Reader {
+    /// [`Reader::connect_with`] with [`Start::Newest`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Reader::connect_with`].
+    pub fn connect(socket: UnixStream) -> Result<Self, SocketError> {
+        Self::connect_with(socket, Start::Newest)
+    }
+
     /// Takes the producer's offer on `socket` and its buffer table, maps the buffers once, and
     /// answers with this reader's marks and doorbell. Blocks until the offer arrives.
+    ///
+    /// The reader's place in the ring is fixed when it answers, from the ring's write position
+    /// at that moment, as `start` says (see [`Start`]). The producer links the reader right after
+    /// it reads the answer, so the reader starts where the first frame it can be sent begins.
     ///
     /// # Errors
     ///
     /// [`SocketError`] if the offer or the buffer table is not the one this build understands,
     /// or a mapping fails.
-    pub fn connect(socket: UnixStream) -> Result<Self, SocketError> {
+    pub fn connect_with(socket: UnixStream, start: Start) -> Result<Self, SocketError> {
         let mut offer_bytes = [0_u8; OFFER_LEN];
         let received = fdpass::recv(socket.as_fd(), &mut offer_bytes, 2, false)?.ok_or(
             SocketError::Protocol("the producer closed before its offer"),
@@ -377,13 +404,20 @@ impl Reader {
         )?;
 
         let view = PoolView::attach(page_fd, pool_fds, &descs)?;
-        let ring = RingReader::attach(ring_fd)?;
         let marks = Arc::new(Marks::create(geometry.buffers() as u32, slot, max_held)?);
-        let reader = BufferReader::new(ring, FIELD, view, Arc::clone(&marks));
-
         let doorbell = Doorbell::create()?;
         let (eventfd, bell_page) = doorbell.bell_fds()?;
         let marks_fd = marks.page_fd()?;
+
+        // The reader's place in the ring, fixed here: the ring's write position is read now, and
+        // the answer is sent right after, so nothing the producer publishes can sit between this
+        // position and the reader's answer unseen.
+        let mut ring = RingReader::attach(ring_fd)?;
+        if start == Start::Newest {
+            step_to_newest(&mut ring);
+        }
+        let reader = BufferReader::new(ring, FIELD, view, Arc::clone(&marks));
+
         let mut ack = [0_u8; ACK_LEN];
         ack[0..4].copy_from_slice(&VERSION.to_le_bytes());
         ack[4..8].copy_from_slice(&slot.to_le_bytes());
@@ -497,6 +531,21 @@ impl Reader {
     /// The socket this reader holds open. The producer counts the reader as alive while it is.
     pub const fn socket(&self) -> &UnixStream {
         &self.socket
+    }
+}
+
+/// Moves a fresh ring reader, which starts at the write position, back to the oldest sample the
+/// ring can still order, then forward over every published sample but the newest. Its next
+/// sample is then the newest one published (none if nothing is published). The samples stepped
+/// over are not frames the reader asked for, so they are not counted as lost. The steps are at
+/// most one ring's window: the ring keeps no more than that to step over.
+fn step_to_newest(ring: &mut RingReader) {
+    ring.rewind();
+    let mut budget = ring.geometry().window().saturating_add(1);
+    while ring.pending() > 1 && budget > 0 {
+        budget -= 1;
+        // Each call moves the reader on, by one sample or by the samples it found gone.
+        let _ = ring.next();
     }
 }
 
