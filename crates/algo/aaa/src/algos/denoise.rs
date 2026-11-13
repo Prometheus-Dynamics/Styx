@@ -21,14 +21,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::CameraConfig;
 use crate::error::{AlgoError, Result};
-#[cfg(not(feature = "std-core"))]
-use crate::float::Float as _;
 use crate::frame::FrameMetadata;
 use crate::params::{
     CdnParams, DenoiseParams, GeqParams, Params, SdnParams, SharpenParams, TdnParams,
 };
 use crate::pipeline::Algorithm;
 use alloc::vec::Vec;
+#[cfg(not(feature = "std-core"))]
+use styx_math::Float as _;
 
 use crate::pwl::Pwl;
 use crate::stats::Statistics;
