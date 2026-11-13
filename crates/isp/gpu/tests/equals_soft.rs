@@ -41,10 +41,6 @@ enum Kind {
 }
 
 impl Kind {
-    fn is_luma(self) -> bool {
-        matches!(self, Kind::Luma)
-    }
-
     fn code(self) -> FourCc {
         match self {
             Kind::Rgb => FourCc::RGB3,
@@ -167,55 +163,24 @@ fn gpu_equals_soft_and_goldens_bit_for_bit() {
             packed(&cpu_out, case.kind, w as usize, h as usize),
             packed(&gpu_out, case.kind, w as usize, h as usize),
         );
-        if case.kind.is_luma() {
-            // Open gap (see the PR): the full-size luma path is within one code of the soft ISP,
-            // not yet bit for bit. Counted and bounded here, not hidden.
-            let differ = cpu_bytes
+        assert!(
+            cpu_bytes == gpu_bytes,
+            "{}: GPU picture differs from soft ({} of {} bytes)",
+            case.name,
+            cpu_bytes
                 .iter()
                 .zip(&gpu_bytes)
                 .filter(|(a, b)| a != b)
-                .count();
-            let worst = cpu_bytes
-                .iter()
-                .zip(&gpu_bytes)
-                .map(|(a, b)| a.abs_diff(*b))
-                .max()
-                .unwrap_or(0);
-            eprintln!(
-                "{}: luma differs from soft on {differ} of {} samples, worst {worst} code(s)",
-                case.name,
-                cpu_bytes.len()
-            );
-            assert!(
-                worst <= 1,
-                "{}: luma more than one code from soft",
-                case.name
-            );
-            let want = data(&format!("{}.out", case.name));
-            let worst_golden = gpu_bytes
-                .iter()
-                .zip(&want)
-                .map(|(a, b)| a.abs_diff(*b))
-                .max()
-                .unwrap_or(0);
-            assert!(
-                worst_golden <= 1,
-                "{}: luma more than one code from the golden",
-                case.name
-            );
-        } else {
-            assert!(
-                cpu_bytes == gpu_bytes,
-                "{}: GPU picture differs from soft",
-                case.name
-            );
-            let want = data(&format!("{}.out", case.name));
-            assert!(
-                gpu_bytes == want,
-                "{}: GPU picture differs from the golden",
-                case.name
-            );
-        }
+                .count(),
+            cpu_bytes.len()
+        );
+        let want = data(&format!("{}.out", case.name));
+        assert!(
+            gpu_bytes == want,
+            "{}: GPU picture differs from the golden",
+            case.name
+        );
+        eprintln!("{}: equal to soft and the golden", case.name);
 
         if case.stats {
             assert_eq!(
@@ -230,9 +195,6 @@ fn gpu_equals_soft_and_goldens_bit_for_bit() {
                 "{}: histogram",
                 case.name
             );
-        }
-        if !case.kind.is_luma() {
-            eprintln!("{}: equal to soft and the golden", case.name);
         }
     }
 }

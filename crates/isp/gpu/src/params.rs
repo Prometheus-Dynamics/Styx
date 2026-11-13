@@ -4,9 +4,9 @@
 
 use std::sync::Arc;
 
+use styx_simd::isp::poly::{PolyTone, SEGMENTS};
+use styx_simd::isp::{RowKind, ToneLut, YuvCoeffs};
 use styx_soft::shared::{grid_map_into, q12, stage_tables};
-use styx_soft::simd::poly::{PolyTone, SEGMENTS};
-use styx_soft::simd::{RowKind, ToneLut, YuvCoeffs};
 use styx_soft::{
     Arithmetic, CfaPattern, IspError, IspParams, LensShading, RawFormat, RawPacking, StatsConfig,
     YuvMatrix,
@@ -263,7 +263,7 @@ impl Tables {
                 b.black[y * 2 + x] = black_cells[pattern.cell_at(x, y)] as u32;
                 b.flat_gain[y * 2 + x] = q12(cell_gain(x, y)) as u32;
             }
-            let kind = RowKind::of(pattern, y);
+            let kind = RowKind::of(pattern.into(), y);
             b.green_even[y] = kind.green_even as u32;
             b.x_is_red[y] = kind.x_is_red as u32;
         }
@@ -323,7 +323,15 @@ impl Tables {
                 tone.set_curve(|x| curve.eval(x));
                 let mut lut = writable(&mut spare.luts);
                 let words = Arc::get_mut(&mut lut).expect("unshared");
-                let poly = (params.arithmetic == Arithmetic::IntPolyTone)
+                // `Auto` resolves as `styx-soft` does on this host: quadratics where the CPU
+                // prefers them (AVX2) and they fit the curve. The quadratics are within one
+                // code of the table, not equal to it, so the choice decides the bits.
+                let want_poly = match params.arithmetic {
+                    Arithmetic::IntPolyTone => true,
+                    Arithmetic::Auto => styx_simd::isp::poly_preferred(),
+                    Arithmetic::Int | Arithmetic::Half => false,
+                };
+                let poly = want_poly
                     .then(|| PolyTone::fit_with(tone.full(), &mut spare.poly_weight))
                     .flatten();
                 b.tone_lut = match poly {
