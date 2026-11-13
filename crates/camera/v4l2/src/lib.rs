@@ -21,7 +21,8 @@ mod stream;
 
 pub use error::Error;
 pub use probe::{
-    Device, Format, Intervals, Probe, Queue, RawControl, Size, SizeRange, Sizes, probe, probe_node,
+    Device, DeviceMenuItem, Format, Intervals, Probe, Queue, RawControl, Size, SizeRange, Sizes,
+    probe, probe_node,
 };
 pub use stream::{Delivery, State, Status, Stream, StreamConfig};
 

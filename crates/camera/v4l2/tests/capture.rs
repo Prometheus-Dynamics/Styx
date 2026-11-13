@@ -8,7 +8,10 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use styx_format::FourCc;
-use styx_v4l2::{Delivery, Queue, Sizes, Stream, StreamConfig, probe};
+use styx_v4l2::{Delivery, Queue, Sizes, Stream, StreamConfig};
+
+mod common;
+use common::physical_probe as probe;
 
 /// The first capture node with a format that lists discrete sizes, and that format's first size.
 fn first_stream_target() -> Option<(PathBuf, FourCc, u32, u32)> {
