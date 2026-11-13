@@ -438,21 +438,6 @@ pub fn poly_row(src: &[u16], dst: &mut [u8], poly: &poly::PolyTone, width: usize
     })
 }
 
-/// Whether [`poly_row`] beats [`lut_row`] on this CPU, so that `Arithmetic::Auto`
-/// picks `Arithmetic::IntPolyTone`: x86 with AVX2 (2.3x the table on Zen 3). The
-/// NEON leaf is slower than the NEON table lookups on the Cortex-A76 (its 16-bit multiplies
-/// run at half rate on one pipe).
-pub fn poly_preferred() -> bool {
-    #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        X86FeatureSet::detect().avx2
-    }
-    #[cfg(not(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64"))))]
-    {
-        false
-    }
-}
-
 /// See [`scalar::interleave_rgb_row`].
 pub fn interleave_rgb_row(planes: [&[u8]; 3], dst: &mut [u8], width: usize) -> SimdBackend {
     let planes = planes.map(|p| &p[..width]);

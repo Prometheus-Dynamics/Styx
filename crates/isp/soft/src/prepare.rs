@@ -68,7 +68,7 @@ pub(crate) struct IntPrep {
     /// Q12 colour matrix.
     pub ccm: Option<[i16; 9]>,
     pub lut: Option<Arc<ToneLut>>,
-    /// The table as quadratics ([`Arithmetic::IntPolyTone`]), when they fit it.
+    /// The table as quadratics ([`Arithmetic::ApproxTone`]), when they fit it.
     pub poly: Option<Arc<PolyTone>>,
     /// The curve `lut` came from, and whether quadratics were wanted for it.
     curve: (Option<Arc<ToneCurve>>, bool),
@@ -355,7 +355,7 @@ impl Prepared {
     /// The arithmetic in use.
     pub fn arithmetic(&self) -> Arithmetic {
         match &self.arith {
-            Arith::Int(i) if i.poly.is_some() => Arithmetic::IntPolyTone,
+            Arith::Int(i) if i.poly.is_some() => Arithmetic::ApproxTone,
             Arith::Int(_) => Arithmetic::Int,
             Arith::Half(_) => Arithmetic::Half,
         }
@@ -414,13 +414,10 @@ impl IntPrep {
             }
             m
         });
-        // Never without feature `poly-tone`.
-        let poly_wanted = cfg!(feature = "poly-tone")
-            && match params.arithmetic {
-                Arithmetic::IntPolyTone => true,
-                Arithmetic::Auto => crate::simd::poly_preferred(),
-                Arithmetic::Int | Arithmetic::Half => false,
-            };
+        // Only when named: `Auto` is the exact table on every host. Never without feature
+        // `poly-tone`.
+        let poly_wanted =
+            cfg!(feature = "poly-tone") && matches!(params.arithmetic, Arithmetic::ApproxTone);
         // The same curve keeps its table and quadratics (fitting costs tens of microseconds),
         // shared rather than copied.
         let (lut, poly, curve) = match previous {

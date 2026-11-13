@@ -227,3 +227,43 @@ fn check_stats(name: &str, stats: &Statistics) {
     assert!(stats.luma.is_none() && stats.focus.is_none());
     assert!(stats.before_wb && !stats.before_lsc);
 }
+
+/// `Arithmetic::ApproxTone` (the tone curve as quadratics, the approximation) is dev's AVX2
+/// picture of the luma case, bit for bit; `Arithmetic::Auto` (the exact table, on every host)
+/// differs from it by one code on some samples, and nowhere by more. Only the luma case has
+/// samples where they differ: its default sRGB curve is the one whose quadratics are farthest
+/// from the table (the others match exactly).
+#[test]
+fn approx_tone_is_the_named_approximation_within_one_code() {
+    let raw_pool = picture_pool(RAW, W, H, 1);
+    let raw = raw_lease(&raw_pool, 1);
+    let picture_of = |arithmetic: styx_soft::params::Arithmetic| {
+        let mut options = options(Demosaic::Bilinear, YuvMatrix::Bt709Limited, false);
+        options.arithmetic = arithmetic;
+        let mut stage = SoftIspStage::new(RAW, W, H, &settings(true, false), options).unwrap();
+        let out_pool = picture_pool(FourCc::GREY, W, H, 1);
+        let mut out = picture(&out_pool, FourCc::GREY, W, H, 2);
+        stage.process(&raw, &mut out, None).unwrap();
+        packed(&out, Kind::Luma, W as usize, H as usize)
+    };
+    let auto = picture_of(styx_soft::params::Arithmetic::Auto);
+    let approx = picture_of(styx_soft::params::Arithmetic::ApproxTone);
+
+    assert!(
+        approx == data("luma_full.approx.out"),
+        "ApproxTone: dev's picture"
+    );
+    assert!(auto == data("luma_full.out"), "Auto: the exact table");
+    let differing: Vec<u8> = auto
+        .iter()
+        .zip(&approx)
+        .map(|(a, b)| a.abs_diff(*b))
+        .filter(|&d| d != 0)
+        .collect();
+    assert_eq!(
+        differing.len(),
+        372,
+        "samples where Auto and ApproxTone differ"
+    );
+    assert!(differing.iter().all(|&d| d == 1), "by one code at most");
+}

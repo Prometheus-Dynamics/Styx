@@ -135,7 +135,7 @@ Asked of those repos on 2026-11-11. A PR that needs one waits for it; don't work
 | Id | Item | Stops |
 |---|---|---|
 | X1 | Lemnos `next` stays buildable at the locked commit | native path; locked by commit |
-| X2 | The PiSP front end has never run through the Lemnos module (Lemnos design says so) | H1's native run on the Raze |
+| X2 | Met: the PiSP front end ran through the Lemnos module on a CM5 (Lemnos board runs, 2026-11-11: statistics for every frame, output 0 equal to the receiver on 800 of 800 lines). Was: the front end had never run through the module | H1's native run on the Raze |
 | X3 | Met (Daedalus J3). Daedalus `next` lists/structs as graph constants (Gaia's X7; Daedalus J3) | Styx node config in graphs; scalars until then |
 | X4 | Consumers (HeliOS, Eidos) move to `next`'s frame type | nothing in Styx |
 | X5 | Met at Lemnos 6c28d722 (crates `shm-*`). The shared ring: a standalone leaf crate family with neutral names, hosted in the Lemnos repository, depending on nothing of Lemnos or Orion (Orion's ring, ring-buffers, -holds, -doorbell, -latest, -time, fdpass and the sample time type move there) | F2, F3, F4 |

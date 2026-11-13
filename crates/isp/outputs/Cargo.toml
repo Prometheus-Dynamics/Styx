@@ -1,0 +1,22 @@
+[package]
+name = "styx-outputs"
+description = "Which ISP outputs to configure for the sizes and formats consumers ask for: one output per distinct size and format, a shared lease for consumers that ask for the same, and one converter fallback for the same size in another format of the same family."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+styx-settings = { path = "../settings" }
+styx-codec-api = { path = "../../codec/codec-api" }
+styx-scale = { path = "../../codec/scale" }
+
+[dev-dependencies]
+styx-soft = { path = "../soft" }
+
+[lints]
+workspace = true

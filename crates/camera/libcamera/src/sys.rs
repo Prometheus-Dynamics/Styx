@@ -32,6 +32,7 @@ pub const CONTROL_TYPE_BOOL: c_uint = 1;
 pub const CONTROL_TYPE_INT32: c_uint = 5;
 pub const CONTROL_TYPE_INT64: c_uint = 6;
 pub const CONTROL_TYPE_FLOAT: c_uint = 7;
+pub const CONTROL_TYPE_RECTANGLE: c_uint = 9;
 
 pub const REQUEST_STATUS_COMPLETE: c_int = 1;
 pub const REQUEST_STATUS_CANCELLED: c_int = 2;
@@ -53,6 +54,11 @@ pub enum FrameBufferPlane {}
 pub enum Request {}
 pub enum ControlList {}
 pub enum ControlValue {}
+pub enum ControlInfo {}
+pub enum ControlInfoMap {}
+pub enum ControlInfoMapIter {}
+pub enum ControlId {}
+pub enum ControlIdEnumeratorsIter {}
 pub enum CallbackHandle {}
 
 pub type RequestCompleted = unsafe extern "C" fn(*mut c_void, *mut Request);
@@ -209,4 +215,33 @@ unsafe extern "C" {
     );
     pub fn styx_stream_set_buffer_count(config: *mut StreamConfiguration, count: c_uint);
     pub fn styx_control_id(which: c_uint) -> c_uint;
+    pub fn styx_property_id(which: c_uint) -> c_uint;
+
+    // The camera's control registry and its listing (controls.h, camera.h).
+    pub fn libcamera_camera_controls(cam: *const Camera) -> *const ControlInfoMap;
+    pub fn libcamera_camera_properties(cam: *const Camera) -> *const ControlList;
+    pub fn libcamera_control_info_map_iter_create(
+        map: *const ControlInfoMap,
+    ) -> *mut ControlInfoMapIter;
+    pub fn libcamera_control_info_map_iter_has_next(iter: *const ControlInfoMapIter) -> bool;
+    pub fn libcamera_control_info_map_iter_key(iter: *const ControlInfoMapIter) -> c_uint;
+    pub fn libcamera_control_info_map_iter_value(
+        iter: *const ControlInfoMapIter,
+    ) -> *const ControlInfo;
+    pub fn libcamera_control_info_map_iter_next(iter: *mut ControlInfoMapIter);
+    pub fn libcamera_control_info_map_iter_destroy(iter: *mut ControlInfoMapIter);
+    pub fn libcamera_control_info_min(info: *mut ControlInfo) -> *const ControlValue;
+    pub fn libcamera_control_info_max(info: *mut ControlInfo) -> *const ControlValue;
+    pub fn libcamera_control_info_def(info: *mut ControlInfo) -> *const ControlValue;
+    pub fn libcamera_control_from_id(id: c_uint) -> *mut ControlId;
+    pub fn libcamera_control_name(control: *mut ControlId) -> *const c_char;
+    pub fn libcamera_control_id_type(control: *mut ControlId) -> c_uint;
+    pub fn libcamera_control_id_is_input(control: *mut ControlId) -> bool;
+    pub fn libcamera_control_id_enumerators_iter_create(
+        control: *mut ControlId,
+    ) -> *mut ControlIdEnumeratorsIter;
+    pub fn libcamera_control_id_enumerators_iter_has_next(
+        iter: *const ControlIdEnumeratorsIter,
+    ) -> bool;
+    pub fn libcamera_control_id_enumerators_iter_destroy(iter: *mut ControlIdEnumeratorsIter);
 }

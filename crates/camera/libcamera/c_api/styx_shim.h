@@ -25,6 +25,8 @@ void styx_stream_set_buffer_count(libcamera_stream_configuration_t *config, unsi
 /* Control ids by Styx's name: 0 ExposureTime, 1 AnalogueGain, 2 DigitalGain, 3 SensorTimestamp,
    4 AeEnable, 5 FrameDuration. Any other value returns 0 (no control). */
 unsigned int styx_control_id(unsigned int which);
+/* Property ids by Styx's name: 0 ScalerCropMaximum. Any other value returns 0. */
+unsigned int styx_property_id(unsigned int which);
 
 #ifdef __cplusplus
 }

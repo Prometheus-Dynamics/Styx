@@ -7,7 +7,9 @@ use core::fmt;
 pub type FrameId = u64;
 
 /// The controls every backend maps to. Their order is [`Control::ALL`]; [`Control::index`] is the
-/// position in [`FrameMetadata::controls`](crate::FrameMetadata::controls).
+/// position in [`FrameMetadata::controls`](crate::FrameMetadata::controls). A backend maps its own
+/// control ids onto these where they mean the same thing; anything else it offers goes through
+/// [`DeviceControl`] instead.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -28,11 +30,35 @@ pub enum Control {
     VFlip,
     /// Crop of the sensor's pixel array, or the whole array.
     Crop,
+    /// Brightness, normalised 0 (darkest) through 1000, 500 neutral when the device range is
+    /// symmetric.
+    Brightness,
+    /// Contrast, normalised 0 through 1000, 500 neutral when the device range is symmetric.
+    Contrast,
+    /// Saturation, normalised 0 through 1000, 500 neutral when the device range is symmetric.
+    Saturation,
+    /// Hue, normalised 0 through 1000, 500 neutral (0 degrees) when the device range is
+    /// symmetric about 0.
+    Hue,
+    /// Sharpness, normalised 0 through 1000, 500 neutral when the device range is symmetric.
+    Sharpness,
+    /// Gamma in thousandths: 2200 is 2.2. Manual values run 1000 (1.0) through 3000 (3.0).
+    Gamma,
+    /// Backlight compensation, normalised 0 (off) through 1000.
+    BacklightCompensation,
+    /// Power line frequency filter: a [`PowerLineFrequency`] value, 0 through 3.
+    PowerLineFrequency,
+    /// Zoom, normalised 0 (widest) through 1000 (the device's longest zoom).
+    Zoom,
+    /// Pan in arc-seconds: 648000 is centred, 0 is 180 degrees one way, 1296000 the other.
+    Pan,
+    /// Tilt in arc-seconds, with the same scale as [`Control::Pan`].
+    Tilt,
 }
 
 impl Control {
     /// Number of controls in the set.
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 19;
 
     /// Every control, in index order.
     pub const ALL: [Control; Self::COUNT] = [
@@ -44,6 +70,17 @@ impl Control {
         Control::HFlip,
         Control::VFlip,
         Control::Crop,
+        Control::Brightness,
+        Control::Contrast,
+        Control::Saturation,
+        Control::Hue,
+        Control::Sharpness,
+        Control::Gamma,
+        Control::BacklightCompensation,
+        Control::PowerLineFrequency,
+        Control::Zoom,
+        Control::Pan,
+        Control::Tilt,
     ];
 
     /// The position of this control in [`Control::ALL`].
@@ -115,6 +152,51 @@ impl Control {
                 default: ControlValue::Crop(None),
                 auto: false,
             },
+            Control::Brightness
+            | Control::Contrast
+            | Control::Saturation
+            | Control::Hue
+            | Control::Sharpness => Spec {
+                control: self,
+                unit: "norm",
+                range: Range::Manual { min: 0, max: 1_000 },
+                default: ControlValue::Manual(500),
+                auto: false,
+            },
+            Control::BacklightCompensation | Control::Zoom => Spec {
+                control: self,
+                unit: "norm",
+                range: Range::Manual { min: 0, max: 1_000 },
+                default: ControlValue::Manual(0),
+                auto: false,
+            },
+            Control::Gamma => Spec {
+                control: self,
+                unit: "milli-gamma",
+                range: Range::Manual {
+                    min: 1_000,
+                    max: 3_000,
+                },
+                default: ControlValue::Manual(2_200),
+                auto: false,
+            },
+            Control::PowerLineFrequency => Spec {
+                control: self,
+                unit: "enum",
+                range: Range::Manual { min: 0, max: 3 },
+                default: ControlValue::Manual(0),
+                auto: false,
+            },
+            Control::Pan | Control::Tilt => Spec {
+                control: self,
+                unit: "arcsec",
+                range: Range::Manual {
+                    min: 0,
+                    max: 1_296_000,
+                },
+                default: ControlValue::Manual(648_000),
+                auto: false,
+            },
         }
     }
 
@@ -129,6 +211,17 @@ impl Control {
             Control::HFlip => "h_flip",
             Control::VFlip => "v_flip",
             Control::Crop => "crop",
+            Control::Brightness => "brightness",
+            Control::Contrast => "contrast",
+            Control::Saturation => "saturation",
+            Control::Hue => "hue",
+            Control::Sharpness => "sharpness",
+            Control::Gamma => "gamma",
+            Control::BacklightCompensation => "backlight_compensation",
+            Control::PowerLineFrequency => "power_line_frequency",
+            Control::Zoom => "zoom",
+            Control::Pan => "pan",
+            Control::Tilt => "tilt",
         }
     }
 
@@ -156,6 +249,40 @@ impl Control {
                 }
             }
             _ => Err(ValueError::WrongKind),
+        }
+    }
+}
+
+/// The power line frequency a [`Control::PowerLineFrequency`] value selects. The numbers are the
+/// values the control takes, the same as the V4L2 menu's indices.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u32)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum PowerLineFrequency {
+    /// The filter is off.
+    Disabled = 0,
+    /// 50 Hz mains.
+    Hz50 = 1,
+    /// 60 Hz mains.
+    Hz60 = 2,
+    /// The device chooses.
+    Auto = 3,
+}
+
+impl PowerLineFrequency {
+    /// The control value that selects this frequency.
+    pub const fn value(self) -> u32 {
+        self as u32
+    }
+
+    /// The frequency a control value selects, or `None` past the range.
+    pub const fn from_value(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(PowerLineFrequency::Disabled),
+            1 => Some(PowerLineFrequency::Hz50),
+            2 => Some(PowerLineFrequency::Hz60),
+            3 => Some(PowerLineFrequency::Auto),
+            _ => None,
         }
     }
 }

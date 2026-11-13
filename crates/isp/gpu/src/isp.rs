@@ -50,8 +50,8 @@ pub(crate) struct Imported {
 
 /// The software ISP's pipeline on a Vulkan device: the same parameters ([`IspParams`]),
 /// outputs ([`OutputBuffers`]) and statistics ([`IspStats`]) as [`styx_soft::SoftIsp`],
-/// computed in its integer arithmetic bit for bit (the tone curve as a table or as quadratics,
-/// `IntPolyTone`, both bit for bit with the CPU's).
+/// computed in its integer arithmetic bit for bit (the exact tone table for `Auto` and `Int`; the
+/// approximate quadratics for `ApproxTone`, which the CPU runs identically).
 ///
 /// Each frame is one submission (statistics histogram cleared, input copied in on devices
 /// with their own memory, the picture, the statistics, results copied out) and one wait on
@@ -795,11 +795,11 @@ impl GpuIsp {
         }
     }
 
-    /// The arithmetic the pictures run in: [`styx_soft::Arithmetic::IntPolyTone`] with the tone
+    /// The arithmetic the pictures run in: [`styx_soft::Arithmetic::ApproxTone`] with the tone
     /// curve as quadratics, else [`styx_soft::Arithmetic::Int`].
     pub fn arithmetic(&self) -> styx_soft::Arithmetic {
         if self.tables.block.tone_lut == 2 {
-            styx_soft::Arithmetic::IntPolyTone
+            styx_soft::Arithmetic::ApproxTone
         } else {
             styx_soft::Arithmetic::Int
         }
