@@ -12,11 +12,21 @@
 //! contract says.
 //!
 //! A request that comes too late for its frame (the post frame has passed) is posted at once and
-//! reports the later frame it lands on ([`Landing::late`]). Nothing is clamped silently:
+//! reports the later frame it lands on ([`Landing::late`]). Nothing is refused for a value the
+//! sensor cannot take exactly; it is answered with the nearest value it can take, and the answer
+//! says why ([`Clamp`]):
 //!
-//! - a value outside the generic control range is [`Error::Value`] (from `styx-controls`);
-//! - a value outside this sensor's own limits for the mode (its exposure range at the frame length
-//!   in force, its gain codes, its frame lengths) is [`Error::Limit`], which names the limit.
+//! - an exposure longer than its frame length allows (the frame less the mode's margin) is moved to
+//!   that ceiling, and one below the sensor's minimum to the minimum. A frame rate is never
+//!   lengthened to fit an exposure: the frame rate has priority, so an exposure in force that the
+//!   new frame cannot hold is clamped from its frame on;
+//! - a gain outside the sensor's codes is moved to the nearest code's gain;
+//! - a frame rate outside the sensor's frame lengths is clamped to the nearest one, and the rate it
+//!   runs at is reported ([`FrameRate`]).
+//!
+//! Refused, with nothing posted: a value outside the generic control range ([`Error::Value`], from
+//! `styx-controls`), a control this path does not post, automatic values, a zero frame rate, and a
+//! mode that cannot take controls.
 //!
 //! Units: exposure in microseconds becomes lines times `2^exposure_fraction_bits` with the mode's
 //! line time; gain in thousandths becomes the sensor's code by the mode's gain law
@@ -32,12 +42,14 @@
 //!
 //! No register access, I2C or ioctls: the only calls are the sensor contract's.
 
+mod clamp;
 mod controls;
 mod error;
 mod gain;
 mod schedule;
 mod units;
 
+pub use clamp::{Clamp, ClampReason, ExposureReport};
 pub use controls::{FrameRate, Initial, Landing, Landings, NativeControls};
 pub use error::{Error, Limit};
 pub use gain::{code_to_gain, gain_to_code};

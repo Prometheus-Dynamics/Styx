@@ -60,6 +60,7 @@ daedalus-wgpu = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", r
 daedalus-wgpu-author = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "831aecbe91d7fa8c5d5c65101ffb7e5309154039" }
 orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "dbd5fc08b9e55a117f10105ae103d2ad04cd14df", default-features = false }
 orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "dbd5fc08b9e55a117f10105ae103d2ad04cd14df" }
+orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "dbd5fc08b9e55a117f10105ae103d2ad04cd14df" }
 orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "dbd5fc08b9e55a117f10105ae103d2ad04cd14df" }
 orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "dbd5fc08b9e55a117f10105ae103d2ad04cd14df" }
 

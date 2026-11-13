@@ -3,7 +3,7 @@
 
 use lemnos_contract_camera_sensor::{GainRange, Mode};
 use styx_controls::{Control, ControlValue, Update, ValueError};
-use styx_native_controls::{Error, Initial, Limit, NativeControls};
+use styx_native_controls::{ClampReason, Error, Initial, NativeControls};
 
 mod common;
 
@@ -61,47 +61,47 @@ fn streaming() -> (NativeControls, Sensor) {
 }
 
 #[test]
-fn an_exposure_past_the_frame_is_refused_with_the_limit_named() {
+fn an_exposure_past_the_frame_is_clamped_to_its_ceiling_and_the_reason_is_kept() {
+    // 60 fps is a frame of 1832 lines: the ceiling is (1832 - 25) lines of 9.1 us, 16 444 us.
     let (mut controls, mut sensor) = streaming();
-    let posts = sensor.posts.len();
-    let err = controls
+    let landings = controls
         .request(&mut sensor, &[manual(Control::Exposure, 17_000, 12)])
-        .unwrap_err();
-    match err {
-        Error::Limit(Limit {
-            control: Control::Exposure,
-            requested: 17_000,
-            min: 1..,
-            max,
-            frame_lines: Some(1832),
-        }) => assert!((16_440..=16_450).contains(&max), "max {max}"),
-        other => panic!("expected an exposure limit, got {other:?}"),
-    }
-    assert!(err.to_string().contains("at a frame length of 1832 lines"));
-    assert_eq!(sensor.posts.len(), posts, "nothing posted");
+        .expect("clamped, not refused");
+    assert_eq!(landings.len(), 1);
+    let report = controls.exposure_report();
+    assert_eq!(report.requested_us, 17_000);
+    assert_eq!(report.applied_us, 16_444);
+    let clamp = report.clamp.expect("a clamp");
+    assert_eq!(clamp.reason, ClampReason::Ceiling);
+    assert_eq!(clamp.frame_lines, Some(1832));
+    assert_eq!(clamp.applied, 16_444);
+    assert!(
+        clamp
+            .text
+            .contains("the frame is 1832 lines, exposure can be at most 16444 us"),
+        "{}",
+        clamp.text
+    );
+    // The frame shows the applied value, not the request.
+    assert_eq!(controls.metadata(12, 0).exposure_us, 16_444);
 }
 
 #[test]
-fn a_gain_past_the_sensors_code_range_is_refused_not_clamped() {
+fn a_gain_past_the_sensors_codes_is_clamped_to_the_nearest_and_the_reason_is_kept() {
+    // The top code is 255 at unity 16: 15 938 milli is its gain.
     let (mut controls, mut sensor) = streaming();
-    let err = controls
+    controls
         .request(&mut sensor, &[manual(Control::Gain, 16_000, 12)])
-        .unwrap_err();
+        .expect("clamped, not refused");
+    assert_eq!(controls.metadata(12, 0).analogue_gain_milli, 15_938);
+    let clamp = controls.clamp(Control::Gain).expect("a gain clamp");
+    assert_eq!(clamp.reason, ClampReason::Ceiling);
+    assert_eq!((clamp.requested, clamp.applied), (16_000, 15_938));
     assert_eq!(
-        err,
-        Error::Limit(Limit {
-            control: Control::Gain,
-            requested: 16_000,
-            min: 1_000,
-            max: 15_938,
-            frame_lines: None,
-        })
+        clamp.text,
+        "gain asked 16000 milli, gain can be at most 15938 milli: applied 15938 milli"
     );
-    assert_eq!(
-        err.to_string(),
-        "gain 16000 milli is outside the sensor's 1000..=15938 milli"
-    );
-    assert!(sensor.posts.iter().all(|&(_, id)| id != 12));
+    assert!(controls.clamp(Control::Exposure).is_none());
 }
 
 #[test]
@@ -205,7 +205,7 @@ fn a_request_before_the_first_frame_is_refused() {
 }
 
 #[test]
-fn a_frame_rate_that_cuts_the_exposure_in_force_is_refused() {
+fn a_frame_rate_that_cuts_the_exposure_in_force_clamps_the_exposure_and_keeps_the_rate() {
     let mode = mode();
     let mut controls = NativeControls::new(&mode, START).unwrap();
     let mut sensor = Sensor::new(&mode);
@@ -220,38 +220,37 @@ fn a_frame_rate_that_cuts_the_exposure_in_force_is_refused() {
                 .unwrap();
         }
     }
-    let posts = sensor.posts.len();
-    let err = controls
+    // Frame rate has priority: the frame is 916 lines, not lengthened for the 12 ms exposure. The
+    // exposure is moved to the ceiling of that frame, (916 - 25) lines of 9.1 us, 8 108 us, from frame 12.
+    controls
         .request(&mut sensor, &[manual(Control::FrameRate, 120_000, 10)])
-        .unwrap_err();
-    match err {
-        Error::Limit(Limit {
-            control: Control::Exposure,
-            requested: 12_000,
-            frame_lines: Some(916),
-            ..
-        }) => {}
-        other => panic!("expected the exposure in force to be refused, got {other:?}"),
-    }
-    assert_eq!(sensor.posts.len(), posts);
+        .expect("clamped, not refused");
+    assert_eq!(sensor.frame_length.last().map(|&(_, fl)| fl), Some(916));
+    // The request is posted in frame 9 (the frame started), so it lands on frame 9 + 2 = 11, as the
+    // frame length does; frame 10 still shows the 12 ms it was given.
+    assert_eq!(controls.metadata(11, 0).exposure_us, 8_108);
+    assert_eq!(controls.metadata(10, 0).exposure_us, 12_000);
+    let report = controls.exposure_report();
+    assert_eq!(report.requested_us, 12_000);
+    assert_eq!(report.applied_us, 8_108);
+    let clamp = report.clamp.expect("the exposure in force was clamped");
+    assert_eq!(clamp.frame_lines, Some(916));
+    assert_eq!(clamp.reason, ClampReason::Ceiling);
 }
 
 #[test]
-fn an_initial_value_the_sensor_cannot_take_is_refused_at_setup() {
-    let err = NativeControls::new(
+fn an_initial_exposure_the_frame_cannot_hold_is_clamped_at_setup_with_the_reason() {
+    let controls = NativeControls::new(
         &mode(),
         Initial {
             exposure_us: 17_000,
             ..START
         },
     )
-    .unwrap_err();
-    assert!(matches!(
-        err,
-        Error::Limit(Limit {
-            control: Control::Exposure,
-            requested: 17_000,
-            ..
-        })
-    ));
+    .expect("clamped, not refused");
+    let report = controls.exposure_report();
+    assert_eq!((report.requested_us, report.applied_us), (17_000, 16_444));
+    let clamp = report.clamp.expect("a clamp");
+    assert_eq!(clamp.frame_lines, Some(1832));
+    assert_eq!(controls.metadata(0, 0).exposure_us, 16_444);
 }
