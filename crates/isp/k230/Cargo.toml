@@ -1,0 +1,25 @@
+[package]
+name = "styx-k230"
+description = "The K230D's ISP8000 as Styx's ISP: the neutral settings (styx-settings) mapped to the register writes Lemnos's k230isp library takes, posted as jobs on camera.isp/1, and its statistics decoded for the 3A. Written, untested on board."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["std-core"] }
+styx-settings = { path = "../settings" }
+styx-soft = { path = "../soft" }
+styx-lemnos = { path = "../../core/lemnos", features = ["k230isp"] }
+styx-frame = { path = "../../core/frame", features = ["linux"] }
+styx-format = { path = "../../core/format" }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "04d09360d2e5c5a5c0f314e95aabf3e336c41aa9", features = ["std"] }
+lemnos-contract-camera-isp = { workspace = true }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[lints]
+workspace = true
