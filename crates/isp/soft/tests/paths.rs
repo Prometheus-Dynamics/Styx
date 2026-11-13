@@ -3,7 +3,7 @@
 //! pipeline's edges and windows meet. The settings cover the neutral case (identity matrix, sRGB
 //! tone), the 8-bit direct luma's eligible and ineligible set-ups, and lens shading.
 
-use styx_aaa::LensShading;
+use styx_aaa::{LensShading, Pwl};
 use styx_settings::IspSettings;
 use styx_soft::params::{IspParams, Paths};
 use styx_soft::settings::{Options, params_for};
@@ -240,6 +240,83 @@ fn flags_parse_by_name() {
     assert!(p.skip_noops && !p.direct_u8);
     let p = Paths::parse("legacy,+skip-noops").unwrap();
     assert!(p.skip_noops && !p.direct_u8);
+    let p = Paths::parse("current,-luma-lut8").unwrap();
+    assert!(p.direct_u8 && !p.luma_lut8);
+    assert!(Paths::parse("current,+luma-lut8").unwrap().luma_lut8);
     assert!(Paths::parse("fast").is_err());
     assert!(Paths::parse("current,direct-u8").is_err());
+}
+
+/// Neutral settings with a non-default gamma (a piecewise curve, not sRGB).
+fn gamma_settings() -> IspSettings {
+    let mut s = neutral();
+    s.gamma = Some(
+        Pwl::new(vec![
+            (0.0, 0.0),
+            (0.05, 0.2),
+            (0.25, 0.55),
+            (0.6, 0.85),
+            (1.0, 1.0),
+        ])
+        .unwrap(),
+    );
+    s
+}
+
+/// The luma routes with the tone folded into the sums (`luma_lut8`) equal the luma row followed
+/// by the tone pass, bit for bit: for every byte value as a uniform frame, for random frames, with
+/// the default sRGB tone and a non-default gamma, at full and half size. The reference is the
+/// same paths with `luma_lut8` off, and the legacy paths.
+#[test]
+fn luma_lut8_equals_the_luma_row_then_tone() {
+    let on = Paths {
+        luma_lut8: true,
+        ..Paths::CURRENT
+    };
+    let off = Paths {
+        luma_lut8: false,
+        ..Paths::CURRENT
+    };
+    for (name, settings) in [("srgb", neutral()), ("gamma", gamma_settings())] {
+        for (w, h) in [(8u32, 6u32), (16, 8)] {
+            let format = RawFormat::new(w, h, CfaPattern::Bggr, RawPacking::U8);
+            let mut frames: Vec<Vec<u8>> = (0..=255u8).map(|b| vec![b; (w * h) as usize]).collect();
+            for seed in 0..6u64 {
+                frames.push(bytes((w * h) as usize, seed + 1000 * w as u64));
+            }
+            for input in &frames {
+                for scale in [Scale::Full, Scale::Half] {
+                    let want_off = run(
+                        format,
+                        &params(&format, &settings, off),
+                        input,
+                        w as usize,
+                        scale,
+                        Kind::Luma,
+                        None,
+                    );
+                    let want_legacy = run(
+                        format,
+                        &params(&format, &settings, Paths::LEGACY),
+                        input,
+                        w as usize,
+                        scale,
+                        Kind::Luma,
+                        None,
+                    );
+                    let got = run(
+                        format,
+                        &params(&format, &settings, on),
+                        input,
+                        w as usize,
+                        scale,
+                        Kind::Luma,
+                        None,
+                    );
+                    assert_eq!(got, want_off, "{name} {w}x{h} {scale:?} vs knob off");
+                    assert_eq!(got, want_legacy, "{name} {w}x{h} {scale:?} vs legacy");
+                }
+            }
+        }
+    }
 }

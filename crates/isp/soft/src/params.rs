@@ -86,6 +86,11 @@ pub struct Paths {
     /// times its byte: 8-bit packing, zero black level, unit gains and no lens shading. Off: the
     /// front end unpacks every row into 12-bit samples first.
     pub direct_u8: bool,
+    /// With `direct_u8`, the GREY luma routes apply the tone table to the weighted byte sum
+    /// (full size) or to the quad's byte sum times 4 (half size) in one pass, with no 12-bit
+    /// luma row between. The table is the same one the tone pass uses, so the output is
+    /// bit-identical; only the passes change. Off: the luma row, then the tone pass.
+    pub luma_lut8: bool,
 }
 
 impl Paths {
@@ -93,23 +98,21 @@ impl Paths {
     pub const CURRENT: Self = Self {
         skip_noops: true,
         direct_u8: true,
+        luma_lut8: false,
     };
     /// The paths the new ones replace.
     pub const LEGACY: Self = Self {
         skip_noops: false,
         direct_u8: false,
+        luma_lut8: false,
     };
 
     /// `current`, `legacy`, or a list of flags: `current,-direct-u8` takes the new paths but the
-    /// legacy front end; `legacy,+skip-noops` the reverse. Flags: `skip-noops`, `direct-u8`.
+    /// legacy front end; `legacy,+skip-noops` the reverse. Flags: `skip-noops`, `direct-u8`,
+    /// `luma-lut8`.
     pub fn parse(text: &str) -> Result<Self, String> {
         let mut out = Self::CURRENT;
         for (i, item) in text.split(',').map(str::trim).enumerate() {
-            let flag = |name: &str| match name {
-                "skip-noops" => Ok(0usize),
-                "direct-u8" => Ok(1usize),
-                other => Err(format!("unknown ISP path flag {other:?}")),
-            };
             match (i, item) {
                 (0, "current") => out = Self::CURRENT,
                 (0, "legacy") => out = Self::LEGACY,
@@ -123,9 +126,11 @@ impl Paths {
                             }
                         },
                     };
-                    match flag(name)? {
-                        0 => out.skip_noops = on,
-                        _ => out.direct_u8 = on,
+                    match name {
+                        "skip-noops" => out.skip_noops = on,
+                        "direct-u8" => out.direct_u8 = on,
+                        "luma-lut8" => out.luma_lut8 = on,
+                        other => return Err(format!("unknown ISP path flag {other:?}")),
                     }
                 }
             }

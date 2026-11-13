@@ -333,6 +333,29 @@ fn bayer_luma_u8_leaves(rows: [&[u8]; 3], base: usize, dst: &mut [u16]) -> (Simd
     outcome.unwrap_or((SimdBackend::Scalar, 0))
 }
 
+/// See [`scalar::bayer_tone_u8_row`]: the tone table applied to the byte sums in one pass.
+pub fn bayer_tone_u8_row(
+    rows: [&[u8]; 3],
+    x0: usize,
+    dst: &mut [u8],
+    n: usize,
+    width: usize,
+    table: &[u8; 4096],
+) {
+    scalar::bayer_tone_u8_row(rows, x0, dst, n, width, table);
+}
+
+/// See [`scalar::quad_tone_u8_row`]; `width` is the output (half) width.
+pub fn quad_tone_u8_row(
+    top: &[u8],
+    bottom: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    table: &[u8; 4096],
+) {
+    scalar::quad_tone_u8_row(top, bottom, dst, width, table);
+}
+
 /// See [`scalar::quad_luma_u8_row`]; `width` is the output (half) width.
 pub fn quad_luma_u8_row(top: &[u8], bottom: &[u8], dst: &mut [u16], width: usize) -> SimdBackend {
     let (top, bottom, dst) = (&top[..2 * width], &bottom[..2 * width], &mut dst[..width]);

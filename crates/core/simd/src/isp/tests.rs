@@ -526,6 +526,61 @@ fn u8_quad_leaves_match() {
     }
 }
 
+/// The fused tone-in-sum kernels equal the luma kernel followed by the table, for random tables
+/// and rows, and for every byte value as a uniform neighbourhood (the sum is then `16 b`).
+#[test]
+fn u8_tone_matches_luma_then_table() {
+    let table: [u8; 4096] =
+        core::array::from_fn(|k| (k as u32).wrapping_mul(2_654_435_761).rotate_left(7) as u8);
+    for width in (4..=40).chain([95, 96, 97, 255, 1280]) {
+        for seed in 0..4u64 {
+            let frame: Vec<Vec<u8>> = (0..3)
+                .map(|i| bytes(width, seed * 13 + i + width as u64))
+                .collect();
+            let rows = [&frame[0][..], &frame[1][..], &frame[2][..]];
+            for (x0, n) in [(0, width), (2.min(width - 2), width - 2)] {
+                let n = n.min(width - x0);
+                let mut luma = vec![0u16; n];
+                bayer_luma_u8_row(rows, x0, &mut luma, n, width);
+                let want: Vec<u8> = luma.iter().map(|&v| table[v as usize]).collect();
+                let mut got = vec![0u8; n];
+                bayer_tone_u8_row(rows, x0, &mut got, n, width, &table);
+                assert_eq!(got, want, "bayer width {width} x0 {x0} seed {seed}");
+            }
+            let half = width / 2;
+            let mut luma = vec![0u16; half];
+            quad_luma_u8_row(
+                &frame[0][..2 * half],
+                &frame[1][..2 * half],
+                &mut luma,
+                half,
+            );
+            let want: Vec<u8> = luma.iter().map(|&v| table[v as usize]).collect();
+            let mut got = vec![0u8; half];
+            quad_tone_u8_row(
+                &frame[0][..2 * half],
+                &frame[1][..2 * half],
+                &mut got,
+                half,
+                &table,
+            );
+            assert_eq!(got, want, "quads width {width} seed {seed}");
+        }
+    }
+    // Uniform neighbourhoods: a byte b in every neighbour makes the bayer sum 16 b and the quad
+    // sum 4 b (times four: 16 b), so the table entry is at 16 b.
+    for b in 0..=255u8 {
+        let row = [b; 9];
+        let rows = [&row[..], &row[..], &row[..]];
+        let mut got = [0u8; 1];
+        bayer_tone_u8_row(rows, 1, &mut got, 1, 9, &table);
+        assert_eq!(got[0], table[16 * b as usize], "uniform byte {b}");
+        let mut got = [0u8; 1];
+        quad_tone_u8_row(&row[..4], &row[..4], &mut got, 1, &table);
+        assert_eq!(got[0], table[16 * b as usize], "uniform quad byte {b}");
+    }
+}
+
 const PATTERNS: [CfaOrder; 4] = [
     CfaOrder::Rggb,
     CfaOrder::Bggr,

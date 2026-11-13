@@ -233,27 +233,97 @@ pub fn bayer_luma_u8_interior(rows: [&[u8]; 3], base: usize, dst: &mut [u16]) {
     }
 }
 
+/// The weighted byte sums of [`bayer_luma_u8_row`] for output columns `x0 .. x0 + n`, each passed
+/// to `put(i, sum)`: the mirrored edge columns one by one, the interior in slices.
+#[inline(always)]
+fn bayer_each(
+    rows: [&[u8]; 3],
+    x0: usize,
+    n: usize,
+    width: usize,
+    mut put: impl FnMut(usize, u16),
+) {
+    // Columns whose neighbours lie in the frame, without a mirror: the rest are one by one.
+    let lo = usize::from(x0 == 0).min(n);
+    let hi = if x0 + n == width {
+        n.saturating_sub(1).max(lo)
+    } else {
+        n
+    };
+    for i in (0..lo).chain(hi..n) {
+        put(i, bayer_luma_u8_one(rows, x0 + i, width));
+    }
+    let m = hi - lo;
+    if m == 0 {
+        return;
+    }
+    let base = x0 + lo;
+    let [up, cur, dn] = rows;
+    fn at(row: &[u8], start: usize, m: usize) -> &[u8] {
+        &row[start..][..m]
+    }
+    let (ul, uc, ur) = (at(up, base - 1, m), at(up, base, m), at(up, base + 1, m));
+    let (cl, cc, cr) = (at(cur, base - 1, m), at(cur, base, m), at(cur, base + 1, m));
+    let (dl, dc, dr) = (at(dn, base - 1, m), at(dn, base, m), at(dn, base + 1, m));
+    for i in 0..m {
+        let left = ul[i] as u32 + 2 * cl[i] as u32 + dl[i] as u32;
+        let centre = uc[i] as u32 + 2 * cc[i] as u32 + dc[i] as u32;
+        let right = ur[i] as u32 + 2 * cr[i] as u32 + dr[i] as u32;
+        put(lo + i, (left + 2 * centre + right) as u16);
+    }
+}
+
 /// [`bayer_luma_row`] of samples that are 16 times a byte (8-bit packing, unit gains, zero black
 /// level, no lens shading): the same values, straight from the bytes. `rows` are the frame's
 /// rows above, at and below the output row, `width` bytes each; output `i` is mosaic column
 /// `x0 + i`, and columns outside the frame mirror. Each output is the weighted sum of the bytes
 /// (weights total 16), which is exactly the 12-bit result: `(16 S + 8) >> 4 = S`.
 pub fn bayer_luma_u8_row(rows: [&[u8]; 3], x0: usize, dst: &mut [u16], n: usize, width: usize) {
-    for (i, d) in dst[..n].iter_mut().enumerate() {
-        *d = bayer_luma_u8_one(rows, x0 + i, width);
-    }
+    let dst = &mut dst[..n];
+    bayer_each(rows, x0, n, width, |i, v| dst[i] = v);
+}
+
+/// [`bayer_luma_u8_row`] followed by the tone table, in one pass: `table[S]` for each sum `S`
+/// (at most 4080, so the 4096-entry table covers it). The same value as the 12-bit path's
+/// `lut_row` of the luma row.
+pub fn bayer_tone_u8_row(
+    rows: [&[u8]; 3],
+    x0: usize,
+    dst: &mut [u8],
+    n: usize,
+    width: usize,
+    table: &[u8; 4096],
+) {
+    let dst = &mut dst[..n];
+    bayer_each(rows, x0, n, width, |i, v| dst[i] = table[v as usize]);
 }
 
 /// [`quad_luma_row`] of samples that are 16 times a byte: `4 V` for the byte sum `V` of each
 /// quad, which is the 12-bit mean `(16 V + 2) >> 2`. `top` and `bottom` hold `2 * width` bytes.
 pub fn quad_luma_u8_row(top: &[u8], bottom: &[u8], dst: &mut [u16], width: usize) {
     for (i, d) in dst[..width].iter_mut().enumerate() {
-        let s = top[2 * i] as u32
-            + top[2 * i + 1] as u32
-            + bottom[2 * i] as u32
-            + bottom[2 * i + 1] as u32;
-        *d = (4 * s) as u16;
+        *d = quad_sum(top, bottom, i) * 4;
     }
+}
+
+/// [`quad_luma_u8_row`] followed by the tone table: `table[4 V]` per quad, the same value as
+/// `lut_row` of the 12-bit quad luma (`4 V` is at most 4080).
+pub fn quad_tone_u8_row(
+    top: &[u8],
+    bottom: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    table: &[u8; 4096],
+) {
+    for (i, d) in dst[..width].iter_mut().enumerate() {
+        *d = table[(quad_sum(top, bottom, i) * 4) as usize];
+    }
+}
+
+/// The byte sum `V` of quad `i` (columns `2 i`, `2 i + 1` of two rows).
+#[inline(always)]
+fn quad_sum(top: &[u8], bottom: &[u8], i: usize) -> u16 {
+    top[2 * i] as u16 + top[2 * i + 1] as u16 + bottom[2 * i] as u16 + bottom[2 * i + 1] as u16
 }
 
 /// One RGB pixel per 2x2 quad of rows `top` and `bottom` (`2 * width` samples each): the red

@@ -68,6 +68,9 @@ pub(crate) struct IntPrep {
     /// Luma routes read the source bytes directly: every sample is exactly 16 times its byte
     /// (see [`Paths::direct_u8`]).
     pub direct_u8: bool,
+    /// The GREY luma routes apply the tone table in one pass ([`Paths::luma_lut8`]): the
+    /// integer table, not the quadratics, and only with `direct_u8`.
+    pub luma_lut8: bool,
     /// Q12 colour matrix.
     pub ccm: Option<[i16; 9]>,
     pub lut: Option<Arc<ToneLut>>,
@@ -465,6 +468,7 @@ impl IntPrep {
             gains,
             gain_src,
             direct_u8,
+            luma_lut8: direct_u8 && params.paths.luma_lut8 && lut.is_some() && poly.is_none(),
             ccm,
             lut,
             poly,
@@ -730,6 +734,24 @@ mod tests {
             b: 1,
         });
         assert_eq!(state(&u8_fmt, &black), (false, false), "black level");
+        // The tone folded into the sums needs the integer table and the 8-bit direct route.
+        let fused = |p: &IspParams| match Prepared::new(&u8_fmt, p, None, 0.0).unwrap().arith {
+            Arith::Int(i) => i.luma_lut8,
+            Arith::Half(_) => panic!("integer arithmetic"),
+        };
+        let mut toned = base.clone();
+        toned.tone = Some(crate::params::ToneCurve::Srgb);
+        toned.paths = crate::params::Paths {
+            luma_lut8: true,
+            ..crate::params::Paths::CURRENT
+        };
+        assert!(fused(&toned), "8-bit with a table takes the fused tone");
+        let legacy_toned = IspParams {
+            paths: crate::params::Paths::LEGACY,
+            ..toned.clone()
+        };
+        assert!(!fused(&legacy_toned), "legacy paths do not");
+        assert!(!fused(&base), "no table, nothing to fold");
         let ten = RawFormat::new(16, 8, CfaPattern::Rggb, RawPacking::U16Le { bits: 10 });
         assert_eq!(state(&ten, &base), (false, false), "10-bit samples");
     }

@@ -456,6 +456,22 @@ impl Worker {
         let n = g.ow;
         let my = Self::mosaic_row(g, oy);
         let w = p.width;
+        // The tone table applied to the sums in the same pass (`Paths::luma_lut8`).
+        if let (true, Some(lut)) = (ip.luma_lut8, ip.lut.as_deref()) {
+            match g.sample {
+                Sample::Full => {
+                    let rows = [-1isize, 0, 1]
+                        .map(|d| src.row(reflect(my as isize + d, p.height), (0, w)));
+                    simd::bayer_tone_u8_row(rows, g.x0, dst, n, w, lut.full());
+                }
+                Sample::Quads { .. } => {
+                    let top = src.row(my, (g.x0, 2 * n));
+                    let bottom = src.row(my + 1, (g.x0, 2 * n));
+                    simd::quad_tone_u8_row(top, bottom, dst, n, lut.full());
+                }
+            }
+            return;
+        }
         match g.sample {
             Sample::Full => {
                 let rows =
