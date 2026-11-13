@@ -1,0 +1,18 @@
+[package]
+name = "styx-h264"
+description = "Styx's own H.264 encoder: Constrained Baseline CAVLC with rate control and quarter-pel motion, as a styx-codec-api encoder on the native backend."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-codec-api = { path = "../codec-api" }
+styx-format = { path = "../../core/format" }
+styx-frame = { path = "../../core/frame" }
+styx-simd = { path = "../../core/simd" }
+
+[lints]
+workspace = true
