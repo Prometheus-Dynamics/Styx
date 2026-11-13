@@ -1,6 +1,6 @@
 [package]
 name = "styx-libcamera"
-description = "libcamera capture backend: cameras, controls, and dma-buf frames as FrameLeases without copies."
+description = "libcamera capture backend: cameras, controls, and dma-buf frames as FrameLeases (zero-copy: not yet run on a camera, see PR H6)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -19,7 +19,7 @@ use lemnos_sim::SimBoard;
 use lemnosd::{Config, Service};
 use styx_format::FourCc;
 use styx_frame::copy_counters;
-use styx_lemnos::{ChainError, Client, find_chain, open_frames};
+use styx_lemnos::{ChainError, Client, Frames, find_chain, open_frames};
 
 fn socket_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("styx-lemnos-sim-{}", std::process::id()));
@@ -94,7 +94,7 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
     .expect("set_input");
 
     // The receiver's frame stream, opened through the client and mapped without copies.
-    let mut frames = open_frames(
+    let mut frames: Frames = open_frames(
         &client,
         chain.receiver.index,
         "frames",
@@ -123,6 +123,12 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
         }
     }
     assert!(seen >= 12, "frames seen: {seen}");
+    // Every frame delivered was one acquire of the pool: the probe-free sweep adds none.
+    assert_eq!(
+        frames.stats().acquired,
+        seen,
+        "pool acquires vs frames delivered"
+    );
 
     for counter in copy_counters() {
         assert_eq!(counter.copies(), 0, "{} copied", counter.site());
@@ -131,6 +137,79 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
     drop(sensor);
     drop(receiver);
     drop(isp);
+    drop(client);
+    service.stop();
+}
+
+#[test]
+fn compressed_stream_leases_are_one_plane_of_each_frames_bytes() {
+    let (service, socket) = start("compressed", &sim::board(Some("csi0")));
+    let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
+
+    let devices = client.list().expect("list");
+    let chain = find_chain(&devices).expect("chain by tag and link");
+    let mut sensor = client
+        .open::<dyn CameraSensor>(&chain.sensor.name)
+        .expect("sensor contract");
+    let mut receiver = client
+        .open::<dyn CameraReceiver>(&chain.receiver.name)
+        .expect("receiver contract");
+    let mode = sensor.mode(0).expect("mode 0");
+    sensor.select_mode(0).expect("select_mode");
+    let layout = receiver
+        .configure(mode.link, Packing::Packed)
+        .expect("configure receiver");
+
+    // A compressed code: each frame's lease is one plane, as long as that frame's bytes.
+    let mut frames: Frames = open_frames(
+        &client,
+        chain.receiver.index,
+        "frames",
+        FourCc::MJPG,
+        layout.width,
+        layout.height,
+    )
+    .expect("open compressed frame stream");
+
+    receiver.start().expect("receiver start");
+    sensor.start().expect("sensor start");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut seen = 0usize;
+    let mut lengths = std::collections::BTreeSet::new();
+    while seen < 12 && Instant::now() < deadline {
+        if let Some(lease) = frames.next(Duration::from_millis(200)).expect("next") {
+            // The sim's identity is its frame sequence, and its frame bytes follow from that.
+            let expect = sim::frame_bytes(layout.size, lease.id()) as usize;
+            {
+                let read = lease.read().expect("mapped for the CPU");
+                let plane = read.plane(0).expect("one plane");
+                assert_eq!(plane.data.len(), expect, "frame {} length", lease.id());
+                assert!(read.plane(1).is_none(), "a compressed frame has one plane");
+                lengths.insert(plane.data.len());
+            }
+            frames.release(lease);
+            seen += 1;
+        }
+    }
+    assert!(seen >= 12, "frames seen: {seen}");
+    assert!(
+        lengths.len() > 1,
+        "frame lengths did not differ: {lengths:?}"
+    );
+    assert_eq!(
+        frames.stats().acquired,
+        seen,
+        "pool acquires vs frames delivered"
+    );
+    assert_eq!(frames.oversize_drops(), 0);
+
+    for counter in copy_counters() {
+        assert_eq!(counter.copies(), 0, "{} copied", counter.site());
+    }
+    drop(frames);
+    drop(sensor);
+    drop(receiver);
     drop(client);
     service.stop();
 }

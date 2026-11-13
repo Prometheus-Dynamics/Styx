@@ -1,14 +1,14 @@
 //! The libcamera binding: cameras, configuration, dma-buf frames and requests, over the C shim.
 //!
-//! Frames are zero-copy: each libcamera buffer is a dma-buf mapped once (read-only) as a
-//! [`FdMemory`] in one [`FramePool`] per stream, and a completed request hands its buffer out
-//! as a [`FrameLease`]. Buffer `k` is requeued to libcamera only when no lease on it is out:
-//! a parked buffer is retried by the requeue thread with `acquire_at`, which reports `Held`
-//! while a consumer still holds it.
+//! Frames are meant to be zero-copy, and are not yet run on a camera (proof: PR H6): each libcamera
+//! buffer's dma-buf is mapped once (read-only) as a [`FdMemory`] in one [`FramePool`] per stream,
+//! and a completed request hands its buffer out as a [`FrameLease`]. Buffer `k` is requeued to
+//! libcamera only when no lease on it is out: a parked buffer is retried by the requeue thread
+//! with `acquire_at`, which reports `Held` while a consumer still holds it.
 
 use std::ffi::{CStr, CString, c_int, c_void};
 use std::fmt;
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -18,10 +18,10 @@ use std::time::Duration;
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_format::{MediaFormat, Resolution};
 use styx_frame::{
-    AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, Layouts,
-    PlaneLayout,
+    AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool,
 };
 
+use crate::planes;
 use crate::sys;
 use crate::{CameraInfo, CaptureConfig, CaptureStats, Error, FrameSink, StreamFormat};
 
@@ -236,7 +236,7 @@ struct Inner {
     camera: NonNull<sys::Camera>,
     stream: NonNull<sys::Stream>,
     pool: FramePool<FrameMetadata>,
-    template: FrameEntry,
+    templates: Vec<FrameEntry>,
     requests: Vec<NonNull<sys::Request>>,
     buffers: Vec<NonNull<sys::FrameBuffer>>,
     requested: Mutex<Requested>,
@@ -310,7 +310,7 @@ impl Inner {
         // SAFETY: the sequence lookup reads the completed request.
         let sequence = unsafe { sys::libcamera_request_sequence(request) };
         let boot_ns = request_sensor_timestamp(request);
-        let mut entry = self.template;
+        let mut entry = self.templates[k];
         entry.id = u64::from(sequence);
         entry.timestamp_ns = match boot_ns {
             Some(boot) => to_monotonic(boot as i128),
@@ -343,7 +343,7 @@ impl Inner {
         let mut i = 0;
         while i < parked.len() {
             let k = parked[i];
-            match self.pool.acquire_at(k, self.template) {
+            match self.pool.acquire_at(k, self.templates[k]) {
                 Ok(lease) => {
                     // Free again: give the buffer back to libcamera.
                     drop(lease);
@@ -586,8 +586,8 @@ impl Capture {
         };
         let mut buffers = Vec::with_capacity(count);
         let mut memories: Vec<Box<dyn BufferMemory>> = Vec::with_capacity(count);
-        let mut payload = usize::MAX;
-        let mut plane_offset = 0usize;
+        let mut templates = Vec::with_capacity(count);
+        let mut span = None;
         for index in 0..count {
             // SAFETY: `index` is below the list's size.
             let fb = unsafe { sys::libcamera_framebuffer_list_get(list, index) }
@@ -595,30 +595,42 @@ impl Capture {
             let Some(fb) = NonNull::new(fb) else {
                 return Err(Error::Camera("allocator returned a null buffer".into()));
             };
-            let (fd, offset, length, planes) = dmabuf_plane(fb)?;
-            if planes != 1 {
-                return Err(Error::Unsupported(
-                    "only single-plane formats are supported in this backend",
-                ));
+            let parts = dmabuf_parts(fb)?;
+            let planned = planes::plan(
+                code,
+                width,
+                height,
+                stride,
+                frame_size,
+                &parts.iter().map(|part| part.part).collect::<Vec<_>>(),
+            )
+            .map_err(|err| Error::Camera(err.to_string()))?;
+            match span {
+                None => span = Some(planned.span),
+                Some(first) if first != planned.span => {
+                    return Err(Error::Camera(format!(
+                        "{code}: buffer {index} lays its planes out differently from buffer 0"
+                    )));
+                }
+                Some(_) => {}
             }
-            plane_offset = offset;
-            payload = payload.min(offset + length);
+            // Every part is the same dma-buf, so the first part's fd maps the whole buffer.
+            let memory_fd = parts
+                .into_iter()
+                .next()
+                .map(|part| part.fd)
+                .ok_or_else(|| Error::Camera("buffer has no planes".into()))?;
             buffers.push(fb);
-            memories.push(Box::new(map_dmabuf(fd, offset + length)?));
+            memories.push(Box::new(map_dmabuf(memory_fd, planned.extent)?));
+            templates.push(FrameEntry::new(0, 0, format, planned.layouts));
         }
         if count == 0 {
             return Err(Error::Camera("camera allocated no buffers".into()));
         }
+        let payload = span.unwrap_or(0);
         let size = BufferSize::new(payload, 0);
         let pool = FramePool::new(size, memories)
             .map_err(|err| Error::Camera(format!("frame pool: {err}")))?;
-        let layouts = Layouts::new(&[PlaneLayout::new(
-            plane_offset,
-            stride,
-            frame_size.min(payload - plane_offset),
-        )])
-        .ok_or_else(|| Error::Camera("frame layout does not fit the buffers".into()))?;
-        let template = FrameEntry::new(0, 0, format, layouts);
 
         let mut requests = Vec::with_capacity(count);
         for (k, fb) in buffers.iter().enumerate() {
@@ -641,7 +653,7 @@ impl Capture {
             camera: camera.0,
             stream,
             pool,
-            template,
+            templates,
             requests,
             buffers,
             requested: Mutex::new(Requested::default()),
@@ -776,9 +788,15 @@ impl Drop for Capture {
     }
 }
 
-/// The first dma-buf descriptor of a buffer's planes: its fd, plane 0 offset and length, and the
-/// plane count. The fd is duplicated so the frame owns it independently of libcamera.
-fn dmabuf_plane(fb: NonNull<sys::FrameBuffer>) -> Result<(OwnedFd, usize, usize, usize), Error> {
+/// One dma-buf part of a libcamera buffer: its fd (duplicated, so the frame owns it independently
+/// of libcamera) and the planning facts.
+struct DmaPart {
+    fd: OwnedFd,
+    part: planes::Part,
+}
+
+/// Every dma-buf part of a buffer, in libcamera's plane order.
+fn dmabuf_parts(fb: NonNull<sys::FrameBuffer>) -> Result<Vec<DmaPart>, Error> {
     // SAFETY: the planes list is owned here and destroyed before return.
     unsafe {
         let planes = sys::libcamera_framebuffer_planes(fb.as_ptr());
@@ -786,28 +804,62 @@ fn dmabuf_plane(fb: NonNull<sys::FrameBuffer>) -> Result<(OwnedFd, usize, usize,
             return Err(Error::Camera("buffer has no planes".into()));
         }
         let count = sys::libcamera_framebuffer_planes_size(planes);
-        let plane = sys::libcamera_framebuffer_planes_at(planes, 0);
-        let result = if plane.is_null() {
-            Err(Error::Camera("buffer has no first plane".into()))
-        } else {
-            let fd = sys::libcamera_framebuffer_plane_fd(plane);
-            let offset = sys::libcamera_framebuffer_plane_offset(plane);
-            let length = sys::libcamera_framebuffer_plane_length(plane);
-            if fd < 0 {
-                Err(Error::Camera("buffer plane is not a dma-buf".into()))
-            } else {
-                // SAFETY: `fd` is the plane's live descriptor; duplicating it yields a new owned fd.
-                let dup = libc::dup(fd);
-                if dup < 0 {
-                    Err(Error::Camera("duplicating a buffer fd failed".into()))
-                } else {
-                    Ok((OwnedFd::from_raw_fd(dup), offset, length, count))
-                }
+        let mut out = Vec::with_capacity(count);
+        let mut result = Ok(());
+        for index in 0..count {
+            let plane = sys::libcamera_framebuffer_planes_at(planes, index);
+            if plane.is_null() {
+                result = Err(Error::Camera("buffer plane is missing".into()));
+                break;
             }
-        };
+            let fd = sys::libcamera_framebuffer_plane_fd(plane);
+            if fd < 0 {
+                result = Err(Error::Camera("buffer plane is not a dma-buf".into()));
+                break;
+            }
+            // SAFETY: `fd` is the plane's live descriptor; duplicating it yields a new owned fd.
+            let dup = libc::dup(fd);
+            if dup < 0 {
+                result = Err(Error::Camera("duplicating a buffer fd failed".into()));
+                break;
+            }
+            // SAFETY: `dup` is a fresh descriptor this value now owns.
+            let fd = OwnedFd::from_raw_fd(dup);
+            let file = match file_id(&fd) {
+                Ok(file) => file,
+                Err(err) => {
+                    result = Err(err);
+                    break;
+                }
+            };
+            out.push(DmaPart {
+                fd,
+                part: planes::Part {
+                    file,
+                    offset: sys::libcamera_framebuffer_plane_offset(plane),
+                    length: sys::libcamera_framebuffer_plane_length(plane),
+                    offset_valid: sys::libcamera_framebuffer_plane_offset_valid(plane),
+                },
+            });
+        }
         sys::libcamera_framebuffer_planes_destroy(planes);
-        result
+        result.map(|()| out)
     }
+}
+
+/// The (device, inode) of the dma-buf behind `fd`: two fds with one key name one memory.
+fn file_id(fd: &OwnedFd) -> Result<(u64, u64), Error> {
+    let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+    // SAFETY: `fd` is a live descriptor and `stat` is a valid out-pointer for `fstat`.
+    let rc = unsafe { libc::fstat(fd.as_raw_fd(), stat.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(Error::Camera(
+            "reading a buffer fd's identity failed".into(),
+        ));
+    }
+    // SAFETY: `fstat` succeeded, so every field of `stat` is initialised.
+    let stat = unsafe { stat.assume_init() };
+    Ok((stat.st_dev, stat.st_ino))
 }
 
 fn map_dmabuf(fd: OwnedFd, len: usize) -> Result<FdMemory, Error> {

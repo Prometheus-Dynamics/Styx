@@ -65,6 +65,12 @@ fn mode(index: usize) -> Option<Mode> {
     })
 }
 
+/// Bytes in frame `sequence` of a stream whose frames are at most `size` bytes. Frames vary by
+/// sequence (as a compressed stream's do), so a reader can check each frame's own length.
+pub fn frame_bytes(size: u32, sequence: u64) -> u32 {
+    size.saturating_sub((sequence % 4) as u32 * 64)
+}
+
 /// Frame time in nanoseconds for a link: its active pixels at its pixel rate.
 fn frame_interval_ns(link: &LinkConfig) -> u64 {
     let pixels = u128::from(link.width) * u128::from(link.height);
@@ -217,7 +223,7 @@ impl Lifecycle for SimReceiver {
                 Ok(Some(buffer)) => {
                     let frame = StreamFrame {
                         buffer,
-                        bytes: size,
+                        bytes: frame_bytes(size, run.sequence),
                         sequence: run.sequence,
                         identity: run.sequence,
                         timestamp_ns: next,

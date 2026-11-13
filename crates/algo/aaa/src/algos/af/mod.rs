@@ -72,8 +72,6 @@ mod types;
 use crate::config::{CameraConfig, LensConfig};
 #[cfg(feature = "af")]
 use crate::error::Result;
-#[cfg(all(feature = "af", not(feature = "std-core")))]
-use crate::float::Float as _;
 #[cfg(feature = "af")]
 use crate::frame::{Controls, FrameMetadata};
 #[cfg(feature = "af")]
@@ -84,6 +82,8 @@ use crate::pipeline::Algorithm;
 use crate::pwl::Pwl;
 #[cfg(feature = "af")]
 use crate::stats::Statistics;
+#[cfg(all(feature = "af", not(feature = "std-core")))]
+use styx_math::Float as _;
 
 /// At most this many windows are used (as libcamera).
 pub const MAX_WINDOWS: usize = 10;
