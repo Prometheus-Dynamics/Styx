@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
-use styx_native_run::Selection;
+use styx_native_run::{ExposureReport, Selection};
 use styx_select::{Backend, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
 
@@ -228,6 +228,9 @@ pub struct CameraStatus {
     /// The sensor mode a native camera runs in, and why it was chosen (`None` for the other
     /// backends, and before a native camera starts).
     pub mode: Option<Selection>,
+    /// The exposure a native camera has: asked, applied, and the clamp with its reason (`None` for
+    /// the other backends, and before a native camera starts).
+    pub exposure: Option<ExposureReport>,
 }
 
 impl CameraStatus {
@@ -319,6 +322,7 @@ impl Slot {
             keep: KeepWindow::default(),
             rate_window: RateWindow::new(),
             mode: None,
+            exposure: None,
         };
         Self {
             id,
@@ -442,6 +446,11 @@ impl Slot {
     /// The mode choice a native camera started with.
     pub(crate) fn set_mode(&self, mode: Selection) {
         lock(&self.status).mode = Some(mode);
+    }
+
+    /// The exposure a native camera has now.
+    pub(crate) fn set_exposure(&self, exposure: ExposureReport) {
+        lock(&self.status).exposure = Some(exposure);
     }
 
     pub(crate) fn set_keep(&self, keep: KeepWindow) {
