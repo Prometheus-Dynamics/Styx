@@ -318,7 +318,7 @@ fn probe_alignment(gpu: &WgpuBackend, fd: &OwnedFd) -> (Option<usize>, Vec<(usiz
 /// Whether a frame at `offset` is imported: the device imports it when `offset` is a multiple of its
 /// alignment, and copies it otherwise. An alignment of `None` (nothing imports) copies every frame.
 fn imported_at(alignment: Option<usize>, offset: usize) -> bool {
-    alignment.is_some_and(|a| offset % a == 0)
+    alignment.is_some_and(|a| offset.is_multiple_of(a))
 }
 
 fn print_probe(label: &str, alignment: Option<usize>, answers: &[(usize, bool)]) {
