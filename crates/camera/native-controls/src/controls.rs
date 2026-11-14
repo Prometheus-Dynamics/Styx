@@ -2,7 +2,7 @@
 
 use lemnos_contract_camera_sensor::{
     CLAMP_ANALOGUE_GAIN, CLAMP_EXPOSURE, CLAMP_FRAME_LENGTH, CameraSensor, Controls, FrameValues,
-    GainRange, InForce, Mode,
+    GainRange, InForce, Mode, fps_milli_of, frame_length_for_fps_milli,
 };
 use std::collections::VecDeque;
 
@@ -126,7 +126,8 @@ const REPORTS: usize = 256;
 /// codes and law, and the frame lengths the mode names (for the error of a zero rate).
 #[derive(Debug, Clone, Copy)]
 struct Limits {
-    line_time_ps: u64,
+    /// The mode's line time, as the contract has it (`u32` picoseconds).
+    line_time_ps: u32,
     fraction_bits: u8,
     /// The analogue gain's codes and law (the contract's `GainRange`).
     gain: GainRange,
@@ -145,19 +146,27 @@ fn lane_of(control: Control) -> Option<usize> {
 
 impl Limits {
     fn exposure_us(&self, code: u32) -> u32 {
-        units::exposure_us(u64::from(code), self.line_time_ps, self.fraction_bits)
+        units::exposure_us(
+            u64::from(code),
+            u64::from(self.line_time_ps),
+            self.fraction_bits,
+        )
     }
 
     /// The exposure in microseconds for a whole number of lines, as a driver reports it.
     fn exposure_us_of_lines(&self, lines: u32) -> u32 {
         let code = u64::from(lines) << self.fraction_bits;
-        units::exposure_us(code, self.line_time_ps, self.fraction_bits)
+        units::exposure_us(code, u64::from(self.line_time_ps), self.fraction_bits)
     }
 
     /// The exposure code for `us`. Not bounded here: the driver clamps it to what its frame allows.
     fn exposure_code(&self, us: u32) -> u32 {
-        u32::try_from(units::exposure_code(us, self.line_time_ps, self.fraction_bits))
-            .unwrap_or(u32::MAX)
+        u32::try_from(units::exposure_code(
+            us,
+            u64::from(self.line_time_ps),
+            self.fraction_bits,
+        ))
+        .unwrap_or(u32::MAX)
     }
 
     /// Thousandths of gain for a code. Only called with a code this crate made, under the range's
@@ -172,17 +181,24 @@ impl Limits {
         gain::gain_to_code(&self.gain, milli)
     }
 
-    /// The rate a frame of `lines` lines runs at, in millihertz.
+    /// The rate a frame of `lines` lines runs at, in millihertz: the contract's `fps_milli_of`.
+    /// Zero lines (no period) is rate 0; a rate too large for `u32` saturates.
     fn rate_of(&self, lines: u32) -> u32 {
-        units::frame_rate_milli(u64::from(lines), self.line_time_ps)
+        // PER-FRAME TERM: the frame length becomes a period here. A per-frame correction from the
+        // contract (for one frame's own period, not the mode's line time) plugs in at this point.
+        if lines == 0 {
+            return 0;
+        }
+        fps_milli_of(self.line_time_ps, lines).unwrap_or(u32::MAX)
     }
 
-    /// The frame length for a frame rate, in whole lines: the nearest whole line to the rate. Not
-    /// bounded here: the driver clamps it to the mode's frame lengths and reports it. Only a rate of
+    /// The frame length for a frame rate, in whole lines: the contract's
+    /// `frame_length_for_fps_milli` over every whole line (`1..=u32::MAX`), so the nearest rate.
+    /// Not bounded to the mode's frame lengths: the driver clamps it and reports it. Only a rate of
     /// zero is refused.
     fn frame_rate(&self, mhz: u32) -> Result<FrameRate, Error> {
-        let lines = units::frame_length(mhz, self.line_time_ps)
-            .and_then(|lines| u32::try_from(lines).ok())
+        let lines = frame_length_for_fps_milli(self.line_time_ps, 1, u32::MAX, mhz)
+            .map(|(lines, _rate)| lines)
             .ok_or_else(|| {
                 Error::Limit(Limit {
                     control: Control::FrameRate,
@@ -251,7 +267,7 @@ impl NativeControls {
             return Err(Error::Mode("analogue gain has no unity code"));
         }
         let limits = Limits {
-            line_time_ps: u64::from(mode.line_time_ps),
+            line_time_ps: mode.line_time_ps,
             fraction_bits: mode.exposure_fraction_bits,
             gain: mode.analogue_gain,
             fl_min: mode.frame_length_min,
@@ -574,16 +590,14 @@ impl NativeControls {
             .map(|&(_, in_force)| in_force);
         let (exposure_us, gain_milli, fl) = match report {
             Some(in_force) => (
-                in_force
-                    .exposure_lines
-                    .map_or_else(|| self.limits.exposure_us(exposure_code), |lines| {
-                        self.limits.exposure_us_of_lines(lines)
-                    }),
-                in_force
-                    .analogue_gain
-                    .map_or_else(|| self.limits.gain_milli(gain_code), |code| {
-                        self.limits.gain_milli(code)
-                    }),
+                in_force.exposure_lines.map_or_else(
+                    || self.limits.exposure_us(exposure_code),
+                    |lines| self.limits.exposure_us_of_lines(lines),
+                ),
+                in_force.analogue_gain.map_or_else(
+                    || self.limits.gain_milli(gain_code),
+                    |code| self.limits.gain_milli(code),
+                ),
                 in_force.frame_length.unwrap_or(fl),
             ),
             None => (

@@ -4,6 +4,7 @@
 mod common;
 
 use common::*;
+use lemnos_contract_camera_sensor::{fps_milli_of, frame_length_for_fps_milli};
 use styx_controls::{Control, ControlValue};
 
 /// One exposure step, 1,000 times: the step frame and both delays vary, the request is made both
@@ -185,17 +186,21 @@ fn a_late_request_lands_late_and_says_so() {
 }
 
 /// A frame rate lands on its frame length delay, and the metadata reports the rate the whole frame
-/// length gives (1832 lines is 59.984 fps, not 60 fps).
+/// length gives (the contract's rate for the whole-line frame, not the rate asked for).
 #[test]
 fn a_frame_rate_lands_on_the_frame_length_delay() {
     let mode = mode(2, 2, 2);
+    let (lines_60, rate_60) =
+        frame_length_for_fps_milli(LINE_TIME_PS, 1, u32::MAX, 60_000).unwrap();
+    let (lines_30, _) = frame_length_for_fps_milli(LINE_TIME_PS, 1, u32::MAX, 30_000).unwrap();
+    assert_eq!(rate_60, fps_milli_of(LINE_TIME_PS, lines_60).unwrap());
     // Written in frame 8, shown from frame 10.
     let run = run(&mode, 8, &[update(Control::FrameRate, 30_000, 10)], 16).unwrap();
     assert_eq!(run.landings, [(Control::FrameRate, 10, 10)]);
-    assert_eq!(run.sensor.frame_length, vec![(0, 1832), (10, 3663)]);
+    assert_eq!(run.sensor.frame_length, vec![(0, lines_60), (10, lines_30)]);
     assert_eq!(
         run.controls.metadata(9, 0).control(Control::FrameRate),
-        ControlValue::Manual(59_984)
+        ControlValue::Manual(rate_60)
     );
     assert_eq!(
         run.controls.metadata(10, 0).control(Control::FrameRate),

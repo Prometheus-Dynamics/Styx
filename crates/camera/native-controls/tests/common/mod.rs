@@ -139,7 +139,8 @@ impl Sensor {
         let fl_now = frame_length
             .or_else(|| self.frame_length.last().map(|&(_, fl)| fl))
             .unwrap_or(m.frame_length_min);
-        let exposure_max = (fl_now.saturating_sub(m.exposure_margin) << FRACTION).max(m.exposure_min);
+        let exposure_max =
+            (fl_now.saturating_sub(m.exposure_margin) << FRACTION).max(m.exposure_min);
         let asked = match controls.exposure {
             Some(code) => Some(code),
             None if frame_length.is_some() => self.exposure.last().map(|&(_, e)| e),

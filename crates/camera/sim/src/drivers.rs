@@ -22,8 +22,9 @@ use lemnos_contract_camera_receiver::{
     MAX_STREAM_NAME, Packing,
 };
 use lemnos_contract_camera_sensor::{
-    AppliedLanding, CLAMP_ANALOGUE_GAIN, CLAMP_EXPOSURE, CLAMP_FRAME_LENGTH, CameraSensor, Controls,
-    EmbeddedData, FrameValues, GainLaw, GainRange, InForce, Landing, Mode, Rect, SensorInfo,
+    AppliedLanding, CLAMP_ANALOGUE_GAIN, CLAMP_EXPOSURE, CLAMP_FRAME_LENGTH, CameraSensor,
+    Controls, EmbeddedData, FrameValues, GainLaw, GainRange, InForce, Landing, Mode, Rect,
+    SensorInfo, fps_milli_of,
 };
 use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
 use lemnos_hal::blocks::StreamFrame;
@@ -71,14 +72,13 @@ pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
     let line_time_ps = u64::from(silicon::LINE_TIME_PS as u32);
     let frame_length_min = frame_interval_ns(&link) * 1_000 / line_time_ps;
     let frame_length_min = u32::try_from(frame_length_min).ok()?;
-    let max_fps_milli =
-        u32::try_from(1_000_000_000_000_000u64 / (u64::from(frame_length_min) * line_time_ps))
-            .ok()?;
+    let line_time_ps = u32::try_from(line_time_ps).ok()?;
+    let max_fps_milli = fps_milli_of(line_time_ps, frame_length_min)?;
     Some(Mode {
         link,
         bayer: BayerOrder::Rggb,
         max_fps_milli,
-        line_time_ps: line_time_ps as u32,
+        line_time_ps,
         line_length: 1456,
         frame_length_min,
         frame_length_max: 52_000,

@@ -14,6 +14,7 @@ use lemnos_contract_camera_isp::{
 use lemnos_contract_camera_receiver::{
     BayerOrder, CameraReceiver, Counters, FrameLayout, Limits, LinkConfig, MAX_STREAM_NAME, Packing,
 };
+use lemnos_contract_camera_sensor::frame_length_for_fps_milli;
 use lemnos_contract_camera_sensor::{
     CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
 };
@@ -66,8 +67,9 @@ fn mode(index: usize) -> Option<Mode> {
         },
         line_time_ps: 9_100_000,
         line_length: 1456,
-        // The shortest frame at this rate: 1e15 / (fps * 1000 * line time), to the nearest line.
-        frame_length_min: (1_000_000_000_000_000 / (u64::from(fps) * 1_000 * 9_100_000)) as u32,
+        // The shortest frame at this rate: the contract's whole line nearest to the rate.
+        frame_length_min: frame_length_for_fps_milli(9_100_000, 1, u32::MAX, fps * 1_000)
+            .map_or(0, |(lines, _)| lines),
         frame_length_max: 52_000,
         exposure_min: 16,
         exposure_margin: 25,

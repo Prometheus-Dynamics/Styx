@@ -1,7 +1,7 @@
 //! Refusals: a value outside the sensor's own limits, or one this path does not post, is refused
 //! with nothing posted and the limit named.
 
-use lemnos_contract_camera_sensor::{GainRange, Mode};
+use lemnos_contract_camera_sensor::{GainRange, Mode, fps_milli_of, frame_length_for_fps_milli};
 use styx_controls::{Control, ControlValue, Update, ValueError};
 use styx_native_controls::{ClampReason, Error, Initial, NativeControls};
 
@@ -156,7 +156,10 @@ fn a_frame_rate_the_frame_length_cannot_reach_is_clamped_and_reported() {
     }
     let rate = controls.initial_rate();
     assert!(rate.clamped, "{rate:?}");
-    assert_eq!((rate.lines, rate.achieved_milli), (900, 122_100));
+    assert_eq!(
+        (rate.lines, rate.achieved_milli),
+        (900, fps_milli_of(9_100_000, 900).unwrap())
+    );
 }
 
 #[test]
@@ -168,8 +171,10 @@ fn a_frame_rate_the_frame_length_reaches_is_not_clamped() {
         .expect("in limits");
     let landing = landings.iter().next().expect("one landing");
     assert!(!landing.clamped);
-    // 916 lines at 9.1 us is 119.967 fps: within 0.06% of 120.
-    assert_eq!(landing.achieved_milli, Some(119_967));
+    // The nearest whole frame to 120 fps is the contract's choice; its rate is the landing's.
+    let (lines, rate) = frame_length_for_fps_milli(9_100_000, 900, 52_000, 120_000).unwrap();
+    assert!((900..=52_000).contains(&lines), "{lines}");
+    assert_eq!(landing.achieved_milli, Some(rate));
 }
 
 #[test]
@@ -277,7 +282,10 @@ fn an_initial_exposure_the_frame_cannot_hold_is_clamped_at_setup_with_the_reason
     sensor.frame = 0;
     controls.frame_start(&mut sensor, 0).unwrap();
     let report = controls.exposure_report();
-    assert_eq!((report.requested_us, report.applied_us), (17_000, Some(16_444)));
+    assert_eq!(
+        (report.requested_us, report.applied_us),
+        (17_000, Some(16_444))
+    );
     let clamp = report.clamp.expect("a clamp");
     assert_eq!(clamp.frame_lines, Some(1832));
     assert_eq!(controls.metadata(0, 0).exposure_us, 16_444);

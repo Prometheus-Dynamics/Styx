@@ -63,9 +63,15 @@ fn a_10_ms_exposure_at_the_915_line_ceiling_is_clamped_to_the_frame_less_the_mar
     // (915 - 25) = 890 lines: 890 x 7.583 us = 6 748.9 us, applied as 6 749 us.
     let (controls, _) = streaming(&board_mode(7_583_000), start(10_000, 240_000), 0);
     assert_eq!(controls.initial_rate().lines, 915);
-    assert!(controls.initial_rate().clamped, "the driver clamped the frame length");
+    assert!(
+        controls.initial_rate().clamped,
+        "the driver clamped the frame length"
+    );
     let report = controls.exposure_report();
-    assert_eq!((report.requested_us, report.applied_us), (10_000, Some(6_749)));
+    assert_eq!(
+        (report.requested_us, report.applied_us),
+        (10_000, Some(6_749))
+    );
     let clamp = report.clamp.expect("a clamp");
     assert_eq!(clamp.reason, ClampReason::Ceiling);
     assert_eq!(clamp.frame_lines, Some(915));
@@ -180,7 +186,10 @@ fn the_gain_range_is_clamped_both_ways() {
         controls.frame_start(&mut sensor, k).unwrap();
     }
     let clamp = controls.clamp(Control::Gain).expect("a gain clamp");
-    assert_eq!((clamp.applied, clamp.reason), (15_938, ClampReason::Ceiling));
+    assert_eq!(
+        (clamp.applied, clamp.reason),
+        (15_938, ClampReason::Ceiling)
+    );
     // Inside the codes: 2.0x is a code, so no clamp.
     controls
         .request(
