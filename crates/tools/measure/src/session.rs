@@ -69,6 +69,9 @@ pub struct Session {
     reader: Reader,
     pub stats: FrameStats,
     pub metadata: Option<FrameMetadata>,
+    /// Frames this reader keeps and never gives back (`--hold N`): the first N it reads. The room is
+    /// taken once by [`Session::hold_first`]. For checking the producer's reserve rule from outside.
+    held: Vec<Frame>,
     isp: Option<IspRunner>,
     /// The ring's frame counts when the session started, so the report can show this run only.
     reader_start: ReaderStats,
@@ -111,6 +114,7 @@ impl Session {
             socket: socket.to_path_buf(),
             reader,
             stats: FrameStats::new(),
+            held: Vec::new(),
             metadata: None,
             isp,
             reader_start,
@@ -120,6 +124,16 @@ impl Session {
             stall_started: None,
             stall_ns_total: 0,
         })
+    }
+
+    /// Keeps the first `frames` frames read and never releases them while the session lives.
+    pub fn hold_first(&mut self, frames: usize) {
+        self.held = Vec::with_capacity(frames);
+    }
+
+    /// Frames held by [`Session::hold_first`] so far.
+    pub fn held(&self) -> usize {
+        self.held.len()
     }
 
     pub fn socket(&self) -> &Path {
@@ -155,6 +169,9 @@ impl Session {
                 Next::Frame(frame) => {
                     last_frame = monotonic_ns();
                     self.handle(&frame)?;
+                    if self.held.len() < self.held.capacity() {
+                        self.held.push(frame);
+                    }
                     if done(&self.stats) {
                         return Ok(Stop::Frames);
                     }

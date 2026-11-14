@@ -18,7 +18,7 @@ usage:
   styx-measure read --socket <camera frame socket> (--frames N | --seconds S)
                     [--control <service control socket>] [--service-pid PID]
                     [--asked-fps FPS] [--soft-isp <FOURCC>[:WxH]] [--isp-variant <name>]
-                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N] [--start newest|next-new]
+                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N] [--start newest|next-new] [--hold N]
   styx-measure status --control <service control socket>
 
 read attaches to a camera's frame socket as a reader in this process and measures what it takes
@@ -47,6 +47,8 @@ pub struct ReadArgs {
     pub isp_variant: Option<Paths>,
     /// Where the reader starts: the newest kept frame at once (the default), or the next new one.
     pub start: Start,
+    /// Frames to keep and never release (the first N read). 0: release every frame at once.
+    pub hold: usize,
     pub report: Option<PathBuf>,
     /// Where to write the first frames one by one (`id,capture_ns,reader_ns`), if asked.
     pub trace: Option<PathBuf>,
@@ -107,6 +109,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
     let mut soft_isp = None;
     let mut isp_variant = None;
     let mut start = Start::default();
+    let mut hold = 0usize;
     let mut report = None;
     let mut trace = None;
     let mut trace_frames = 20_000usize;
@@ -136,6 +139,11 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
                 seconds = Some(s);
             }
             "--soft-isp" => soft_isp = Some(text(&mut it, flag)?.parse::<SoftIspArg>()?),
+            "--hold" => {
+                hold = text(&mut it, flag)?.parse().map_err(|_| {
+                    "--hold: a count of frames to keep and never release".to_string()
+                })?;
+            }
             "--start" => {
                 start = match text(&mut it, flag)?.as_str() {
                     "newest" => Start::Newest,
@@ -177,6 +185,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
         soft_isp,
         isp_variant,
         start,
+        hold,
         report,
         trace,
         trace_frames,
@@ -378,6 +387,9 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
         .map_err(|e: SessionError| e.to_string())?;
     if args.trace.is_some() {
         session.stats.keep_trace(args.trace_frames);
+    }
+    if args.hold > 0 {
+        session.hold_first(args.hold);
     }
     let reader0 = session.reader_start();
 
