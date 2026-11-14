@@ -77,6 +77,11 @@ pub struct LinkStatus {
     pub next_delay: Option<Duration>,
     /// The last failure's message.
     pub last_error: Option<String>,
+    /// Cut off by the producer for holding frames past its keep window while the camera needed
+    /// the buffers. Not a failure: the link reconnects after the first backoff step.
+    pub cut_offs: u64,
+    /// The last cut-off's reason, as the reader words it.
+    pub last_cut: Option<String>,
 }
 
 #[cfg(test)]

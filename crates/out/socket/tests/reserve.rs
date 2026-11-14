@@ -319,35 +319,187 @@ fn with_reserve_two_a_reader_may_hold_two_frames_past_the_window() {
 }
 
 #[test]
-fn with_reserve_two_the_third_frame_past_the_window_cuts_its_holder_off() {
+fn with_reserve_two_a_reader_may_hold_five_older_frames_and_none_is_cut() {
     const KEEP: usize = 4;
     const RESERVE: usize = 2;
     let pool = pool();
     let mut producer = producer(pool.clone(), KEEP, RESERVE);
-    let mut reader = attach_reader(&mut producer, "three");
+    let mut reader = attach_reader(&mut producer, "five");
 
-    // The reader holds frames 0, 1 and 2. Frame 0 leaves the window at publish 4, frame 1 at 5,
-    // frame 2 at 6: the third frame past the window makes six plus one, over the bound of six.
+    // The reader keeps frames 0..=4 for the whole run. Budget six: the newest frame and five older.
     let mut held: Vec<Frame> = Vec::new();
-    for id in 0..=6_u64 {
+    for id in 0..FRAMES {
         camera_frame(&pool, &mut producer, id);
-        if id < 3 {
+        if id < 5 {
             held.push(take(&mut reader).expect("not cut off").expect("published"));
         }
         assert_bound(&producer, &pool, RESERVE, id);
-        let cut = producer.stats().cut_off_for_reserve;
+        assert_eq!(producer.stats().cut_off_for_reserve, 0, "frame {id}");
+    }
+    assert_eq!(
+        producer.stats().outstanding,
+        BUFFERS - RESERVE,
+        "the bound is used"
+    );
+    assert_eq!(producer.stats().bound_unmet, 0);
+    assert_eq!(producer.stats().cut_off, 0);
+    drop(held);
+}
+
+#[test]
+fn with_reserve_two_the_sixth_older_frame_cuts_its_holder_off() {
+    const KEEP: usize = 4;
+    const RESERVE: usize = 2;
+    let pool = pool();
+    let mut producer = producer(pool.clone(), KEEP, RESERVE);
+    let mut reader = attach_reader(&mut producer, "six");
+
+    // The reader holds frames 0..=5. Frame 5 is the newest at its publish; from publish 6 the
+    // reader holds six frames older than the newest: seven in flight, over the budget of six.
+    let mut held: Vec<Frame> = Vec::new();
+    for id in 0..=6_u64 {
+        camera_frame(&pool, &mut producer, id);
+        if id < 6 {
+            held.push(take(&mut reader).expect("not cut off").expect("published"));
+        }
+        assert_bound(&producer, &pool, RESERVE, id);
         assert_eq!(
-            cut,
+            producer.stats().cut_off_for_reserve,
             u64::from(id == 6),
             "cut off on the publish of frame 6, and not before (frame {id})"
         );
     }
-    assert_eq!(producer.stats().bound_unmet, 0);
     assert_eq!(
         take(&mut reader).expect_err("cut off"),
         ReadError::Ended(StreamEnd::ConsumerFault)
     );
     drop(held);
+}
+
+#[test]
+fn one_older_frame_held_through_forty_publishes_is_never_cut_and_the_window_yields() {
+    const KEEP: usize = 4;
+    const RESERVE: usize = 4;
+    let pool = pool();
+    let mut producer = producer(pool.clone(), KEEP, RESERVE);
+    let mut reader = attach_reader(&mut producer, "one");
+
+    camera_frame(&pool, &mut producer, 0);
+    let held = take(&mut reader).expect("not cut off").expect("published");
+    for id in 1..FRAMES {
+        camera_frame(&pool, &mut producer, id);
+        assert_bound(&producer, &pool, RESERVE, id);
+        let want = if id >= KEEP as u64 { KEEP - 1 } else { KEEP };
+        assert_eq!(
+            producer.kept_now(),
+            want,
+            "the window while frame 0 is held (frame {id})"
+        );
+        assert_eq!(producer.stats().kept, want);
+        assert_eq!(producer.keep(), KEEP, "the configured keep is unchanged");
+    }
+    assert_eq!(
+        producer.stats().cut_off,
+        0,
+        "one older frame is never a reason to cut"
+    );
+    assert_eq!(producer.stats().cut_off_for_reserve, 0);
+    // Released: the next publish gives the window its four back.
+    drop(held);
+    camera_frame(&pool, &mut producer, FRAMES);
+    assert_bound(&producer, &pool, RESERVE, FRAMES);
+    assert_eq!(
+        producer.kept_now(),
+        KEEP,
+        "the window grows back once the hold is released"
+    );
+    // The reader is far behind by now: the ring skips what it lost, and it is served, not cut off.
+    assert!(take(&mut reader).expect("never cut off").is_some());
+}
+
+#[test]
+fn three_older_frames_held_are_never_cut_and_the_window_is_the_newest_alone() {
+    const KEEP: usize = 4;
+    const RESERVE: usize = 4;
+    let pool = pool();
+    let mut producer = producer(pool.clone(), KEEP, RESERVE);
+    let mut reader = attach_reader(&mut producer, "three");
+
+    let mut held: Vec<Frame> = Vec::new();
+    for id in 0..FRAMES {
+        camera_frame(&pool, &mut producer, id);
+        if id < 3 {
+            held.push(take(&mut reader).expect("not cut off").expect("published"));
+        }
+        assert_bound(&producer, &pool, RESERVE, id);
+        if id >= 4 {
+            assert_eq!(
+                producer.kept_now(),
+                1,
+                "the window yields to the three holds (frame {id})"
+            );
+        }
+    }
+    assert_eq!(producer.stats().cut_off, 0);
+    assert_eq!(producer.stats().cut_off_for_reserve, 0);
+    assert_eq!(producer.stats().bound_unmet, 0);
+    drop(held);
+}
+
+#[test]
+fn of_two_readers_holding_two_older_frames_each_the_one_with_the_oldest_is_cut() {
+    const KEEP: usize = 4;
+    const RESERVE: usize = 4;
+    let pool = pool();
+    let mut producer = producer(pool.clone(), KEEP, RESERVE);
+    let mut first = attach_reader(&mut producer, "first");
+    let mut second = attach_reader(&mut producer, "second");
+
+    // First holds frames 0 and 1; second holds 2 and 3. Four older holds and the newest: over the
+    // budget of four at publish 4, when frame 0 is the oldest held frame past the window.
+    let mut first_held: Vec<Frame> = Vec::new();
+    let mut second_held: Vec<Frame> = Vec::new();
+    for id in 0..=4_u64 {
+        camera_frame(&pool, &mut producer, id);
+        if id < 2 {
+            first_held.push(
+                take(&mut first)
+                    .expect("not cut off yet")
+                    .expect("published"),
+            );
+        }
+        // The second reader reads in order from its start: frames 0 and 1 it lets go at once.
+        if id < 4 {
+            let frame = take(&mut second)
+                .expect("not cut off yet")
+                .expect("published");
+            if id >= 2 {
+                second_held.push(frame);
+            }
+        }
+        assert_bound(&producer, &pool, RESERVE, id);
+        assert_eq!(
+            producer.stats().cut_off_for_reserve,
+            u64::from(id == 4),
+            "the holder of the oldest frame is cut at publish 4 and no other time (frame {id})"
+        );
+    }
+    assert_eq!(
+        first.next_frame().err(),
+        Some(ReadError::Ended(StreamEnd::ConsumerFault)),
+        "the first reader holds the oldest frame and is cut off"
+    );
+    let next = second
+        .next_frame()
+        .expect("the second reader is never cut off");
+    assert_eq!(
+        next.map(|f| f.lease().id()),
+        Some(4),
+        "the second reader still gets frames"
+    );
+    assert_eq!(producer.stats().cut_off, 1);
+    drop(first_held);
+    drop(second_held);
 }
 
 #[test]

@@ -61,7 +61,8 @@
 //! format = "YUYV"        # V4L2 and libcamera: the pixel format's four-character code
 //! fps_milli = 30000
 //! buffers = 4            # V4L2 and libcamera: buffers requested
-//! hardware_reserve = 4   # optional: pool buffers the camera keeps to stream (default: half, min 2)
+//! hardware_reserve = 4   # optional: pool buffers the camera keeps to stream (default: half, min 2);
+//!                        # a reader may hold buffers - hardware_reserve - 1 frames older than the newest
 //! ```
 //!
 //! Native cameras: `width` and `height` are the smallest mode that is acceptable, and `format` and
@@ -135,10 +136,12 @@ pub struct CameraConfig {
     #[serde(default)]
     pub buffers: Option<u32>,
     /// Buffers of the camera's pool the camera keeps for itself to stream (default: half the pool's
-    /// buffers, at least 2, at most the pool's size). The ring's keep window and the frames readers
-    /// hold past it never take more than `buffers - hardware_reserve` of the pool, so the camera
-    /// always has this many free, and a reader that holds a frame past the window while the camera
-    /// needs its buffer is cut off; a larger reserve shortens the readers' window.
+    /// buffers, at least 2, at most the pool's size). Frames the ring holds, in its window and held
+    /// by readers, never take more than `buffers - hardware_reserve` of the pool, so the camera
+    /// always has this many free. In plain words: a reader may hold up to `buffers -
+    /// hardware_reserve - 1` frames older than the newest, and holding more cuts it off with a
+    /// consumer fault; the ring's window of recent frames for late readers shrinks to make room
+    /// and grows back when the holds are released.
     #[serde(default)]
     pub hardware_reserve: Option<u32>,
 }

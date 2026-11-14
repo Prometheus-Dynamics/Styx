@@ -233,8 +233,12 @@ pub struct ProducerStats {
     pub cut_off_for_reserve: u64,
     /// Readers whose socket closed (process exit or drop); their holds were removed.
     pub gone: u64,
-    /// The keep window: how many of the newest published frames are never given back.
+    /// The configured keep window: the most of the newest published frames kept (see
+    /// [`Producer::set_keep`]).
     pub keep: usize,
+    /// The keep window in force now: smaller than `keep` while readers hold older frames and the
+    /// reserve needs the buffers (see [`Producer::reclaim`]).
+    pub kept: usize,
     /// Buffers the camera keeps for itself (see [`Producer::set_reserve`]).
     pub reserve: usize,
     /// Buffers out of the camera's hands now: the frames the ring still holds, in the keep window
@@ -280,10 +284,13 @@ pub struct Producer<M = ()> {
     /// For each buffer, the lease on the frame the ring still holds in it. Kept until the ring
     /// takes the buffer back, so the buffer stays this producer's while any reader may read it.
     in_flight: Vec<Option<FrameLease<M>>>,
-    /// How many of the newest published frames [`Producer::reclaim`] keeps, held by a reader or
-    /// not. A reader that is within `keep` frames of the newest finds its frame. See
+    /// How many of the newest published frames [`Producer::reclaim`] keeps at most, held by a
+    /// reader or not. A reader that is within `keep` frames of the newest finds its frame. See
     /// [`Producer::set_keep`].
     keep: usize,
+    /// The window in force at the last [`Producer::reclaim`]: `keep`, or less while readers hold
+    /// older frames and the reserve needs the buffers. See [`Producer::kept_now`].
+    kept: usize,
     /// Buffers the camera keeps for itself to stream: the buffers out of the ring's hands never
     /// exceed `buffers - reserve`. See [`Producer::set_reserve`] and [`Producer::reclaim`].
     reserve: usize,
@@ -415,6 +422,7 @@ impl<M> Producer<M> {
                 .collect(),
             in_flight: (0..geometry.buffers()).map(|_| None).collect(),
             keep: 1,
+            kept: 1,
             reserve: 0,
             taken: [false; MAX_READERS as usize],
             cut_for_reserve: 0,
@@ -430,10 +438,12 @@ impl<M> Producer<M> {
         })
     }
 
-    /// Sets the keep window: the newest `keep` published frames are never given back by
-    /// [`Producer::reclaim`], whether or not a reader holds them, so a reader that is up to
-    /// `keep - 1` frame periods late still finds every frame. Frames older than that are given
-    /// back (unless a reader holds them). The camera service sets it to
+    /// Sets the configured keep window: the most of the newest published frames that
+    /// [`Producer::reclaim`] keeps whether or not a reader holds them, so a reader that is up to
+    /// `keep - 1` frame periods late still finds every frame. Frames older than the window are
+    /// given back unless a reader holds them. The window shrinks, down to the newest frame, while
+    /// readers hold older frames and the reserve needs the buffers (see [`Producer::kept_now`]),
+    /// and grows back to `keep` as those holds are released. The camera service sets it to
     /// `min(history, buffers - hardware_reserve)`.
     ///
     /// `keep` is clamped to `1..=min(history, buffers - reserve)`, so that `keep + reserve` never
@@ -443,10 +453,18 @@ impl<M> Producer<M> {
         let limit = (self.geometry.history() as usize)
             .min(self.geometry.buffers().saturating_sub(self.reserve));
         self.keep = keep.clamp(1, limit.max(1));
+        self.kept = self.keep;
         self.keep
     }
 
-    /// The keep window in force (see [`Producer::set_keep`]).
+    /// The keep window in force now (at most [`Producer::keep`]). It shrinks, to 1 at the least,
+    /// while readers hold older frames and the reserve needs their buffers, and grows back to
+    /// `keep` as those holds are released.
+    pub const fn kept_now(&self) -> usize {
+        self.kept
+    }
+
+    /// The configured keep window, the maximum (see [`Producer::set_keep`]).
     pub const fn keep(&self) -> usize {
         self.keep
     }
@@ -774,40 +792,65 @@ impl<M> Producer<M> {
     /// given-back frame's lease is dropped, so its pool buffer is free for a stream or a device.
     /// Returns how many were given back. Call it after publishing.
     ///
-    /// **The reserve.** At every call, the buffers out of the camera's hands (the frames in the
-    /// keep window, plus the frames readers hold past it) are at most `buffers - reserve`. Frames
-    /// in the window are at most `keep <= buffers - reserve`, so any excess is a frame past the
-    /// window that a reader holds. While there is excess, the oldest such frame is given back by
-    /// cutting off every reader that marks it: its marks leave the hold table, the reader is told
-    /// through the pool page and woken, and it reads [`crate::ReadError::Ended`] with
-    /// [`StreamEnd::ConsumerFault`]. A reader that holds only frames in the window is never cut off
-    /// for this, and a reader past the window is cut off only when the bound needs its frame.
-    /// No frame is copied and nothing waits. A mark the producer cannot see (one an adopter put
-    /// in the hold table through [`Producer::holds_mut`]) cannot be cut off here: the bound is
-    /// then unmet, and [`ProducerStats::bound_unmet`] counts it.
+    /// **The reserve.** At every call, the buffers out of the camera's hands (the frames the ring
+    /// still holds: those in the keep window and those held by readers past it) are at most
+    /// `buffers - reserve`. A frame a reader holds takes precedence over the window: first the
+    /// window shrinks, giving back the frames inside it that no reader holds, oldest first, down
+    /// to the newest frame alone. Only if the bound is still not met is a reader cut off: the one
+    /// holding the oldest frame past the window, whose marks leave the hold table. It is told
+    /// through the pool page and woken, and reads [`crate::ReadError::Ended`] with
+    /// [`StreamEnd::ConsumerFault`]. So a reader may hold up to `buffers - reserve - 1` frames
+    /// older than the newest, and holding more cuts it off.
+    ///
+    /// Known residuals (limits of the ring crate at this revision):
+    /// - a mark an adopter writes directly into the hold table ([`Producer::holds_mut`]) is
+    ///   invisible to the producer and cannot be cut off here; then the bound is unmet and
+    ///   [`ProducerStats::bound_unmet`] counts the publishes on which that happened;
+    /// - a cut reader may still be reading the frame it held when its buffer is reused. It must
+    ///   drop every frame it holds on [`crate::ReadError::Ended`], and the content of its last frame
+    ///   is not guaranteed.
+    ///
+    /// No frame is copied and nothing waits.
     pub fn reclaim(&mut self) -> usize {
+        let budget = self.geometry.buffers() - self.reserve;
+        // The window in force for this publish starts at the configured keep and only shrinks.
+        let mut window = self.keep;
+        let mut given = self.release_unheld_from(window);
+        // First the window yields: frames inside it that no reader holds are given back, oldest
+        // first, down to the newest frame alone.
+        while self.outstanding() > budget && window > 1 {
+            window -= 1;
+            given += self.release_unheld_from(window);
+        }
+        // Only if the bound still is not met (the readers' held frames alone exceed it beside the
+        // newest frame) is a reader cut off: the one holding the oldest frame past the window.
+        while self.outstanding() > budget {
+            let Some(index) = self.oldest_from(window) else {
+                break;
+            };
+            self.cut_off_holders(index);
+            given += self.release_unheld_from(window);
+            if self.in_flight[index].is_some() {
+                // A mark the producer cannot see (an adopter's): the bound stays unmet.
+                self.bound_unmet += 1;
+                break;
+            }
+        }
+        self.kept = window;
+        given
+    }
+
+    /// Gives back every frame at or past `window` ages that no reader holds. Returns how many.
+    fn release_unheld_from(&mut self, window: usize) -> usize {
         let mut given = 0;
         for index in 0..self.in_flight.len() {
-            if self.in_flight[index].is_none() || self.age_of(index) < self.keep as u64 {
+            if self.in_flight[index].is_none() || self.age_of(index) < window as u64 {
                 continue;
             }
             if self.writer.reclaim(BufferIndex(index as u32), &self.holds) {
                 self.release(index);
                 given += 1;
             }
-        }
-        let budget = self.geometry.buffers() - self.reserve;
-        while self.outstanding() > budget {
-            let Some(index) = self.oldest_past_window() else {
-                break;
-            };
-            self.cut_off_holders(index);
-            if !self.writer.reclaim(BufferIndex(index as u32), &self.holds) {
-                self.bound_unmet += 1;
-                break;
-            }
-            self.release(index);
-            given += 1;
         }
         given
     }
@@ -826,12 +869,12 @@ impl<M> Producer<M> {
         self.published - self.seq_of[index]
     }
 
-    /// The oldest frame the ring still holds that has left the keep window, if any.
-    fn oldest_past_window(&self) -> Option<usize> {
-        let keep = self.keep as u64;
+    /// The oldest frame the ring still holds that is at least `window` publishes old, if any.
+    fn oldest_from(&self, window: usize) -> Option<usize> {
+        let window = window as u64;
         let mut oldest: Option<(u64, usize)> = None;
         for index in 0..self.in_flight.len() {
-            if self.in_flight[index].is_none() || self.age_of(index) < keep {
+            if self.in_flight[index].is_none() || self.age_of(index) < window {
                 continue;
             }
             if oldest.is_none_or(|(seq, _)| self.seq_of[index] < seq) {
@@ -919,6 +962,7 @@ impl<M> Producer<M> {
             dropped: self.dropped,
             readers: self.links.len(),
             keep: self.keep,
+            kept: self.kept,
             reserve: self.reserve,
             outstanding: self.outstanding(),
             bound_unmet: self.bound_unmet,

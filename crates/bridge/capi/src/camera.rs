@@ -420,6 +420,13 @@ impl RemoteLink {
             match self.reader.next_frame() {
                 Ok(Some(frame)) => return Ok(Some(frame)),
                 Ok(None) => {}
+                Err(e @ styx_socket::ReadError::Ended(styx_socket::StreamEnd::ConsumerFault)) => {
+                    // A cut-off reader: its frames are no longer valid to read; release them first.
+                    return Err(Fail::new(
+                        E_STOPPED,
+                        format!("{e}; release every frame you hold, then open the camera again"),
+                    ));
+                }
                 Err(e) => {
                     return Err(Fail::new(E_STOPPED, format!("{e}; open the camera again")));
                 }

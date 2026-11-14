@@ -35,11 +35,18 @@
 //!   that is too slow loses frames to the ring's history and counts them as skipped.
 //! - **Limits**: [`Limits`] caps the buffers one reader may hold and how long it may hold one; a
 //!   reader over a limit is cut off, and told so when it next looks.
-//! - **The reserve**: at every publish, the buffers out of the camera's hands (the keep window and
-//!   the frames readers hold past it) are at most `buffers - reserve`, so the camera always has its
-//!   reserve free. A reader that holds a frame past the window while the bound needs it is cut off
-//!   ([`Producer::set_reserve`], [`Producer::reclaim`]); a reader holding only frames in the window
-//!   is never touched.
+//! - **The reserve**: at every publish, the buffers out of the camera's hands (the frames the ring
+//!   holds: the keep window and the frames readers hold past it) are at most `buffers - reserve`,
+//!   so the camera always has its reserve free. A held frame takes precedence over the window: the
+//!   window shrinks first ([`Producer::kept_now`]), and a reader is cut off only if the bound is
+//!   still not met, the one holding the oldest frame past the window ([`Producer::set_reserve`],
+//!   [`Producer::reclaim`]). A reader may hold up to `buffers - reserve - 1` frames older than the
+//!   newest.
+//! - **Known residuals** (limits of the ring crate at this revision): a mark an adopter writes
+//!   directly into the hold table is invisible to the producer and cannot be cut off
+//!   ([`ProducerStats::bound_unmet`] counts it); and a cut reader may still be reading the frame it
+//!   held when its buffer is reused, so on [`ReadError::Ended`] it must drop every frame it holds,
+//!   and the content of its last frame is not guaranteed.
 //! - **Death**: a reader whose socket closes (the process exits, or the reader is dropped) loses
 //!   its marks at once. Its buffers come back on the next [`Producer::begin`].
 //!

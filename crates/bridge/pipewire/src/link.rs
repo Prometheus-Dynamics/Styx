@@ -90,6 +90,11 @@ pub struct LinkStatus {
     pub next_delay: Option<Duration>,
     /// The last failure's message.
     pub last_error: Option<String>,
+    /// Cut off by the producer for holding frames past its keep window while the camera needed
+    /// the buffers. Not a failure: the link reconnects after the first backoff step.
+    pub cut_offs: u64,
+    /// The last cut-off's reason, as the reader words it.
+    pub last_cut: Option<String>,
 }
 
 /// The link to one producer socket.
@@ -108,6 +113,8 @@ enum Pass {
     Pending,
     /// The producer closed its ring before the buffers were learned: the end of its stream.
     Ended,
+    /// The producer cut this reader off for holding frames too long: not a failure.
+    Cut(String),
     Failed(String),
 }
 
@@ -179,6 +186,10 @@ impl Link {
                 self.ended(now);
                 None
             }
+            Pass::Cut(why) => {
+                self.cut(now, why);
+                None
+            }
             Pass::Failed(why) => {
                 self.fail(now, why);
                 None
@@ -225,6 +236,11 @@ impl Link {
                 self.ended(now);
                 None
             }
+            // Cut off for holding frames too long: not a camera failure.
+            Err(err @ ReadError::Ended(StreamEnd::ConsumerFault)) => {
+                self.cut(now, err.to_string());
+                None
+            }
             Err(err) => {
                 self.fail(now, err.to_string());
                 None
@@ -242,6 +258,19 @@ impl Link {
         self.status.state = LinkState::Waiting;
         self.status.next_delay = Some(self.backoff.failed(now));
         self.status.last_error = None;
+    }
+
+    /// The producer cut this reader off for holding frames too long. The reader and the learner
+    /// are let go (with the marks of their frames), the cut is counted apart from failures, and the
+    /// next attempt comes after the first backoff step.
+    fn cut(&mut self, now: Instant, why: String) {
+        self.reader = None;
+        self.learner = None;
+        self.backoff.reset();
+        self.status.cut_offs += 1;
+        self.status.last_cut = Some(why);
+        self.status.state = LinkState::Waiting;
+        self.status.next_delay = Some(self.backoff.failed(now));
     }
 
     fn fail(&mut self, now: Instant, why: String) {
@@ -270,6 +299,9 @@ fn pass(reader: &mut Reader, learner: &mut Learner) -> Pass {
             },
             Ok(None) => return Pass::Pending,
             Err(ReadError::Ended(StreamEnd::Closed)) => return Pass::Ended,
+            Err(err @ ReadError::Ended(StreamEnd::ConsumerFault)) => {
+                return Pass::Cut(err.to_string());
+            }
             Err(err) => return Pass::Failed(err.to_string()),
         }
     }

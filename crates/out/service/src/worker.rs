@@ -591,6 +591,8 @@ fn pump(
                                 hardware_reserve: reserve,
                                 reclaimed: 0,
                                 reserve_cuts: 0,
+                                kept: keep,
+                                bound_unmet: 0,
                             };
                             slot.set_keep(window);
                             let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
@@ -619,9 +621,13 @@ fn pump(
                     slot.set_readers(stats.readers);
                     if window.reclaimed != stats.reclaimed
                         || window.reserve_cuts != stats.cut_off_for_reserve
+                        || window.kept != stats.kept
+                        || window.bound_unmet != stats.bound_unmet
                     {
                         window.reclaimed = stats.reclaimed;
                         window.reserve_cuts = stats.cut_off_for_reserve;
+                        window.kept = stats.kept;
+                        window.bound_unmet = stats.bound_unmet;
                         slot.set_keep(window);
                     }
                 }
