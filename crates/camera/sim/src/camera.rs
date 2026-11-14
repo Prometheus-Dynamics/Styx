@@ -53,6 +53,9 @@ const GRANT_WAIT: Duration = Duration::from_secs(10);
 
 /// Errors from starting a simulated camera, setting a control and reading a frame.
 /// What one wait on a simulated camera's stream found (see [`SimCamera::next_event`]).
+// The frame is the common case and is returned in place: boxing it would allocate on every frame,
+// which the steady-state rule forbids, so the size difference is kept (as styx-socket's `Next`).
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum SimEvent {
     /// A frame, rendered.
