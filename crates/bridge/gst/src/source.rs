@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use shm_fdpass as fdpass;
 use styx_format::FourCc;
 use styx_frame::{Layouts, PlaneLayout};
-use styx_socket::{Frame, Reader};
+use styx_socket::{Frame, ReadError, Reader};
 
 use crate::link::{Backoff, LinkState, LinkStatus};
 
@@ -217,6 +217,11 @@ impl Source {
                 let _ = reader.wait(Some(wait));
                 None
             }
+            // The producer closed its ring: the end of its stream, which is normal, not a failure.
+            Err(ReadError::PublisherClosed) => {
+                self.ended(now);
+                None
+            }
             Err(err) => {
                 self.fail(now, err.to_string());
                 None
@@ -248,6 +253,17 @@ impl Source {
                 false
             }
         }
+    }
+
+    /// The producer closed its ring cleanly: its stream ended, with every frame delivered. Not a
+    /// failure: the reader is let go, no error is kept, and the next attempt comes after the first
+    /// backoff step.
+    fn ended(&mut self, now: Instant) {
+        self.reader = None;
+        self.backoff.reset();
+        self.status.state = LinkState::Waiting;
+        self.status.next_delay = Some(self.backoff.failed(now));
+        self.status.last_error = None;
     }
 
     fn fail(&mut self, now: Instant, why: String) {

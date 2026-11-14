@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use shm_fdpass as fdpass;
-use styx_socket::{Frame, Reader};
+use styx_socket::{Frame, ReadError, Reader};
 
 use crate::learn::{Buffers, Learner};
 
@@ -106,6 +106,8 @@ pub struct Link {
 enum Pass {
     Learned,
     Pending,
+    /// The producer closed its ring before the buffers were learned: the end of its stream.
+    Ended,
     Failed(String),
 }
 
@@ -173,6 +175,10 @@ impl Link {
         let learner = self.learner.as_mut()?;
         match pass(reader, learner) {
             Pass::Pending => None,
+            Pass::Ended => {
+                self.ended(now);
+                None
+            }
             Pass::Failed(why) => {
                 self.fail(now, why);
                 None
@@ -214,11 +220,28 @@ impl Link {
         }
         match reader.next_frame() {
             Ok(frame) => frame,
+            // The producer closed its ring cleanly: the end of its stream, which is normal.
+            Err(ReadError::PublisherClosed) => {
+                self.ended(now);
+                None
+            }
             Err(err) => {
                 self.fail(now, err.to_string());
                 None
             }
         }
+    }
+
+    /// The producer closed its ring cleanly: its stream ended, with every frame delivered. Not a
+    /// failure: the reader and the learner are let go, no error is kept, and the next attempt comes
+    /// after the first backoff step.
+    fn ended(&mut self, now: Instant) {
+        self.reader = None;
+        self.learner = None;
+        self.backoff.reset();
+        self.status.state = LinkState::Waiting;
+        self.status.next_delay = Some(self.backoff.failed(now));
+        self.status.last_error = None;
     }
 
     fn fail(&mut self, now: Instant, why: String) {
@@ -246,6 +269,7 @@ fn pass(reader: &mut Reader, learner: &mut Learner) -> Pass {
                 Err(err) => return Pass::Failed(err.to_string()),
             },
             Ok(None) => return Pass::Pending,
+            Err(ReadError::PublisherClosed) => return Pass::Ended,
             Err(err) => return Pass::Failed(err.to_string()),
         }
     }
