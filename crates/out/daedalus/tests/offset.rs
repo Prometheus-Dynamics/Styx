@@ -1,22 +1,29 @@
 //! Frames cut from one descriptor at different offsets, each sent through a GPU graph.
 //!
 //! A dma-buf frame at an offset names its whole dma-buf and says where it starts
-//! (`DmaBufBacked::offset`), so a device that can bind there imports it in place. Two cases:
+//! (`DmaBufBacked::offset`), so a device that can bind there imports it in place; a device binds
+//! only at a multiple of its own alignment, and any other offset is copied. Each case runs ten
+//! frames, one trip through a freshly loaded graph each, and every trip is one frame with nothing
+//! else moving, so the device's counter deltas for it are that frame's:
 //!
-//! - offsets that are page multiples, which every device here binds at: each frame must arrive
-//!   with its own bytes, and where the device imports dma-bufs each frame is imported, with
-//!   nothing copied (`TransferStats::imports` up by one; the frame is not uploaded);
-//! - an offset of 100, which the device's alignment refuses: the frame must still arrive with its
-//!   own bytes, copied from the dma-buf at that offset.
+//! - the device's bind alignment is not reported by the rev (the import error carries it, but the
+//!   copy path discards that error), so it is inferred: one trip at each power of two offset
+//!   imports or copies; the smallest that imports is the alignment, and it is printed as inferred;
+//! - the page-multiple frames must arrive with their own bytes, and where the offset is a multiple
+//!   of that alignment each frame is imported with nothing uploaded for it (`imports` +1,
+//!   `uploads` +0, and the plan has no upload move);
+//! - the offset of 100 is misaligned or not by that alignment, and the test expects what that
+//!   alignment says: copied (`imports` +0, `uploads` +1) or imported (`imports` +1); each frame
+//!   must arrive with its own bytes either way.
 //!
 //! The memfd case has no dma-buf, so its frames reach the device through their bytes, from the
-//! frame's own start. Each frame is written with its own pattern and the shader must read each
-//! frame's pattern, so a read from the descriptor's start would fail. The dma-heap cases skip,
-//! with the reason printed, when the heap or a GPU device can't open.
+//! frame's own start: copied, never imported. Each frame is written with its own pattern and the
+//! shader must read each frame's pattern, so a read from the descriptor's start would fail. The
+//! dma-heap cases skip, with the reason printed, when the heap or a GPU device can't open.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
 use std::os::fd::{AsFd, OwnedFd};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use daedalus::prelude::*;
 use daedalus_cpu::CpuBackend;
@@ -58,14 +65,21 @@ impl HostBytes for Words {
 
 const SIZE: BufferSize = BufferSize::new(4096, 256);
 const PAYLOAD_WORDS: usize = 4096 / 4;
+/// The frames of a case, one per buffer of its pool.
 const FRAMES: usize = 3;
-/// The frames of the aligned case start on a page and a page apart from one another: a page
-/// multiple, which every device here binds at.
+/// Trips through the graph per case: every case runs this many frames.
+const TRIPS: usize = 10;
+/// The frames of the aligned case start on a page and a page apart from one another.
 const ALIGNED: [usize; FRAMES] = [4096, 4096 + 8192, 4096 + 2 * 8192];
-/// The frames of the misaligned case: the first starts 100 bytes in, so the mapping's lead is used,
-/// and no device binds a buffer there.
+/// The frames of the misaligned case: the first starts 100 bytes in, so the mapping's lead is used.
 const MISALIGNED: [usize; FRAMES] = [100, 100 + 4352, 100 + 2 * 4352];
 const MISALIGNED_OFFSET: usize = 100;
+/// The offsets a probe tries, one trip each: the powers of two a device's alignment can be.
+const PROBES: [usize; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
+
+/// The GPU tests of this binary share one process-wide device, so their counter deltas overlap when
+/// they run in parallel (a trip of one counts another's imports). Each test holds this for its run.
+static GPU_TURN: Mutex<()> = Mutex::new(());
 
 /// A frame's id, its offset in the descriptor, and its value.
 type Made = (u64, usize, Arc<StyxFrame>);
@@ -130,12 +144,12 @@ fn entry(id: u64) -> FrameEntry {
     FrameEntry::new(id, 1_000 + id, format, layouts)
 }
 
-/// `FRAMES` frames, each a window of `kind` memory at its offset in one descriptor: one pool. Every
-/// frame is written with its own pattern and turned into a `styx:frame` value.
+/// One frame per offset, each a window of `kind` memory at its offset in one descriptor, in one
+/// pool. Every frame is written with its own pattern and turned into a `styx:frame` value.
 fn frames_from_one_descriptor(
     fd: &OwnedFd,
     kind: MemoryKind,
-    offsets: [usize; FRAMES],
+    offsets: &[usize],
 ) -> (FramePool<()>, Vec<Made>) {
     let memories: Vec<Box<dyn BufferMemory>> = offsets
         .iter()
@@ -175,7 +189,8 @@ fn frames_from_one_descriptor(
 }
 
 /// Sends `value` through a graph planned on `gpu` and returns the shader's words, the moves the
-/// plan made, and what the device counted for this trip.
+/// plan made, and what the device counted for this trip. The graph is loaded for this one frame,
+/// so nothing else is in the trip.
 fn through_graph(
     gpu: &WgpuBackend,
     value: Arc<StyxFrame>,
@@ -233,69 +248,34 @@ fn check(words: &[u32], id: u64, label: &str) {
     }
 }
 
-/// Sends every frame through the graph and checks its bytes. `dma` says the frames are dma-bufs,
-/// so each has a dma-buf and an offset; `imports_expected` says the device imports each one in
-/// place, with no upload, and is asserted only then.
-fn run_all(
-    gpu: &WgpuBackend,
-    made: (FramePool<()>, Vec<Made>),
-    label: &str,
-    dma: bool,
-    imports_expected: bool,
-) -> Vec<(u64, u64)> {
-    let (pool, values) = made;
-    let offsets: Vec<usize> = values.iter().map(|(_, offset, _)| *offset).collect();
-    println!("{label}: offsets {offsets:?}, buffers {}", pool.buffers());
-    let mut trips = Vec::new();
-    for (id, offset, value) in &values {
-        match value.dmabuf() {
-            Some((_, import)) => {
-                assert!(dma, "{label}: a memfd frame names no dma-buf");
-                assert_eq!(import, SIZE.allocation().unwrap() as u64);
-                assert_eq!(
-                    value.offset(),
-                    *offset as u64,
-                    "{label}: the offset is the frame's"
-                );
-            }
-            None => assert!(!dma, "{label}: a dma-buf frame names its dma-buf"),
-        }
-        let (words, moves, counted) = through_graph(gpu, Arc::clone(value));
-        println!(
-            "{label}: frame {id} at offset {offset}: moves {moves:?}, imports +{}, uploads +{}",
-            counted.imports, counted.uploads
-        );
-        check(&words, *id, label);
-        println!("{label}: frame {id} read its own bytes");
-        trips.push((counted.imports, counted.uploads));
-        // `uploads` is not checked per frame: it counts every upload the step makes.
-        if imports_expected {
-            assert_eq!(
-                counted.imports, 1,
-                "{label}: frame {id} is imported in place"
-            );
-        }
-    }
-    let mut distinct = offsets.clone();
-    distinct.sort_unstable();
-    distinct.dedup();
-    assert_eq!(distinct.len(), FRAMES, "each frame is at its own offset");
-    trips
+/// One trip: the frame, where it was cut, what the plan moved, and the device's counts for it.
+struct Trip {
+    offset: usize,
+    moves: Vec<String>,
+    imports: u64,
+    uploads: u64,
 }
 
-#[test]
-fn memfd_frames_cut_from_one_descriptor_at_offsets_each_read_their_own_bytes() {
-    let gpu = match open_gpu() {
-        Ok(gpu) => gpu,
-        Err(why) => {
-            println!("skipped: {why}");
-            return;
-        }
-    };
-    let len = MISALIGNED[FRAMES - 1] + SIZE.allocation().unwrap();
-    let fd = dma_buf::sealed_memfd(c"styx-daedalus-offset", len as u64).expect("a memfd");
-    let made = frames_from_one_descriptor(&fd, MemoryKind::Memfd, MISALIGNED);
-    run_all(&gpu, made, "memfd", false, false);
+/// `TRIPS` trips through the graph, cycling over `values`. Each trip's frame must read its own
+/// bytes. Printed per trip, so the counters are visible in the test output.
+fn trips(gpu: &WgpuBackend, values: &[Made], label: &str) -> Vec<Trip> {
+    let mut out = Vec::new();
+    for trip in 0..TRIPS {
+        let (id, offset, value) = &values[trip % values.len()];
+        let (words, moves, counted) = through_graph(gpu, Arc::clone(value));
+        check(&words, *id, label);
+        println!(
+            "{label}: trip {trip:>2} frame {id} at offset {offset}: imports +{}, uploads +{}, moves {moves:?}",
+            counted.imports, counted.uploads
+        );
+        out.push(Trip {
+            offset: *offset,
+            moves,
+            imports: counted.imports,
+            uploads: counted.uploads,
+        });
+    }
+    out
 }
 
 /// A dma-heap buffer of `len` bytes, or `None` (with the reason printed) when the heap can't open.
@@ -314,26 +294,49 @@ fn heap_buffer(len: usize) -> Option<OwnedFd> {
     Some(dma_heap::allocate(heap.as_fd(), len as u64).expect("a dma-heap buffer"))
 }
 
-#[test]
-fn dma_heap_frames_at_page_offsets_are_imported_in_place_and_read_their_own_bytes() {
-    let gpu = match open_gpu() {
-        Ok(gpu) => gpu,
-        Err(why) => {
-            println!("skipped: {why}");
-            return;
-        }
-    };
-    let Some(fd) = heap_buffer(ALIGNED[FRAMES - 1] + SIZE.allocation().unwrap() + 4096) else {
-        return;
-    };
-    let imports = gpu.caps().is_some_and(|caps| caps.dma_heap);
-    println!("device reports dma-heap import support: {imports}");
-    let made = frames_from_one_descriptor(&fd, MemoryKind::Dmabuf, ALIGNED);
-    run_all(&gpu, made, "dma-heap aligned", true, imports);
+/// The device's bind alignment, inferred: one trip at each power-of-two offset of a dma-buf, which
+/// imports (the offset is a multiple of the alignment) or copies. The smallest offset that imports
+/// is the alignment. Returns it with each probe's answer. `None` when nothing probed imports.
+///
+/// The rev reports no alignment: `import_dma_buf_at` refuses an offset with `Error::Offset {
+/// alignment }`, but the wgpu import step turns that refusal into a copy and drops the error.
+fn probe_alignment(gpu: &WgpuBackend, fd: &OwnedFd) -> (Option<usize>, Vec<(usize, bool)>) {
+    let mut answers = Vec::new();
+    for offset in PROBES {
+        let (_, values) = frames_from_one_descriptor(fd, MemoryKind::Dmabuf, &[offset]);
+        let (_, _, value) = &values[0];
+        let (_, _, counted) = through_graph(gpu, Arc::clone(value));
+        answers.push((offset, counted.imports == 1));
+    }
+    let alignment = answers
+        .iter()
+        .find(|(_, aligned)| *aligned)
+        .map(|(o, _)| *o);
+    (alignment, answers)
+}
+
+/// Whether a frame at `offset` is imported: the device imports it when `offset` is a multiple of its
+/// alignment, and copies it otherwise. An alignment of `None` (nothing imports) copies every frame.
+fn imported_at(alignment: Option<usize>, offset: usize) -> bool {
+    alignment.is_some_and(|a| offset % a == 0)
+}
+
+fn print_probe(label: &str, alignment: Option<usize>, answers: &[(usize, bool)]) {
+    let shown: Vec<String> = answers
+        .iter()
+        .map(|(o, aligned)| format!("{o}:{}", if *aligned { "imports" } else { "copies" }))
+        .collect();
+    println!("{label}: probes {}", shown.join(" "));
+    match alignment {
+        Some(a) => println!(
+            "{label}: device bind alignment, inferred (the rev does not report it): {a} bytes"
+        ),
+        None => println!("{label}: no probed offset imports: the device copies every dma-buf"),
+    }
 }
 
 #[test]
-fn dma_heap_frames_at_a_misaligned_offset_still_read_their_own_bytes() {
+fn memfd_frames_cut_from_one_descriptor_at_offsets_each_read_their_own_bytes() {
     let gpu = match open_gpu() {
         Ok(gpu) => gpu,
         Err(why) => {
@@ -341,15 +344,132 @@ fn dma_heap_frames_at_a_misaligned_offset_still_read_their_own_bytes() {
             return;
         }
     };
-    let Some(fd) = heap_buffer(MISALIGNED[FRAMES - 1] + SIZE.allocation().unwrap()) else {
+    let _turn = GPU_TURN.lock().unwrap_or_else(PoisonError::into_inner);
+    let len = MISALIGNED[FRAMES - 1] + SIZE.allocation().unwrap();
+    let fd = dma_buf::sealed_memfd(c"styx-daedalus-offset", len as u64).expect("a memfd");
+    let (_pool, values) = frames_from_one_descriptor(&fd, MemoryKind::Memfd, &MISALIGNED);
+    for trip in trips(&gpu, &values, "memfd") {
+        // A memfd names no dma-buf: its bytes are uploaded, and nothing is imported.
+        assert_eq!(trip.imports, 0, "memfd at {}: never imported", trip.offset);
+        assert_eq!(
+            trip.uploads, 1,
+            "memfd at {}: its bytes are uploaded",
+            trip.offset
+        );
+    }
+}
+
+#[test]
+fn dma_heap_frames_at_page_offsets_each_read_their_own_bytes_and_are_imported_in_place() {
+    let gpu = match open_gpu() {
+        Ok(gpu) => gpu,
+        Err(why) => {
+            println!("skipped: {why}");
+            return;
+        }
+    };
+    let _turn = GPU_TURN.lock().unwrap_or_else(PoisonError::into_inner);
+    let len = 4096 + ALIGNED[FRAMES - 1] + SIZE.allocation().unwrap();
+    let Some(fd) = heap_buffer(len) else {
         return;
     };
-    let made = frames_from_one_descriptor(&fd, MemoryKind::Dmabuf, MISALIGNED);
-    assert_eq!(made.1[0].1, MISALIGNED_OFFSET);
-    // Whether the device imports at an offset depends on its alignment and on its state: on this
-    // machine the same offsets were copied in one run, imported in another, and counted twice for
-    // one frame in a third (the printed counts say which). So this asserts only what holds in every
-    // run: each frame read its own bytes (`run_all` checks them). The counts are printed, not
-    // asserted, and the open question is recorded in the reply.
-    let _trips = run_all(&gpu, made, "dma-heap misaligned", true, false);
+    println!(
+        "dma-heap page: before any trip, {}",
+        gpu.dmabuf_status(false)
+    );
+    let (alignment, answers) = probe_alignment(&gpu, &fd);
+    print_probe("dma-heap page", alignment, &answers);
+    println!(
+        "dma-heap page: after the probes, {}",
+        gpu.dmabuf_status(false)
+    );
+    let (_pool, values) = frames_from_one_descriptor(&fd, MemoryKind::Dmabuf, &ALIGNED);
+    for (id, offset, value) in &values {
+        assert_eq!(
+            value.offset(),
+            *offset as u64,
+            "frame {id}: its offset is its own"
+        );
+    }
+    let expect = |offset: usize| imported_at(alignment, offset);
+    for trip in trips(&gpu, &values, "dma-heap page") {
+        if expect(trip.offset) {
+            // Imported in place: the import step uploaded nothing for this frame. The plan has no
+            // upload move, so no other step could have made the upload either.
+            assert_eq!(trip.imports, 1, "offset {}: imported in place", trip.offset);
+            assert_eq!(
+                trip.uploads, 0,
+                "offset {}: nothing uploaded for it",
+                trip.offset
+            );
+            assert!(
+                trip.moves.iter().any(|m| m.starts_with("wgpu.import:"))
+                    && !trip.moves.iter().any(|m| m.contains("upload")),
+                "offset {}: the plan imports and does not upload: {:?}",
+                trip.offset,
+                trip.moves
+            );
+        } else {
+            assert_eq!(
+                trip.imports, 0,
+                "offset {}: copied, not imported",
+                trip.offset
+            );
+            assert_eq!(trip.uploads, 1, "offset {}: copied", trip.offset);
+        }
+    }
+}
+
+#[test]
+fn dma_heap_frames_at_a_misaligned_offset_read_their_own_bytes_as_the_device_alignment_says() {
+    let gpu = match open_gpu() {
+        Ok(gpu) => gpu,
+        Err(why) => {
+            println!("skipped: {why}");
+            return;
+        }
+    };
+    let _turn = GPU_TURN.lock().unwrap_or_else(PoisonError::into_inner);
+    let len = 4096 + MISALIGNED[FRAMES - 1] + SIZE.allocation().unwrap();
+    let Some(fd) = heap_buffer(len) else {
+        return;
+    };
+    println!(
+        "dma-heap offset {MISALIGNED_OFFSET}: before any trip, {}",
+        gpu.dmabuf_status(false)
+    );
+    let (alignment, answers) = probe_alignment(&gpu, &fd);
+    print_probe("dma-heap offset 100", alignment, &answers);
+    let (_pool, values) = frames_from_one_descriptor(&fd, MemoryKind::Dmabuf, &MISALIGNED);
+    assert_eq!(values[0].1, MISALIGNED_OFFSET);
+    let expect = imported_at(alignment, MISALIGNED_OFFSET);
+    println!(
+        "dma-heap offset {MISALIGNED_OFFSET}: {} alignment {} so {}",
+        if expect {
+            "a multiple of"
+        } else {
+            "not a multiple of"
+        },
+        alignment.map_or_else(|| "unknown".to_string(), |a| a.to_string()),
+        if expect {
+            "imported in place"
+        } else {
+            "copied"
+        }
+    );
+    for trip in trips(&gpu, &values, "dma-heap offset 100") {
+        if expect {
+            assert_eq!(trip.imports, 1, "offset 100 is aligned: imported");
+            assert_eq!(trip.uploads, 0, "offset 100 is aligned: nothing uploaded");
+        } else {
+            // The device refuses the offset, the frame is copied, and the import count stays 0 for
+            // every trip, the trial included (a refusal of the value does not decide the device).
+            assert_eq!(trip.imports, 0, "offset 100 is misaligned: no import");
+            assert_eq!(trip.uploads, 1, "offset 100 is misaligned: copied");
+        }
+    }
+    println!(
+        "dma-heap offset {MISALIGNED_OFFSET}: after the trips, {}",
+        gpu.dmabuf_status(false)
+    );
 }
