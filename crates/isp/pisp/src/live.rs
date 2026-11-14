@@ -329,15 +329,22 @@ impl LiveIsp {
     }
 
     /// Waits up to the timeout for a posted frame to complete on both outputs, and returns it.
-    /// `None` when none completed in time.
+    ///
+    /// `Ok(None)` means nothing is in flight, so there is nothing to wait for (it returns at
+    /// once). A job in flight that does not complete within the timeout is
+    /// [`PispError::Stalled`], with the flights and the device's counters: a completion that
+    /// never comes is never reported as "none yet".
     pub fn wait(&mut self) -> Result<Option<LiveJob>, PispError> {
+        if self.flights.is_empty() {
+            return Ok(None);
+        }
         let deadline = Instant::now() + self.timeout;
         loop {
             if let Some(done) = self.take_done() {
                 return Ok(Some(done));
             }
             if Instant::now() >= deadline {
-                return Ok(None);
+                return Err(self.stalled());
             }
             if let Some(held) = self.outputs[0]
                 .wait(POLL)
@@ -359,6 +366,42 @@ impl LiveIsp {
         self.isp.stop().map_err(|e| setup(format!("stop: {e:?}")))?;
         self.flights.clear();
         Ok(())
+    }
+
+    /// The error for jobs in flight that did not complete in time: each flight's state, the
+    /// buffers held, and the device's own counters (`jobs`, `dropped`, `errors`) when it answers.
+    fn stalled(&mut self) -> PispError {
+        let flights: Vec<String> = self
+            .flights
+            .iter()
+            .map(|f| {
+                format!(
+                    "job {} (config {}, input {}, outputs {:?}, completed {:?})",
+                    f.identity,
+                    f.config,
+                    f.input,
+                    f.outputs,
+                    f.done.iter().map(Option::is_some).collect::<Vec<_>>()
+                )
+            })
+            .collect();
+        let device = match self.isp.counters() {
+            Ok(c) => format!(
+                "device jobs {}, dropped {}, errors {}",
+                c.jobs, c.dropped, c.errors
+            ),
+            Err(e) => format!("device counters unavailable: {e:?}"),
+        };
+        PispError::Stalled(format!(
+            "no completion within {:?} for {}; {device}; buffers in use: input {}, outputs {:?}",
+            self.timeout,
+            flights.join(", "),
+            self.input_busy.iter().filter(|b| **b).count(),
+            self.output_busy
+                .iter()
+                .map(|v| v.iter().filter(|b| **b).count())
+                .collect::<Vec<_>>(),
+        ))
     }
 
     /// The first flight whose two outputs are both in: its frame, with its buffers freed for

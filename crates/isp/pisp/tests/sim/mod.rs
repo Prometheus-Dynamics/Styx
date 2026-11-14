@@ -11,6 +11,12 @@
 //!
 //! The gate (`set_gate`) holds jobs in the ring while the test checks what a full set of config
 //! buffers does; the log records every job the simulated ISP ran, in the order it ran them.
+//!
+//! Buffers come back from the consumer at any time. The simulated ISP takes the returned ones
+//! before it judges each job it reads, as the PiSP driver does (`drivers/pisp/src/be_device.rs`,
+//! `pump`: `take_returns` before every `submit`): a job may name a buffer its consumer gave back
+//! after the ISP last looked, in the same serve. `pause_after_take` holds one serve between its
+//! look and its jobs, so a test can put that ordering in place.
 
 #![allow(dead_code)]
 
@@ -58,6 +64,8 @@ pub struct Ran {
 static EXPECTS: Mutex<Option<HashMap<u64, Expect>>> = Mutex::new(None);
 static RAN: Mutex<Vec<Ran>> = Mutex::new(Vec::new());
 static GATE: AtomicBool = AtomicBool::new(false);
+static PAUSE: AtomicBool = AtomicBool::new(false);
+static PAUSED: AtomicBool = AtomicBool::new(false);
 
 /// Expectations for the jobs the test will post, by identity.
 pub fn expect(identity: u64, e: Expect) {
@@ -76,6 +84,17 @@ pub fn ran() -> Vec<Ran> {
 /// Holds jobs in the ring while `held`: the simulated ISP takes none while it is set.
 pub fn set_gate(held: bool) {
     GATE.store(held, Ordering::SeqCst);
+}
+
+/// Holds the simulated ISP for one serve, after it has looked at the returned buffers and before
+/// it reads a job, while `held` (for at most ten seconds).
+pub fn pause_after_take(held: bool) {
+    PAUSE.store(held, Ordering::SeqCst);
+}
+
+/// Whether the simulated ISP is held in the serve [`pause_after_take`] names.
+pub fn paused() -> bool {
+    PAUSED.load(Ordering::SeqCst)
 }
 
 /// FNV-1a over `bytes`.
@@ -156,6 +175,8 @@ impl SimPisp {
     /// Runs one job the ring holds: reads it, checks its configuration and input, and publishes
     /// the outputs it names.
     fn run_job(&mut self, bytes: &[u8], now_ns: u64) -> Result<()> {
+        // The buffers returned since the serve's look, named by this job among them.
+        self.streams()?;
         let job = match IspJob::decode(&mut Reader::new(bytes)) {
             Ok(job) => job,
             Err(_) => {
@@ -211,6 +232,8 @@ impl SimPisp {
                 continue;
             };
             if !self.slots[2 + k].has(buffer) {
+                // Named but not held: the job's output is never made, so it is counted.
+                self.counters.dropped += 1;
                 continue;
             }
             let fill = vec![fill_for(job.identity, k); size as usize];
@@ -277,6 +300,14 @@ impl Lifecycle for SimPisp {
     fn tick(&mut self, now_ns: u64) -> Option<u64> {
         if self.running {
             let _ = self.streams();
+            if PAUSE.load(Ordering::SeqCst) {
+                PAUSED.store(true, Ordering::SeqCst);
+                let until = std::time::Instant::now() + std::time::Duration::from_secs(10);
+                while PAUSE.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+                    std::thread::sleep(std::time::Duration::from_micros(200));
+                }
+                PAUSED.store(false, Ordering::SeqCst);
+            }
             if !GATE.load(Ordering::SeqCst) {
                 let mut encoded = [0u8; 128];
                 for _ in 0..4 {

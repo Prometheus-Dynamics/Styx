@@ -7,15 +7,9 @@
 
 mod sim;
 
-use std::path::PathBuf;
 use std::time::Duration;
 
-use lemnos_contract_codec_block::{CodecBlock, JOB_BYTES, JobStatus};
-use lemnos_host::board::parse;
-use lemnos_host::{Options, entry};
-use lemnos_sim::SimBoard;
-use lemnosd::{Config, Service};
-use styx_block::hevc;
+use lemnos_contract_codec_block::{CodecBlock, JobStatus};
 use styx_block::live::CODEC_TAG;
 use styx_block::{HevcDecoder, LiveSession, Session};
 use styx_codec_api::{CodecError, Decoder, FourCc};
@@ -23,56 +17,9 @@ use styx_format::{MediaFormat, Resolution};
 use styx_frame::{FrameEntry, Layouts, PlaneLayout, copy_counters, packed_layouts};
 use styx_lemnos::Client;
 
-const STREAM: &[u8] = include_bytes!("../src/hevc/fixtures/idr320.h265");
-
-/// The board: one simulated codec with a job stream whose jobs are the contract's `JOB_BYTES`, so
-/// the fixture follows the contract's record size (a job is a length-prefixed block).
-fn board() -> String {
-    format!(
-        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
-         [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
-         [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = {JOB_BYTES}\n"
-    )
-}
-
-fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-block-live-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
-fn start(name: &str) -> (Service, PathBuf) {
-    let dir = socket_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
-    let config = Config {
-        socket: socket.clone(),
-        name: "styx-block-test".to_string(),
-        board: parse(&board()).expect("board"),
-        drivers: vec![entry::<sim::SimCodec>()],
-        backend: Box::new(SimBoard::new()),
-        options: Options {
-            call_deadline: Duration::from_millis(500),
-            ..Options::default()
-        },
-    };
-    (Service::start(config).expect("start lemnosd"), socket)
-}
-
-/// The access unit of one IDR frame: the stream's IDR slice, with its start code, first.
-fn idr_access_unit() -> Vec<u8> {
-    let (_, raw) = hevc::nal_units(STREAM)
-        .map(|nal| (nal.unit_type, nal.raw.to_vec()))
-        .find(|(unit_type, _)| *unit_type == 19)
-        .expect("the fixture has an IDR slice");
-    let mut au = vec![0, 0, 1];
-    au.extend_from_slice(&raw);
-    au
-}
-
 #[test]
 fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_copies() {
-    let (service, socket) = start("decode");
+    let (service, socket) = sim::start("decode");
     let client = Client::connect(&socket, "styx-block-test").expect("connect");
     let device = client
         .find(CODEC_TAG)
@@ -90,9 +37,11 @@ fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_cop
             .map(|s| Box::new(s) as Box<dyn Session>)
             .ok_or_else(|| CodecError::Unavailable("the test's one session is in use".into()))
     });
-    decoder.set_parameter_sets(STREAM).expect("parameter sets");
+    decoder
+        .set_parameter_sets(sim::STREAM)
+        .expect("parameter sets");
 
-    let au = idr_access_unit();
+    let au = sim::idr_access_unit();
     let bitstream = MediaFormat::with_defaults(FourCc::HEVC, Resolution::new(320, 240).unwrap());
     let picture = MediaFormat::with_defaults(FourCc::NV12, Resolution::new(320, 240).unwrap());
     let (width, height) = (320usize, 240usize);
@@ -150,8 +99,6 @@ fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_cop
     let mut block = client
         .open::<dyn CodecBlock>(&device.name)
         .expect("codec contract");
-    // The block's own counters (Lemnos `codec.block` Counters): `refused` counts the jobs the block
-    // completed as Refused, not a stream's stat. A clean run completes none so.
     let counters = block.counters().expect("counters");
     assert_eq!(
         (counters.jobs, counters.refused, counters.failed),

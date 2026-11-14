@@ -56,6 +56,9 @@ pub enum PispError {
     Sink(String),
     /// A statistics buffer did not parse.
     Stats(String),
+    /// Jobs were in flight and did not complete within the wait's timeout: the flights, and the
+    /// device's counters at that point.
+    Stalled(String),
 }
 
 impl std::fmt::Display for PispError {
@@ -68,6 +71,7 @@ impl std::fmt::Display for PispError {
             Self::Job(e) => write!(f, "pisp job: {e}"),
             Self::Sink(e) => write!(f, "pisp job stream: {e}"),
             Self::Stats(e) => write!(f, "pisp statistics: {e}"),
+            Self::Stalled(e) => write!(f, "pisp jobs stalled: {e}"),
         }
     }
 }

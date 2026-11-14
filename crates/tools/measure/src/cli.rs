@@ -10,6 +10,7 @@ use crate::control::{CameraLine, ask, camera_for_socket};
 use crate::isp::{IspRunner, SoftIspArg};
 use crate::report::{CopySite, Process, Report, ServiceCamera};
 use crate::session::{Session, SessionError, Stop};
+use styx_socket::Start;
 use styx_soft::params::Paths;
 
 pub const USAGE: &str = "\
@@ -17,7 +18,7 @@ usage:
   styx-measure read --socket <camera frame socket> (--frames N | --seconds S)
                     [--control <service control socket>] [--service-pid PID]
                     [--asked-fps FPS] [--soft-isp <FOURCC>[:WxH]] [--isp-variant <name>]
-                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N]
+                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N] [--start newest|next-new]
   styx-measure status --control <service control socket>
 
 read attaches to a camera's frame socket as a reader in this process and measures what it takes
@@ -44,6 +45,8 @@ pub struct ReadArgs {
     pub seconds: Option<f64>,
     pub soft_isp: Option<SoftIspArg>,
     pub isp_variant: Option<Paths>,
+    /// Where the reader starts: the newest kept frame at once (the default), or the next new one.
+    pub start: Start,
     pub report: Option<PathBuf>,
     /// Where to write the first frames one by one (`id,capture_ns,reader_ns`), if asked.
     pub trace: Option<PathBuf>,
@@ -103,6 +106,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
     let mut seconds = None;
     let mut soft_isp = None;
     let mut isp_variant = None;
+    let mut start = Start::default();
     let mut report = None;
     let mut trace = None;
     let mut trace_frames = 20_000usize;
@@ -132,6 +136,13 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
                 seconds = Some(s);
             }
             "--soft-isp" => soft_isp = Some(text(&mut it, flag)?.parse::<SoftIspArg>()?),
+            "--start" => {
+                start = match text(&mut it, flag)?.as_str() {
+                    "newest" => Start::Newest,
+                    "next-new" => Start::NextNew,
+                    other => return Err(format!("--start {other}: newest or next-new")),
+                }
+            }
             "--isp-variant" => isp_variant = Some(Paths::parse(&text(&mut it, flag)?)?),
             "--report" => report = Some(value(&mut it, flag)?),
             "--trace" => trace = Some(value(&mut it, flag)?),
@@ -165,6 +176,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
         seconds,
         soft_isp,
         isp_variant,
+        start,
         report,
         trace,
         trace_frames,
@@ -362,8 +374,8 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
         .soft_isp
         .clone()
         .map(|arg| IspRunner::new(arg).with_paths(paths));
-    let mut session =
-        Session::connect(&args.socket, isp).map_err(|e: SessionError| e.to_string())?;
+    let mut session = Session::connect_with(&args.socket, isp, args.start)
+        .map_err(|e: SessionError| e.to_string())?;
     if args.trace.is_some() {
         session.stats.keep_trace(args.trace_frames);
     }

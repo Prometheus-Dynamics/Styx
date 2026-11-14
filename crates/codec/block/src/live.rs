@@ -15,6 +15,17 @@
 //! how the job ended and how many bytes of read-back follow it. A refused job is
 //! [`CodecError::Rejected`], and the session stays open.
 //!
+//! # Buffers the block may not have back yet
+//!
+//! A buffer the session returns (a completion's result, released with [`JobStream::release`]) is
+//! the block's again only when the block next looks at the stream: the block takes returned
+//! buffers in its own pass over the stream, and a job it reads later in the same pass can name a
+//! buffer it has not yet taken. The session therefore keeps the set of buffers it has returned
+//! and not yet seen the block use: it does not pick them for a job's own work or result, and a
+//! job that names one and is refused is posted again (up to [`ATTEMPTS`] times). A job that names
+//! none of them and is refused is the block's answer: it is returned as [`CodecError::Rejected`].
+//! Both are counted: [`LiveSession::refusals`] and [`LiveSession::retries`].
+//!
 //! What is not here: a reopen after a failure makes a new stream, so new memory. The leases taken
 //! from the old pool still point at it, so the caller must take new ones from the new session's
 //! pool. [`LiveSession::pool`] says which pool is the session's.
@@ -45,12 +56,22 @@ pub const CODEC_TAG: &str = "codec.block/1";
 /// Most buffers one job can name. The contract's job stream holds at most this many.
 const MAX_NAMED: usize = 64;
 
+/// Most times one job is posted. A refusal that names a buffer the session returned is posted
+/// again; the block has taken that buffer back by the next time it looks, so the next post is
+/// accepted unless the block is still in the pass that refused it.
+pub const ATTEMPTS: u32 = 4;
+
 /// A `codec.block/1` device's job stream as a [`Session`]. Its buffers are the job stream's pool.
 pub struct LiveSession {
     stream: JobStream<usize>,
     /// Identity of the next job. Only the completion with this number is the job's.
     sequence: u64,
     timeout: Duration,
+    /// Buffers the session has returned to the block and has not yet seen the block use. See the
+    /// module's notes on buffers the block may not have back yet.
+    unproven: u64,
+    refusals: u64,
+    retries: u64,
     /// Jobs not posted because the pool had no free buffer for the work or the result. Styx picks
     /// those buffers itself, so the stream's `refused` stat (driver-picked buffers only) never
     /// counts them. Nothing was sent, so the block never saw them.
@@ -66,8 +87,19 @@ impl fmt::Debug for LiveSession {
             .field("stream", &self.stream.name())
             .field("buffers", &self.stream.buffers())
             .field("sequence", &self.sequence)
+            .field("refusals", &self.refusals)
+            .field("retries", &self.retries)
             .finish()
     }
+}
+
+/// The block's answer to one posted job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// Done: this many bytes of read-back follow the record.
+    Done(u32),
+    /// Refused: the block did not run it, and nothing reached the hardware.
+    Refused,
 }
 
 impl LiveSession {
@@ -94,6 +126,9 @@ impl LiveSession {
             stream,
             sequence: 0,
             timeout,
+            unproven: 0,
+            refusals: 0,
+            retries: 0,
             starved: 0,
             posts_refused: 0,
         })
@@ -110,6 +145,19 @@ impl LiveSession {
     #[must_use]
     pub fn stream_name(&self) -> &str {
         self.stream.name()
+    }
+
+    /// Jobs the block refused, since the session opened (every refusal, retried or not).
+    #[must_use]
+    pub fn refusals(&self) -> u64 {
+        self.refusals
+    }
+
+    /// Jobs posted again after a refusal that named a buffer the session had returned, since the
+    /// session opened.
+    #[must_use]
+    pub fn retries(&self) -> u64 {
+        self.retries
     }
 
     /// Jobs not posted since the session opened, for want of a free buffer for the work or the
@@ -134,8 +182,10 @@ impl LiveSession {
     }
 
     /// Waits for the completion of the job `identity` whose result is `result`, reads its
-    /// record and releases the frame.
-    fn completion(&mut self, identity: u64, result: u32) -> Result<u32, CodecError> {
+    /// record and releases the frame. `named` is the buffers the job named, its work and result
+    /// included: a job the block completed as done held all of them, so the session has seen the
+    /// block use them.
+    fn completion(&mut self, identity: u64, result: u32, named: u64) -> Result<Answer, CodecError> {
         let frame = self
             .stream
             .wait(self.timeout)
@@ -144,104 +194,38 @@ impl LiveSession {
                 CodecError::Failed(format!("no completion within {:?}", self.timeout))
             })?;
         let outcome = read_completion(&self.stream, &frame, identity, result);
+        if matches!(outcome, Ok(Answer::Done(_))) {
+            self.unproven &= !named;
+        }
+        // The result is given back now, so the block may not have it until it next looks.
+        self.unproven |= 1 << result;
         self.stream
             .release(frame)
             .map_err(|e| CodecError::Failed(format!("releasing the completion: {e}")))?;
         outcome
     }
-}
 
-/// The name the device's `job_stream` answers.
-fn job_stream_name(client: &Client, device: &DeviceEntry) -> Result<String, CodecError> {
-    let mut block = client
-        .open::<dyn CodecBlock>(&device.name)
-        .map_err(|e| CodecError::Unavailable(format!("{}: {e}", device.name)))?;
-    let mut name = [0u8; MAX_STREAM_NAME];
-    let len = block
-        .job_stream(&mut name)
-        .map_err(|e| CodecError::Unavailable(format!("{}: job_stream: {e:?}", device.name)))?;
-    std::str::from_utf8(&name[..len])
-        .map(str::to_owned)
-        .map_err(|_| {
-            CodecError::Unavailable(format!("{}: job stream name is not UTF-8", device.name))
-        })
-}
-
-/// What a completion frame says about the job `identity` whose result is `result`.
-fn read_completion(
-    stream: &JobStream<usize>,
-    frame: &HeldFrame,
-    identity: u64,
-    result: u32,
-) -> Result<u32, CodecError> {
-    if frame.identity() != identity || frame.buffer() != result {
-        return Err(CodecError::Failed(format!(
-            "a completion for job {} on buffer {}, while job {identity} is waited for",
-            frame.identity(),
-            frame.buffer()
-        )));
-    }
-    let bytes = stream.bytes(frame);
-    let record = bytes
-        .get(..COMPLETION_BYTES)
-        .ok_or_else(|| CodecError::Failed("the completion has no record".into()))?;
-    let record = Completion::decode(&mut Reader::new(record))
-        .map_err(|_| CodecError::Failed("the completion record is malformed".into()))?;
-    match record.status {
-        JobStatus::Done => {
-            let count = record.count as usize;
-            if frame.len() != DATA_OFFSET + count {
-                return Err(CodecError::Failed(format!(
-                    "job {identity} completed with {} bytes for {count} of read-back",
-                    frame.len()
-                )));
-            }
-            Ok(record.count)
-        }
-        JobStatus::Refused => Err(CodecError::Rejected(format!(
-            "the block refused job {identity}"
-        ))),
-        JobStatus::Failed => Err(CodecError::Failed(format!(
-            "the block failed job {identity}"
-        ))),
-    }
-}
-
-/// The format a buffer the session takes for a job's own use is marked with. It means nothing
-/// to the block: the lease only keeps the buffer from anyone else for the job's length.
-fn reservation_format() -> Result<MediaFormat, CodecError> {
-    let resolution = Resolution::new(1, 1)
-        .ok_or_else(|| CodecError::Failed("a 1x1 resolution is not one".into()))?;
-    Ok(MediaFormat::with_defaults(FourCc::HEVC, resolution))
-}
-
-impl Session for LiveSession {
-    fn run(&mut self, work: &[u8]) -> Result<u32, CodecError> {
-        let parsed = Work::parse(work)
-            .ok_or_else(|| CodecError::Rejected("the job's work is not work".into()))?;
-        // The buffers the job names: its work's references, one bit each.
-        let mut named = 0u64;
-        for reference in parsed.refs() {
-            let buffer = reference.buffer as usize;
-            if buffer >= MAX_NAMED {
-                return Err(CodecError::Rejected(format!(
-                    "buffer {buffer} is out of range"
-                )));
-            }
-            named |= 1 << buffer;
-        }
+    /// Takes the work and result buffers for one job, posts it and waits for the block's answer.
+    /// `named` is the buffers the work references, one bit each.
+    fn post_once(&mut self, work: &[u8], named: u64) -> Result<Answer, CodecError> {
+        let unproven = self.unproven;
         let pool = self.stream.pool();
         let count = pool.buffers();
-        let free = |index: usize| {
-            index < count.min(MAX_NAMED) && named & (1 << index) == 0 && pool.is_free(index)
+        // A buffer the job's work or result takes: free, not named, and not one the block may
+        // not have back.
+        let usable = |index: usize| {
+            index < count.min(MAX_NAMED)
+                && named & (1 << index) == 0
+                && unproven & (1 << index) == 0
+                && pool.is_free(index)
         };
-        let Some(work_index) = (0..count).find(|&index| free(index)) else {
+        let Some(work_index) = (0..count).find(|&index| usable(index)) else {
             self.starved += 1;
             return Err(CodecError::Failed(
                 "refused: no free buffer for the job's work".into(),
             ));
         };
-        let Some(result_index) = (0..count).find(|&index| index != work_index && free(index))
+        let Some(result_index) = (0..count).find(|&index| index != work_index && usable(index))
         else {
             self.starved += 1;
             return Err(CodecError::Failed(
@@ -298,11 +282,106 @@ impl Session for LiveSession {
             self.posts_refused += 1;
             return Err(CodecError::Failed("refused: the job queue is full".into()));
         }
-        let outcome = self.completion(identity, result_index as u32);
-        if matches!(outcome, Err(CodecError::Rejected(_))) {
-            // The block completed the posted job as Refused: the job did not run.
-            self.posts_refused += 1;
+        let touched = named | (1 << work_index) | (1 << result_index);
+        self.completion(identity, result_index as u32, touched)
+    }
+}
+
+/// The name the device's `job_stream` answers.
+fn job_stream_name(client: &Client, device: &DeviceEntry) -> Result<String, CodecError> {
+    let mut block = client
+        .open::<dyn CodecBlock>(&device.name)
+        .map_err(|e| CodecError::Unavailable(format!("{}: {e}", device.name)))?;
+    let mut name = [0u8; MAX_STREAM_NAME];
+    let len = block
+        .job_stream(&mut name)
+        .map_err(|e| CodecError::Unavailable(format!("{}: job_stream: {e:?}", device.name)))?;
+    std::str::from_utf8(&name[..len])
+        .map(str::to_owned)
+        .map_err(|_| {
+            CodecError::Unavailable(format!("{}: job stream name is not UTF-8", device.name))
+        })
+}
+
+/// What a completion frame says about the job `identity` whose result is `result`.
+fn read_completion(
+    stream: &JobStream<usize>,
+    frame: &HeldFrame,
+    identity: u64,
+    result: u32,
+) -> Result<Answer, CodecError> {
+    if frame.identity() != identity || frame.buffer() != result {
+        return Err(CodecError::Failed(format!(
+            "a completion for job {} on buffer {}, while job {identity} is waited for",
+            frame.identity(),
+            frame.buffer()
+        )));
+    }
+    let bytes = stream.bytes(frame);
+    let record = bytes
+        .get(..COMPLETION_BYTES)
+        .ok_or_else(|| CodecError::Failed("the completion has no record".into()))?;
+    let record = Completion::decode(&mut Reader::new(record))
+        .map_err(|_| CodecError::Failed("the completion record is malformed".into()))?;
+    match record.status {
+        JobStatus::Done => {
+            let count = record.count as usize;
+            if frame.len() != DATA_OFFSET + count {
+                return Err(CodecError::Failed(format!(
+                    "job {identity} completed with {} bytes for {count} of read-back",
+                    frame.len()
+                )));
+            }
+            Ok(Answer::Done(record.count))
         }
-        outcome
+        JobStatus::Refused => Ok(Answer::Refused),
+        JobStatus::Failed => Err(CodecError::Failed(format!(
+            "the block failed job {identity}"
+        ))),
+    }
+}
+
+/// The format a buffer the session takes for a job's own use is marked with. It means nothing
+/// to the block: the lease only keeps the buffer from anyone else for the job's length.
+fn reservation_format() -> Result<MediaFormat, CodecError> {
+    let resolution = Resolution::new(1, 1)
+        .ok_or_else(|| CodecError::Failed("a 1x1 resolution is not one".into()))?;
+    Ok(MediaFormat::with_defaults(FourCc::HEVC, resolution))
+}
+
+impl Session for LiveSession {
+    fn run(&mut self, work: &[u8]) -> Result<u32, CodecError> {
+        let parsed = Work::parse(work)
+            .ok_or_else(|| CodecError::Rejected("the job's work is not work".into()))?;
+        // The buffers the job names: its work's references, one bit each.
+        let mut named = 0u64;
+        for reference in parsed.refs() {
+            let buffer = reference.buffer as usize;
+            if buffer >= MAX_NAMED {
+                return Err(CodecError::Rejected(format!(
+                    "buffer {buffer} is out of range"
+                )));
+            }
+            named |= 1 << buffer;
+        }
+        for attempt in 1..=ATTEMPTS {
+            // Whether the job names a buffer the block may not have back: then a refusal may be
+            // the session's own ordering, and the job is posted again.
+            let exposed = named & self.unproven;
+            match self.post_once(work, named)? {
+                Answer::Done(count) => return Ok(count),
+                Answer::Refused => {
+                    self.refusals += 1;
+                    self.posts_refused += 1;
+                    if exposed == 0 || attempt == ATTEMPTS {
+                        return Err(CodecError::Rejected(format!(
+                            "the block refused the job ({attempt} attempt(s))"
+                        )));
+                    }
+                    self.retries += 1;
+                }
+            }
+        }
+        Err(CodecError::Rejected("the block refused the job".into()))
     }
 }

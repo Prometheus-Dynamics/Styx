@@ -464,8 +464,9 @@ impl<M> Producer<M> {
     }
 
     /// The second half of a handshake: the reader's marks and doorbell go into the hold table,
-    /// and the reader is linked, so the next frame can be published to it. Quick and
-    /// non-blocking; call it on the producer's thread between frames.
+    /// and the reader is linked, so the next frame can be published to it. The reader's doorbell
+    /// is rung once, for any frame published since it took the ring. Quick and non-blocking;
+    /// call it on the producer's thread between frames.
     ///
     /// # Errors
     ///
@@ -481,7 +482,12 @@ impl<M> Producer<M> {
             bell_page,
         } = accepted;
         self.holds.add(slot, marks, limits)?;
-        let bell = Bell::attach(eventfd, bell_page)?;
+        let mut bell = Bell::attach(eventfd, bell_page)?;
+        // The reader has had the ring since the first half of the handshake and may already be
+        // asleep on its doorbell. A frame published between then and now rang nothing for it, so
+        // it would sit unread until the next publish: one frame period late. One ring here wakes
+        // it for whatever is already there; with nothing there it looks and sleeps again.
+        bell.ring();
         self.links.push(Link { slot, socket, bell });
         Ok(slot)
     }
