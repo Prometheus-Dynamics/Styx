@@ -9,7 +9,7 @@ use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use orion::Orion;
-use orion::topics::{FieldId, OnSubscribe, Publisher, Subscriber, TopicDecl};
+use orion::topics::{FieldId, Publisher, Subscriber, TopicDecl};
 use shm_sample_time::SampleTime;
 use styx_socket::{Reader, SocketError};
 
@@ -142,9 +142,6 @@ pub fn advertise(orion: &Orion, name: &str, advert: &Advert) -> Result<Advertise
         history: HISTORY,
         expiry_ms: 0,
         max_payload: MAX_LEN as u32,
-        // A subscriber that connects gets the newest record at once: the frame ring's advert is
-        // the one the reader needs, so it is not made to wait for the next publish.
-        on_subscribe: OnSubscribe::Latest,
     })?;
     let mut advertisement = Advertisement { publisher };
     advertisement.update(advert)?;
