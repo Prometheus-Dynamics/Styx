@@ -7,7 +7,7 @@
 #![allow(dead_code)] // each test binary uses part of this shared simulator.
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use lemnos_contract_camera_isp::{
     CameraIsp, ConfigLayout, Counters as IspCounters, IspInfo, IspInput, IspOutput, OutputLayout,
@@ -15,11 +15,92 @@ use lemnos_contract_camera_isp::{
 use lemnos_contract_camera_receiver::{
     BayerOrder, CameraReceiver, Counters, FrameLayout, Limits, LinkConfig, MAX_STREAM_NAME, Packing,
 };
+use lemnos_contract_camera_sensor::frame_length_for_fps_milli;
 use lemnos_contract_camera_sensor::{
     CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
 };
 use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
 use lemnos_hal::blocks::StreamFrame;
+
+/// Lanes of the frame clock: exposure, analogue gain, frame length.
+const LANES: usize = 3;
+
+/// One camera's frame clock, shared by its sensor and its receiver through the `camera` config
+/// entry. A write the sensor takes at frame `w` is on the list until the receiver makes the frame
+/// it shows from (`w` plus the mode's delay for that control); then it is in force. The receiver
+/// makes frames as the stream runs, so a write lands on the frame its delay names, as the sensor's
+/// contract says, as long as the consumer posts it before that frame is made.
+#[derive(Default)]
+struct Clock {
+    state: Mutex<ClockState>,
+}
+
+#[derive(Default)]
+struct ClockState {
+    /// Writes not yet in force: (lane, code, first frame they show on), in the order they came.
+    pending: Vec<(usize, u32, u64)>,
+    /// The codes in force, per lane.
+    in_force: [Option<u32>; LANES],
+}
+
+/// Every camera's clock in this process, by its `camera` name. Each board text names its cameras
+/// uniquely (see `two_cameras` in `service.rs`), so tests in one process do not share a clock.
+static CLOCKS: Mutex<Vec<(String, Arc<Clock>)>> = Mutex::new(Vec::new());
+
+/// The clock of the camera a device's `camera` config entry names. A device with no entry has a
+/// clock of its own: its writes land on its own receiver's frames only if it is given a name.
+fn clock_named(cfg: &Config<'_>) -> Result<Arc<Clock>> {
+    let Some(name) = cfg.str("camera") else {
+        return Ok(Arc::new(Clock::default()));
+    };
+    let mut all = CLOCKS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, clock)) = all.iter().find(|(n, _)| n == name) {
+        return Ok(Arc::clone(clock));
+    }
+    let clock = Arc::new(Clock::default());
+    all.push((name.to_string(), Arc::clone(&clock)));
+    Ok(clock)
+}
+
+impl Clock {
+    /// Puts in force every write that shows from frame `frame` on, as the receiver makes it.
+    fn make_frame(&self, frame: u64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut i = 0;
+        while i < state.pending.len() {
+            if state.pending[i].2 <= frame {
+                let (lane, code, _) = state.pending.remove(i);
+                state.in_force[lane] = Some(code);
+            } else {
+                i += 1;
+            }
+        }
+    }
+
+    /// Puts a write in force now (a control set before the stream, not a posted value).
+    fn set_now(&self, lane: usize, code: u32) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.in_force[lane] = Some(code);
+    }
+
+    fn in_force(&self) -> [Option<u32>; LANES] {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .in_force
+    }
+
+    fn post(&self, lane: usize, code: u32, shows_from: u64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.pending.push((lane, code, shows_from));
+    }
+
+    /// Forgets the writes not yet in force, as a sensor that starts again has none.
+    fn reset(&self) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.pending.clear();
+    }
+}
 
 /// Calls in the order they arrived, across every simulated device.
 static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -67,8 +148,9 @@ fn mode(index: usize) -> Option<Mode> {
         },
         line_time_ps: 9_100_000,
         line_length: 1456,
-        // The shortest frame at this rate: 1e15 / (fps * 1000 * line time), to the nearest line.
-        frame_length_min: (1_000_000_000_000_000 / (u64::from(fps) * 1_000 * 9_100_000)) as u32,
+        // The shortest frame at this rate: the contract's whole line nearest to the rate.
+        frame_length_min: frame_length_for_fps_milli(9_100_000, 1, u32::MAX, fps * 1_000)
+            .map_or(0, |(lines, _)| lines),
         frame_length_max: 52_000,
         exposure_min: 16,
         exposure_margin: 25,
@@ -104,8 +186,8 @@ pub struct SimSensor {
     selected: Option<u16>,
     streaming: bool,
     applied: Option<FrameValues>,
-    /// The codes last written (exposure, gain, frame length), after the sensor's clamp.
-    written: [Option<u32>; 3],
+    /// The frame clock the receiver of this camera makes frames on.
+    clock: Arc<Clock>,
     /// The `CLAMP_*` bits of the last request.
     clamped: u8,
 }
@@ -113,12 +195,13 @@ pub struct SimSensor {
 impl SimSensor {
     /// The request as the sensor takes it: each value moved to the nearest one the selected mode
     /// allows (the exposure ceiling is the frame less the mode's margin, in the frame length asked
-    /// for or last written), with the `CLAMP_*` bits of what was moved.
+    /// for or in force), with the `CLAMP_*` bits of what was moved.
     fn fit(&mut self, controls: Controls) -> Controls {
         let m = self.selected.and_then(|i| mode(usize::from(i)));
         let Some(m) = m else {
             return controls;
         };
+        let written = self.clock.in_force();
         let mut clamped = 0;
         let frame_length = controls.frame_length.map(|lines| {
             let fit = lines.clamp(m.frame_length_min, m.frame_length_max);
@@ -127,14 +210,12 @@ impl SimSensor {
             }
             fit
         });
-        let frame_length_now = frame_length
-            .or(self.written[2])
-            .unwrap_or(m.frame_length_min);
-        let exposure_max = (frame_length_now.saturating_sub(m.exposure_margin) << 4)
-            .max(m.exposure_min);
+        let frame_length_now = frame_length.or(written[2]).unwrap_or(m.frame_length_min);
+        let exposure_max =
+            (frame_length_now.saturating_sub(m.exposure_margin) << 4).max(m.exposure_min);
         let asked = match controls.exposure {
             Some(code) => Some(code),
-            None if frame_length.is_some() => self.written[0],
+            None if frame_length.is_some() => written[0],
             None => None,
         };
         let exposure = asked.map(|code| {
@@ -152,7 +233,6 @@ impl SimSensor {
             fit
         });
         self.clamped = clamped;
-        self.written = [exposure.or(self.written[0]), analogue_gain.or(self.written[1]), frame_length.or(self.written[2])];
         Controls {
             exposure,
             analogue_gain,
@@ -160,17 +240,28 @@ impl SimSensor {
             digital_gain: controls.digital_gain,
         }
     }
+
+    /// The mode's delay, in frames, for a lane: a write at frame `w` shows from `w + delay`.
+    fn delay_of(m: &Mode, lane: usize) -> u64 {
+        u64::from(match lane {
+            0 => m.exposure_delay,
+            1 => m.gain_delay,
+            _ => m.frame_length_delay,
+        })
+    }
 }
 
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
 
-    fn start(_needs: SimSensorNeeds, _cfg: &Config<'_>) -> Result<Self> {
+    fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
+        let clock = clock_named(cfg)?;
+        clock.reset();
         Ok(Self {
             selected: None,
             streaming: false,
             applied: None,
-            written: [None; 3],
+            clock,
             clamped: 0,
         })
     }
@@ -197,10 +288,11 @@ impl CameraSensor for SimSensor {
     fn in_force(
         &mut self,
     ) -> core::result::Result<lemnos_contract_camera_sensor::InForce, lemnos_core::Status> {
+        let [exposure, gain, frame_length] = self.clock.in_force();
         Ok(lemnos_contract_camera_sensor::InForce {
-            exposure_lines: self.written[0].map(|code| code >> 4),
-            analogue_gain: self.written[1],
-            frame_length: self.written[2],
+            exposure_lines: exposure.map(|code| code >> 4),
+            analogue_gain: gain,
+            frame_length,
             clamped: self.clamped,
         })
     }
@@ -279,15 +371,38 @@ impl CameraSensor for SimSensor {
             return Err(Status::INVALID_ARGUMENT);
         }
         log("sensor.set_controls");
-        self.fit(controls);
+        let fit = self.fit(controls);
+        // A control set before the stream runs is in force at once.
+        for (lane, code) in [fit.exposure, fit.analogue_gain, fit.frame_length]
+            .into_iter()
+            .enumerate()
+        {
+            if let Some(code) = code {
+                self.clock.set_now(lane, code);
+            }
+        }
         Ok(())
     }
 
+    /// A posted value is written during frame `identity` and shows from `identity` plus the mode's
+    /// delay for each control (the frame clock puts it in force then).
     fn post_values(&mut self, values: FrameValues) -> Result<()> {
-        let controls = self.fit(values.controls);
+        let fit = self.fit(values.controls);
+        let m = self.selected.and_then(|i| mode(usize::from(i)));
+        if let Some(m) = m {
+            for (lane, code) in [fit.exposure, fit.analogue_gain, fit.frame_length]
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(code) = code {
+                    let shows = values.identity + Self::delay_of(&m, lane);
+                    self.clock.post(lane, code, shows);
+                }
+            }
+        }
         self.applied = Some(FrameValues {
             identity: values.identity,
-            controls,
+            controls: fit,
         });
         Ok(())
     }
@@ -325,19 +440,22 @@ pub struct SimReceiver {
     layout: Option<FrameLayout>,
     run: Option<Run>,
     counters: Counters,
+    /// The frame clock of this camera: the frames this receiver makes put the writes in force.
+    clock: Arc<Clock>,
 }
 
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
     const TICKS: bool = true;
 
-    fn start(needs: SimReceiverNeeds, _cfg: &Config<'_>) -> Result<Self> {
+    fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
             frames: needs.frames,
             configured: None,
             layout: None,
             run: None,
             counters: Counters::default(),
+            clock: clock_named(cfg)?,
         })
     }
 
@@ -354,6 +472,8 @@ impl Lifecycle for SimReceiver {
         };
         let size = self.layout.map_or(0, |layout| layout.size);
         while next <= now_ns {
+            // The frame is made first: the writes that show from it are in force on it.
+            self.clock.make_frame(run.sequence);
             // A stalled receiver makes no frame: the fault switch is on.
             if STALL_NOW.load(Ordering::Acquire) {
                 run.sequence += 1;
@@ -483,6 +603,7 @@ impl CameraReceiver for SimReceiver {
             return Err(Status::IO);
         }
         log("receiver.start");
+        self.clock.reset();
         self.counters = Counters::default();
         self.run = Some(Run {
             interval_ns: frame_interval_ns(&link),

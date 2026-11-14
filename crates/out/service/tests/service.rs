@@ -8,11 +8,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use lemnos_contract_camera_sensor::frame_length_for_fps_milli;
 use lemnos_host::board::parse;
 use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
@@ -25,17 +26,38 @@ use styx_service::{Config, Deps, Discard, Listers, Outlet, Outlets, Service, cam
 use styx_socket::Reader;
 
 /// Two complete chains (sensor, receiver, ISP each) on one daemon.
+/// Mode 0's shortest frame in the double (asked at 120 fps, the contract's whole line nearest that
+/// rate), and the exposure ceiling that frame gives: (frame - the mode's margin of 25 lines) at its
+/// 9.1 us line, rounded to the microsecond.
+fn mode0_shortest() -> (u32, u32) {
+    let (lines, _) = frame_length_for_fps_milli(9_100_000, 1, u32::MAX, 120_000).expect("a frame");
+    let us = (u64::from(lines) - 25) * 9_100_000;
+    (
+        lines,
+        u32::try_from((us + 500_000) / 1_000_000).expect("us"),
+    )
+}
+
+/// Two cameras, each with its own receiver and ISP. Each call names its cameras' frame clocks
+/// uniquely, so the tests of this binary (which run in one process) do not share one.
 fn two_cameras() -> String {
-    "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
-     [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
-     [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n"
-        .to_string()
+    static BOARDS: AtomicU32 = AtomicU32::new(0);
+    let n = BOARDS.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
+         [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
+         [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
+         [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n"
+    )
 }
 
 fn test_dir(name: &str) -> PathBuf {
@@ -254,14 +276,12 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
     let f0 = ask(&control, &format!("frame {}", cams[0]));
     let f1 = ask(&control, &format!("frame {}", cams[1]));
     assert_eq!(field(&f1[0], "exposure_us"), Some("9992"), "{f1:?}");
-    // The service's test double applies a post at once (it has no frame clock), so the change is
-    // visible on the frame it is read at, up to the mode's delay before the asked frame. The landing
-    // rule itself is checked by the native controls' landing tests and the sim's native-path test.
+    // The change shows from the asked frame on: the newest frame read has it, so it is on or past
+    // that frame.
     assert!(
         field(&f0[0], "id")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap()
-            + 2
             >= frame,
         "{f0:?}"
     );
@@ -327,8 +347,8 @@ fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_back
     let lemnos_socket = dir.join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let recorder = Arc::new(Recorder::default());
-    // 240 fps is past mode 0's ceiling, so the frame is its shortest: 915 lines. Its exposure
-    // ceiling is (915 - 25) lines of 9.1 us, 8 099 us. The 10 ms asked is moved to it, and the
+    // 240 fps is past mode 0's ceiling, so the frame is its shortest (`mode0_shortest`). Its exposure
+    // ceiling is (the frame - 25) lines of 9.1 us. The 10 ms asked is moved to it, and the
     // camera streams: a clamp is not a failure.
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
@@ -350,13 +370,26 @@ fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_back
     assert_eq!(field(&line, "total_failures"), Some("0"), "{line}");
     assert_eq!(field(&line, "starts"), Some("1"), "{line}");
     assert_eq!(field(&line, "exposure_requested"), Some("10000"), "{line}");
-    assert_eq!(field(&line, "exposure_applied"), Some("8099"), "{line}");
+    let (lines, ceiling) = mode0_shortest();
+    let ceiling = ceiling.to_string();
+    assert_eq!(
+        field(&line, "exposure_applied"),
+        Some(ceiling.as_str()),
+        "{line}"
+    );
     let why = field(&line, "exposure_clamp").expect("the clamp's reason");
-    assert!(why.contains("the_frame_is_915_lines"), "{line}");
-    assert!(why.contains("at_most_8099_us"), "{line}");
+    assert!(
+        why.contains(&format!("the_frame_is_{lines}_lines")),
+        "{line}"
+    );
+    assert!(why.contains(&format!("at_most_{ceiling}_us")), "{line}");
     // The frames show what was applied.
     let frame = ask(&control, &format!("frame {cam}"));
-    assert_eq!(field(&frame[0], "exposure_us"), Some("8099"), "{frame:?}");
+    assert_eq!(
+        field(&frame[0], "exposure_us"),
+        Some(ceiling.as_str()),
+        "{frame:?}"
+    );
     service.shutdown();
 }
 
@@ -396,15 +429,24 @@ fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
     wait_until("the clamp in status", Duration::from_secs(20), || {
         line_of(&control, cam).is_some_and(|l| field(&l, "exposure_requested") == Some("20000"))
     });
-    wait_until("8099 us on frames", Duration::from_secs(20), || {
+    let (_, ceiling) = mode0_shortest();
+    let ceiling = ceiling.to_string();
+    wait_until("the ceiling on frames", Duration::from_secs(20), || {
         ask(&control, &format!("frame {cam}"))
             .iter()
-            .any(|l| field(l, "exposure_us") == Some("8099"))
+            .any(|l| field(l, "exposure_us") == Some(ceiling.as_str()))
     });
     let line = line_of(&control, cam).expect("listed");
-    assert_eq!(field(&line, "exposure_applied"), Some("8099"), "{line}");
+    let (_, ceiling) = mode0_shortest();
+    let ceiling = ceiling.to_string();
+    assert_eq!(
+        field(&line, "exposure_applied"),
+        Some(ceiling.as_str()),
+        "{line}"
+    );
     assert!(
-        field(&line, "exposure_clamp").is_some_and(|c| c.contains("at_most_8099_us")),
+        field(&line, "exposure_clamp")
+            .is_some_and(|c| c.contains(&format!("at_most_{ceiling}_us"))),
         "{line}"
     );
     assert_eq!(field(&line, "state"), Some("streaming"), "{line}");
@@ -926,9 +968,8 @@ fn frames_reach_readers_in_other_processes_with_their_metadata_and_bytes() {
     );
     let first_changed = cam0.iter().find(|f| f.1 == 4_996).map(|f| f.0);
     let first_changed = first_changed.expect("camera 0's readers saw the exposure change");
-    // The double applies a post at once (see above): the change shows up to the delay early.
     assert!(
-        first_changed + 2 >= landing,
+        first_changed >= landing,
         "changed at {first_changed}, asked for {landing}"
     );
     assert!(
