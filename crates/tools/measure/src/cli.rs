@@ -34,6 +34,9 @@ RGB3, GREY) at full size, or at WxH (full or half of the raw size).
 --isp-variant: which equivalent row paths the software ISP takes: `current` (the default), `legacy`
 (the paths they replace), or a list such as `current,-direct-u8` (see styx_soft::params::Paths).
 The paths in effect are printed to stderr at the first frame.
+--hold N: keep the first N frames read and never release them. The frame being read is in hand
+too, so N + 1 count against the camera's hold bound (buffers - hardware_reserve - 1, shared by
+all readers): N = bound - 1 is never cut; N = bound is cut whenever this reader lags one frame.
 ";
 
 /// What `read` was asked to do.
