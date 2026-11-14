@@ -45,6 +45,10 @@ pub enum FaultCode {
     UnsupportedFormat = 8,
     /// A buffer too small for the planes its frame needs.
     PlaneLayoutMismatch = 9,
+    /// Orion refused a revision: the node's revision is not one this build can use.
+    OrionRevision = 10,
+    /// Orion refused a feature level: the feature needs a level the node does not provide.
+    OrionFeature = 11,
 }
 
 impl FaultCode {
@@ -60,6 +64,8 @@ impl FaultCode {
         FaultCode::NoDataPath,
         FaultCode::UnsupportedFormat,
         FaultCode::PlaneLayoutMismatch,
+        FaultCode::OrionRevision,
+        FaultCode::OrionFeature,
     ];
 }
 
@@ -115,6 +121,16 @@ pub const TABLE: &[(FaultCode, &str, &str)] = &[
         FaultCode::PlaneLayoutMismatch,
         "PlaneLayoutMismatch",
         "The buffer is smaller than the frame's planes need for its format and size, or the planes can't be laid out. The detail gives the sizes.",
+    ),
+    (
+        FaultCode::OrionRevision,
+        "OrionRevision",
+        "Orion refused a node's revision. The detail names the node and the revision it is, and the revision this build is.",
+    ),
+    (
+        FaultCode::OrionFeature,
+        "OrionFeature",
+        "Orion refused a feature at the level it is asked for. The detail names the node, the feature and the level it needs.",
     ),
 ];
 
@@ -229,10 +245,7 @@ pub fn check_format(format: &MediaFormat, want: FourCc) -> Result<(), StyxFault>
     Err(StyxFault::new(
         FaultCode::UnsupportedFormat,
         "the step does not take this pixel format",
-        format!(
-            "the step takes {want:?}, and the frame is {:?}",
-            format.code
-        ),
+        format!("the step takes {want}, and the frame is {}", format.code),
     ))
 }
 
@@ -244,7 +257,7 @@ pub fn check_planes(len: usize, format: &MediaFormat) -> Result<(), StyxFault> {
         StyxFault::new(
             FaultCode::PlaneLayoutMismatch,
             "the frame's planes can't be laid out",
-            format!("{:?} at {width}x{height}: {error:?}", format.code),
+            format!("{} at {width}x{height}: {error:?}", format.code),
         )
     })?;
     let need: usize = sizes.iter().map(|plane| plane.len).sum();
@@ -255,7 +268,7 @@ pub fn check_planes(len: usize, format: &MediaFormat) -> Result<(), StyxFault> {
         FaultCode::PlaneLayoutMismatch,
         "the buffer is smaller than the frame's planes",
         format!(
-            "{:?} at {width}x{height} needs {need} bytes in its planes ({:?}), and the buffer holds {len}",
+            "{} at {width}x{height} needs {need} bytes in its planes ({:?}), and the buffer holds {len}",
             format.code,
             sizes.iter().map(|plane| plane.len).collect::<Vec<_>>()
         ),
@@ -281,6 +294,71 @@ pub fn orion_fault(kind: u32, revision: &str, feature: &str) -> StyxFault {
         "Orion refused this revision or feature",
         format!("orion refused (kind {kind}): revision {revision}, feature {feature}"),
     )
+}
+
+/// Orion's refusal as Styx sees it. Orion's own `ClientError::Revision { node, client }` and
+/// `ClientError::Level { feature, needs, node }` are not at the pinned Orion revision, so this
+/// stand-in carries the same words; when Orion's rev moves, the caller maps Orion's error into it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OrionRefusal {
+    /// The node's revision is not the one the client was built for.
+    Revision {
+        /// The node, as Orion names it.
+        node: String,
+        /// The revision the client was built for.
+        client: String,
+    },
+    /// The feature needs a level the node does not provide.
+    Level {
+        /// The feature, as Orion names it.
+        feature: String,
+        /// The level the feature needs.
+        needs: String,
+        /// The node, as Orion names it.
+        node: String,
+    },
+}
+
+/// The fault for an Orion refusal: [`FaultCode::OrionRevision`] or [`FaultCode::OrionFeature`],
+/// with the node and the words Orion gave.
+pub fn orion_refusal_fault(refusal: &OrionRefusal) -> StyxFault {
+    match refusal {
+        OrionRefusal::Revision { node, client } => StyxFault::new(
+            FaultCode::OrionRevision,
+            "Orion refused this node's revision",
+            format!("node {node} is not the revision this client was built for ({client})"),
+        ),
+        OrionRefusal::Level {
+            feature,
+            needs,
+            node,
+        } => StyxFault::new(
+            FaultCode::OrionFeature,
+            "Orion refused a feature at this level",
+            format!("feature {feature} needs level {needs}, and node {node} does not provide it"),
+        ),
+    }
+}
+
+/// The fault for a frame socket's handshake refused by layout
+/// ([`styx_socket::SocketError::Layout`]): [`FaultCode::LayoutRefused`], with the structure and both
+/// values. `None` for any other handshake error, which the caller reports with its own code.
+pub fn socket_fault(error: &styx_socket::SocketError) -> Option<StyxFault> {
+    match error {
+        styx_socket::SocketError::Layout {
+            which,
+            found,
+            expected,
+        } => Some(StyxFault::new(
+            FaultCode::LayoutRefused,
+            "the shared-memory layout is not this build's",
+            format!(
+                "{} is layout {found}; this build reads layout {expected}",
+                which.what()
+            ),
+        )),
+        _ => None,
+    }
 }
 
 /// The fault for a device failure, with the device's own words.

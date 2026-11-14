@@ -10,3 +10,5 @@
 | 7 | NoDataPath | A frame has neither a dma-buf nor CPU bytes, so there is nothing a device or a step can read. |
 | 8 | UnsupportedFormat | A step takes one pixel format and the frame is another. The detail names both. |
 | 9 | PlaneLayoutMismatch | The buffer is smaller than the frame's planes need for its format and size, or the planes can't be laid out. The detail gives the sizes. |
+| 10 | OrionRevision | Orion refused a node's revision. The detail names the node and the revision it is, and the revision this build is. |
+| 11 | OrionFeature | Orion refused a feature at the level it is asked for. The detail names the node, the feature and the level it needs. |

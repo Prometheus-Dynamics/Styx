@@ -15,8 +15,9 @@ use daedalus_wgpu::OpenError;
 use lemnos_linux_sys::dma_buf;
 use styx_daedalus::StyxFrame;
 use styx_daedalus::fault::{
-    FaultCode, StyxFault, TABLE, check_bytes, check_format, check_frame, check_planes,
-    check_writable, device_fault, fail, layout_fault, open_fault, orion_fault,
+    FaultCode, OrionRefusal, StyxFault, TABLE, check_bytes, check_format, check_frame,
+    check_planes, check_writable, device_fault, fail, layout_fault, open_fault, orion_fault,
+    orion_refusal_fault, socket_fault,
 };
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{BufferMemory, BufferSize, FdMemory, FramePool, MemoryKind};
@@ -83,7 +84,65 @@ fn a_layout_refusal_at_attach_is_layout_refused() {
     assert!(detail.contains("expected 0xabc, found 0xdef"), "{detail}");
 }
 
-// Stand-in: no Orion refusal is a type at the current locks.
+/// A layout refusal from the real handshake type: the socket's `SocketError::Layout` is what a
+/// frame socket's attach returns, so the code is produced from it, not from words.
+#[test]
+fn a_socket_handshake_layout_refusal_is_layout_refused_with_both_values() {
+    let error = styx_socket::SocketError::Layout {
+        which: styx_socket::SharedLayout::Marks,
+        found: 1,
+        expected: 2,
+    };
+    let fault = socket_fault(&error).expect("a layout refusal has a code");
+    let (code, _, detail) = step_fault(&fault);
+    assert_eq!(code, FaultCode::LayoutRefused as u32);
+    assert!(detail.contains("this marks page is layout 1"), "{detail}");
+    assert!(detail.contains("reads layout 2"), "{detail}");
+    // A version refusal is not a layout refusal: the caller reports it with its own code.
+    let version = styx_socket::SocketError::Version { ours: 5, theirs: 4 };
+    assert!(socket_fault(&version).is_none());
+}
+
+/// Orion's refusals as the stand-in carries them: each has its own code, named with the node.
+#[test]
+fn orion_revision_and_feature_refusals_have_their_own_codes() {
+    let revision = OrionRefusal::Revision {
+        node: "hdr-meta".to_string(),
+        client: "0.9.4".to_string(),
+    };
+    let (code, reason, detail) = step_fault(&orion_refusal_fault(&revision));
+    assert_eq!(code, FaultCode::OrionRevision as u32);
+    assert_eq!(code, 10);
+    assert!(reason.contains("revision"), "{reason}");
+    assert!(
+        detail.contains("node hdr-meta") && detail.contains("0.9.4"),
+        "{detail}"
+    );
+
+    let level = OrionRefusal::Level {
+        feature: "tone-map".to_string(),
+        needs: "2".to_string(),
+        node: "hdr-meta".to_string(),
+    };
+    let (code, reason, detail) = step_fault(&orion_refusal_fault(&level));
+    assert_eq!(code, FaultCode::OrionFeature as u32);
+    assert_eq!(code, 11);
+    assert!(reason.contains("feature"), "{reason}");
+    assert!(
+        detail.contains("feature tone-map needs level 2") && detail.contains("hdr-meta"),
+        "{detail}"
+    );
+}
+
+/// The real refusal types are Orion's `ClientError::Revision` and `ClientError::Level`. They are
+/// not at the pinned Orion revision, so this test cannot name them yet.
+#[test]
+#[ignore = "needs Orion's rev with ClientError::Revision/Level"]
+fn orion_s_own_refusals_map_to_the_revision_and_feature_codes() {
+    unimplemented!("map Orion's ClientError::Revision and ClientError::Level into OrionRefusal");
+}
+
+// Stand-in: the pre-existing code for an Orion refusal with no kind of its own.
 #[test]
 fn an_orion_refusal_is_orion_refused() {
     let fault = orion_fault(7, "0.9.4", "hdr-meta");
@@ -215,6 +274,8 @@ fn the_published_numbers_and_names_do_not_change() {
         (FaultCode::NoDataPath, 7, "NoDataPath"),
         (FaultCode::UnsupportedFormat, 8, "UnsupportedFormat"),
         (FaultCode::PlaneLayoutMismatch, 9, "PlaneLayoutMismatch"),
+        (FaultCode::OrionRevision, 10, "OrionRevision"),
+        (FaultCode::OrionFeature, 11, "OrionFeature"),
     ];
     for (code, number, name) in published {
         assert_eq!(code as u32, number, "{name}");
