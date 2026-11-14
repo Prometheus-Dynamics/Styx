@@ -49,6 +49,9 @@ pub enum FaultCode {
     OrionRevision = 10,
     /// Orion refused a feature level: the feature needs a level the node does not provide.
     OrionFeature = 11,
+    /// The board's Lemnos and this Styx are different builds: a device's contract is laid out another
+    /// way here, so the bind is refused.
+    ContractMismatch = 12,
 }
 
 impl FaultCode {
@@ -66,6 +69,7 @@ impl FaultCode {
         FaultCode::PlaneLayoutMismatch,
         FaultCode::OrionRevision,
         FaultCode::OrionFeature,
+        FaultCode::ContractMismatch,
     ];
 }
 
@@ -131,6 +135,11 @@ pub const TABLE: &[(FaultCode, &str, &str)] = &[
         FaultCode::OrionFeature,
         "OrionFeature",
         "Orion refused a feature at the level it is asked for. The detail names the node, the feature and the level it needs.",
+    ),
+    (
+        FaultCode::ContractMismatch,
+        "ContractMismatch",
+        "The board's Lemnos and this Styx are different builds: a device's contract is laid out another way here, so the bind is refused. The detail names the contract and both base hashes.",
     ),
 ];
 

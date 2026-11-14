@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
 //! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
@@ -289,6 +289,11 @@ fn camera_line(status: &CameraStatus) -> String {
         || "running".to_string(),
         |since| format!("retrying:{since}"),
     );
+    // The contract another build's that refuses the camera, by name (one word; `-` when none).
+    let contract_mismatch = status
+        .contract_mismatch
+        .as_ref()
+        .map_or_else(|| "-".to_string(), |c| c.replace(' ', "_"));
     // The layout refusal as `<ring|marks>:<found>:<expected>`, and the fault code number.
     let layout_refused = status
         .layout_refused
@@ -332,7 +337,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -378,6 +383,7 @@ fn camera_line(status: &CameraStatus) -> String {
         fault,
         keep.bound_unmet,
         status.discontinuities,
+        contract_mismatch,
         error,
     )
 }
@@ -434,6 +440,8 @@ pub struct CameraLine {
     /// Frame-stream discontinuities: each lost resume (the camera was bound again and the sequence
     /// restarts). Not gaps: `skipped` does not count them.
     pub discontinuities: Option<u64>,
+    /// The device contract another build's that refuses the camera, by name (`contract_mismatch=`).
+    pub contract_mismatch: Option<String>,
     /// The last failure's message: the free text at the end of the line.
     pub last_error: Option<String>,
 }
@@ -521,6 +529,7 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "reserve_cuts" => camera.reserve_cuts = number,
             "bound_unmet" => camera.bound_unmet = number,
             "discontinuities" => camera.discontinuities = number,
+            "contract_mismatch" => camera.contract_mismatch = text,
             _ => {}
         }
     }
@@ -706,6 +715,31 @@ mod tests {
     }
 
     #[test]
+    fn a_contract_mismatch_is_its_name_and_its_sentence_is_the_text_with_the_fault_code() {
+        // The camera the board's Lemnos refuses: the contract's name as a field, the fault code, and
+        // the sentence the Lemnos error gives (both hashes) as the text.
+        let slot = slot("lemnos:cam0");
+        let sentence = "this Styx and the board's Lemnos are different builds: contract camera.sensor/1: a base method is laid out differently (the device's base hash 0x4d6f4b4bddf78636, this client's 0x33b860b02987233d)";
+        slot.set_contract(Some("camera.sensor/1".to_string()));
+        slot.failed(sentence.to_string(), 1);
+        let line = camera_line(&slot.snapshot());
+        assert!(
+            line.contains(
+                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
+            ),
+            "{line}"
+        );
+        let cam = parse_camera_line(&line).expect("a camera line");
+        assert_eq!(cam.contract_mismatch.as_deref(), Some("camera.sensor/1"));
+        assert_eq!(cam.fault, Some(12));
+        assert_eq!(cam.last_error.as_deref(), Some(sentence));
+        slot.set_contract(None);
+        let cam = parse_camera_line(&camera_line(&slot.snapshot())).expect("a camera line");
+        assert_eq!(cam.contract_mismatch, None);
+        assert_eq!(cam.fault, None);
+    }
+
+    #[test]
     fn a_layout_refusal_injected_at_the_status_shows_as_fields_before_the_text() {
         // The status a native session reports when its frame stream refuses the other side's
         // layout: the refusal's values and the fault code, then the text of the failure.
@@ -722,7 +756,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 last_error=frame stream cam0: the marks page"
+                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- last_error=frame stream cam0: the marks page"
             ),
             "the fields come before the free text: {line}"
         );

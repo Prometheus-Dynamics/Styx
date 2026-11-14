@@ -25,4 +25,5 @@ and never change or are reused.
 | 9 | PlaneLayoutMismatch | The buffer is smaller than the frame's planes need for its format and size, or the planes can't be laid out. The detail gives the sizes. |
 | 10 | OrionRevision | Orion refused a node's revision. The detail names the node and the revision it is, and the revision this build is. |
 | 11 | OrionFeature | Orion refused a feature at the level it is asked for. The detail names the node, the feature and the level it needs. |
+| 12 | ContractMismatch | The board's Lemnos and this Styx are different builds: a device's contract is laid out another way here, so the bind is refused. The detail names the contract and both base hashes. |
 Checked by `tests/fault_codes.rs`: the table, the enum and this file cannot drift apart.

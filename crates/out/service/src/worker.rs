@@ -18,7 +18,7 @@ use styx_format::{FourCc, Interval};
 use styx_lemnos::Carried;
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
-use styx_native::{Camera, discover};
+use styx_native::{Camera, Refusal, discover};
 use styx_native_run::{
     AutoOff, Clock, ExposureReport, Initial, Policy, Request, Selection, Session,
 };
@@ -324,6 +324,15 @@ fn open<R>(
             let client =
                 Client::connect(socket, CLIENT_NAME).map_err(|e| format!("lemnos: {e}"))?;
             let found = discover(&client).map_err(|e| format!("lemnos discovery: {e}"))?;
+            // A camera whose device contract is another build's is refused at discovery: its status
+            // names the contract and the sentence, and the worker backs off like any failure.
+            if let Some((_, Refusal::Contract { contract, text, .. })) =
+                found.refused.iter().find(|entry| entry.0 == selection.key)
+            {
+                slot.set_contract(Some(contract.clone()));
+                return Err(text.clone());
+            }
+            slot.set_contract(None);
             let camera = found
                 .cameras
                 .iter()

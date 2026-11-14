@@ -276,6 +276,7 @@ fn the_published_numbers_and_names_do_not_change() {
         (FaultCode::PlaneLayoutMismatch, 9, "PlaneLayoutMismatch"),
         (FaultCode::OrionRevision, 10, "OrionRevision"),
         (FaultCode::OrionFeature, 11, "OrionFeature"),
+        (FaultCode::ContractMismatch, 12, "ContractMismatch"),
     ];
     for (code, number, name) in published {
         assert_eq!(code as u32, number, "{name}");
@@ -409,5 +410,24 @@ fn a_steps_code_reaches_the_host() {
         detail.text.contains("mapped for reading only"),
         "{}",
         detail.text
+    );
+}
+
+#[test]
+fn a_contract_mismatch_has_its_own_code_and_keeps_both_hashes() {
+    // The board's Lemnos refuses a bind for a contract another build lays out differently: its own
+    // code (12), and the detail keeps the Lemnos error's words with both base hashes.
+    let fault = StyxFault::new(
+        FaultCode::ContractMismatch,
+        "the board's Lemnos is another build",
+        "contract camera.sensor/1: a base method is laid out differently (the device's base hash 0x4d6f4b4bddf78636, this client's 0x33b860b02987233d)",
+    );
+    let (code, reason, detail) = step_fault(&fault);
+    assert_eq!(FaultCode::ContractMismatch as u32, 12);
+    assert_eq!(code, 12);
+    assert_eq!(reason, "the board's Lemnos is another build");
+    assert!(
+        detail.contains("0x4d6f4b4bddf78636") && detail.contains("0x33b860b02987233d"),
+        "{detail}"
     );
 }

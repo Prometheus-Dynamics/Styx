@@ -325,6 +325,16 @@ pub enum Error {
     /// A shared ring or marks page of the stream is another layout than this build reads. Only
     /// that stream is affected; nothing was mapped.
     SharedLayout(LayoutRefusal),
+    /// This Styx and the board's Lemnos are different builds: a base method of contract `contract`
+    /// is laid out differently on the device than this client was built with (a base hash
+    /// differs). Refused at bind; nothing was called. `source` is the client's error in full, so
+    /// its words (both hashes) survive.
+    ContractMismatch {
+        contract: String,
+        ours: u64,
+        theirs: u64,
+        source: lemnos_client::Error,
+    },
     /// The stream ended and no frame is left to read: why, as the host wrote it. No more frames
     /// come from this stream; a session reopens it.
     StreamEnded(StreamEnd),
@@ -365,7 +375,20 @@ pub enum Error {
 impl Error {
     /// The Lemnos client's error as Styx's. A shared-layout refusal keeps its structure and both
     /// values as [`Error::SharedLayout`]; every other client error is [`Error::Client`] unchanged.
-    pub(crate) fn from_client(error: lemnos_client::Error) -> Self {
+    pub fn from_client(error: lemnos_client::Error) -> Self {
+        if let lemnos_client::Error::ContractMismatch {
+            contract,
+            ours,
+            theirs,
+        } = &error
+        {
+            return Self::ContractMismatch {
+                contract: contract.clone(),
+                ours: *ours,
+                theirs: *theirs,
+                source: error.clone(),
+            };
+        }
         match error {
             lemnos_client::Error::Stream(lemnos_wire::ring::RingError::Layout {
                 which,
@@ -391,6 +414,15 @@ impl Error {
             _ => None,
         }
     }
+
+    /// The contract whose base method differs from this build's, if this is a contract mismatch.
+    #[must_use]
+    pub fn contract_mismatch(&self) -> Option<&str> {
+        match self {
+            Self::ContractMismatch { contract, .. } => Some(contract),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for Error {
@@ -398,6 +430,10 @@ impl fmt::Display for Error {
         match self {
             Self::Client(e) => write!(f, "lemnos client: {e}"),
             Self::SharedLayout(refusal) => write!(f, "frame stream: {refusal}"),
+            Self::ContractMismatch { source, .. } => write!(
+                f,
+                "this Styx and the board's Lemnos are different builds: {source}"
+            ),
             Self::StreamEnded(end) => write!(f, "{end}"),
             Self::Chain(e) => write!(f, "{e}"),
             Self::Map(e) => write!(f, "mapping stream buffers: {e}"),
@@ -1128,6 +1164,23 @@ mod layout_tests {
             );
             assert!(text.contains(want.what()), "{text}");
         }
+    }
+
+    #[test]
+    fn a_contract_mismatch_at_bind_is_its_own_error_and_its_sentence_keeps_both_hashes() {
+        let client = lemnos_client::Error::ContractMismatch {
+            contract: "camera.sensor/1".to_string(),
+            ours: 0x33b8_60b0_2987_233d,
+            theirs: 0x4d6f_4b4b_ddf7_8636,
+        };
+        let error = Error::from_client(client);
+        assert!(matches!(error, Error::ContractMismatch { .. }), "{error:?}");
+        assert_eq!(error.contract_mismatch(), Some("camera.sensor/1"));
+        assert_eq!(error.layout_refusal(), None);
+        assert_eq!(
+            error.to_string(),
+            "this Styx and the board's Lemnos are different builds: contract camera.sensor/1: a base method is laid out differently (the device's base hash 0x4d6f4b4bddf78636, this client's 0x33b860b02987233d)"
+        );
     }
 
     #[test]

@@ -180,6 +180,9 @@ pub struct FrameSummary {
 pub const FAULT_LAYOUT_REFUSED: u32 = 1;
 /// The fault code of a device switched off for good: the Daedalus fault table's `DeviceFailed`.
 pub const FAULT_DEVICE_FAILED: u32 = 6;
+/// The fault code of a camera whose device contract is another build's than this Styx's: the Daedalus
+/// fault table's `ContractMismatch` (crates/out/daedalus/src/fault.rs), the same number for the same cause.
+pub const FAULT_CONTRACT_MISMATCH: u32 = 12;
 
 /// What the service knows about one camera. Cloned out for the control socket.
 #[derive(Debug, Clone, PartialEq)]
@@ -216,6 +219,10 @@ pub struct CameraStatus {
     /// The frame stream's shared-layout refusal, while it is the cause of the camera's retry, as
     /// its values. `None` while the camera runs.
     pub layout_refused: Option<LayoutRefusal>,
+    /// The device contract another build's that the board's Lemnos refuses, by name, while the camera
+    /// cannot be opened for it (`contract_mismatch=<name>`; `None` when there is none). The status
+    /// sentence is the camera's `last_error`.
+    pub contract_mismatch: Option<String>,
     /// The fault code of the camera's last failure, the Daedalus fault table's number (see
     /// [`FAULT_LAYOUT_REFUSED`] and [`FAULT_DEVICE_FAILED`]); `None` when it has none.
     pub fault: Option<u32>,
@@ -344,6 +351,7 @@ impl Slot {
             last_error: None,
             producer_since_ns: None,
             layout_refused: None,
+            contract_mismatch: None,
             fault: None,
             recoveries: 0,
             last_recovery: None,
@@ -444,6 +452,18 @@ impl Slot {
             (None, Some(FAULT_LAYOUT_REFUSED)) => None,
             (None, other) => other,
         };
+    }
+
+    /// The contract another build's that the board's Lemnos refuses, in force (`None` clears it). It
+    /// sets the fault code [`FAULT_CONTRACT_MISMATCH`]; clearing it removes that code again.
+    pub(crate) fn set_contract(&self, contract: Option<String>) {
+        let mut status = lock(&self.status);
+        match contract {
+            Some(_) => status.fault = Some(FAULT_CONTRACT_MISMATCH),
+            None if status.fault == Some(FAULT_CONTRACT_MISMATCH) => status.fault = None,
+            None => {}
+        }
+        status.contract_mismatch = contract;
     }
 
     /// Sets the fault code of the camera's last failure.

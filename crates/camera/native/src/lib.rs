@@ -101,6 +101,14 @@ pub enum Refusal {
     /// A device could not be asked now (the read failed); nothing is concluded, so a later
     /// discovery asks again.
     Probe { device: String, why: String },
+    /// The board's Lemnos and this Styx are different builds: the device's contract `contract` is
+    /// laid out another way here. `text` is the sentence the Lemnos client's error gives, as
+    /// [`styx_lemnos::Error::ContractMismatch`] words it. Refused at bind.
+    Contract {
+        device: String,
+        contract: String,
+        text: String,
+    },
 }
 
 impl fmt::Display for Refusal {
@@ -121,6 +129,7 @@ impl fmt::Display for Refusal {
                 "receiver {receiver} has nothing wired to its input (sensor {sensor})"
             ),
             Self::Probe { device, why } => write!(f, "{device}: could not be asked: {why}"),
+            Self::Contract { text, .. } => f.write_str(text),
         }
     }
 }
@@ -179,10 +188,10 @@ fn wiring(client: &Client, mut camera: Camera) -> Result<Camera, (String, Refusa
     let refused = |device: &str, why: String| (sensor_name.clone(), probe(device, why));
     let mut sensor: Bound<dyn CameraSensor, RemoteCaller> = client
         .open::<dyn CameraSensor>(&sensor_name)
-        .map_err(|e| refused(&sensor_name, e.to_string()))?;
+        .map_err(|e| (sensor_name.clone(), open_refusal(&sensor_name, e)))?;
     let mut receiver: Bound<dyn CameraReceiver, RemoteCaller> = client
         .open::<dyn CameraReceiver>(&receiver_name)
-        .map_err(|e| refused(&receiver_name, e.to_string()))?;
+        .map_err(|e| (sensor_name.clone(), open_refusal(&receiver_name, e)))?;
 
     let mut own = [0u8; MAX_IDENTITY_NAME];
     let identity: Option<String> = match sensor.identity(&mut own) {
@@ -227,6 +236,20 @@ fn wiring(client: &Client, mut camera: Camera) -> Result<Camera, (String, Refusa
             Ok(camera)
         }
     }
+}
+
+/// Why a device could not be opened: a contract another build's is a refusal of its own, with the
+/// Lemnos error's words; anything else is a device that could not be asked now.
+fn open_refusal(device: &str, error: lemnos_client::Error) -> Refusal {
+    if matches!(error, lemnos_client::Error::ContractMismatch { .. }) {
+        let typed = Error::from_client(error);
+        return Refusal::Contract {
+            device: device.to_string(),
+            contract: typed.contract_mismatch().unwrap_or_default().to_string(),
+            text: typed.to_string(),
+        };
+    }
+    probe(device, error.to_string())
 }
 
 fn probe(device: &str, why: String) -> Refusal {
