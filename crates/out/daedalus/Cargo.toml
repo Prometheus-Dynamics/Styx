@@ -16,6 +16,9 @@ daedalus = [
     "dep:daedalus",
     "dep:daedalus-dmabuf",
     "dep:daedalus-types",
+    "dep:daedalus-abi",
+    "dep:daedalus-wgpu",
+    "dep:styx-format",
     "dep:styx-socket",
 ]
 
@@ -25,13 +28,14 @@ styx-socket = { path = "../socket", optional = true }
 daedalus = { workspace = true, features = ["std"], optional = true }
 daedalus-dmabuf = { workspace = true, optional = true }
 daedalus-types = { workspace = true, optional = true }
+daedalus-wgpu = { workspace = true, optional = true }
+daedalus-abi = { workspace = true, optional = true }
+styx-format = { path = "../../core/format", optional = true }
 
 [dev-dependencies]
-styx-format = { path = "../../core/format" }
 lemnos-linux-sys = { workspace = true }
 styx-frame = { path = "../../core/frame", features = ["linux"] }
 daedalus = { workspace = true, features = ["std"] }
-daedalus-abi = { workspace = true }
 daedalus-backend = { workspace = true }
 daedalus-cpu = { workspace = true }
 daedalus-cpu-author = { workspace = true }
@@ -40,7 +44,6 @@ daedalus-registry = { workspace = true }
 daedalus-runner = { workspace = true }
 daedalus-types = { workspace = true }
 # The GPU backend for the import test (tests/gpu.rs): the wgpu device and its shader authoring crate.
-daedalus-wgpu = { workspace = true }
 daedalus-wgpu-author = { workspace = true }
 
 [lints]
