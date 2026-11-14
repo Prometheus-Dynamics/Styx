@@ -261,7 +261,11 @@ fn live_path_on_the_simulated_pisp() {
     // Job-driven streams never replace an unread result: nothing was skipped. Every refused post
     // was counted by the session and sent nothing.
     assert_eq!(live.skipped(), 0, "a job-driven result was replaced");
-    assert_eq!(live.refused(), refusals as u64, "refusals counted");
+    assert_eq!(
+        live.starved() + live.posts_refused(),
+        refusals as u64,
+        "refusals counted: starved for a buffer Styx picks, or the job ring refused the post"
+    );
     assert_eq!(
         done,
         (0..FRAMES).collect::<Vec<_>>(),

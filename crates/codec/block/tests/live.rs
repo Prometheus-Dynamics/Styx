@@ -150,6 +150,8 @@ fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_cop
     let mut block = client
         .open::<dyn CodecBlock>(&device.name)
         .expect("codec contract");
+    // The block's own counters (Lemnos `codec.block` Counters): `refused` counts the jobs the block
+    // completed as Refused, not a stream's stat. A clean run completes none so.
     let counters = block.counters().expect("counters");
     assert_eq!(
         (counters.jobs, counters.refused, counters.failed),

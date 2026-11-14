@@ -51,9 +51,13 @@ pub struct LiveSession {
     /// Identity of the next job. Only the completion with this number is the job's.
     sequence: u64,
     timeout: Duration,
-    /// Jobs not posted because the pool had no free buffer for the work or the result, or the job
-    /// queue was full. Nothing was sent, so the block never saw them.
-    refused: u64,
+    /// Jobs not posted because the pool had no free buffer for the work or the result. Styx picks
+    /// those buffers itself, so the stream's `refused` stat (driver-picked buffers only) never
+    /// counts them. Nothing was sent, so the block never saw them.
+    starved: u64,
+    /// Jobs Styx posted that the job stream refused (its queue was full: the post returned `false`),
+    /// and jobs the block completed as `Refused`. In both the block did not run the job.
+    posts_refused: u64,
 }
 
 impl fmt::Debug for LiveSession {
@@ -90,7 +94,8 @@ impl LiveSession {
             stream,
             sequence: 0,
             timeout,
-            refused: 0,
+            starved: 0,
+            posts_refused: 0,
         })
     }
 
@@ -107,10 +112,18 @@ impl LiveSession {
         self.stream.name()
     }
 
-    /// Jobs not posted since the session opened, for want of a free buffer or a queue slot.
+    /// Jobs not posted since the session opened, for want of a free buffer for the work or the
+    /// result (the session picks those buffers).
     #[must_use]
-    pub fn refused(&self) -> u64 {
-        self.refused
+    pub fn starved(&self) -> u64 {
+        self.starved
+    }
+
+    /// Jobs Styx posted that the stream refused (queue full) or the block completed as `Refused`,
+    /// since the session opened.
+    #[must_use]
+    pub fn posts_refused(&self) -> u64 {
+        self.posts_refused
     }
 
     /// Completions this session's reader was too late for (`JobStream::skipped`). A job stream never
@@ -223,14 +236,14 @@ impl Session for LiveSession {
             index < count.min(MAX_NAMED) && named & (1 << index) == 0 && pool.is_free(index)
         };
         let Some(work_index) = (0..count).find(|&index| free(index)) else {
-            self.refused += 1;
+            self.starved += 1;
             return Err(CodecError::Failed(
                 "refused: no free buffer for the job's work".into(),
             ));
         };
         let Some(result_index) = (0..count).find(|&index| index != work_index && free(index))
         else {
-            self.refused += 1;
+            self.starved += 1;
             return Err(CodecError::Failed(
                 "refused: no free buffer for the job's result".into(),
             ));
@@ -282,9 +295,14 @@ impl Session for LiveSession {
             .post(&encoded)
             .map_err(|e| CodecError::Failed(format!("posting job {identity}: {e}")))?;
         if !posted {
-            self.refused += 1;
+            self.posts_refused += 1;
             return Err(CodecError::Failed("refused: the job queue is full".into()));
         }
-        self.completion(identity, result_index as u32)
+        let outcome = self.completion(identity, result_index as u32);
+        if matches!(outcome, Err(CodecError::Rejected(_))) {
+            // The block completed the posted job as Refused: the job did not run.
+            self.posts_refused += 1;
+        }
+        outcome
     }
 }

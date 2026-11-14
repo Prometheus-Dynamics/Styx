@@ -53,6 +53,10 @@ pub struct Stats {
     pub staged_bytes: u64,
     /// Bytes copied from the completion buffer into the output frame.
     pub copied_bytes: u64,
+    /// Jobs the scaler's job stream refused at the post (its queue was full): nothing was queued,
+    /// so the scaler never ran them. Not the stream's Lemnos `refused` stat, which counts only
+    /// jobs that starved for a driver-picked buffer; this converter names both buffers itself.
+    pub posts_refused: u64,
 }
 
 /// The descriptor of the hardware converter for `code` to `code`.
@@ -299,6 +303,7 @@ impl<M> Converter<M> for Lemnos {
             .post_job(&encoded[..used])
             .map_err(|e| failed("post job", e))?
         {
+            self.stats.posts_refused += 1;
             return Err(CodecError::Failed(
                 "the scaler's job queue is full".to_string(),
             ));
