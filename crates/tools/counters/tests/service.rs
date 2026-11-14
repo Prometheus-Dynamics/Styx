@@ -1,11 +1,10 @@
 //! The counters on the camera service, on the simulated backend: `lemnosd` in this process on
-//! `lemnos-sim`, with the service's own simulator (shared test code, `out/service/tests/sim`).
+//! `lemnos-sim`, with the service's own simulator (shared test code, the styx-sim drivers).
 //!
 //! Each test starts a service with the counting outlets, a counters ring, and reads the snapshots
 //! the way another process would.
 
-#[path = "../../../out/service/tests/sim/mod.rs"]
-mod sim;
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};
@@ -46,13 +45,13 @@ const CHILD_COUNT: &str = "STYX_COUNTERS_CHILD_COUNT";
 fn two_cameras() -> String {
     "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
      [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\nconfig = { layout = false }\n\
      [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
+     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\nconfig = { modes = \"run\", drop_frames = 2 }\n\
      [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
+     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\nconfig = { layout = false }\n\
      [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n"
+     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\nconfig = { modes = \"run\", drop_frames = 2 }\n"
         .to_string()
 }
 
@@ -69,9 +68,9 @@ fn daemon(socket: &Path, text: &str) -> LemnosDaemon {
         name: "styx-counters-test".to_string(),
         board: parse(text).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {

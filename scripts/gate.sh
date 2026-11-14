@@ -46,4 +46,7 @@ step "git dependencies are named in the workspace only" bash -c '! grep -n -E "(
 # One copy of the shared ring: every shm-* crate from one version and one source.
 step "one source for every shm crate" python3 scripts/one-shm.py
 
+# One simulated camera: the sensor, receiver and ISP drivers live in styx-sim only.
+step "one simulated camera" python3 scripts/one-sim.py
+
 echo "gate passed"

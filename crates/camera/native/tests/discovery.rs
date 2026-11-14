@@ -1,10 +1,11 @@
 //! Native cameras on Lemnos's simulated backend, through the real socket.
 //!
 //! `lemnosd` runs in this process with the simulated sensor, receiver and ISP drivers (see
-//! `sim/mod.rs`) on `lemnos-sim`. [`styx_native::discover`] lists the board's devices through
+//! the `styx-sim` drivers) on `lemnos-sim`. [`styx_native::discover`] lists the board's devices through
 //! `lemnos-client` and resolves every sensor to its camera.
 
-mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -38,9 +39,9 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
         name: "styx-native-test".to_string(),
         board: parse(text).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -62,7 +63,7 @@ fn discover_on(name: &str, text: &str) -> Discovery {
 
 #[test]
 fn one_sensor_on_the_simulated_board_is_one_camera() {
-    let found = discover_on("one", &sim::board(Some("csi0")));
+    let found = discover_on("one", &Board::timed(Family::Native).text());
     assert_eq!(found.cameras.len(), 1, "{found:?}");
     assert!(found.refused.is_empty(), "{:?}", found.refused);
     let camera = &found.cameras[0];
@@ -82,7 +83,7 @@ fn one_sensor_on_the_simulated_board_is_one_camera() {
 
 #[test]
 fn two_sensors_on_the_simulated_board_are_two_cameras() {
-    let found = discover_on("two", &sim::board_with_two_sensors());
+    let found = discover_on("two", &Board::timed(Family::Native).second_sensor().text());
     let names: Vec<&str> = found.cameras.iter().map(|c| c.name()).collect();
     assert_eq!(names, ["cam0-sensor", "cam1-sensor"], "{found:?}");
     assert!(found.refused.is_empty(), "{:?}", found.refused);
@@ -101,8 +102,8 @@ fn two_sensors_on_the_simulated_board_are_two_cameras() {
 fn an_unlinked_sensor_is_refused_and_the_linked_one_still_found() {
     // cam0-sensor has no link; cam1-sensor links to the receiver.
     let text = format!(
-        "{}[[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n",
-        sim::board(None)
+        "{}[[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\nconfig = {{ modes = \"bare\" }}\n",
+        Board::timed(Family::Native).sensor_link(None).text()
     );
     let found = discover_on("unlinked", &text);
     let names: Vec<&str> = found.cameras.iter().map(|c| c.name()).collect();
@@ -122,7 +123,7 @@ fn discover_board(name: &str, text: &str) -> Discovery {
 
 #[test]
 fn a_receiver_fed_by_this_sensor_confirms_the_link() {
-    let text = sim::board_with(Some("csi0"), Some("cam-a"), Some("cam-a"));
+    let text = Board::timed(Family::Native).identity(Some("cam-a")).source(Some("cam-a")).text();
     let found = discover_board("confirmed", &text);
     assert!(found.refused.is_empty(), "{:?}", found.refused);
     assert_eq!(found.cameras.len(), 1);
@@ -131,7 +132,7 @@ fn a_receiver_fed_by_this_sensor_confirms_the_link() {
 
 #[test]
 fn a_receiver_fed_by_another_sensor_refuses_the_camera_naming_both() {
-    let text = sim::board_with(Some("csi0"), Some("cam-a"), Some("cam-b"));
+    let text = Board::timed(Family::Native).identity(Some("cam-a")).source(Some("cam-b")).text();
     let found = discover_board("mismatch", &text);
     assert!(found.cameras.is_empty(), "{found:?}");
     let [(name, refusal)] = found.refused.as_slice() else {
@@ -153,7 +154,7 @@ fn a_receiver_fed_by_another_sensor_refuses_the_camera_naming_both() {
 
 #[test]
 fn an_empty_source_is_nothing_wired_and_refuses_the_camera() {
-    let text = sim::board_with(Some("csi0"), Some("cam-a"), Some(""));
+    let text = Board::timed(Family::Native).identity(Some("cam-a")).source(Some("")).text();
     let found = discover_board("unwired", &text);
     assert!(found.cameras.is_empty(), "{found:?}");
     assert_eq!(
@@ -171,7 +172,7 @@ fn an_empty_source_is_nothing_wired_and_refuses_the_camera() {
 #[test]
 fn an_unknown_source_is_carried_as_unknown_and_never_a_mismatch() {
     // The receiver cannot say what is wired (NOT_SUPPORTED): the camera stays, with the reason.
-    let found = discover_board("unknown", &sim::board(Some("csi0")));
+    let found = discover_board("unknown", &Board::timed(Family::Native).text());
     assert!(found.refused.is_empty(), "{:?}", found.refused);
     assert!(
         matches!(found.cameras[0].link(), LinkCheck::Unknown(why) if why.contains("cannot say"))
@@ -179,7 +180,7 @@ fn an_unknown_source_is_carried_as_unknown_and_never_a_mismatch() {
 
     // The sensor has no identity (NOT_SUPPORTED) and the receiver names one: still unknown, never a
     // match and never a mismatch.
-    let text = sim::board_with(Some("csi0"), None, Some("cam-b"));
+    let text = Board::timed(Family::Native).identity(None).source(Some("cam-b")).text();
     let found = discover_board("no-identity", &text);
     assert!(found.refused.is_empty(), "{:?}", found.refused);
     assert!(matches!(found.cameras[0].link(), LinkCheck::Unknown(_)));

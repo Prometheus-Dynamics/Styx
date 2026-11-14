@@ -1,11 +1,12 @@
 //! Start and stop 100 times on the simulated backend.
 //!
-//! `lemnosd` runs in this process with the simulated sensor, receiver and ISP (see `sim/mod.rs`) on
+//! `lemnosd` runs in this process with the simulated sensor, receiver and ISP (the `styx-sim` drivers) on
 //! `lemnos-sim`. Each cycle goes through the real socket: it selects the mode, configures the
 //! receiver with the mode's link, starts receiver then sensor, drops the mode's first frames,
 //! streams, and stops sensor then receiver.
 
-mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -40,9 +41,9 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
         name: "styx-native-run-test".to_string(),
         board: parse(text).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -55,7 +56,7 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
 
 #[test]
 fn start_and_stop_100_times_on_the_simulated_backend() {
-    let (service, socket) = start("cycles", &sim::board(Some("csi0")));
+    let (service, socket) = start("cycles", &Board::timed(Family::Run).text());
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
     assert!(found.refused.is_empty(), "refused: {:?}", found.refused);
@@ -108,7 +109,7 @@ fn start_and_stop_100_times_on_the_simulated_backend() {
 
         session.stop().expect("stop");
         assert_eq!(session.status().state, State::Stopped, "cycle {cycle}");
-        assert_eq!(sim::take_log(), order, "cycle {cycle}: call order");
+        assert_eq!(styx_sim::take_log(), order, "cycle {cycle}: call order");
     }
 
     let status = session.status();

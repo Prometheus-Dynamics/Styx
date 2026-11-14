@@ -4,7 +4,7 @@
 //! the process leaves, that the next start streams at once, and that a sensor a previous owner
 //! left started is stopped at start.
 
-mod sim;
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
@@ -30,13 +30,13 @@ static SERIAL: Mutex<()> = Mutex::new(());
 fn two_cameras() -> String {
     "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
      [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\nconfig = { layout = false }\n\
      [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
+     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\nconfig = { modes = \"run\", drop_frames = 2 }\n\
      [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
+     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\nconfig = { layout = false }\n\
      [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n"
+     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\nconfig = { modes = \"run\", drop_frames = 2 }\n"
         .to_string()
 }
 
@@ -54,9 +54,9 @@ fn daemon(socket: &Path) -> LemnosDaemon {
         name: "styx-service-exit-test".to_string(),
         board: parse(&two_cameras()).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -249,7 +249,7 @@ fn stop_then_restart(signal: &str) {
 
     let mut first = Process::spawn(&dir, &text, 1);
     wait_streaming(&first.control, &CAMERAS);
-    let _ = sim::take_log();
+    let _ = styx_sim::take_log();
 
     first.signal(signal);
     let status = first.exit(Duration::from_secs(30));
@@ -257,7 +257,7 @@ fn stop_then_restart(signal: &str) {
 
     // Every camera's sensor and receiver were stopped through the contract, in this process's
     // simulator: one stop of each per camera.
-    let log = sim::take_log();
+    let log = styx_sim::take_log();
     assert!(
         count(&log, "sensor.stop") >= CAMERAS.len(),
         "sensor stops in {log:?}"
@@ -332,7 +332,7 @@ fn a_sensor_left_started_by_a_previous_owner_is_stopped_at_start_and_the_service
         Err(Status::BUSY),
         "the sensor left by hand should be streaming"
     );
-    let _ = sim::take_log();
+    let _ = styx_sim::take_log();
 
     let mut service = Process::spawn(&dir, &text, 1);
     wait_streaming(&service.control, &CAMERAS);
@@ -346,7 +346,7 @@ fn a_sensor_left_started_by_a_previous_owner_is_stopped_at_start_and_the_service
     let cam1 = line_of(&service.control, CAMERAS[1]).expect("listed");
     assert_eq!(field(&cam1, "recoveries"), Some("0"), "{cam1}");
 
-    let log = sim::take_log();
+    let log = styx_sim::take_log();
     assert!(
         count(&log, "sensor.stop") >= 1,
         "the left sensor was not stopped: {log:?}"

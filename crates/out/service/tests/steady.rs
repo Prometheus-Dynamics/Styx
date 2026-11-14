@@ -5,7 +5,7 @@
 //! own thread, once per frame, and records how many allocations that thread made since the frame
 //! before: the stream's next frame, the status update and the outlet call all sit in that window.
 
-mod sim;
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -142,9 +142,9 @@ impl V4l2Lister for NoOthers {
 
 const BOARD: &str = "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
      [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\nconfig = { layout = false }\n\
      [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n";
+     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\nconfig = { modes = \"run\", drop_frames = 2 }\n";
 
 fn daemon(socket: &std::path::Path) -> LemnosDaemon {
     let config = DaemonConfig {
@@ -152,9 +152,9 @@ fn daemon(socket: &std::path::Path) -> LemnosDaemon {
         name: "styx-service-steady".to_string(),
         board: parse(BOARD).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {

@@ -27,6 +27,8 @@ styx-socket = { path = "../../out/socket" }
 styx-v4l2 = { path = "../../camera/v4l2" }
 
 [dev-dependencies]
+# The simulated camera drivers and board (test code of this crate uses them; see styx-sim).
+styx-sim = { path = "../../camera/sim" }
 # The in-process service on the simulated camera (as crates/out/service's tests do).
 styx-service = { path = "../../out/service" }
 styx-native-run = { path = "../../camera/native-run" }

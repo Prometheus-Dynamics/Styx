@@ -24,8 +24,10 @@ styx-socket = { path = "../../out/socket" }
 styx-counters = { path = "../../tools/counters" }
 
 [dev-dependencies]
+# The simulated camera drivers and board (test code of this crate uses them; see styx-sim).
+styx-sim = { path = "../../camera/sim" }
 # The simulated backend, as the camera service's tests run it: lemnosd in this process on
-# lemnos-sim (test code only, see tests/sim), and the service itself for the socket path.
+# lemnos-sim (test code only, the styx-sim drivers), and the service itself for the socket path.
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }

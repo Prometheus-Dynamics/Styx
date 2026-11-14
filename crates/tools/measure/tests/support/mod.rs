@@ -3,8 +3,8 @@
 
 #![allow(dead_code)]
 
-#[path = "sim.rs"]
-pub mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -68,11 +68,11 @@ pub fn daemon(socket: &Path) -> LemnosDaemon {
     let config = DaemonConfig {
         socket: socket.to_path_buf(),
         name: "styx-measure-test".to_string(),
-        board: parse(&sim::board(Some("csi0"))).expect("board"),
+        board: parse(&Board::timed(Family::Run).text()).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {

@@ -10,7 +10,8 @@
 //! The simulated drivers are a copy of the service's test simulator (see [`sim`]); the examples
 //! use it through the Lemnos daemon, as the service does on a board.
 
-mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::fs;
 use std::os::unix::net::UnixStream;
@@ -104,15 +105,15 @@ impl Lab {
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let guard = DirGuard(dir.clone());
         let socket = dir.join("lemnos.sock");
-        let board = parse(&sim::board(Some("csi0"))).map_err(|e| format!("board: {e:?}"))?;
+        let board = parse(&Board::timed(Family::Run).decoy(false).text()).map_err(|e| format!("board: {e:?}"))?;
         let config = DaemonConfig {
             socket: socket.clone(),
             name: NAME.to_string(),
             board,
             drivers: vec![
-                entry::<sim::SimSensor>(),
-                entry::<sim::SimReceiver>(),
-                entry::<sim::SimIsp>(),
+                entry::<SimSensor>(),
+                entry::<SimReceiver>(),
+                entry::<SimIsp>(),
             ],
             backend: Box::new(SimBoard::new()),
             options: Options {

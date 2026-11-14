@@ -16,6 +16,8 @@ styx-native = { path = "../native" }
 styx-select = { path = "../select" }
 
 [dev-dependencies]
+# The simulated camera drivers and board (test code of this crate uses them; see styx-sim).
+styx-sim = { path = "../sim" }
 # The simulated backend: lemnosd in this process, its drivers and board (test only, as in styx-service).
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }

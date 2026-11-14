@@ -26,6 +26,8 @@ daedalus = [
 ]
 
 [dependencies]
+# The simulated camera drivers and board (test code of this crate uses them; see styx-sim).
+styx-sim = { path = "../../camera/sim" }
 styx-controls = { path = "../../core/controls" }
 styx-daedalus = { path = "../../out/daedalus" }
 styx-format = { path = "../../core/format" }
@@ -49,7 +51,7 @@ daedalus-registry = { workspace = true, optional = true }
 daedalus-runner = { workspace = true, optional = true }
 daedalus-types = { workspace = true, optional = true }
 
-# The simulated backend: lemnosd in this process on lemnos-sim, with the drivers in src/sim.rs.
+# The simulated backend: lemnosd in this process on lemnos-sim, with the drivers from styx-sim.
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }

@@ -34,7 +34,8 @@ use styx_format::FourCc;
 use styx_frame::FrameLease;
 use styx_lemnos::{ChainError, Frames, Geometry, find_chain, open_frames_writable_at};
 
-use crate::drivers::{self, SimIsp, SimReceiver, SimSensor};
+use crate::board::Board;
+use crate::drivers::{SimIsp, SimReceiver, SimSensor};
 use crate::scene::{self, Scene};
 use crate::silicon::{self, InForce, SensorTiming, Silicon};
 
@@ -232,7 +233,7 @@ impl SimCamera {
         silicon: Arc<Silicon>,
     ) -> Result<Self, Error> {
         let socket = dir.join("sock");
-        let board = parse(&drivers::board(token, Some("csi0")))
+        let board = parse(&Board::clocked(token).text())
             .map_err(|e| Error::Daemon(format!("board: {e:?}")))?;
         let config = Config {
             socket: socket.clone(),

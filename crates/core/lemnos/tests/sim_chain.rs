@@ -1,11 +1,12 @@
 //! The camera chain on Lemnos's simulated backend, through the real socket.
 //!
 //! `lemnosd` runs in this process with the simulated sensor, receiver and ISP drivers (see
-//! `sim/mod.rs`) on `lemnos-sim`. This crate finds the chain by tag and link through
+//! the `styx-sim` drivers) on `lemnos-sim`. This crate finds the chain by tag and link through
 //! `lemnos-client`, starts it with contract calls in the order the Lemnos contracts set, and
 //! reads frames from the receiver's stream as `FrameLease`s.
 
-mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -36,9 +37,9 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
         name: "styx-lemnos-test".to_string(),
         board: parse(text).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -51,7 +52,7 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
 
 #[test]
 fn two_sensors_on_the_simulated_board_are_refused_by_tag() {
-    let (service, socket) = start("two", &sim::board_with_two_sensors());
+    let (service, socket) = start("two", &Board::timed(Family::Lemnos).second_sensor().text());
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
     let devices = client.list().expect("list");
     assert_eq!(find_chain(&devices), Err(ChainError::SensorCount(2)));
@@ -61,7 +62,7 @@ fn two_sensors_on_the_simulated_board_are_refused_by_tag() {
 
 #[test]
 fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
-    let (service, socket) = start("chain", &sim::board(Some("csi0")));
+    let (service, socket) = start("chain", &Board::timed(Family::Lemnos).text());
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
 
     let devices = client.list().expect("list");
@@ -153,7 +154,7 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
 
 #[test]
 fn compressed_stream_leases_are_one_plane_of_each_frames_bytes() {
-    let (service, socket) = start("compressed", &sim::board(Some("csi0")));
+    let (service, socket) = start("compressed", &Board::timed(Family::Lemnos).text());
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
 
     let devices = client.list().expect("list");
@@ -190,7 +191,7 @@ fn compressed_stream_leases_are_one_plane_of_each_frames_bytes() {
     while seen < 12 && Instant::now() < deadline {
         if let Some(lease) = frames.next(Duration::from_millis(200)).expect("next") {
             // The lease id is the frame's sequence, and the sim's frame bytes follow from that.
-            let expect = sim::frame_bytes(layout.size, lease.id()) as usize;
+            let expect = styx_sim::drivers::frame_bytes(layout.size, lease.id()) as usize;
             {
                 let read = lease.read().expect("mapped for the CPU");
                 let plane = read.plane(0).expect("one plane");

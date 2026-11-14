@@ -14,13 +14,21 @@
 //! may also post to [`SimCamera::sensor`] directly, the way `styx-native-controls` does.
 //!
 //! Only exposure and gain change the image. Other controls are refused by [`SimCamera::set_control`].
+//!
+//! The drivers are also served without a camera: a [`board::Board`] with no clock is timed, and its
+//! receiver makes frames on the link's interval, as the test simulators of this workspace did (see
+//! [`board::Family`]). [`ManualSensor`] is a sensor a test drives frame by frame, with no daemon.
+
+pub mod board;
+pub mod drivers;
 
 mod camera;
-mod drivers;
+mod manual;
 mod scene;
 mod silicon;
 
 pub use camera::{Error, SimCamera, SimFrame};
-pub use drivers::call_log;
+pub use drivers::{call_log, take_log};
+pub use manual::ManualSensor;
 pub use scene::{FULL_SCALE, REFERENCE_EXPOSURE_US, REFERENCE_GAIN_MILLI, Scene};
 pub use silicon::SensorTiming;

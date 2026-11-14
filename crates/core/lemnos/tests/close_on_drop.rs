@@ -5,7 +5,8 @@
 //! simulated backend, then an explicit `close()`.
 
 #[allow(dead_code)]
-mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -29,9 +30,9 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
         name: "styx-lemnos-test".to_string(),
         board: parse(text).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -44,7 +45,7 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
 
 #[test]
 fn a_dropped_frame_stream_reopens_twenty_times_and_close_returns_the_answer() {
-    let (service, socket) = start("reopen", &sim::board(Some("csi0")));
+    let (service, socket) = start("reopen", &Board::timed(Family::Lemnos).text());
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
 
     let devices = client.list().expect("list");

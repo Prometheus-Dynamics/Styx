@@ -4,7 +4,8 @@
 //! delays the session chose without waiting for them. Every fault switch is in this one test,
 //! because the switches are process-wide and the test binary runs its tests in parallel.
 
-mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -74,9 +75,9 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
         name: "styx-native-run-test".to_string(),
         board: parse(text).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -112,7 +113,7 @@ fn frames_flow<C: Clock>(session: &mut Session<'_, C>, want: usize, what: &str) 
 
 #[test]
 fn a_receiver_fault_recovers_with_capped_backoff() {
-    let (service, socket) = start("recover", &sim::board(Some("csi0")));
+    let (service, socket) = start("recover", &Board::timed(Family::Run).text());
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
     assert!(found.refused.is_empty(), "refused: {:?}", found.refused);
@@ -137,7 +138,7 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     let clock = FakeClock::default();
     let mut session =
         Session::new(&client, camera, request, policy, &clock).with_controls(CONTROLS);
-    sim::FAIL_STARTS.store(8, Ordering::SeqCst);
+    styx_sim::drivers::FAIL_STARTS.store(8, Ordering::SeqCst);
     session
         .start()
         .expect("comes back after eight failed starts");
@@ -145,7 +146,7 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
         clock.waits(),
         ms(&[250, 500, 1000, 2000, 4000, 5000, 5000, 5000])
     );
-    assert_eq!(sim::FAIL_STARTS.load(Ordering::SeqCst), 0);
+    assert_eq!(styx_sim::drivers::FAIL_STARTS.load(Ordering::SeqCst), 0);
     let status = session.status().clone();
     assert_eq!(status.state, State::Streaming);
     assert_eq!(status.starts, 1);
@@ -165,7 +166,7 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     //    devices stop (which clears the fault, as a receiver reset does), one backoff runs, and the
     //    camera starts again inside next_frame.
     clock.clear();
-    sim::STALL_NOW.store(true, Ordering::SeqCst);
+    styx_sim::drivers::STALL_NOW.store(true, Ordering::SeqCst);
     let deadline = Instant::now() + Duration::from_secs(10);
     while session.status().starts == 1 {
         assert!(Instant::now() < deadline, "no recovery from the stall");
@@ -173,7 +174,7 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
             .next_frame(Duration::from_millis(20))
             .expect("next_frame");
     }
-    assert!(!sim::STALL_NOW.load(Ordering::SeqCst));
+    assert!(!styx_sim::drivers::STALL_NOW.load(Ordering::SeqCst));
     assert_eq!(clock.waits(), ms(&[250]));
     assert_eq!(session.status().state, State::Streaming);
     assert_eq!(session.status().starts, 2);
@@ -190,14 +191,14 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     };
     let mut session =
         Session::new(&client, camera, request, policy, &clock).with_controls(CONTROLS);
-    sim::FAIL_STARTS.store(5, Ordering::SeqCst);
+    styx_sim::drivers::FAIL_STARTS.store(5, Ordering::SeqCst);
     match session.start() {
         Err(Error::AutoOff { failures, .. }) => assert_eq!(failures, 3),
         other => panic!("expected auto-off, got {other:?}"),
     }
     assert_eq!(clock.waits(), ms(&[250, 500]));
     assert_eq!(session.status().state, State::Off);
-    assert_eq!(sim::FAIL_STARTS.load(Ordering::SeqCst), 2);
+    assert_eq!(styx_sim::drivers::FAIL_STARTS.load(Ordering::SeqCst), 2);
     clock.clear();
     session.start().expect("started again after auto-off");
     assert_eq!(clock.waits(), ms(&[250, 500]));
@@ -212,14 +213,14 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     clock.cancel_after.set(Some(3));
     let mut session =
         Session::new(&client, camera, request, Policy::default(), &clock).with_controls(CONTROLS);
-    sim::FAIL_STARTS.store(100, Ordering::SeqCst);
+    styx_sim::drivers::FAIL_STARTS.store(100, Ordering::SeqCst);
     match session.start() {
         Err(Error::Stopped) => {}
         other => panic!("expected a stop, got {other:?}"),
     }
     assert_eq!(clock.waits(), ms(&[250, 500, 1000]));
     assert_eq!(session.status().state, State::Stopped);
-    sim::FAIL_STARTS.store(0, Ordering::SeqCst);
+    styx_sim::drivers::FAIL_STARTS.store(0, Ordering::SeqCst);
     session.start().expect("starts once the fault is gone");
     frames_flow(&mut session, 2, "after the manual restart");
     session.stop().expect("stop");

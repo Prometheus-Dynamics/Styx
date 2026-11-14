@@ -1,10 +1,11 @@
 //! Controls on a running camera: each delivered frame carries the metadata of its session's native
 //! controls, and a value posted through the session lands on the frame it names.
 //!
-//! Runs on the simulated backend (`sim/mod.rs`): `lemnosd` in this process on `lemnos-sim`, through
+//! Runs on the simulated backend (the `styx-sim` drivers): `lemnosd` in this process on `lemnos-sim`, through
 //! the real socket. The sensor's delays are the mode's: exposure two frames, gain one.
 
-mod sim;
+use styx_sim::board::{Board, Family};
+use styx_sim::drivers::{SimIsp, SimReceiver, SimSensor};
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -37,11 +38,11 @@ fn start(name: &str) -> (Service, PathBuf) {
     let config = Config {
         socket: socket.clone(),
         name: "styx-native-run-test".to_string(),
-        board: parse(&sim::board(Some("csi0"))).expect("board"),
+        board: parse(&Board::timed(Family::Run).text()).expect("board"),
         drivers: vec![
-            entry::<sim::SimSensor>(),
-            entry::<sim::SimReceiver>(),
-            entry::<sim::SimIsp>(),
+            entry::<SimSensor>(),
+            entry::<SimReceiver>(),
+            entry::<SimIsp>(),
         ],
         backend: Box::new(SimBoard::new()),
         options: Options {
