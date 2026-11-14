@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use shm_fdpass as fdpass;
-use styx_socket::{Frame, ReadError, Reader};
+use styx_socket::{Frame, ReadError, Reader, StreamEnd};
 
 use crate::learn::{Buffers, Learner};
 
@@ -221,7 +221,7 @@ impl Link {
         match reader.next_frame() {
             Ok(frame) => frame,
             // The producer closed its ring cleanly: the end of its stream, which is normal.
-            Err(ReadError::PublisherClosed) => {
+            Err(ReadError::Ended(StreamEnd::Closed)) => {
                 self.ended(now);
                 None
             }
@@ -269,7 +269,7 @@ fn pass(reader: &mut Reader, learner: &mut Learner) -> Pass {
                 Err(err) => return Pass::Failed(err.to_string()),
             },
             Ok(None) => return Pass::Pending,
-            Err(ReadError::PublisherClosed) => return Pass::Ended,
+            Err(ReadError::Ended(StreamEnd::Closed)) => return Pass::Ended,
             Err(err) => return Pass::Failed(err.to_string()),
         }
     }

@@ -17,7 +17,7 @@ use styx_frame::{
     BufferMemory, BufferSize, CpuAccess, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
 
-use crate::SocketError;
+use crate::{SocketError, StreamEnd};
 use crate::geometry::Geometry;
 use crate::wire::{
     ACK_LEN, OFFER_LEN, Offer, RECORD_LEN, Record, USER_MAX, VERSION, decode_meta, decode_offer,
@@ -43,40 +43,37 @@ pub enum Start {
 /// Why [`Reader::next_frame`] stopped delivering frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadError {
-    /// The producer cut this reader off for breaking its limits. Frames it holds may change, so
-    /// it takes no more. Drop the reader and connect again.
-    CutOff,
+    /// The stream ended. Every frame already published has been delivered first; no more come.
+    /// The [`StreamEnd`] says why. A cut-off reader gets [`StreamEnd::ConsumerFault`]: the
+    /// producer cut it off for breaking its limits, and it takes no more frames. Drop the reader
+    /// and connect again.
+    Ended(StreamEnd),
     /// The producer replaced its pool. This reader does not have the new buffers.
     PoolChanged {
         /// The new pool's generation.
         generation: u32,
-    },
-    /// The producer closed its ring cleanly (it was shut down, or dropped). Every frame it
-    /// published has been delivered; no more will come. Not a fault: the reader ends.
-    PublisherClosed,
-    /// The producer's ring ended with a fault ([`crate::ENDED_FAULTED`], or another nonzero end code).
-    /// Every frame it published has been delivered; no more will come.
-    PublisherFaulted {
-        /// The end code the ring holds.
-        code: u32,
     },
 }
 
 impl core::fmt::Display for ReadError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::CutOff => f.write_str("the producer cut this reader off for its limits"),
+            Self::Ended(StreamEnd::Closed) => {
+                f.write_str("the stream ended: the producer closed it, no more frames")
+            }
+            Self::Ended(StreamEnd::ConsumerFault) => f.write_str(
+                "the stream ended because this reader broke the rules (a hold kept too long or a bad mark)",
+            ),
+            Self::Ended(StreamEnd::DeviceFailed) => {
+                f.write_str("the stream ended because the device failed for good")
+            }
+            Self::Ended(StreamEnd::Unknown(code)) => {
+                write!(f, "the stream ended, kind unknown (end code {code})")
+            }
             Self::PoolChanged { generation } => {
                 write!(
                     f,
                     "the producer replaced its pool (generation {generation})"
-                )
-            }
-            Self::PublisherClosed => f.write_str("the producer closed its ring: no more frames"),
-            Self::PublisherFaulted { code } => {
-                write!(
-                    f,
-                    "the producer's ring ended with a fault (end code {code})"
                 )
             }
         }
@@ -470,7 +467,7 @@ impl Reader {
     ///
     /// # Errors
     ///
-    /// [`ReadError::CutOff`] once the producer has cut this reader off.
+    /// [`ReadError::Ended`] with [`StreamEnd::ConsumerFault`] once the producer has cut this reader off.
     pub fn next_frame(&mut self) -> Result<Option<Frame>, ReadError> {
         loop {
             // The end code is read before the ring: a ring that has ended has published every frame
@@ -484,17 +481,16 @@ impl Reader {
                 }
                 NextBatch::Skipped(_) => {}
                 NextBatch::Empty => {
-                    return match ended {
-                        0 => Ok(None),
-                        crate::ENDED_CLOSED => Err(ReadError::PublisherClosed),
-                        code => Err(ReadError::PublisherFaulted { code }),
+                    return match StreamEnd::from_code(ended) {
+                        None => Ok(None),
+                        Some(end) => Err(ReadError::Ended(end)),
                     };
                 }
                 NextBatch::Limited => {
                     self.counters.limited += 1;
                     return Ok(None);
                 }
-                NextBatch::CutOff => return Err(ReadError::CutOff),
+                NextBatch::CutOff => return Err(ReadError::Ended(StreamEnd::ConsumerFault)),
                 NextBatch::PoolChanged { generation } => {
                     return Err(ReadError::PoolChanged { generation });
                 }

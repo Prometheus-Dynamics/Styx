@@ -1,6 +1,6 @@
 //! The end of a producer's ring, seen by the link. A producer that closes its ring cleanly has
 //! ended its stream, with every frame delivered: the link counts no failure and keeps no error. A
-//! producer whose ring ends with a fault is an error, and is counted as one.
+//! producer whose ring ends with a device failure is an error, and is counted as one.
 
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
 use styx_pipewire::{Link, LinkState, LinkStatus};
-use styx_socket::{BeginError, ENDED_FAULTED, Limits, Producer, ProducerConfig};
+use styx_socket::{BeginError, ENDED_DEVICE_FAILED, Limits, Producer, ProducerConfig};
 
 const WIDTH: u32 = 64;
 const HEIGHT: u32 = 48;
@@ -142,11 +142,11 @@ fn a_closed_ring_is_the_end_of_the_stream_and_not_a_failure() {
 }
 
 #[test]
-fn a_faulted_ring_is_an_error_and_is_counted() {
+fn a_device_failed_ring_is_an_error_and_is_counted() {
     let status = run("pw-ended-faulted.sock", 5, |producer| {
-        producer.ring().set_end(ENDED_FAULTED);
+        producer.ring().set_end(ENDED_DEVICE_FAILED);
     });
     assert_eq!(status.state, LinkState::Waiting);
-    assert_eq!(status.failures, 1, "a faulted end is counted");
+    assert_eq!(status.failures, 1, "a failed device end is counted");
     assert!(status.last_error.is_some(), "and its error is kept");
 }

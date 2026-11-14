@@ -813,6 +813,9 @@ impl<M> Frames<M> {
         if self.taken.stream().is_open() {
             Ok(None)
         } else {
+            // STREAM END: the client cannot tell a closed end from a faulted one at this pin (no
+            // `FrameStream::end()` yet). When the Lemnos rev that has it is pinned, map its
+            // `StreamEnd` here (Closed, ConsumerFault, DeviceFailed, Unknown) to its own error.
             Err(Error::StreamEnded)
         }
     }
@@ -965,6 +968,7 @@ impl<M> JobStream<M> {
         match frame {
             Some(frame) => Ok(Some(frame)),
             None if self.taken.stream().is_open() => Ok(None),
+            // STREAM END: see `ended_or_none`; the same mapping goes here once end() is pinned.
             None => Err(Error::StreamEnded),
         }
     }

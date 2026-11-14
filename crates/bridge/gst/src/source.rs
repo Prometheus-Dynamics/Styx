@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use shm_fdpass as fdpass;
 use styx_format::FourCc;
 use styx_frame::{Layouts, PlaneLayout};
-use styx_socket::{Frame, ReadError, Reader};
+use styx_socket::{Frame, ReadError, Reader, StreamEnd};
 
 use crate::link::{Backoff, LinkState, LinkStatus};
 
@@ -218,7 +218,7 @@ impl Source {
                 None
             }
             // The producer closed its ring: the end of its stream, which is normal, not a failure.
-            Err(ReadError::PublisherClosed) => {
+            Err(ReadError::Ended(StreamEnd::Closed)) => {
                 self.ended(now);
                 None
             }

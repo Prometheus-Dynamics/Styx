@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
-use styx_socket::{ENDED_FAULTED, Limits, Producer, ProducerConfig, ReadError, Reader};
+use styx_socket::{Limits, Producer, ProducerConfig, ReadError, Reader, StreamEnd};
 
 const WIDTH: u32 = 16;
 const HEIGHT: u32 = 16;
@@ -84,10 +84,10 @@ fn a_closed_ring_gives_its_frames_then_a_closed_error_promptly() {
             .expect("published before the end");
         assert_eq!(frame.lease().id(), id);
     }
-    assert_eq!(reader.next_frame().err(), Some(ReadError::PublisherClosed));
+    assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(StreamEnd::Closed)));
     assert!(closed_at.elapsed() < PROMPT, "the end is read at once");
     // Sticky: every later read says so, and never an empty read.
-    assert_eq!(reader.next_frame().err(), Some(ReadError::PublisherClosed));
+    assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(StreamEnd::Closed)));
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn a_reader_asleep_on_its_doorbell_wakes_when_the_ring_closes() {
         woke < PROMPT,
         "the doorbell wait ends at the close: {woke:?}"
     );
-    assert_eq!(read.err(), Some(ReadError::PublisherClosed));
+    assert_eq!(read.err(), Some(ReadError::Ended(StreamEnd::Closed)));
 }
 
 #[test]
@@ -123,23 +123,66 @@ fn dropping_the_producer_ends_its_ring() {
         .expect("read")
         .expect("the frame before the drop");
     assert_eq!(frame.lease().id(), 1);
-    assert_eq!(reader.next_frame().err(), Some(ReadError::PublisherClosed));
+    assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(StreamEnd::Closed)));
+}
+
+/// Each end code is its own outcome with its own sentence, and an unknown code is kept, never read
+/// as running. Frames published before the end come first.
+#[test]
+fn each_end_code_gives_its_own_outcome_and_sentence() {
+    let ends = [
+        StreamEnd::DeviceFailed,
+        StreamEnd::ConsumerFault,
+        StreamEnd::Unknown(7),
+    ];
+    let mut sentences = Vec::new();
+    for end in ends {
+        let mut producer = producer();
+        let mut reader = attach(&mut producer, &format!("end-{}", end.code()));
+        publish(&mut producer, 1);
+        producer.end(end);
+        assert_eq!(producer.ring().end(), end.code(), "the end code is written");
+        let frame = reader
+            .next_frame()
+            .expect("the frame before the end is read")
+            .expect("published before the end");
+        assert_eq!(frame.lease().id(), 1);
+        drop(frame);
+        let err = reader.next_frame().err().expect("the stream has ended");
+        assert_eq!(err, ReadError::Ended(end));
+        // Sticky: the same end on every later read.
+        assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(end)));
+        sentences.push(err.to_string());
+    }
+    assert!(sentences[0].contains("device failed for good"), "{}", sentences[0]);
+    assert!(sentences[1].contains("broke the rules"), "{}", sentences[1]);
+    assert!(sentences[2].contains("kind unknown") && sentences[2].contains('7'), "{}", sentences[2]);
+    assert!(sentences[0] != sentences[1] && sentences[1] != sentences[2] && sentences[0] != sentences[2]);
 }
 
 #[test]
-fn a_faulted_ring_says_faulted_with_its_code() {
+fn the_first_end_is_the_one_a_reader_is_told() {
     let mut producer = producer();
-    let mut reader = attach(&mut producer, "faulted");
-    producer.ring().set_end(ENDED_FAULTED);
+    let mut reader = attach(&mut producer, "first");
+    producer.end(StreamEnd::DeviceFailed);
+    producer.close();
+    assert_eq!(producer.ring().end(), StreamEnd::DeviceFailed.code());
     assert_eq!(
         reader.next_frame().err(),
-        Some(ReadError::PublisherFaulted {
-            code: ENDED_FAULTED
-        })
+        Some(ReadError::Ended(StreamEnd::DeviceFailed))
     );
-    // A close after a fault keeps the fault: the first end is the one a reader is told.
-    producer.close();
-    assert_eq!(producer.ring().end(), ENDED_FAULTED);
+}
+
+#[test]
+fn end_codes_map_both_ways() {
+    assert_eq!(StreamEnd::from_code(0), None, "0 is a running ring");
+    assert_eq!(StreamEnd::from_code(1), Some(StreamEnd::Closed));
+    assert_eq!(StreamEnd::from_code(2), Some(StreamEnd::ConsumerFault));
+    assert_eq!(StreamEnd::from_code(3), Some(StreamEnd::DeviceFailed));
+    assert_eq!(StreamEnd::from_code(7), Some(StreamEnd::Unknown(7)));
+    for end in [StreamEnd::Closed, StreamEnd::ConsumerFault, StreamEnd::DeviceFailed, StreamEnd::Unknown(7)] {
+        assert_eq!(StreamEnd::from_code(end.code()), Some(end));
+    }
 }
 
 #[test]
@@ -156,5 +199,5 @@ fn latest_returns_the_newest_frame_before_the_end_and_the_end_after() {
         .expect("a frame before the end");
     assert_eq!(newest.lease().id(), 3);
     drop(newest);
-    assert_eq!(reader.latest().err(), Some(ReadError::PublisherClosed));
+    assert_eq!(reader.latest().err(), Some(ReadError::Ended(StreamEnd::Closed)));
 }

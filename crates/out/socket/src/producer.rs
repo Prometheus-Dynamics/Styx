@@ -15,7 +15,7 @@ use styx_frame::{
     AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
 
-use crate::SocketError;
+use crate::{SocketError, StreamEnd};
 use crate::geometry::Geometry;
 use crate::wire::{
     ACK_LEN, MAX_DESCRIPTORS, META_MAX, Offer, Record, VERSION, encode_entry, encode_offer,
@@ -620,13 +620,25 @@ impl<M> Producer<M> {
         Ok(seq)
     }
 
-    /// Ends the ring cleanly: readers get the frames already published, then
-    /// [`ReadError::PublisherClosed`] from their next read, and a reader waiting on its doorbell
-    /// wakes at once. Idempotent; a ring already ended keeps its code. Dropping the producer does
-    /// this too.
+    /// Ends the ring cleanly ([`Producer::end`] with [`StreamEnd::Closed`]). Dropping the producer
+    /// does this too.
     pub fn close(&mut self) {
+        self.end(StreamEnd::Closed);
+    }
+
+    /// Ends the stream with `end`: readers get the frames already published, then
+    /// [`ReadError::Ended`] with this end from their next read, and a reader waiting on its
+    /// doorbell wakes at once. Idempotent: a ring already ended keeps its first end. Writing
+    /// [`StreamEnd::ConsumerFault`] is for a test or a reader-side report only; the camera
+    /// service writes `Closed` or `DeviceFailed`. [`StreamEnd::Unknown`] with 0 is not an end,
+    /// so it is written as `Closed`.
+    pub fn end(&mut self, end: StreamEnd) {
         if self.ring.end() == 0 {
-            self.ring.set_end(crate::ENDED_CLOSED);
+            let code = match end.code() {
+                0 => crate::ENDED_CLOSED,
+                code => code,
+            };
+            self.ring.set_end(code);
         }
         for link in &mut self.links {
             link.bell.ring();

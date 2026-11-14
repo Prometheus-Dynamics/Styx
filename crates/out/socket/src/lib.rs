@@ -59,12 +59,54 @@ pub use producer::{
 pub use reader::{Frame, ReadError, Reader, ReaderStats, Start};
 pub use shm_ring_holds::Limits;
 pub use wire::USER_MAX;
-/// The end code a ring holds once its publisher has closed it cleanly ([`Producer::close`], or the
-/// producer's drop). Readers see it as [`ReadError::PublisherClosed`].
+/// Why a stream ended. The same four meanings as the hardware layer's stream ends (I2h), so a
+/// reader learns one thing whichever ring it reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    /// The producer ended the stream on purpose: a clean stop, the camera removed, the service
+    /// going away. Every frame published has been delivered first.
+    Closed,
+    /// The stream ended because THIS READER broke the rules: a hold kept too long, a bad mark.
+    /// The producer cut the reader off for it. It is not a fault of the producer.
+    ConsumerFault,
+    /// The device failed for good and will not continue on this attachment. Only a producer
+    /// whose camera was turned off for good writes it; a transient failure is a stall, not an end.
+    DeviceFailed,
+    /// Any other end code. The value is kept; the stream is never treated as running.
+    Unknown(u32),
+}
+
+impl StreamEnd {
+    /// The end code the ring holds for this end (`Unknown` keeps its value).
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Closed => ENDED_CLOSED,
+            Self::ConsumerFault => ENDED_CONSUMER_FAULT,
+            Self::DeviceFailed => ENDED_DEVICE_FAILED,
+            Self::Unknown(code) => code,
+        }
+    }
+
+    /// The end a ring's end code names; `None` for 0, which means the ring still runs.
+    pub const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            0 => None,
+            ENDED_CLOSED => Some(Self::Closed),
+            ENDED_CONSUMER_FAULT => Some(Self::ConsumerFault),
+            ENDED_DEVICE_FAILED => Some(Self::DeviceFailed),
+            other => Some(Self::Unknown(other)),
+        }
+    }
+}
+
+/// The end code of [`StreamEnd::Closed`]: the producer closed its ring cleanly ([`Producer::close`],
+/// or its drop).
 pub const ENDED_CLOSED: u32 = 1;
-/// The end code a ring holds once its publisher has ended with a fault. Readers see it as
-/// [`ReadError::PublisherFaulted`]. A test sets it with [`Producer::ring`]`.set_end`.
-pub const ENDED_FAULTED: u32 = 2;
+/// The end code of [`StreamEnd::ConsumerFault`]. A producer does not write it on its own behalf:
+/// a cut-off reader gets this outcome from its own read, not from the ring's end word.
+pub const ENDED_CONSUMER_FAULT: u32 = 2;
+/// The end code of [`StreamEnd::DeviceFailed`].
+pub const ENDED_DEVICE_FAILED: u32 = 3;
 /// The handshake version this build speaks. A peer on another version is refused by name
 /// ([`SocketError::Version`]).
 pub const HANDSHAKE_VERSION: u32 = wire::VERSION;
