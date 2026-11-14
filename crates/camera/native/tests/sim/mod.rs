@@ -303,6 +303,15 @@ impl Lifecycle for SimReceiver {
 }
 
 impl CameraReceiver for SimReceiver {
+    // Added at Lemnos 41736042 (U2d): this simulated receiver has no inputs, so NOT_SUPPORTED.
+    fn inputs(&mut self, _into: &mut [u8]) -> core::result::Result<usize, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn input(&mut self) -> core::result::Result<u32, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
     // Added at Lemnos 58098f97: no frame-start counts here, so NOT_SUPPORTED.
     fn frame_starts(
         &mut self,
