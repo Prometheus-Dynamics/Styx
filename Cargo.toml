@@ -58,11 +58,11 @@ daedalus-runner = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git",
 daedalus-types = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "4c7dc7498fc269b4d16fa1864ea2372cc67533e4" }
 daedalus-wgpu = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "4c7dc7498fc269b4d16fa1864ea2372cc67533e4" }
 daedalus-wgpu-author = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "4c7dc7498fc269b4d16fa1864ea2372cc67533e4" }
-orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a36fce2a02e3d16c7bc1f3c080302e61253b8f1c", default-features = false }
-orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a36fce2a02e3d16c7bc1f3c080302e61253b8f1c" }
-orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a36fce2a02e3d16c7bc1f3c080302e61253b8f1c" }
-orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a36fce2a02e3d16c7bc1f3c080302e61253b8f1c" }
-orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a36fce2a02e3d16c7bc1f3c080302e61253b8f1c" }
+orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "c9eb5a25ebeff940786901995ad4d9abc91795bc", default-features = false }
+orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "c9eb5a25ebeff940786901995ad4d9abc91795bc" }
+orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "c9eb5a25ebeff940786901995ad4d9abc91795bc" }
+orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "c9eb5a25ebeff940786901995ad4d9abc91795bc" }
+orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "c9eb5a25ebeff940786901995ad4d9abc91795bc" }
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
