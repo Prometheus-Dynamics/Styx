@@ -352,6 +352,40 @@ impl OrionRefusal {
     }
 }
 
+/// The fault for any refusal Orion's client returns, with the node's own words (feature `orion`):
+/// a wire revision or a feature level ([`OrionRefusal`]: [`FaultCode::OrionRevision`],
+/// [`FaultCode::OrionFeature`]); a refused request whose error is Orion's `Layout` (code 21:
+/// the shared memory is of another layout) is [`FaultCode::LayoutRefused`]; any other refused
+/// request is [`FaultCode::OrionRefused`] with Orion's error, its code and the node's detail.
+/// `None` for an error that is not a refusal (I/O, a lost session, ...): the caller reports it
+/// with its own code.
+#[cfg(feature = "orion")]
+pub fn orion_client_fault(error: &orion::ClientError) -> Option<StyxFault> {
+    if let Some(refusal) = OrionRefusal::from_client_error(error) {
+        return Some(orion_refusal_fault(&refusal));
+    }
+    match error {
+        orion::ClientError::Refused {
+            error: orion::types::Error::Layout,
+            detail,
+        } => Some(StyxFault::new(
+            FaultCode::LayoutRefused,
+            "the shared-memory layout is not this build's",
+            format!(
+                "orion refused (code {}): {}: {detail}",
+                orion::types::Error::Layout.code(),
+                orion::types::Error::Layout
+            ),
+        )),
+        orion::ClientError::Refused { error, detail } => Some(StyxFault::new(
+            FaultCode::OrionRefused,
+            "Orion refused this request",
+            format!("orion refused (code {}): {error}: {detail}", error.code()),
+        )),
+        _ => None,
+    }
+}
+
 /// The fault for an Orion refusal: [`FaultCode::OrionRevision`] or [`FaultCode::OrionFeature`],
 /// with the node and the words Orion gave.
 pub fn orion_refusal_fault(refusal: &OrionRefusal) -> StyxFault {

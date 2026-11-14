@@ -171,6 +171,46 @@ fn orion_s_own_refusals_map_to_the_revision_and_feature_codes() {
     );
 }
 
+/// Orion's refused requests carry the node's own words: a `Layout` refusal (Orion's code 21) is
+/// Styx's layout code with those words; any other refusal is the Orion-refused code with Orion's
+/// error, its code and the words; a lost session is not a refusal.
+#[cfg(feature = "orion")]
+#[test]
+fn orion_s_refused_requests_carry_the_node_s_words() {
+    use orion::types::Error;
+    use styx_daedalus::fault::orion_client_fault;
+
+    let layout = orion::ClientError::Refused {
+        error: Error::Layout,
+        detail: "ring cam0 has layout 0x1234, this node reads 0x5678".to_string(),
+    };
+    let (code, _, detail) = step_fault(&orion_client_fault(&layout).expect("a refusal"));
+    assert_eq!(code, FaultCode::LayoutRefused as u32);
+    assert_eq!(Error::Layout.code(), 21);
+    assert!(
+        detail.contains("code 21") && detail.contains("layout 0x1234, this node reads 0x5678"),
+        "{detail}"
+    );
+
+    let busy = orion::ClientError::Refused {
+        error: Error::Busy,
+        detail: "cam.front is held by workload:a".to_string(),
+    };
+    let (code, _, detail) = step_fault(&orion_client_fault(&busy).expect("a refusal"));
+    assert_eq!(code, FaultCode::OrionRefused as u32);
+    assert!(
+        detail.contains(&format!("code {}", Error::Busy.code()))
+            && detail.contains("cam.front is held by workload:a"),
+        "{detail}"
+    );
+
+    let revision = orion::ClientError::Revision { node: 3, client: 4 };
+    let (code, _, _) = step_fault(&orion_client_fault(&revision).expect("a refusal"));
+    assert_eq!(code, FaultCode::OrionRevision as u32);
+
+    assert!(orion_client_fault(&orion::ClientError::Lost).is_none());
+}
+
 // Stand-in: the pre-existing code for an Orion refusal with no kind of its own.
 #[test]
 fn an_orion_refusal_is_orion_refused() {
