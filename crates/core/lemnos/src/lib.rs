@@ -807,6 +807,9 @@ impl<M> Frames<M> {
         self.lease_for(frame).map(Some)
     }
 
+    // PRODUCER STALL: `Frames::next` will report the producer's stall and resume here once the
+    // Lemnos rev with `FrameStream::producer()` and `Next::Stalled`/`Resumed` is pinned. Until then
+    // a stall is not visible through this client: the frame loop waits as it always has.
     /// No frame was pending: `None` while the stream runs, [`Error::StreamEnded`] once the host has
     /// ended it.
     fn ended_or_none<T>(&self) -> Result<Option<T>, Error> {

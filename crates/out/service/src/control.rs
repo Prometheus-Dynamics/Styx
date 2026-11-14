@@ -283,6 +283,10 @@ fn camera_line(status: &CameraStatus) -> String {
         .last_error
         .as_deref()
         .map_or_else(|| "-".to_string(), one_line);
+    // The producer's state: `running`, or `retrying:<since_ns>` (CLOCK_MONOTONIC nanoseconds).
+    let producer = status
+        .producer_since_ns
+        .map_or_else(|| "running".to_string(), |since| format!("retrying:{since}"));
     let socket = status
         .socket
         .as_ref()
@@ -319,7 +323,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -358,6 +362,7 @@ fn camera_line(status: &CameraStatus) -> String {
         exposure_applied,
         exposure_clamp,
         status.lemnos_skipped,
+        producer,
         error,
     )
 }
@@ -396,6 +401,8 @@ pub struct CameraLine {
     pub rate_clamped: Option<bool>,
     /// Why the rates differ, as the service writes it (one word: spaces are `_`).
     pub rate_reason: Option<String>,
+    /// The producer's state as one word: `running`, or `retrying:<since_ns>`.
+    pub producer: Option<String>,
     /// The last failure's message: the free text at the end of the line.
     pub last_error: Option<String>,
 }
@@ -475,6 +482,7 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "measured" => camera.measured_milli = milli,
             "rate_clamped" => camera.rate_clamped = value.parse::<bool>().ok(),
             "rate_reason" => camera.rate_reason = text,
+            "producer" => camera.producer = text,
             _ => {}
         }
     }

@@ -198,6 +198,9 @@ pub struct CameraStatus {
     pub next_delay: Option<Duration>,
     /// The last failure's message, or the backend's last retry message.
     pub last_error: Option<String>,
+    /// While the camera is retrying after a failure: when the retry began (CLOCK_MONOTONIC
+    /// nanoseconds). Readers on its socket are told the same; `None` while the camera runs.
+    pub producer_since_ns: Option<u64>,
     /// Times the service stopped a sensor and receiver a previous owner left started, since the
     /// service started (see `worker`).
     pub recoveries: u64,
@@ -315,6 +318,7 @@ impl Slot {
             total_failures: 0,
             next_delay: None,
             last_error: None,
+            producer_since_ns: None,
             recoveries: 0,
             last_recovery: None,
             frames: 0,
@@ -396,6 +400,23 @@ impl Slot {
         if status.state == State::Retrying {
             status.state = State::Streaming;
         }
+    }
+
+    /// The camera failed and retries from `since_ns`: its readers stay attached, told `Retrying`.
+    pub(crate) fn stalled(&self, since_ns: u64) {
+        lock(&self.status).producer_since_ns = Some(since_ns);
+    }
+
+    /// No stall in force: the camera's producer was ended (stopped, or turned off for good).
+    pub(crate) fn clear_stall(&self) {
+        lock(&self.status).producer_since_ns = None;
+    }
+
+    /// The camera runs again after a stall (a new attempt delivered a frame).
+    pub(crate) fn camera_back(&self) {
+        let mut status = lock(&self.status);
+        status.producer_since_ns = None;
+        status.last_error = Some("camera back".to_string());
     }
 
     pub(crate) fn failed(&self, reason: String, failures: u32) {

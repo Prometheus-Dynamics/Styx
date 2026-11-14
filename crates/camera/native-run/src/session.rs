@@ -581,6 +581,10 @@ impl<'a, C: Clock> Session<'a, C> {
                 last_error: text,
             });
         }
+        // PRODUCER STALL: the hardware layer's `Next::Stalled` is due here (a failed start with a
+        // backoff step is a stall edge, the stream stays attached) and its `Next::Resumed` on the
+        // next successful start (`Carried::Kept` for the same instance, `Lost` after a rebind).
+        // Until that rev is pinned the service stalls its own producer on the failure it sees.
         let delay = self.policy.backoff.delay(failures);
         self.status.state = State::Backoff;
         self.status.next_delay = Some(delay);

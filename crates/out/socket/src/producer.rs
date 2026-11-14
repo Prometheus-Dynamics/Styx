@@ -15,6 +15,7 @@ use styx_frame::{
     AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
 
+use crate::state::{Carried, ProducerState, StateWriter};
 use crate::{SocketError, StreamEnd};
 use crate::geometry::Geometry;
 use crate::wire::{
@@ -34,6 +35,7 @@ pub struct HandshakePlan {
     geometry: Geometry,
     ring_fd: OwnedFd,
     page_fd: OwnedFd,
+    state_fd: OwnedFd,
     descriptors: Vec<OwnedFd>,
     buffers: Vec<Record>,
 }
@@ -79,7 +81,11 @@ impl HandshakePlan {
             geometry: self.geometry,
             descriptors: self.descriptors.len() as u32,
         });
-        let fds = [self.ring_fd.as_fd(), self.page_fd.as_fd()];
+        let fds = [
+            self.ring_fd.as_fd(),
+            self.page_fd.as_fd(),
+            self.state_fd.as_fd(),
+        ];
         fdpass::send_on(&socket, &[&offer], &fds)?;
 
         let mut named = 0_usize;
@@ -260,6 +266,8 @@ pub struct Producer<M = ()> {
     seq_of: Vec<u64>,
     /// The memory kind of each buffer, as the handshake names it.
     kinds: Vec<MemoryKind>,
+    /// The producer's state page: running or retrying, shared read-only with every reader.
+    state: StateWriter,
     geometry: Geometry,
     published: u64,
     dropped: u64,
@@ -376,6 +384,7 @@ impl<M> Producer<M> {
             keep: 1,
             seq_of: vec![0; geometry.buffers()],
             kinds,
+            state: StateWriter::create()?,
             geometry,
             published: 0,
             dropped: 0,
@@ -439,6 +448,7 @@ impl<M> Producer<M> {
         let slot = self.holds.free_slot().ok_or(SocketError::NoReaderSlot)?;
         let ring_fd = self.ring.read_fd()?.try_clone()?;
         let page_fd = self.writer.pool().page_fd()?.try_clone()?;
+        let state_fd = self.state.reader_fd()?;
         let descriptors: Vec<OwnedFd> = self
             .writer
             .pool()
@@ -467,6 +477,7 @@ impl<M> Producer<M> {
             geometry: self.geometry,
             ring_fd,
             page_fd,
+            state_fd,
             descriptors,
             buffers,
         })
@@ -640,6 +651,42 @@ impl<M> Producer<M> {
             };
             self.ring.set_end(code);
         }
+        self.ring_all();
+    }
+
+    /// The camera failed transiently: the stream stays attached and its readers stay linked, and
+    /// they are told `Retrying` since `since_ns` (CLOCK_MONOTONIC nanoseconds). Every reader's
+    /// doorbell and every outside bell is rung once, so a reader asleep wakes with no frame.
+    /// Idempotent: a stall already in force keeps its first time. See [`ProducerState`].
+    pub fn stall(&mut self, since_ns: u64) {
+        if matches!(self.state.state(), ProducerState::Retrying { .. }) {
+            return;
+        }
+        if self
+            .state
+            .change(ProducerState::Retrying { since_ns }, self.state.recovery())
+        {
+            self.ring_all();
+        }
+    }
+
+    /// The camera came back. `carried` says whether the same driver instance recovered
+    /// ([`Carried::Kept`]) or the device was rebound ([`Carried::Lost`]). A reader that was told
+    /// of the stall gets [`crate::Next::Resumed`] before the next frame. Does nothing when the
+    /// camera already runs.
+    pub fn resume(&mut self, carried: Carried) {
+        if self.state.change(ProducerState::Running, carried) {
+            self.ring_all();
+        }
+    }
+
+    /// The producer's state now: running, or retrying since when.
+    pub fn producer_state(&self) -> ProducerState {
+        self.state.state()
+    }
+
+    /// Rings every linked reader's doorbell and every outside bell, once each.
+    fn ring_all(&mut self) {
         for link in &mut self.links {
             link.bell.ring();
         }

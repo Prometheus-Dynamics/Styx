@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use styx_controls::FrameMetadata;
-use styx_socket::{Frame, ReadError, Reader, ReaderStats, SocketError, Start};
+use styx_socket::{Carried, Frame, Next, ProducerState, ReadError, Reader, ReaderStats, SocketError, Start};
 
 use crate::clock::monotonic_ns;
 use crate::isp::{IspError, IspRunner};
@@ -70,6 +70,12 @@ pub struct Session {
     isp: Option<IspRunner>,
     /// The ring's frame counts when the session started, so the report can show this run only.
     reader_start: ReaderStats,
+    /// Producer stall edges seen: the camera retried, and came back. Each is printed when seen.
+    pub stalls: u64,
+    /// Producer resume edges seen (the camera running again after a stall this reader was told of).
+    pub resumes: u64,
+    /// Resumes that were a device rebind (the same stall may end `Lost`).
+    pub lost_resumes: u64,
 }
 
 impl Session {
@@ -101,6 +107,9 @@ impl Session {
             metadata: None,
             isp,
             reader_start,
+            stalls: 0,
+            resumes: 0,
+            lost_resumes: 0,
         })
     }
 
@@ -133,15 +142,17 @@ impl Session {
         let started = monotonic_ns();
         let mut last_frame = started;
         loop {
-            match self.reader.next_frame().map_err(SessionError::Read)? {
-                Some(frame) => {
+            match self.reader.next_event().map_err(SessionError::Read)? {
+                Next::Frame(frame) => {
                     last_frame = monotonic_ns();
                     self.handle(&frame)?;
                     if done(&self.stats) {
                         return Ok(Stop::Frames);
                     }
                 }
-                None => {
+                Next::Stalled(state) => self.stall_edge(state),
+                Next::Resumed { state } => self.resume_edge(state),
+                Next::Idle => {
                     let now = monotonic_ns();
                     if let Some(limit) = time
                         && now.saturating_sub(started) >= limit.as_nanos() as u64
@@ -155,6 +166,35 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// A stall edge: the camera retries. Printed with the time it was seen and the time it began.
+    fn stall_edge(&mut self, state: ProducerState) {
+        self.stalls += 1;
+        let since = match state {
+            ProducerState::Retrying { since_ns } => since_ns,
+            _ => 0,
+        };
+        eprintln!(
+            "producer stalled: seen at {} ns, retrying since {since} ns (edge {})",
+            monotonic_ns(),
+            self.stalls
+        );
+    }
+
+    /// A resume edge: the camera runs again. Printed with the time it was seen and its kind.
+    fn resume_edge(&mut self, state: Carried) {
+        self.resumes += 1;
+        let lost = matches!(state, Carried::Lost);
+        if lost {
+            self.lost_resumes += 1;
+        }
+        eprintln!(
+            "producer resumed: seen at {} ns, {} (edge {})",
+            monotonic_ns(),
+            if lost { "lost: rebound, a new sequence" } else { "kept: same driver instance" },
+            self.resumes
+        );
     }
 
     /// One frame in hand: its times and metadata are read, then the ISP runs on it. The frame

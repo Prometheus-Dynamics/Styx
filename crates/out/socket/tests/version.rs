@@ -69,7 +69,8 @@ fn a_new_producer_refuses_an_old_answer_names_both_versions_and_links_nothing() 
     // The old reader: takes the offer and the two records, then answers with the old version.
     let old = std::thread::spawn(move || {
         let mut offer = [0_u8; OFFER_LEN];
-        fdpass::recv(old_reader.as_fd(), &mut offer, 2, false)
+        // The offer carries three descriptors: the ring, the pool page and the state page.
+        fdpass::recv(old_reader.as_fd(), &mut offer, 3, false)
             .expect("offer")
             .expect("the producer sent an offer");
         for _ in 0..2 {

@@ -1031,17 +1031,31 @@ fn a_camera_that_leaves_and_returns_is_read_again_by_its_reader() {
         reader.frames().len() >= 20
     });
 
-    // The camera leaves: lemnosd goes away, and the reader is told by its connection closing.
+    // The camera leaves: lemnosd goes away. The service retries with backoff and its producer stays
+    // attached meanwhile: the reader is NOT closed while the camera retries, and the status says so.
     drop(lemnos);
-    wait_until("the reader sees the close", Duration::from_secs(30), || {
+    wait_until("the camera retries", Duration::from_secs(30), || {
+        line_of(&control, cam)
+            .and_then(|l| field(&l, "producer").map(|p| p.starts_with("retrying:")))
+            .unwrap_or(false)
+    });
+    let retry_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < retry_deadline {
+        reader.pump(Duration::from_millis(20));
+    }
+    assert!(
+        !reader.has(|l| l == "CLOSED"),
+        "the reader stays attached while the camera retries"
+    );
+    // It comes back on new buffers: the old ring ends (CLOSED) and the reader connects again.
+    let _lemnos = daemon(&lemnos_socket, &board);
+    wait_until("the reader sees the close", Duration::from_secs(60), || {
         reader.pump(Duration::from_millis(20));
         reader.has(|l| l == "CLOSED")
     });
     let before = reader.frames().len();
 
-    // It comes back: the same socket. The service makes a new pool and producer; the reader
-    // connects again and takes frames from the new pool.
-    let _lemnos = daemon(&lemnos_socket, &board);
+    // The reader connects again and takes frames from the new pool.
     wait_until("the reader connects again", Duration::from_secs(60), || {
         reader.pump(Duration::from_millis(20));
         reader

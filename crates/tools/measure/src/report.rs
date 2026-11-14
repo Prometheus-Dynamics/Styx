@@ -71,6 +71,10 @@ pub struct Report {
     pub frames: FrameStats,
     /// Reader counts for this run (ring skips and so on): end minus start.
     pub skipped: u64,
+    /// Producer stall edges and resume edges seen in this run, and how many resumes were lost.
+    pub stalls: u64,
+    pub resumes: u64,
+    pub lost_resumes: u64,
     pub superseded: u64,
     pub limited: u64,
     pub malformed: u64,
@@ -198,6 +202,9 @@ impl Report {
             ("frames", Json::Object(vec![
                 ("delivered", Json::Int(delivered)),
                 ("skipped_by_ring", Json::Int(self.skipped)),
+                ("producer_stalls", Json::Int(self.stalls)),
+                ("producer_resumes", Json::Int(self.resumes)),
+                ("producer_resumes_lost", Json::Int(self.lost_resumes)),
                 ("superseded", Json::Int(self.superseded)),
                 ("limited", Json::Int(self.limited)),
                 ("malformed", Json::Int(self.malformed)),
@@ -298,6 +305,10 @@ impl Report {
         let mut row = |k: &str, v: String| rows.push((k.to_string(), v));
         row("frames delivered", f.delivered.to_string());
         row("frames skipped by ring", self.skipped.to_string());
+        row(
+            "producer stalls (stalls, resumes, lost)",
+            format!("{}, {}, {}", self.stalls, self.resumes, self.lost_resumes),
+        );
         row(
             "gaps (count, largest)",
             format!("{}, {}", f.gaps, f.largest_gap),

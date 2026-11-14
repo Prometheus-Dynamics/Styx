@@ -47,6 +47,7 @@
 mod geometry;
 mod producer;
 mod reader;
+mod state;
 mod wire;
 
 use core::fmt;
@@ -56,7 +57,8 @@ pub use producer::{
     Accepted, BeginError, BellId, HANDSHAKE_TIMEOUT, HandshakePlan, OUTSIDE_BELLS, Producer,
     ProducerConfig, ProducerStats, ReaderInfo,
 };
-pub use reader::{Frame, ReadError, Reader, ReaderStats, Start};
+pub use reader::{Frame, Next, ReadError, Reader, ReaderStats, Start};
+pub use state::{Carried, ProducerState};
 pub use shm_ring_holds::Limits;
 pub use wire::USER_MAX;
 /// Why a stream ended. The same four meanings as the hardware layer's stream ends (I2h), so a
@@ -107,6 +109,12 @@ pub const ENDED_CLOSED: u32 = 1;
 pub const ENDED_CONSUMER_FAULT: u32 = 2;
 /// The end code of [`StreamEnd::DeviceFailed`].
 pub const ENDED_DEVICE_FAILED: u32 = 3;
+/// The clock stall times are stated in: `CLOCK_MONOTONIC`, in nanoseconds (the same clock as
+/// [`ProducerState::Retrying`]'s `since_ns`).
+pub fn clock_ns() -> u64 {
+    shm_ring::SampleTime::now().as_nanos()
+}
+
 /// The handshake version this build speaks. A peer on another version is refused by name
 /// ([`SocketError::Version`]).
 pub const HANDSHAKE_VERSION: u32 = wire::VERSION;

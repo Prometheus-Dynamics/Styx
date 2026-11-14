@@ -17,6 +17,7 @@ use styx_frame::{
     BufferMemory, BufferSize, CpuAccess, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
 
+use crate::state::{Carried, ProducerState, StateReader};
 use crate::{SocketError, StreamEnd};
 use crate::geometry::Geometry;
 use crate::wire::{
@@ -280,6 +281,32 @@ pub struct Reader {
     doorbell: Doorbell,
     geometry: Geometry,
     counters: Counters,
+    /// The producer's state page, read-only.
+    producer: StateReader,
+    /// Whether this reader has been told of the stall in force: [`Next::Stalled`] was returned
+    /// and [`Next::Resumed`] is owed when the camera runs again.
+    told_stall: bool,
+}
+
+/// One thing [`Reader::next_event`] returns: a frame, or a change in the producer's state, or
+/// nothing new. A stream that ends is the `Err` of that call ([`ReadError::Ended`]).
+#[derive(Debug)]
+pub enum Next {
+    /// The next frame, held (the same as [`Reader::next_frame`] gives).
+    Frame(Frame),
+    /// No frame and no change: wait for the doorbell again.
+    Idle,
+    /// The camera stopped running and is retrying. Given once per stall this reader sees, and
+    /// only when no frame is pending: frames published before the stall come first. A reader that
+    /// asks while a stall is in force gets this once, then [`Next::Idle`] until the camera is back.
+    Stalled(ProducerState),
+    /// The camera runs again after a stall this reader was told of. Given once, before the first
+    /// frame after the stall. A stall that began and ended between two calls of a reader that
+    /// never saw it is silent.
+    Resumed {
+        /// Whether the same driver instance recovered or the device was rebound.
+        state: Carried,
+    },
 }
 
 impl Reader {
@@ -305,7 +332,7 @@ impl Reader {
     /// or a mapping fails.
     pub fn connect_with(socket: UnixStream, start: Start) -> Result<Self, SocketError> {
         let mut offer_bytes = [0_u8; OFFER_LEN];
-        let received = fdpass::recv(socket.as_fd(), &mut offer_bytes, 2, false)?.ok_or(
+        let received = fdpass::recv(socket.as_fd(), &mut offer_bytes, 3, false)?.ok_or(
             SocketError::Protocol("the producer closed before its offer"),
         )?;
         // The version first: another version may send an offer of another length.
@@ -331,16 +358,18 @@ impl Reader {
             "the offer is not one this build reads",
         ))?;
         let mut fds = received.fds;
-        if fds.len() != 2 {
+        if fds.len() != 3 {
             return Err(SocketError::Protocol(
                 "the offer carries the wrong descriptors",
             ));
         }
-        let (Some(ring_fd), Some(page_fd)) = (fds.take(0), fds.take(1)) else {
+        let (Some(ring_fd), Some(page_fd), Some(state_fd)) = (fds.take(0), fds.take(1), fds.take(2))
+        else {
             return Err(SocketError::Protocol(
-                "the offer lacks the ring or the pool page",
+                "the offer lacks the ring, the pool page or the state page",
             ));
         };
+        let producer = StateReader::new(state_fd)?;
 
         // The buffer table: one record per buffer, in order. A record carries its descriptor
         // exactly when it is the first buffer that names it.
@@ -458,6 +487,8 @@ impl Reader {
             doorbell,
             geometry,
             counters: Counters::default(),
+            producer,
+            told_stall: false,
         })
     }
 
@@ -526,16 +557,59 @@ impl Reader {
         Ok(newest)
     }
 
-    /// Sleeps until the producer rings this reader's doorbell, unless a frame is already queued.
+    /// The producer's state now, readable at any time (a reader attaching during a stall reads
+    /// `Retrying` at once, with its time).
+    pub fn producer(&self) -> ProducerState {
+        self.producer.snapshot().state
+    }
+
+    /// The next thing this reader has: a frame, a change in the producer's state it is owed, or
+    /// nothing new. The plain frame loop ([`Reader::next_frame`]) ignores stalls and keeps waiting
+    /// through them; a reader that wants to show them calls this instead.
+    ///
+    /// # Errors
+    ///
+    /// As [`Reader::next_frame`].
+    pub fn next_event(&mut self) -> Result<Next, ReadError> {
+        let before = self.producer.snapshot();
+        if self.told_stall && before.running() {
+            self.told_stall = false;
+            return Ok(Next::Resumed {
+                state: before.recovery,
+            });
+        }
+        if let Some(frame) = self.next_frame()? {
+            return Ok(Next::Frame(frame));
+        }
+        // No frame is pending: a stall this reader has not been told of is reported now.
+        let now = self.producer.snapshot();
+        if !self.told_stall && !now.running() {
+            self.told_stall = true;
+            return Ok(Next::Stalled(now.state));
+        }
+        Ok(Next::Idle)
+    }
+
+    /// Sleeps until the producer rings this reader's doorbell, unless a frame is already queued or
+    /// a state change is owed to this reader (a stall to report, or a recovery to report).
     ///
     /// # Errors
     ///
     /// If polling the doorbell fails.
     pub fn wait(&mut self, timeout: Option<Duration>) -> io::Result<Wake> {
         let buffers = &self.buffers;
+        let producer = &self.producer;
+        let told = self.told_stall;
         // An ended ring is ready at once: the next read reports the end.
-        self.doorbell
-            .wait(timeout, || buffers.pending() > 0 || buffers.end() != 0)
+        self.doorbell.wait(timeout, || {
+            buffers.pending() > 0
+                || buffers.end() != 0
+                || if told {
+                    producer.snapshot().running()
+                } else {
+                    !producer.snapshot().running()
+                }
+        })
     }
 
     /// Counts, now.
