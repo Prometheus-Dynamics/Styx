@@ -290,6 +290,9 @@ pub struct Reader {
 
 /// One thing [`Reader::next_event`] returns: a frame, or a change in the producer's state, or
 /// nothing new. A stream that ends is the `Err` of that call ([`ReadError::Ended`]).
+// The frame is the common case and is returned in place: boxing it would allocate on every frame,
+// which the steady-state rule forbids, so the size difference is kept.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Next {
     /// The next frame, held (the same as [`Reader::next_frame`] gives).

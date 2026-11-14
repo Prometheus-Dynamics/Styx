@@ -157,7 +157,7 @@ fn each_end_code_gives_its_own_outcome_and_sentence() {
             .expect("published before the end");
         assert_eq!(frame.lease().id(), 1);
         drop(frame);
-        let err = reader.next_frame().err().expect("the stream has ended");
+        let err = reader.next_frame().expect_err("the stream has ended");
         assert_eq!(err, ReadError::Ended(end));
         // Sticky: the same end on every later read.
         assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(end)));
