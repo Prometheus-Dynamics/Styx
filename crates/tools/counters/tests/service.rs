@@ -399,12 +399,19 @@ fn a_slow_reader_skips_frames_and_the_counters_show_it_is_connected() {
         r.latest(CAM0)
             .is_some_and(|s| s.publish == styx_counters::PublishState::Publishing)
     });
+    // A reader that cannot connect is a failure with its reason, not a test that never ends.
+    let connect_by = Instant::now() + Duration::from_secs(20);
     let mut reader = loop {
         match UnixStream::connect(&socket)
             .and_then(|s| Reader::connect(s).map_err(|e| std::io::Error::other(e.to_string())))
         {
             Ok(reader) => break reader,
-            Err(_) => {
+            Err(e) => {
+                assert!(
+                    Instant::now() < connect_by,
+                    "no reader could connect to {} in 20 s: {e}",
+                    socket.display()
+                );
                 run.tick();
                 std::thread::sleep(Duration::from_millis(10));
             }
