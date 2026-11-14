@@ -124,7 +124,10 @@ fn a_blocked_reader_gets_stalled_once_then_resumed_before_the_next_frame() {
         ],
         "one stall, one resume, then the frame"
     );
-    assert!(woke < PROMPT, "the stall woke the sleeping reader: {woke:?}");
+    assert!(
+        woke < PROMPT,
+        "the stall woke the sleeping reader: {woke:?}"
+    );
 }
 
 #[test]
@@ -147,7 +150,10 @@ fn a_reader_attaching_during_a_stall_reads_retrying_at_once() {
     let since = now_ns();
     producer.stall(since);
     let mut reader = attach(&mut producer, "late");
-    assert_eq!(reader.producer(), ProducerState::Retrying { since_ns: since });
+    assert_eq!(
+        reader.producer(),
+        ProducerState::Retrying { since_ns: since }
+    );
     let mut seen = Vec::new();
     // Its first call reports the stall it is in; the next waits, silent.
     assert!(matches!(
@@ -179,7 +185,12 @@ fn a_plain_frame_loop_sees_only_frames_through_a_stall() {
     producer.stall(now_ns());
     // Through the stall the plain loop keeps waiting: no frame, and never an error.
     for _ in 0..3 {
-        assert!(reader.next_frame().expect("no error during a stall").is_none());
+        assert!(
+            reader
+                .next_frame()
+                .expect("no error during a stall")
+                .is_none()
+        );
     }
     producer.resume(Carried::Kept);
     publish(&mut producer, 2);
@@ -232,7 +243,10 @@ fn stalling_twice_keeps_the_first_time_and_resuming_twice_is_silent() {
     let first = now_ns();
     producer.stall(first);
     producer.stall(first + 1_000);
-    assert_eq!(producer.producer_state(), ProducerState::Retrying { since_ns: first });
+    assert_eq!(
+        producer.producer_state(),
+        ProducerState::Retrying { since_ns: first }
+    );
     assert!(matches!(
         reader.next_event().expect("live"),
         Next::Stalled(ProducerState::Retrying { since_ns }) if since_ns == first

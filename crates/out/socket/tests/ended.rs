@@ -84,10 +84,16 @@ fn a_closed_ring_gives_its_frames_then_a_closed_error_promptly() {
             .expect("published before the end");
         assert_eq!(frame.lease().id(), id);
     }
-    assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(StreamEnd::Closed)));
+    assert_eq!(
+        reader.next_frame().err(),
+        Some(ReadError::Ended(StreamEnd::Closed))
+    );
     assert!(closed_at.elapsed() < PROMPT, "the end is read at once");
     // Sticky: every later read says so, and never an empty read.
-    assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(StreamEnd::Closed)));
+    assert_eq!(
+        reader.next_frame().err(),
+        Some(ReadError::Ended(StreamEnd::Closed))
+    );
 }
 
 #[test]
@@ -123,7 +129,10 @@ fn dropping_the_producer_ends_its_ring() {
         .expect("read")
         .expect("the frame before the drop");
     assert_eq!(frame.lease().id(), 1);
-    assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(StreamEnd::Closed)));
+    assert_eq!(
+        reader.next_frame().err(),
+        Some(ReadError::Ended(StreamEnd::Closed))
+    );
 }
 
 /// Each end code is its own outcome with its own sentence, and an unknown code is kept, never read
@@ -154,10 +163,22 @@ fn each_end_code_gives_its_own_outcome_and_sentence() {
         assert_eq!(reader.next_frame().err(), Some(ReadError::Ended(end)));
         sentences.push(err.to_string());
     }
-    assert!(sentences[0].contains("device failed for good"), "{}", sentences[0]);
+    assert!(
+        sentences[0].contains("device failed for good"),
+        "{}",
+        sentences[0]
+    );
     assert!(sentences[1].contains("broke the rules"), "{}", sentences[1]);
-    assert!(sentences[2].contains("kind unknown") && sentences[2].contains('7'), "{}", sentences[2]);
-    assert!(sentences[0] != sentences[1] && sentences[1] != sentences[2] && sentences[0] != sentences[2]);
+    assert!(
+        sentences[2].contains("kind unknown") && sentences[2].contains('7'),
+        "{}",
+        sentences[2]
+    );
+    assert!(
+        sentences[0] != sentences[1]
+            && sentences[1] != sentences[2]
+            && sentences[0] != sentences[2]
+    );
 }
 
 #[test]
@@ -180,7 +201,12 @@ fn end_codes_map_both_ways() {
     assert_eq!(StreamEnd::from_code(2), Some(StreamEnd::ConsumerFault));
     assert_eq!(StreamEnd::from_code(3), Some(StreamEnd::DeviceFailed));
     assert_eq!(StreamEnd::from_code(7), Some(StreamEnd::Unknown(7)));
-    for end in [StreamEnd::Closed, StreamEnd::ConsumerFault, StreamEnd::DeviceFailed, StreamEnd::Unknown(7)] {
+    for end in [
+        StreamEnd::Closed,
+        StreamEnd::ConsumerFault,
+        StreamEnd::DeviceFailed,
+        StreamEnd::Unknown(7),
+    ] {
         assert_eq!(StreamEnd::from_code(end.code()), Some(end));
     }
 }
@@ -199,5 +225,8 @@ fn latest_returns_the_newest_frame_before_the_end_and_the_end_after() {
         .expect("a frame before the end");
     assert_eq!(newest.lease().id(), 3);
     drop(newest);
-    assert_eq!(reader.latest().err(), Some(ReadError::Ended(StreamEnd::Closed)));
+    assert_eq!(
+        reader.latest().err(),
+        Some(ReadError::Ended(StreamEnd::Closed))
+    );
 }

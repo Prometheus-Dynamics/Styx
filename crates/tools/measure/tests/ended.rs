@@ -9,7 +9,9 @@ use std::time::{Duration, Instant};
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
 use styx_measure::session::{Session, SessionError};
-use styx_socket::{ENDED_DEVICE_FAILED, Limits, Producer, ProducerConfig, ReadError, Start, StreamEnd};
+use styx_socket::{
+    ENDED_DEVICE_FAILED, Limits, Producer, ProducerConfig, ReadError, Start, StreamEnd,
+};
 
 const WIDTH: u32 = 16;
 const HEIGHT: u32 = 16;
@@ -94,8 +96,5 @@ fn a_device_failed_ring_ends_the_run_with_its_own_sentence() {
         "{err}"
     );
     let text = err.to_string();
-    assert!(
-        text.contains("device failed for good"),
-        "{text}"
-    );
+    assert!(text.contains("device failed for good"), "{text}");
 }

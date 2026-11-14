@@ -8,8 +8,8 @@ use std::fmt;
 use std::time::Duration;
 
 use styx_controls::{FrameMetadata, Update};
-use styx_lemnos::LayoutRefusal;
 use styx_frame::FrameLease;
+use styx_lemnos::LayoutRefusal;
 
 /// What an opened camera is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]

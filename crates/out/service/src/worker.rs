@@ -29,9 +29,7 @@ use styx_v4l2::StreamConfig;
 use crate::config::CameraConfig;
 use crate::outlet::Outlet;
 use crate::service::Shared;
-use crate::slot::{
-    Command, FAULT_DEVICE_FAILED, Health, KeepWindow, Publish, Slot, State,
-};
+use crate::slot::{Command, FAULT_DEVICE_FAILED, Health, KeepWindow, Publish, Slot, State};
 use lemnos_client::DeviceHealth;
 use lemnos_contract_camera_receiver::CameraReceiver;
 use lemnos_contract_camera_sensor::CameraSensor;
@@ -188,7 +186,14 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
             continue;
         };
         slot.set_state(State::Backoff);
-        let ended = attempt(slot, commands, shared, outlet.as_mut(), &selection, &mut publisher);
+        let ended = attempt(
+            slot,
+            commands,
+            shared,
+            outlet.as_mut(),
+            &selection,
+            &mut publisher,
+        );
         match ended {
             Ended::Stopped => {
                 release(&mut publisher, slot, None);
@@ -223,7 +228,10 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     slot.set_readers(held.producer.stats().readers);
                 }
                 slot.stalled(since);
-                slot.failed(format!("camera failed, retrying since {since}: {text}"), failures);
+                slot.failed(
+                    format!("camera failed, retrying since {since}: {text}"),
+                    failures,
+                );
                 let delay = shared.backoff.delay(failures);
                 slot.backing_off(delay);
                 slot.wake.store(false, Ordering::Release);
@@ -264,7 +272,9 @@ fn drain(commands: &Receiver<Command>, slot: &Slot, publisher: &mut Publisher) -
             }
             // A reader asking while the camera retries joins the producer that stays attached.
             Ok(Command::Handshake(reply)) => answer_handshake(publisher, reply),
-            Ok(Command::Attach(planned, accepted)) => attach_reader(publisher, planned, accepted, slot),
+            Ok(Command::Attach(planned, accepted)) => {
+                attach_reader(publisher, planned, accepted, slot)
+            }
             Err(TryRecvError::Empty) => return Drained::Idle,
             Err(TryRecvError::Disconnected) => return Drained::Gone,
         }

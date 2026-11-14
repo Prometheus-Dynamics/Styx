@@ -17,13 +17,13 @@ use styx_frame::{
     BufferMemory, BufferSize, CpuAccess, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
 
-use crate::state::{Carried, ProducerState, StateReader};
-use crate::{SocketError, StreamEnd};
 use crate::geometry::Geometry;
+use crate::state::{Carried, ProducerState, StateReader};
 use crate::wire::{
     ACK_LEN, OFFER_LEN, Offer, RECORD_LEN, Record, USER_MAX, VERSION, decode_meta, decode_offer,
     decode_record, decode_user, version_of,
 };
+use crate::{SocketError, StreamEnd};
 
 const FIELD: FieldId = FieldId(0);
 
@@ -363,7 +363,8 @@ impl Reader {
                 "the offer carries the wrong descriptors",
             ));
         }
-        let (Some(ring_fd), Some(page_fd), Some(state_fd)) = (fds.take(0), fds.take(1), fds.take(2))
+        let (Some(ring_fd), Some(page_fd), Some(state_fd)) =
+            (fds.take(0), fds.take(1), fds.take(2))
         else {
             return Err(SocketError::Protocol(
                 "the offer lacks the ring, the pool page or the state page",

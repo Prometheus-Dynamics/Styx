@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use styx_controls::FrameMetadata;
-use styx_socket::{Carried, Frame, Next, ProducerState, ReadError, Reader, ReaderStats, SocketError, Start};
+use styx_socket::{
+    Carried, Frame, Next, ProducerState, ReadError, Reader, ReaderStats, SocketError, Start,
+};
 
 use crate::clock::monotonic_ns;
 use crate::isp::{IspError, IspRunner};
@@ -192,7 +194,11 @@ impl Session {
         eprintln!(
             "producer resumed: seen at {} ns, {} (edge {})",
             monotonic_ns(),
-            if lost { "lost: rebound, a new sequence" } else { "kept: same driver instance" },
+            if lost {
+                "lost: rebound, a new sequence"
+            } else {
+                "kept: same driver instance"
+            },
             self.resumes
         );
     }

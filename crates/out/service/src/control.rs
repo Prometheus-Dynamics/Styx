@@ -285,14 +285,17 @@ fn camera_line(status: &CameraStatus) -> String {
         .as_deref()
         .map_or_else(|| "-".to_string(), one_line);
     // The producer's state: `running`, or `retrying:<since_ns>` (CLOCK_MONOTONIC nanoseconds).
-    let producer = status
-        .producer_since_ns
-        .map_or_else(|| "running".to_string(), |since| format!("retrying:{since}"));
+    let producer = status.producer_since_ns.map_or_else(
+        || "running".to_string(),
+        |since| format!("retrying:{since}"),
+    );
     // The layout refusal as `<ring|marks>:<found>:<expected>`, and the fault code number.
     let layout_refused = status
         .layout_refused
         .map_or_else(|| "-".to_string(), |r| format_layout(&r));
-    let fault = status.fault.map_or_else(|| "-".to_string(), |f| f.to_string());
+    let fault = status
+        .fault
+        .map_or_else(|| "-".to_string(), |f| f.to_string());
     let socket = status
         .socket
         .as_ref()
@@ -692,7 +695,9 @@ mod tests {
             expected: 2,
         };
         slot.layout_refused(Some(refusal));
-        slot.retrying("frame stream cam0: the marks page is layout 1; this build reads layout 2".into());
+        slot.retrying(
+            "frame stream cam0: the marks page is layout 1; this build reads layout 2".into(),
+        );
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
@@ -710,7 +715,11 @@ mod tests {
             })
         );
         assert_eq!(cam.fault, Some(1));
-        assert!(cam.last_error.as_deref().is_some_and(|e| e.starts_with("frame stream cam0")));
+        assert!(
+            cam.last_error
+                .as_deref()
+                .is_some_and(|e| e.starts_with("frame stream cam0"))
+        );
         // A refusal that ends clears its fields; the line says so with `-`.
         slot.layout_refused(None);
         let cam = parse_camera_line(&camera_line(&slot.snapshot())).expect("a camera line");

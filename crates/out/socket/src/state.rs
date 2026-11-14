@@ -138,8 +138,10 @@ impl StateWriter {
         self.map.store(W_EDGES, self.edges, Ordering::Relaxed);
         self.map.store(W_STATE, word, Ordering::Relaxed);
         self.map.store(W_SINCE, since_ns, Ordering::Relaxed);
-        self.map.store(W_RECOVERY, recovery.code(), Ordering::Relaxed);
-        self.map.store(W_SEQ, (seq | 1).wrapping_add(1), Ordering::Release);
+        self.map
+            .store(W_RECOVERY, recovery.code(), Ordering::Relaxed);
+        self.map
+            .store(W_SEQ, (seq | 1).wrapping_add(1), Ordering::Release);
     }
 }
 

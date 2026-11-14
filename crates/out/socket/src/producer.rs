@@ -15,13 +15,13 @@ use styx_frame::{
     AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
 
-use crate::state::{Carried, ProducerState, StateWriter};
-use crate::{SocketError, StreamEnd};
 use crate::geometry::Geometry;
+use crate::state::{Carried, ProducerState, StateWriter};
 use crate::wire::{
     ACK_LEN, MAX_DESCRIPTORS, META_MAX, Offer, Record, VERSION, encode_entry, encode_offer,
     encode_record, version_of,
 };
+use crate::{SocketError, StreamEnd};
 
 /// How long a reader has to answer the handshake.
 /// How long a reader has to answer a handshake, from its connection, before it is dropped.
