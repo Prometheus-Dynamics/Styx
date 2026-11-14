@@ -129,4 +129,3 @@ impl CameraSensor for ManualSensor {
         Err(Status::NOT_SUPPORTED)
     }
 }
-

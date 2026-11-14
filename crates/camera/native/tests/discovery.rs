@@ -123,7 +123,10 @@ fn discover_board(name: &str, text: &str) -> Discovery {
 
 #[test]
 fn a_receiver_fed_by_this_sensor_confirms_the_link() {
-    let text = Board::timed(Family::Native).identity(Some("cam-a")).source(Some("cam-a")).text();
+    let text = Board::timed(Family::Native)
+        .identity(Some("cam-a"))
+        .source(Some("cam-a"))
+        .text();
     let found = discover_board("confirmed", &text);
     assert!(found.refused.is_empty(), "{:?}", found.refused);
     assert_eq!(found.cameras.len(), 1);
@@ -132,7 +135,10 @@ fn a_receiver_fed_by_this_sensor_confirms_the_link() {
 
 #[test]
 fn a_receiver_fed_by_another_sensor_refuses_the_camera_naming_both() {
-    let text = Board::timed(Family::Native).identity(Some("cam-a")).source(Some("cam-b")).text();
+    let text = Board::timed(Family::Native)
+        .identity(Some("cam-a"))
+        .source(Some("cam-b"))
+        .text();
     let found = discover_board("mismatch", &text);
     assert!(found.cameras.is_empty(), "{found:?}");
     let [(name, refusal)] = found.refused.as_slice() else {
@@ -154,7 +160,10 @@ fn a_receiver_fed_by_another_sensor_refuses_the_camera_naming_both() {
 
 #[test]
 fn an_empty_source_is_nothing_wired_and_refuses_the_camera() {
-    let text = Board::timed(Family::Native).identity(Some("cam-a")).source(Some("")).text();
+    let text = Board::timed(Family::Native)
+        .identity(Some("cam-a"))
+        .source(Some(""))
+        .text();
     let found = discover_board("unwired", &text);
     assert!(found.cameras.is_empty(), "{found:?}");
     assert_eq!(
@@ -180,7 +189,10 @@ fn an_unknown_source_is_carried_as_unknown_and_never_a_mismatch() {
 
     // The sensor has no identity (NOT_SUPPORTED) and the receiver names one: still unknown, never a
     // match and never a mismatch.
-    let text = Board::timed(Family::Native).identity(None).source(Some("cam-b")).text();
+    let text = Board::timed(Family::Native)
+        .identity(None)
+        .source(Some("cam-b"))
+        .text();
     let found = discover_board("no-identity", &text);
     assert!(found.refused.is_empty(), "{:?}", found.refused);
     assert!(matches!(found.cameras[0].link(), LinkCheck::Unknown(_)));

@@ -98,7 +98,12 @@ impl Fields {
 /// a rate, it does not pace anything).
 const BARE_FPS: [u32; 2] = [120, 60];
 
-pub(crate) fn mode(index: usize, timing: SensorTiming, fields: Fields, drop_frames: u8) -> Option<Mode> {
+pub(crate) fn mode(
+    index: usize,
+    timing: SensorTiming,
+    fields: Fields,
+    drop_frames: u8,
+) -> Option<Mode> {
     let (width, height) = *MODES.get(index)?;
     let link = LinkConfig {
         lanes: 2,
@@ -259,7 +264,13 @@ impl CameraSensor for SimSensor {
         if self.streaming {
             return Err(Status::BUSY);
         }
-        if mode(usize::from(index), SensorTiming::default(), self.fields, self.drop_frames).is_none()
+        if mode(
+            usize::from(index),
+            SensorTiming::default(),
+            self.fields,
+            self.drop_frames,
+        )
+        .is_none()
         {
             return Err(Status::NOT_FOUND);
         }
@@ -582,7 +593,11 @@ impl CameraReceiver for SimReceiver {
     }
 
     fn layout(&mut self) -> Result<Option<FrameLayout>> {
-        Ok(if self.reports_layout { self.layout } else { None })
+        Ok(if self.reports_layout {
+            self.layout
+        } else {
+            None
+        })
     }
 }
 
@@ -613,7 +628,9 @@ pub struct SimIsp {
 
 impl std::fmt::Debug for SimIsp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SimIsp").field("running", &self.running).finish_non_exhaustive()
+        f.debug_struct("SimIsp")
+            .field("running", &self.running)
+            .finish_non_exhaustive()
     }
 }
 

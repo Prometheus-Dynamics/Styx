@@ -105,7 +105,8 @@ impl Lab {
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let guard = DirGuard(dir.clone());
         let socket = dir.join("lemnos.sock");
-        let board = parse(&Board::timed(Family::Run).decoy(false).text()).map_err(|e| format!("board: {e:?}"))?;
+        let board = parse(&Board::timed(Family::Run).decoy(false).text())
+            .map_err(|e| format!("board: {e:?}"))?;
         let config = DaemonConfig {
             socket: socket.clone(),
             name: NAME.to_string(),
