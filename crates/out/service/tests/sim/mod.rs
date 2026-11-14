@@ -41,6 +41,8 @@ struct ClockState {
     pending: Vec<(usize, u32, u64)>,
     /// The codes in force, per lane.
     in_force: [Option<u32>; LANES],
+    /// The frame the receiver made last (the frame in progress), since its start.
+    last: Option<u64>,
 }
 
 /// Every camera's clock in this process, by its `camera` name. Each board text names its cameras
@@ -66,6 +68,7 @@ impl Clock {
     /// Puts in force every write that shows from frame `frame` on, as the receiver makes it.
     fn make_frame(&self, frame: u64) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.last = Some(frame);
         let mut i = 0;
         while i < state.pending.len() {
             if state.pending[i].2 <= frame {
@@ -81,6 +84,14 @@ impl Clock {
     fn set_now(&self, lane: usize, code: u32) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.in_force[lane] = Some(code);
+    }
+
+    /// The frame the receiver is in (its last start), or `None` before it has started one.
+    fn frame_in_progress(&self) -> Option<u64> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .last
     }
 
     fn in_force(&self) -> [Option<u32>; LANES] {
@@ -99,6 +110,7 @@ impl Clock {
     fn reset(&self) {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         state.pending.clear();
+        state.last = None;
     }
 }
 
@@ -193,6 +205,27 @@ pub struct SimSensor {
 }
 
 impl SimSensor {
+    /// Writes a post during frame `written`: each control shows from `written` plus its delay.
+    fn post_written(&mut self, values: FrameValues, written: u64) {
+        let fit = self.fit(values.controls);
+        let m = self.selected.and_then(|i| mode(usize::from(i)));
+        if let Some(m) = m {
+            for (lane, code) in [fit.exposure, fit.analogue_gain, fit.frame_length]
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(code) = code {
+                    let shows = written + Self::delay_of(&m, lane);
+                    self.clock.post(lane, code, shows);
+                }
+            }
+        }
+        self.applied = Some(FrameValues {
+            identity: values.identity,
+            controls: fit,
+        });
+    }
+
     /// The request as the sensor takes it: each value moved to the nearest one the selected mode
     /// allows (the exposure ceiling is the frame less the mode's margin, in the frame length asked
     /// for or in force), with the `CLAMP_*` bits of what was moved.
@@ -268,12 +301,25 @@ impl Lifecycle for SimSensor {
 }
 
 impl CameraSensor for SimSensor {
-    // Added at Lemnos 58098f97: this simulated driver has no landings, so it answers NOT_SUPPORTED.
+    /// Posts as `post_values` does, written during the frame the receiver is in (its launch), and
+    /// answers the landing by the contract's rule: the launch frame plus each control's delay.
+    /// `BUSY` before the receiver has counted a frame since its start.
     fn post_values_at(
         &mut self,
-        _values: lemnos_contract_camera_sensor::FrameValues,
+        values: lemnos_contract_camera_sensor::FrameValues,
     ) -> core::result::Result<lemnos_contract_camera_sensor::Landing, lemnos_core::Status> {
-        Err(lemnos_core::Status::NOT_SUPPORTED)
+        let launch = self.clock.frame_in_progress().ok_or(Status::BUSY)?;
+        let m = self
+            .selected
+            .and_then(|i| mode(usize::from(i)))
+            .ok_or(Status::INVALID_ARGUMENT)?;
+        self.post_written(values, launch);
+        let delays = [0, 1, 2].map(|lane| Self::delay_of(&m, lane) as u8);
+        Ok(lemnos_contract_camera_sensor::landing_of(
+            launch,
+            delays,
+            &values.controls,
+        ))
     }
 
     fn applied_landing(
@@ -387,23 +433,7 @@ impl CameraSensor for SimSensor {
     /// A posted value is written during frame `identity` and shows from `identity` plus the mode's
     /// delay for each control (the frame clock puts it in force then).
     fn post_values(&mut self, values: FrameValues) -> Result<()> {
-        let fit = self.fit(values.controls);
-        let m = self.selected.and_then(|i| mode(usize::from(i)));
-        if let Some(m) = m {
-            for (lane, code) in [fit.exposure, fit.analogue_gain, fit.frame_length]
-                .into_iter()
-                .enumerate()
-            {
-                if let Some(code) = code {
-                    let shows = values.identity + Self::delay_of(&m, lane);
-                    self.clock.post(lane, code, shows);
-                }
-            }
-        }
-        self.applied = Some(FrameValues {
-            identity: values.identity,
-            controls: fit,
-        });
+        self.post_written(values, values.identity);
         Ok(())
     }
 
@@ -506,14 +536,20 @@ impl Lifecycle for SimReceiver {
 }
 
 impl CameraReceiver for SimReceiver {
-    // Added at Lemnos 58098f97: no frame-start counts here, so NOT_SUPPORTED.
+    /// The frames the receiver has made since its start: the frame in progress is `count - 1`. The
+    /// latest start's time is not kept by this double (0).
     fn frame_starts(
         &mut self,
     ) -> core::result::Result<
         Option<lemnos_contract_camera_receiver::FrameStarts>,
         lemnos_core::Status,
     > {
-        Err(lemnos_core::Status::NOT_SUPPORTED)
+        Ok(self.clock.frame_in_progress().map(|frame| {
+            lemnos_contract_camera_receiver::FrameStarts {
+                count: frame + 1,
+                latest_ns: 0,
+            }
+        }))
     }
 
     fn embedded_stream(&mut self, _into: &mut [u8]) -> Result<usize> {

@@ -21,6 +21,13 @@
 //! requested and applied values. A driver that answers `NOT_SUPPORTED` to `in_force` gives no
 //! report: the applied values are then unknown, and nothing is clamped by Styx.
 //!
+//! A report has no frame in the contract: it is what the driver holds now, and a value posted in
+//! frame `w` shows from `w + delay`. So a report is kept for a frame only when the frame's value is
+//! known: every post of that control has landed by the frame. The landing comes from the sensor
+//! (`post_values_at` answers the frame the group launched in, which is the receiver's count and may
+//! be past the session's frame). A value still on its way is unknown until it lands, and so is
+//! every report once a sensor has refused a landing (`NOT_SUPPORTED`) for a post.
+//!
 ////! Refused, with nothing posted: a value outside the generic control range ([`Error::Value`], from
 //! `styx-controls`), a control this path does not post, automatic values, a zero frame rate, and a
 //! mode that cannot take controls.
@@ -31,10 +38,10 @@
 //! length in whole lines, the frame length over the line time. The sensor's limits are the driver's
 //! to apply; [`FrameRate`] carries the driver's report. No nominal rate is kept anywhere.
 //!
-//! [`NativeControls::metadata`] reports the values in force on a frame, from what was posted and
-//! the delays. `camera.sensor/1` at the lock has no per-frame read-back, so nothing is read back
-//! from the frame itself: reading the sensor's embedded data back, to verify the schedule, is not
-//! wired yet.
+//! [`NativeControls::metadata`] reports the values in force on a frame: the driver's report where it
+//! is known for that frame, and otherwise what was posted and landed, at the sensor's landing.
+//! `camera.sensor/1` at the lock has no per-frame read-back, so nothing is read back from the frame
+//! itself: reading the sensor's embedded data back, to verify the schedule, is not wired yet.
 //!
 //! No register access, I2C or ioctls: the only calls are the sensor contract's.
 

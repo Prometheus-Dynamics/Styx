@@ -86,6 +86,9 @@ pub struct Sensor {
     pub frame_length: Vec<(u64, u32)>,
     /// Frame each `post_values` was made in, with the identity Styx passed (opaque to Lemnos).
     pub posts: Vec<(u64, u64)>,
+    /// Answers `NOT_SUPPORTED` to `post_values_at` and writes nothing, as a sensor with no link to
+    /// a frame counter does: the posts then have no landing from the sensor.
+    pub refuse_landings: bool,
 }
 
 impl Sensor {
@@ -103,6 +106,7 @@ impl Sensor {
             gain: Vec::new(),
             frame_length: Vec::new(),
             posts: Vec::new(),
+            refuse_landings: false,
         }
     }
 
@@ -176,12 +180,22 @@ impl Sensor {
 }
 
 impl CameraSensor for Sensor {
-    // Added at Lemnos 58098f97: this simulated driver has no landings, so it answers NOT_SUPPORTED.
+    /// Posts as `post_values` does, and answers the landing from the frame the double is in (the
+    /// receiver's count: the launch frame), by the contract's rule `launch + delay`.
     fn post_values_at(
         &mut self,
-        _values: lemnos_contract_camera_sensor::FrameValues,
-    ) -> core::result::Result<lemnos_contract_camera_sensor::Landing, lemnos_core::Status> {
-        Err(lemnos_core::Status::NOT_SUPPORTED)
+        values: lemnos_contract_camera_sensor::FrameValues,
+    ) -> Result<lemnos_contract_camera_sensor::Landing> {
+        if self.refuse_landings {
+            return Err(Status::NOT_SUPPORTED);
+        }
+        self.post_values(values)?;
+        let m = self.mode;
+        Ok(lemnos_contract_camera_sensor::landing_of(
+            self.frame,
+            [m.exposure_delay, m.gain_delay, m.frame_length_delay],
+            &values.controls,
+        ))
     }
 
     fn applied_landing(

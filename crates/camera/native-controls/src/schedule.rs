@@ -77,6 +77,15 @@ impl Lane {
         }
     }
 
+    /// True when every post the sensor took for this control has landed by `frame`: the value the
+    /// driver holds is then the one in force on `frame`. Posts land in order, so the last one
+    /// decides. A lane with no post is settled.
+    pub(crate) fn settled_at(&self, frame: u64) -> bool {
+        self.history
+            .back()
+            .is_none_or(|&(landing, _)| landing <= frame)
+    }
+
     /// The code in force on `frame`, from what was posted.
     pub(crate) fn value_at(&self, frame: u64) -> u32 {
         self.history

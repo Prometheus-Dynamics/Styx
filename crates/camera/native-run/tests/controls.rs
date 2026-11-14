@@ -84,6 +84,11 @@ fn a_value_posted_to_a_running_camera_lands_on_its_frame_and_each_frame_carries_
     // Exposure 8 ms until a step to 12 ms on frame TARGET. The step is posted during frame TARGET
     // minus the exposure delay (2), so it lands on TARGET. Frame ids come from the stream.
     const EXPOSURE_STEP_US: u32 = 12_000;
+    // The sensor reports exposure in whole lines, and the metadata shows the line the exposure is
+    // in. At this mode's 9.1 us a line: 8000 us is 879 lines (7999 us), 12000 us is 1318 lines
+    // (11994 us). The frame's metadata shows these, whether or not its report is known.
+    const START_LINES_US: u32 = 7_999;
+    const STEP_LINES_US: u32 = 11_994;
     let mut target = None;
     let mut seen = 0u64;
     let mut last_id = None;
@@ -117,8 +122,8 @@ fn a_value_posted_to_a_running_camera_lands_on_its_frame_and_each_frame_carries_
         let meta = lease.meta();
         let exposure = meta.exposure_us;
         let want_exposure = match target {
-            Some(t) if id >= t => EXPOSURE_STEP_US,
-            _ => START.exposure_us,
+            Some(t) if id >= t => STEP_LINES_US,
+            _ => START_LINES_US,
         };
         assert_eq!(
             exposure, want_exposure,
@@ -133,7 +138,7 @@ fn a_value_posted_to_a_running_camera_lands_on_its_frame_and_each_frame_carries_
             ControlValue::Manual(want_exposure),
             "frame {id}: the exposure control in force"
         );
-        if stepped_on.is_none() && exposure == EXPOSURE_STEP_US {
+        if stepped_on.is_none() && exposure == STEP_LINES_US {
             stepped_on = Some(id);
         }
         drop(lease);

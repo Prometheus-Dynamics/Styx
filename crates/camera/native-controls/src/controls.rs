@@ -115,8 +115,12 @@ pub struct NativeControls {
     gain_requested_milli: u32,
     /// The clamp the driver reported for gain, if it clamped the last request.
     gain_clamp: Option<Clamp>,
-    /// The reports read at the start of recent frames, by frame, for the frames' metadata.
+    /// The reports read at the start of recent frames, by frame, for the frames' metadata. Each is
+    /// the report as attributed to its frame (see [`attributed`]).
     reports: VecDeque<(u64, InForce)>,
+    /// Set when the sensor refused a post's landing (`post_values_at`: `NOT_SUPPORTED`), so its
+    /// posts were made without a landing from the sensor. Then no report can be tied to a frame.
+    landings_refused: bool,
 }
 
 /// Frames whose reports are kept for their metadata.
@@ -145,15 +149,11 @@ fn lane_of(control: Control) -> Option<usize> {
 }
 
 impl Limits {
-    fn exposure_us(&self, code: u32) -> u32 {
-        units::exposure_us(
-            u64::from(code),
-            u64::from(self.line_time_ps),
-            self.fraction_bits,
-        )
+    /// The exposure in microseconds for a whole number of lines, as a driver reports it.
+    fn exposure_us_at_line(&self, code: u32) -> u32 {
+        self.exposure_us_of_lines(code >> self.fraction_bits)
     }
 
-    /// The exposure in microseconds for a whole number of lines, as a driver reports it.
     fn exposure_us_of_lines(&self, lines: u32) -> u32 {
         let code = u64::from(lines) << self.fraction_bits;
         units::exposure_us(code, u64::from(self.line_time_ps), self.fraction_bits)
@@ -297,6 +297,7 @@ impl NativeControls {
             gain_requested_milli: initial.gain_milli,
             gain_clamp: None,
             reports: VecDeque::with_capacity(REPORTS),
+            landings_refused: false,
             limits,
         })
     }
@@ -338,10 +339,13 @@ impl NativeControls {
         sensor.set_controls(controls).map_err(Error::Sensor)
     }
 
-    /// Takes the driver's report of what is in force: the exposure, gain and frame length it holds,
+    /// Takes a report of what is in force: the exposure, gain and frame length the driver holds,
     /// and which of them it clamped on the last request. Styx takes the applied values and the fact
     /// of a clamp from here; the reason (ceiling or floor) is read off the requested and applied
     /// values. Exposure is whole lines in the report, so its applied value is to the line.
+    ///
+    /// The report must already be attributed to its frame ([`attributed`]): a `None` field is
+    /// unknown, and leaves what was known before it as it was.
     pub fn observe(&mut self, in_force: &InForce) {
         if let Some(lines) = in_force.frame_length {
             self.rate = FrameRate {
@@ -410,6 +414,7 @@ impl NativeControls {
     ) -> Result<(), Error> {
         match sensor.in_force() {
             Ok(in_force) => {
+                let in_force = attributed(in_force, self.known_at(frame));
                 self.observe(&in_force);
                 match self.reports.back_mut() {
                     Some(last) if last.0 == frame => last.1 = in_force,
@@ -429,6 +434,14 @@ impl NativeControls {
             Err(status) => return Err(Error::Sensor(status)),
         }
         Ok(())
+    }
+
+    /// Which controls' reports are known for `frame`: the sensor took the posts with a landing, and
+    /// every post of the control has landed by `frame`, so the driver's value is the one in force
+    /// on `frame`. A value still on its way to its frame is unknown until it lands.
+    fn known_at(&self, frame: u64) -> [bool; LANES] {
+        let refused = self.landings_refused;
+        std::array::from_fn(|lane| !refused && self.lanes[lane].settled_at(frame))
     }
 
     /// Asks for values from their frames on. Each is posted now if its post frame has come (the
@@ -453,6 +466,8 @@ impl NativeControls {
         let mut exposure_us: Option<u32> = None;
         let mut gain_milli: Option<u32> = None;
         let mut landings = Landings::default();
+        // Per lane: the request is posted in this call (its post frame has come).
+        let mut now = [false; LANES];
         for update in updates {
             let control = update.control;
             let lane = lane_of(control).ok_or(Error::Unsupported(control))?;
@@ -485,11 +500,9 @@ impl NativeControls {
             }
             // Posted now when its post frame has come; otherwise in the frame `delay` before it.
             let delay = u64::from(self.lanes[lane].delay);
-            let landing = if frame.saturating_sub(delay) <= at {
-                at + delay
-            } else {
-                frame
-            };
+            let posted_now = frame.saturating_sub(delay) <= at;
+            now[lane] = posted_now;
+            let landing = if posted_now { at + delay } else { frame };
             landings.items[landings.len] = Some(Landing {
                 control,
                 requested: frame,
@@ -518,7 +531,17 @@ impl NativeControls {
                 self.lanes[lane].insert(frame, code);
             }
         }
-        self.post_due(sensor, at)?;
+        let actual = self.post_due(sensor, at)?;
+        // A value posted now lands where the sensor says its launch puts it, which is the answer
+        // for it (the frame is a prediction only for a value posted in a later frame).
+        for landing in landings.items.iter_mut().flatten() {
+            if let Some(lane) = lane_of(landing.control)
+                && now[lane]
+                && let Some(frame) = actual[lane]
+            {
+                landing.frame = frame;
+            }
+        }
         // A value posted now for the current frame (a delay of zero) is in the report of that frame.
         self.read_report(sensor, at)?;
         Ok(landings)
@@ -527,7 +550,12 @@ impl NativeControls {
     /// Posts what is due in frame `at`: for each control the latest request whose post frame has
     /// come. Controls due in the same frame with the same frame and delay share one post, so they
     /// land together; controls with different delays are posted in their own frames.
-    fn post_due<S: CameraSensor + ?Sized>(&mut self, sensor: &mut S, at: u64) -> Result<(), Error> {
+    fn post_due<S: CameraSensor + ?Sized>(
+        &mut self,
+        sensor: &mut S,
+        at: u64,
+    ) -> Result<[Option<u64>; LANES], Error> {
+        let mut actual = [None; LANES];
         let mut due: [Option<(u64, u32)>; LANES] = [None; LANES];
         for (lane, slot) in self.lanes.iter_mut().zip(due.iter_mut()) {
             *slot = lane.take_due(at);
@@ -556,20 +584,37 @@ impl NativeControls {
                 digital_gain: None,
                 frame_length: picked[FRAME_LENGTH],
             };
-            sensor
-                .post_values(FrameValues {
-                    // Opaque to Lemnos: the post frame is kept here as a record, not as the landing.
-                    identity: frame,
-                    controls,
-                })
-                .map_err(Error::Sensor)?;
-            for (lane, code) in self.lanes.iter_mut().zip(picked) {
-                if let Some(code) = code {
-                    lane.record(at + u64::from(delay), code);
+            let values = FrameValues {
+                // Opaque to Lemnos: the post frame is kept here as a record, not as the landing.
+                identity: frame,
+                controls,
+            };
+            // The sensor says where its group lands: the frame its launch completed in (the
+            // receiver's count, which may be past `at`), plus each control's delay. A sensor that
+            // cannot say (no link to a frame counter) takes the post without a landing, and then
+            // the schedule is Styx's own arithmetic and no report can be tied to a frame.
+            let landed = match sensor.post_values_at(values) {
+                Ok(landing) => [
+                    landing.exposure,
+                    landing.analogue_gain,
+                    landing.frame_length,
+                ],
+                Err(Status::NOT_SUPPORTED) => {
+                    self.landings_refused = true;
+                    sensor.post_values(values).map_err(Error::Sensor)?;
+                    [None; LANES]
+                }
+                Err(status) => return Err(Error::Sensor(status)),
+            };
+            for (lane_index, lane) in self.lanes.iter_mut().enumerate() {
+                if let Some(code) = picked[lane_index] {
+                    let landing = landed[lane_index].unwrap_or(at + u64::from(delay));
+                    lane.record(landing, code);
+                    actual[lane_index] = Some(landing);
                 }
             }
         }
-        Ok(())
+        Ok(actual)
     }
 
     /// The controls in force on `frame`, and what the frame measured. Timestamp is the frame's
@@ -588,10 +633,12 @@ impl NativeControls {
             .rev()
             .find(|&&(f, _)| f == frame)
             .map(|&(_, in_force)| in_force);
+        // Exposure is whole lines, as the driver reports it: a value from the schedule is taken to
+        // the line too, so a frame's metadata has one resolution whether or not its report is known.
         let (exposure_us, gain_milli, fl) = match report {
             Some(in_force) => (
                 in_force.exposure_lines.map_or_else(
-                    || self.limits.exposure_us(exposure_code),
+                    || self.limits.exposure_us_at_line(exposure_code),
                     |lines| self.limits.exposure_us_of_lines(lines),
                 ),
                 in_force.analogue_gain.map_or_else(
@@ -601,7 +648,7 @@ impl NativeControls {
                 in_force.frame_length.unwrap_or(fl),
             ),
             None => (
-                self.limits.exposure_us(exposure_code),
+                self.limits.exposure_us_at_line(exposure_code),
                 self.limits.gain_milli(gain_code),
                 fl,
             ),
@@ -643,5 +690,33 @@ impl NativeControls {
     /// Requests waiting for their post frame.
     pub fn pending(&self) -> usize {
         self.lanes.iter().map(Lane::pending).sum()
+    }
+}
+
+/// The report as it may be used for its frame: a field the driver reported is kept only where the
+/// frame's value is known (`known`, per lane). Dropping a field makes it unknown, and so does
+/// dropping its clamp bit.
+fn attributed(in_force: InForce, known: [bool; LANES]) -> InForce {
+    let mut clamped = in_force.clamped;
+    let mut keep = |lane: usize, bit: u8| {
+        if !known[lane] {
+            clamped &= !bit;
+        }
+        known[lane]
+    };
+    let exposure_lines = in_force
+        .exposure_lines
+        .filter(|_| keep(EXPOSURE, CLAMP_EXPOSURE));
+    let analogue_gain = in_force
+        .analogue_gain
+        .filter(|_| keep(GAIN, CLAMP_ANALOGUE_GAIN));
+    let frame_length = in_force
+        .frame_length
+        .filter(|_| keep(FRAME_LENGTH, CLAMP_FRAME_LENGTH));
+    InForce {
+        exposure_lines,
+        analogue_gain,
+        frame_length,
+        clamped,
     }
 }
