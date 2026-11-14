@@ -76,8 +76,13 @@ pub struct Session {
     pub stalls: u64,
     /// Producer resume edges seen (the camera running again after a stall this reader was told of).
     pub resumes: u64,
-    /// Resumes that were a device rebind (the same stall may end `Lost`).
+    /// Resumes that were a device rebind (the same stall may end `Lost`), each a discontinuity of
+    /// the sequence.
     pub lost_resumes: u64,
+    /// When the stall in force began (the monotonic time its edge was seen), while one is.
+    stall_started: Option<u64>,
+    /// The time the camera spent stalled, summed over the stalls seen, in ns.
+    pub stall_ns_total: u64,
 }
 
 impl Session {
@@ -112,6 +117,8 @@ impl Session {
             stalls: 0,
             resumes: 0,
             lost_resumes: 0,
+            stall_started: None,
+            stall_ns_total: 0,
         })
     }
 
@@ -173,6 +180,7 @@ impl Session {
     /// A stall edge: the camera retries. Printed with the time it was seen and the time it began.
     fn stall_edge(&mut self, state: ProducerState) {
         self.stalls += 1;
+        self.stall_started.get_or_insert_with(monotonic_ns);
         let since = match state {
             ProducerState::Retrying { since_ns } => since_ns,
             _ => 0,
@@ -187,19 +195,28 @@ impl Session {
     /// A resume edge: the camera runs again. Printed with the time it was seen and its kind.
     fn resume_edge(&mut self, state: Carried) {
         self.resumes += 1;
+        let now = monotonic_ns();
+        let stalled_ns = self
+            .stall_started
+            .take()
+            .map_or(0, |start| now.saturating_sub(start));
+        self.stall_ns_total += stalled_ns;
         let lost = matches!(state, Carried::Lost);
         if lost {
             self.lost_resumes += 1;
         }
+        // The frames after the stall are a new run of ids, or go on from the last one: either way the
+        // stall is not a gap in them (see `FrameStats::across_stall`).
+        self.stats.across_stall();
         eprintln!(
-            "producer resumed: seen at {} ns, {} (edge {})",
-            monotonic_ns(),
+            "producer resumed: seen at {now} ns, {} (edge {}), stalled {} ms",
             if lost {
                 "lost: rebound, a new sequence"
             } else {
                 "kept: same driver instance"
             },
-            self.resumes
+            self.resumes,
+            stalled_ns as f64 / 1e6
         );
     }
 

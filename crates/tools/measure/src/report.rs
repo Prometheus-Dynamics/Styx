@@ -75,6 +75,8 @@ pub struct Report {
     pub stalls: u64,
     pub resumes: u64,
     pub lost_resumes: u64,
+    /// The time the camera spent stalled in this run, in ns (the edges' times).
+    pub stall_ns_total: u64,
     pub superseded: u64,
     pub limited: u64,
     pub malformed: u64,
@@ -202,6 +204,10 @@ impl Report {
             ("frames", Json::Object(vec![
                 ("delivered", Json::Int(delivered)),
                 ("skipped_by_ring", Json::Int(self.skipped)),
+                ("stalls", Json::Int(self.stalls)),
+                ("stall_ms_total", Json::Float(self.stall_ns_total as f64 / 1e6)),
+                ("stall_gaps_ms", Json::Array(f.stall_gaps_ns.iter().map(|ns| Json::Float(*ns as f64 / 1e6)).collect())),
+                ("discontinuities", Json::Int(self.lost_resumes)),
                 ("producer_stalls", Json::Int(self.stalls)),
                 ("producer_resumes", Json::Int(self.resumes)),
                 ("producer_resumes_lost", Json::Int(self.lost_resumes)),
@@ -309,6 +315,12 @@ impl Report {
             "producer stalls (stalls, resumes, lost)",
             format!("{}, {}, {}", self.stalls, self.resumes, self.lost_resumes),
         );
+        for (edge, ns) in f.stall_gaps_ns.iter().enumerate() {
+            row(
+                &format!("stall {}", edge + 1),
+                format!("stall, {:.3} ms", *ns as f64 / 1e6),
+            );
+        }
         row(
             "gaps (count, largest)",
             format!("{}, {}", f.gaps, f.largest_gap),

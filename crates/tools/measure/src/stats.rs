@@ -13,6 +13,13 @@ pub struct FrameStats {
     pub gaps: u64,
     /// The largest run of ids missing at one gap.
     pub largest_gap: u64,
+    /// The time gap across each producer stall, in ns: from the time the reader had the last frame
+    /// before it to the time it had the first after it (the time the reader waited). Not gaps: no frame is counted lost from a stall (the sensor made none while it
+    /// was stalled, and a rebind restarts the sequence).
+    pub stall_gaps_ns: Vec<u64>,
+    /// The next frame follows a stall: its id is not compared with the last one, and its time gap is
+    /// recorded in `stall_gaps_ns`.
+    stall_pending: bool,
     /// Frames whose id was the same as the previous one.
     pub duplicates: u64,
     /// Frames whose id was lower than the previous one.
@@ -25,6 +32,8 @@ pub struct FrameStats {
     pub first_capture_ns: Option<u64>,
     pub last_capture_ns: Option<u64>,
     prev_capture_ns: Option<u64>,
+    /// When the reader had the last frame (the time now at its record).
+    prev_seen_ns: Option<u64>,
     /// Gaps between consecutive capture times (ns).
     pub intervals: Histogram,
     /// Capture to reader, now minus the capture time (ns). Negative values are counted apart.
@@ -51,10 +60,13 @@ impl FrameStats {
             out_of_order: 0,
             metadata_refused: 0,
             first_id: None,
+            stall_gaps_ns: Vec::new(),
+            stall_pending: false,
             last_id: None,
             first_capture_ns: None,
             last_capture_ns: None,
             prev_capture_ns: None,
+            prev_seen_ns: None,
             intervals: Histogram::new(),
             latency: Histogram::new(),
             negative_latency: 0,
@@ -79,7 +91,9 @@ impl FrameStats {
             self.metadata_refused += 1;
         }
         match self.last_id {
-            None => self.first_id = Some(id),
+            None => {
+                self.first_id.get_or_insert(id);
+            }
             Some(prev) if id == prev => self.duplicates += 1,
             Some(prev) if id < prev => self.out_of_order += 1,
             Some(prev) if id > prev + 1 => {
@@ -94,15 +108,29 @@ impl FrameStats {
         if self.first_capture_ns.is_none() {
             self.first_capture_ns = Some(capture_ns);
         }
-        if let Some(prev) = self.prev_capture_ns {
+        if self.stall_pending {
+            if let Some(prev) = self.prev_seen_ns {
+                self.stall_gaps_ns.push(now_ns.saturating_sub(prev));
+            }
+            self.stall_pending = false;
+        } else if let Some(prev) = self.prev_capture_ns {
             self.intervals.record(capture_ns.saturating_sub(prev));
         }
+        self.prev_seen_ns = Some(now_ns);
         self.prev_capture_ns = Some(capture_ns);
         self.last_capture_ns = Some(capture_ns);
         match now_ns.checked_sub(capture_ns) {
             Some(latency) => self.latency.record(latency),
             None => self.negative_latency += 1,
         }
+    }
+
+    /// The camera stalled and came back: the next frame's id is not compared with the last one (a
+    /// sequence that goes on and one that restarts are both fine here), and its time gap is the
+    /// stall's.
+    pub fn across_stall(&mut self) {
+        self.last_id = None;
+        self.stall_pending = true;
     }
 
     /// The mean capture interval over the run, in ns: the capture time from the first frame to the

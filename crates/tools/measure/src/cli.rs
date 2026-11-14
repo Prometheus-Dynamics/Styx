@@ -444,6 +444,7 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
         stalls: session.stalls,
         resumes: session.resumes,
         lost_resumes: session.lost_resumes,
+        stall_ns_total: session.stall_ns_total,
         superseded: reader1.superseded.saturating_sub(reader0.superseded),
         limited: reader1.limited.saturating_sub(reader0.limited),
         malformed: reader1.malformed.saturating_sub(reader0.malformed),
