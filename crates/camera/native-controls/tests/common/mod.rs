@@ -96,7 +96,7 @@ impl Sensor {
                 u64::from(mode.gain_delay),
                 u64::from(mode.frame_length_delay),
             ],
-            mode: mode.clone(),
+            mode: *mode,
             clamped: 0,
             frame: 0,
             exposure: Vec::new(),
@@ -127,7 +127,7 @@ impl Sensor {
     /// mode's margin, in the frame length asked for or last written; a shorter frame also clamps the
     /// exposure in force.
     fn fit(&mut self, controls: Controls) -> Controls {
-        let m = self.mode.clone();
+        let m = self.mode;
         let mut clamped = 0;
         let frame_length = controls.frame_length.map(|lines| {
             let fit = lines.clamp(m.frame_length_min, m.frame_length_max);
