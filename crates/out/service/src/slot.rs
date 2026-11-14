@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
+use styx_lemnos::LayoutRefusal;
 use styx_native_run::{ExposureReport, Selection};
 use styx_select::{Backend, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
@@ -166,6 +167,12 @@ pub struct FrameSummary {
     pub controls: [ControlValue; Control::COUNT],
 }
 
+/// The fault code of a frame stream whose shared layout is another build's: the Daedalus fault
+/// table's `LayoutRefused` (crates/out/daedalus/src/fault.rs), the same number for the same cause.
+pub const FAULT_LAYOUT_REFUSED: u32 = 1;
+/// The fault code of a device switched off for good: the Daedalus fault table's `DeviceFailed`.
+pub const FAULT_DEVICE_FAILED: u32 = 6;
+
 /// What the service knows about one camera. Cloned out for the control socket.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CameraStatus {
@@ -198,6 +205,12 @@ pub struct CameraStatus {
     pub next_delay: Option<Duration>,
     /// The last failure's message, or the backend's last retry message.
     pub last_error: Option<String>,
+    /// The frame stream's shared-layout refusal, while it is the cause of the camera's retry, as
+    /// its values. `None` while the camera runs.
+    pub layout_refused: Option<LayoutRefusal>,
+    /// The fault code of the camera's last failure, the Daedalus fault table's number (see
+    /// [`FAULT_LAYOUT_REFUSED`] and [`FAULT_DEVICE_FAILED`]); `None` when it has none.
+    pub fault: Option<u32>,
     /// While the camera is retrying after a failure: when the retry began (CLOCK_MONOTONIC
     /// nanoseconds). Readers on its socket are told the same; `None` while the camera runs.
     pub producer_since_ns: Option<u64>,
@@ -319,6 +332,8 @@ impl Slot {
             next_delay: None,
             last_error: None,
             producer_since_ns: None,
+            layout_refused: None,
+            fault: None,
             recoveries: 0,
             last_recovery: None,
             frames: 0,
@@ -405,6 +420,23 @@ impl Slot {
     /// The camera failed and retries from `since_ns`: its readers stay attached, told `Retrying`.
     pub(crate) fn stalled(&self, since_ns: u64) {
         lock(&self.status).producer_since_ns = Some(since_ns);
+    }
+
+    /// The layout refusal in force (`None` clears it). A layout refusal is fault code
+    /// [`FAULT_LAYOUT_REFUSED`]; a refusal that ends makes the fault `None` again.
+    pub(crate) fn layout_refused(&self, layout: Option<LayoutRefusal>) {
+        let mut status = lock(&self.status);
+        status.layout_refused = layout;
+        status.fault = match (layout, status.fault) {
+            (Some(_), _) => Some(FAULT_LAYOUT_REFUSED),
+            (None, Some(FAULT_LAYOUT_REFUSED)) => None,
+            (None, other) => other,
+        };
+    }
+
+    /// Sets the fault code of the camera's last failure.
+    pub(crate) fn set_fault(&self, code: u32) {
+        lock(&self.status).fault = Some(code);
     }
 
     /// No stall in force: the camera's producer was ended (stopped, or turned off for good).

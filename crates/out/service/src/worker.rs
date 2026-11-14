@@ -29,7 +29,9 @@ use styx_v4l2::StreamConfig;
 use crate::config::CameraConfig;
 use crate::outlet::Outlet;
 use crate::service::Shared;
-use crate::slot::{Command, Health, KeepWindow, Publish, Slot, State};
+use crate::slot::{
+    Command, FAULT_DEVICE_FAILED, Health, KeepWindow, Publish, Slot, State,
+};
 use lemnos_client::DeviceHealth;
 use lemnos_contract_camera_receiver::CameraReceiver;
 use lemnos_contract_camera_sensor::CameraSensor;
@@ -205,6 +207,7 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     // Switched off for good by its own policy: its readers learn the device failed.
                     release(&mut publisher, slot, Some(StreamEnd::DeviceFailed));
                     slot.failed(text, failures);
+                    slot.set_fault(FAULT_DEVICE_FAILED);
                     paused = Some(State::Off);
                     slot.set_state(State::Off);
                     continue;
@@ -617,15 +620,22 @@ fn pump(
             }
         }
         match capture.status() {
-            Status::Streaming => slot.resumed(),
-            Status::Retrying { reason } => slot.retrying(reason),
+            Status::Streaming => {
+                slot.layout_refused(None);
+                slot.resumed();
+            }
+            Status::Retrying { reason, layout } => {
+                slot.layout_refused(layout);
+                slot.retrying(reason);
+            }
             Status::Stopped => {
                 break Ended::Fault {
                     text: "the backend reports the camera stopped".to_string(),
                     delivered,
                 };
             }
-            Status::Failed { reason } => {
+            Status::Failed { reason, layout } => {
+                slot.layout_refused(layout);
                 break Ended::Fault {
                     text: reason,
                     delivered,

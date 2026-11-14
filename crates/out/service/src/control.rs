@@ -31,6 +31,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, Range, Update};
+use styx_lemnos::{LayoutRefusal, SharedLayout};
 
 use crate::service::Shared;
 use crate::slot::{CameraStatus, Command, Slot};
@@ -287,6 +288,11 @@ fn camera_line(status: &CameraStatus) -> String {
     let producer = status
         .producer_since_ns
         .map_or_else(|| "running".to_string(), |since| format!("retrying:{since}"));
+    // The layout refusal as `<ring|marks>:<found>:<expected>`, and the fault code number.
+    let layout_refused = status
+        .layout_refused
+        .map_or_else(|| "-".to_string(), |r| format_layout(&r));
+    let fault = status.fault.map_or_else(|| "-".to_string(), |f| f.to_string());
     let socket = status
         .socket
         .as_ref()
@@ -323,7 +329,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} buffers={} reserve={} reclaimed={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -363,6 +369,8 @@ fn camera_line(status: &CameraStatus) -> String {
         exposure_clamp,
         status.lemnos_skipped,
         producer,
+        layout_refused,
+        fault,
         error,
     )
 }
@@ -403,6 +411,10 @@ pub struct CameraLine {
     pub rate_reason: Option<String>,
     /// The producer's state as one word: `running`, or `retrying:<since_ns>`.
     pub producer: Option<String>,
+    /// The layout refusal in force, as its values (`layout_refused=<ring|marks>:<found>:<expected>`).
+    pub layout_refused: Option<LayoutRefusal>,
+    /// The fault code of the camera's last failure (the Daedalus fault table's number).
+    pub fault: Option<u32>,
     /// The last failure's message: the free text at the end of the line.
     pub last_error: Option<String>,
 }
@@ -483,11 +495,40 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "rate_clamped" => camera.rate_clamped = value.parse::<bool>().ok(),
             "rate_reason" => camera.rate_reason = text,
             "producer" => camera.producer = text,
+            "layout_refused" => camera.layout_refused = parse_layout(value),
+            "fault" => camera.fault = value.parse::<u32>().ok(),
             _ => {}
         }
     }
     camera.last_error = last_error.filter(|text| *text != "-").map(str::to_string);
     Some(camera)
+}
+
+/// The layout refusal as the line writes it: `ring` or `marks`, then the found and the expected
+/// values in decimal, separated by `:`.
+fn format_layout(refusal: &LayoutRefusal) -> String {
+    let which = match refusal.which {
+        SharedLayout::Ring => "ring",
+        SharedLayout::Marks => "marks",
+    };
+    format!("{which}:{}:{}", refusal.found, refusal.expected)
+}
+
+/// Reads [`format_layout`]'s text; `-` and anything else is `None`.
+fn parse_layout(value: &str) -> Option<LayoutRefusal> {
+    let mut parts = value.split(':');
+    let which = match parts.next()? {
+        "ring" => SharedLayout::Ring,
+        "marks" => SharedLayout::Marks,
+        _ => return None,
+    };
+    let found = parts.next()?.parse().ok()?;
+    let expected = parts.next()?.parse().ok()?;
+    Some(LayoutRefusal {
+        which,
+        found,
+        expected,
+    })
 }
 
 /// One copy line: `copy copies=.. bytes=.. site=<free text>`.
@@ -638,6 +679,43 @@ mod tests {
         assert_eq!(cam.achieved_milli, None, "`unknown` reads as absent");
         assert_eq!(cam.measured_milli, None, "`none` reads as absent");
         assert_eq!(cam.last_error, None);
+    }
+
+    #[test]
+    fn a_layout_refusal_injected_at_the_status_shows_as_fields_before_the_text() {
+        // The status a native session reports when its frame stream refuses the other side's
+        // layout: the refusal's values and the fault code, then the text of the failure.
+        let slot = slot("lemnos:cam0");
+        let refusal = LayoutRefusal {
+            which: SharedLayout::Marks,
+            found: 1,
+            expected: 2,
+        };
+        slot.layout_refused(Some(refusal));
+        slot.retrying("frame stream cam0: the marks page is layout 1; this build reads layout 2".into());
+        let line = camera_line(&slot.snapshot());
+        assert!(
+            line.contains(
+                "layout_refused=marks:1:2 fault=1 last_error=frame stream cam0: the marks page"
+            ),
+            "the fields come before the free text: {line}"
+        );
+        let cam = parse_camera_line(&line).expect("a camera line");
+        assert_eq!(
+            cam.layout_refused,
+            Some(LayoutRefusal {
+                which: SharedLayout::Marks,
+                found: 1,
+                expected: 2,
+            })
+        );
+        assert_eq!(cam.fault, Some(1));
+        assert!(cam.last_error.as_deref().is_some_and(|e| e.starts_with("frame stream cam0")));
+        // A refusal that ends clears its fields; the line says so with `-`.
+        slot.layout_refused(None);
+        let cam = parse_camera_line(&camera_line(&slot.snapshot())).expect("a camera line");
+        assert_eq!(cam.layout_refused, None);
+        assert_eq!(cam.fault, None);
     }
 
     #[test]

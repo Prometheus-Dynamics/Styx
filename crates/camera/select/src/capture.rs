@@ -8,6 +8,7 @@ use std::fmt;
 use std::time::Duration;
 
 use styx_controls::{FrameMetadata, Update};
+use styx_lemnos::LayoutRefusal;
 use styx_frame::FrameLease;
 
 /// What an opened camera is doing.
@@ -15,12 +16,19 @@ use styx_frame::FrameLease;
 pub enum Status {
     /// Frames flow.
     Streaming,
-    /// The device failed; the backend is retrying. `reason` is its last error.
-    Retrying { reason: String },
+    /// The device failed; the backend is retrying. `reason` is its last error. `layout` is the
+    /// frame stream's shared-layout refusal when that is the cause, as its values.
+    Retrying {
+        reason: String,
+        layout: Option<LayoutRefusal>,
+    },
     /// Stopped by the caller.
     Stopped,
-    /// The backend gave up.
-    Failed { reason: String },
+    /// The backend gave up. `layout` as for [`Status::Retrying`].
+    Failed {
+        reason: String,
+        layout: Option<LayoutRefusal>,
+    },
 }
 
 /// Why a capture call failed.

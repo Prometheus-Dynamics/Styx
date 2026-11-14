@@ -81,9 +81,11 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
             State::Stopped => Status::Stopped,
             State::Backoff => Status::Retrying {
                 reason: status.last_error.clone().unwrap_or_default(),
+                layout: status.layout,
             },
             State::Off => Status::Failed {
                 reason: status.last_error.clone().unwrap_or_default(),
+                layout: status.layout,
             },
         }
     }
@@ -161,9 +163,15 @@ impl Capture for V4l2Capture {
             None => Status::Stopped,
             Some(stream) => match stream.status().state {
                 V4l2State::Streaming => Status::Streaming,
-                V4l2State::Retrying { error, .. } => Status::Retrying { reason: error },
+                V4l2State::Retrying { error, .. } => Status::Retrying {
+                    reason: error,
+                    layout: None,
+                },
                 V4l2State::Stopped => Status::Stopped,
-                V4l2State::Failed { error } => Status::Failed { reason: error },
+                V4l2State::Failed { error } => Status::Failed {
+                    reason: error,
+                    layout: None,
+                },
             },
         }
     }
