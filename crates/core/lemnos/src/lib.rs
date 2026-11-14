@@ -51,7 +51,7 @@ pub const FRAMES_TAG: &str = "camera.frames/1";
 
 /// Connects to the Lemnos service at `path` as `name`.
 pub fn connect(path: impl AsRef<std::path::Path>, name: &str) -> Result<Client, Error> {
-    Client::connect(path, name).map_err(Error::Client)
+    Client::connect(path, name).map_err(Error::from_client)
 }
 
 /// A camera's devices, found by tag and link.
@@ -195,10 +195,60 @@ pub fn find_chains(devices: &[DeviceEntry]) -> Vec<Result<Chain, ChainError>> {
         .collect()
 }
 
+/// A shared structure of a frame stream whose layout value is not the one this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedLayout {
+    /// The frame ring's header.
+    Ring,
+    /// A reader's marks page.
+    Marks,
+}
+
+impl SharedLayout {
+    /// The structure as a person reads it: the start of the refusal's message.
+    #[must_use]
+    pub const fn what(self) -> &'static str {
+        match self {
+            Self::Ring => "this ring",
+            Self::Marks => "this marks page",
+        }
+    }
+}
+
+/// A layout refusal: the structure, the value in the memory, and the value this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutRefusal {
+    /// The structure whose layout is refused.
+    pub which: SharedLayout,
+    /// The value in the memory.
+    pub found: u64,
+    /// The value this build reads.
+    pub expected: u64,
+}
+
+impl fmt::Display for LayoutRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} is layout {}; this build reads layout {}",
+            self.which.what(),
+            self.found,
+            self.expected
+        )
+    }
+}
+
 /// Errors from opening and reading frame streams.
 #[derive(Debug)]
 pub enum Error {
     Client(lemnos_client::Error),
+    /// A shared ring or marks page of the stream is another layout than this build reads. Only
+    /// that stream is affected; nothing was mapped.
+    SharedLayout(LayoutRefusal),
+    /// The host ended the stream and no frame is left to read. The client does not say at this
+    /// lock whether the end was a close or a fault, so this is one answer for both; no more
+    /// frames will come from this stream.
+    StreamEnded,
     Chain(ChainError),
     /// The stream's buffers could not be mapped.
     Map(io::Error),
@@ -233,10 +283,43 @@ pub enum Error {
     NotSinglePlane(FourCc),
 }
 
+impl Error {
+    /// The Lemnos client's error as Styx's. A shared-layout refusal keeps its structure and both
+    /// values as [`Error::SharedLayout`]; every other client error is [`Error::Client`] unchanged.
+    pub(crate) fn from_client(error: lemnos_client::Error) -> Self {
+        match error {
+            lemnos_client::Error::Stream(lemnos_wire::ring::RingError::Layout {
+                which,
+                found,
+                expected,
+            }) => Self::SharedLayout(LayoutRefusal {
+                which: match which {
+                    lemnos_wire::ring::SharedLayout::Ring => SharedLayout::Ring,
+                    lemnos_wire::ring::SharedLayout::Marks => SharedLayout::Marks,
+                },
+                found,
+                expected,
+            }),
+            other => Self::Client(other),
+        }
+    }
+
+    /// The layout refusal this error is, if it is one.
+    #[must_use]
+    pub fn layout_refusal(&self) -> Option<LayoutRefusal> {
+        match self {
+            Self::SharedLayout(refusal) => Some(*refusal),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Client(e) => write!(f, "lemnos client: {e}"),
+            Self::SharedLayout(refusal) => write!(f, "frame stream: {refusal}"),
+            Self::StreamEnded => f.write_str("the host ended the frame stream: no more frames"),
             Self::Chain(e) => write!(f, "{e}"),
             Self::Map(e) => write!(f, "mapping stream buffers: {e}"),
             Self::NoBuffers => write!(f, "stream has no mappable buffers"),
@@ -286,7 +369,7 @@ impl Taken {
     /// Gives the stream back to the daemon and returns its answer.
     fn close(mut self) -> Result<(), Error> {
         match self.stream.take() {
-            Some(stream) => self.client.close_stream(stream).map_err(Error::Client),
+            Some(stream) => self.client.close_stream(stream).map_err(Error::from_client),
             None => Ok(()),
         }
     }
@@ -331,7 +414,7 @@ fn open_mapped<M: Default + Send + Sync>(
     } else {
         client.open_stream(device, stream, platform)
     }
-    .map_err(Error::Client)?;
+    .map_err(Error::from_client)?;
     // From here the stream is given back on every error path: `Taken` does it on drop.
     let taken = Taken {
         client: client.clone(),
@@ -681,33 +764,57 @@ impl<M> Frames<M> {
                 self.taken
                     .stream_mut()
                     .release(frame)
-                    .map_err(Error::Client)?;
+                    .map_err(Error::from_client)?;
             }
         }
         Ok(())
     }
 
     /// Waits up to `timeout` for a frame and returns it as a lease over its buffer.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] once the host has ended the stream and no frame is left: the loop
+    /// that calls this ends there, rather than waiting on a stream that will not produce.
     pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<M>>, Error> {
         self.sweep()?;
         let Some(frame) = self
             .taken
             .stream_mut()
             .next_frame(timeout)
-            .map_err(Error::Client)?
+            .map_err(Error::from_client)?
         else {
-            return Ok(None);
+            return self.ended_or_none();
         };
         self.lease_for(frame).map(Some)
     }
 
     /// Takes a frame if one is ready, without waiting.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] as [`Frames::next`] gives it.
     pub fn try_next(&mut self) -> Result<Option<FrameLease<M>>, Error> {
         self.sweep()?;
-        let Some(frame) = self.taken.stream_mut().try_next().map_err(Error::Client)? else {
-            return Ok(None);
+        let Some(frame) = self
+            .taken
+            .stream_mut()
+            .try_next()
+            .map_err(Error::from_client)?
+        else {
+            return self.ended_or_none();
         };
         self.lease_for(frame).map(Some)
+    }
+
+    /// No frame was pending: `None` while the stream runs, [`Error::StreamEnded`] once the host has
+    /// ended it.
+    fn ended_or_none<T>(&self) -> Result<Option<T>, Error> {
+        if self.taken.stream().is_open() {
+            Ok(None)
+        } else {
+            Err(Error::StreamEnded)
+        }
     }
 
     fn lease_for(&mut self, frame: HeldFrame) -> Result<FrameLease<M>, Error> {
@@ -722,7 +829,7 @@ impl<M> Frames<M> {
                     self.taken
                         .stream_mut()
                         .release(frame)
-                        .map_err(Error::Client)?;
+                        .map_err(Error::from_client)?;
                     return Err(Error::Oversize { len, payload });
                 }
                 // The frame's one plane: the bytes it holds, as the stream's own arithmetic counts them.
@@ -750,14 +857,14 @@ impl<M> Frames<M> {
                 self.taken
                     .stream_mut()
                     .release(frame)
-                    .map_err(Error::Client)?;
+                    .map_err(Error::from_client)?;
                 Err(Error::Held(index as u32))
             }
             Err(e) => {
                 self.taken
                     .stream_mut()
                     .release(frame)
-                    .map_err(Error::Client)?;
+                    .map_err(Error::from_client)?;
                 Err(Error::Acquire(e))
             }
         }
@@ -838,15 +945,28 @@ impl<M> JobStream<M> {
 
     /// Posts one job. `Ok(false)` means the job queue is full and nothing was posted.
     pub fn post(&mut self, job: &[u8]) -> Result<bool, Error> {
-        self.taken.stream_mut().post_job(job).map_err(Error::Client)
+        self.taken
+            .stream_mut()
+            .post_job(job)
+            .map_err(Error::from_client)
     }
 
     /// Waits up to `timeout` for the next completion frame; `None` after the timeout.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] once the host has ended the stream and no completion is left.
     pub fn wait(&mut self, timeout: Duration) -> Result<Option<HeldFrame>, Error> {
-        self.taken
+        let frame = self
+            .taken
             .stream_mut()
             .next_frame(timeout)
-            .map_err(Error::Client)
+            .map_err(Error::from_client)?;
+        match frame {
+            Some(frame) => Ok(Some(frame)),
+            None if self.taken.stream().is_open() => Ok(None),
+            None => Err(Error::StreamEnded),
+        }
     }
 
     /// The bytes of a frame this stream handed out by [`JobStream::wait`].
@@ -859,11 +979,51 @@ impl<M> JobStream<M> {
         self.taken
             .stream_mut()
             .release(frame)
-            .map_err(Error::Client)
+            .map_err(Error::from_client)
     }
 
     /// Closes the stream on the daemon and returns the daemon's answer.
     pub fn close(self) -> Result<(), Error> {
         self.taken.close()
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use lemnos_wire::ring::{RingError, SharedLayout as WireLayout};
+
+    #[test]
+    fn a_shared_layout_refusal_keeps_its_structure_and_both_values() {
+        for (wire, want) in [
+            (WireLayout::Ring, SharedLayout::Ring),
+            (WireLayout::Marks, SharedLayout::Marks),
+        ] {
+            let refused = lemnos_client::Error::Stream(RingError::Layout {
+                which: wire,
+                found: 1,
+                expected: 2,
+            });
+            let error = Error::from_client(refused);
+            let expected = LayoutRefusal {
+                which: want,
+                found: 1,
+                expected: 2,
+            };
+            assert_eq!(error.layout_refusal(), Some(expected));
+            let text = error.to_string();
+            assert!(
+                text.contains("layout 1") && text.contains("layout 2"),
+                "{text}"
+            );
+            assert!(text.contains(want.what()), "{text}");
+        }
+    }
+
+    #[test]
+    fn other_stream_errors_stay_client_errors() {
+        let error = Error::from_client(lemnos_client::Error::Stream(RingError::BadBuffer));
+        assert!(matches!(error, Error::Client(_)));
+        assert_eq!(error.layout_refusal(), None);
     }
 }

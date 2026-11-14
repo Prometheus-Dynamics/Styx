@@ -11,7 +11,7 @@ use lemnos_contract_camera_receiver::{CameraReceiver, MAX_STREAM_NAME, Packing};
 use lemnos_contract_camera_sensor::{CameraSensor, Mode};
 use lemnos_core::Bound;
 use styx_controls::{FrameMetadata, Update};
-use styx_lemnos::{Geometry, open_frames_at};
+use styx_lemnos::{Geometry, LayoutRefusal, open_frames_at};
 use styx_native::Camera;
 use styx_native_controls::{ExposureReport, FrameRate, Initial, Landings, NativeControls};
 
@@ -53,6 +53,9 @@ pub struct Status {
     pub total_failures: u64,
     /// The last failure, as text.
     pub last_error: Option<String>,
+    /// The last shared-layout refusal of the frame stream, as its values (the text of it is in
+    /// `last_error` too). Cleared by a successful start.
+    pub layout: Option<LayoutRefusal>,
     /// The wait before the next attempt, while in backoff.
     pub next_delay: Option<Duration>,
     /// When the next attempt is due, on the session clock's timeline.
@@ -69,6 +72,7 @@ impl Status {
             consecutive_failures: 0,
             total_failures: 0,
             last_error: None,
+            layout: None,
             next_delay: None,
             retry_at: None,
         }
@@ -137,9 +141,26 @@ impl StopHandle {
 /// One attempt that did not stream: a retry, or a request no retry can fix.
 enum Fault {
     Retry(String),
+    /// A frame stream's shared layout is another build's: a retry, with the refusal's values.
+    Layout {
+        refusal: LayoutRefusal,
+        text: String,
+    },
     Permanent(ModeError),
     /// The session's settings cannot run on this camera. Retrying cannot fix it.
     Config(Error),
+}
+
+/// A frame stream's error as an attempt's fault: a layout refusal keeps its values, anything
+/// else is text.
+fn stream_fault(error: styx_lemnos::Error, call: &str) -> Fault {
+    match error.layout_refusal() {
+        Some(refusal) => Fault::Layout {
+            refusal,
+            text: format!("{call}: {error}"),
+        },
+        None => Fault::Retry(format!("{call}: {error}")),
+    }
 }
 
 /// A lemnos call's refusal, as text for the status.
@@ -181,7 +202,7 @@ impl Running {
                         "no frame while dropping the first {drop_frames} ({dropped} seen)"
                     )));
                 }
-                Err(e) => return Err(Fault::Retry(format!("frame stream: {e}"))),
+                Err(e) => return Err(stream_fault(e, "frame stream")),
             }
         }
         Ok(())
@@ -211,6 +232,10 @@ fn unwind(running: Running, fault: Fault) -> Fault {
     match (halt(running), fault) {
         (Ok(()), fault) => fault,
         (Err(stop), Fault::Retry(text)) => Fault::Retry(format!("{text}; {stop}")),
+        (Err(stop), Fault::Layout { refusal, text }) => Fault::Layout {
+            refusal,
+            text: format!("{text}; {stop}"),
+        },
         (Err(_), permanent) => permanent,
     }
 }
@@ -457,6 +482,9 @@ impl<'a, C: Clock> Session<'a, C> {
             }
             Err(styx_lemnos::Error::Held(_)) => Ok(None),
             Err(e) => {
+                if let Some(refusal) = e.layout_refusal() {
+                    self.status.layout = Some(refusal);
+                }
                 self.fault(format!("frame stream: {e}"))?;
                 Ok(None)
             }
@@ -509,6 +537,7 @@ impl<'a, C: Clock> Session<'a, C> {
                     }
                     self.status.starts += 1;
                     self.status.consecutive_failures = 0;
+                    self.status.layout = None;
                     self.status.next_delay = None;
                     self.status.retry_at = None;
                     self.running = Some(running);
@@ -522,6 +551,10 @@ impl<'a, C: Clock> Session<'a, C> {
                     return Err(Error::Mode(e));
                 }
                 Err(Fault::Retry(text)) => self.backoff_after(text)?,
+                Err(Fault::Layout { refusal, text }) => {
+                    self.status.layout = Some(refusal);
+                    self.backoff_after(text)?;
+                }
                 Err(Fault::Config(e)) => {
                     self.status.state = State::Stopped;
                     self.status.last_error = Some(e.to_string());
@@ -601,7 +634,7 @@ impl<'a, C: Clock> Session<'a, C> {
             stride: layout.stride,
         };
         let frames = open_frames_at(self.client, self.camera.receiver().index, stream, geometry)
-            .map_err(|e| Fault::Retry(format!("frame stream {stream}: {e}")))?;
+            .map_err(|e| stream_fault(e, &format!("frame stream {stream}")))?;
 
         let mut running = Running {
             sensor,
@@ -615,5 +648,40 @@ impl<'a, C: Clock> Session<'a, C> {
             Ok(()) => Ok(running),
             Err(fault) => Err(unwind(running, fault)),
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use styx_lemnos::{LayoutRefusal, SharedLayout};
+
+    #[test]
+    fn a_layout_refusal_from_a_frame_stream_is_a_layout_fault_with_its_values() {
+        let refusal = LayoutRefusal {
+            which: SharedLayout::Marks,
+            found: 1,
+            expected: 2,
+        };
+        let error = styx_lemnos::Error::SharedLayout(refusal);
+        match stream_fault(error, "frame stream cam") {
+            Fault::Layout { refusal: got, text } => {
+                assert_eq!(got, refusal);
+                assert!(
+                    text.contains("layout 1") && text.contains("layout 2"),
+                    "{text}"
+                );
+            }
+            _ => panic!("a layout refusal is a layout fault"),
+        }
+    }
+
+    #[test]
+    fn other_frame_stream_errors_stay_retries() {
+        let error = styx_lemnos::Error::NoBuffers;
+        assert!(matches!(
+            stream_fault(error, "frame stream"),
+            Fault::Retry(_)
+        ));
     }
 }

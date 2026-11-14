@@ -27,6 +27,7 @@ lemnos-contract-camera-isp = { workspace = true }
 lemnos-contract-camera-frames = { workspace = true }
 lemnos-linux-sys = { workspace = true }
 lemnos-linux-stream = { workspace = true }
+lemnos-wire = { workspace = true }
 libc = "0.2"
 
 # Library halves (X6): optional, each built only with its feature.
