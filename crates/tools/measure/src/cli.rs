@@ -396,11 +396,12 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
     let started = monotonic_ns();
     let time = args.seconds.map(Duration::from_secs_f64);
     let stop = session.run(time, wanted(args.frames)).map_err(|e| {
-        // A reader cut off for holding frames: say how far it got. It holds at most the frame in
-        // hand, and releases that before it reads the end, so it holds none at the cut.
+        // A reader cut off for holding frames: say how far it got and how many frames it held
+        // (`--hold`'s frames; the frame in hand is released before the end is read).
         format!(
-            "{e} (after {} frames delivered; frames held at the cut: 0)",
-            session.stats.delivered
+            "{e} (after {} frames delivered; frames held at the cut: {})",
+            session.stats.delivered,
+            session.held()
         )
     })?;
     let wall_s = monotonic_ns().saturating_sub(started) as f64 / 1e9;
