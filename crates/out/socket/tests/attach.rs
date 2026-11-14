@@ -209,3 +209,55 @@ fn an_attach_with_nothing_published_waits_for_the_first_frame() {
     let (id, _) = take_id(&mut reader).expect("the first frame");
     assert_eq!(id, 0);
 }
+
+/// The handshake's two halves with a frame published between them, as a service does it: the
+/// reader answers on the socket's thread and goes to sleep on its doorbell, the camera's thread
+/// publishes its next frame, and only then links the reader. That frame rang nothing for the
+/// reader. The link itself must wake it: no later publish is made here, so a reader left asleep
+/// would wait out its whole timeout.
+#[test]
+fn a_frame_published_before_the_reader_is_linked_wakes_it_at_the_link() {
+    let pool = pool();
+    let mut producer = Producer::with_pool(pool.clone(), HISTORY).expect("producer");
+    producer.set_keep(KEEP);
+    publish_run(&pool, &mut producer, 0, 3);
+
+    let path = socket_path("link-wake");
+    let listener = UnixListener::bind(&path).expect("bind");
+    let reader_path = path.clone();
+    let reader = thread::spawn(move || {
+        let mut reader = Reader::connect_with(
+            UnixStream::connect(reader_path).expect("connect"),
+            Start::NextNew,
+        )
+        .expect("handshake");
+        // Asleep on the doorbell from here, with nothing new to read yet.
+        let asleep = Instant::now();
+        let wake = reader.wait(Some(Duration::from_secs(5))).expect("wait");
+        let waited = asleep.elapsed();
+        let frame = take_id(&mut reader);
+        (format!("{wake:?}"), waited, frame)
+    });
+    let (stream, _) = listener.accept().expect("accept");
+    let plan = producer.handshake_plan().expect("plan");
+    let accepted = plan
+        .run(stream, Limits::default(), Duration::from_secs(5))
+        .expect("the reader answers");
+    // The reader has answered; give it time to be asleep on its doorbell.
+    thread::sleep(Duration::from_millis(200));
+    publish(&pool, &mut producer, 3);
+    let linked = Instant::now();
+    producer.attach(accepted).expect("link the reader");
+
+    let (wake, waited, frame) = reader.join().expect("reader thread");
+    let after_link = linked.elapsed();
+    println!(
+        "link wake: {wake}, reader waited {waited:?}, joined {after_link:?} after the link, frame {frame:?}"
+    );
+    assert!(
+        after_link < Duration::from_secs(1),
+        "the reader slept on after it was linked ({wake}, {waited:?})"
+    );
+    let (id, _) = frame.expect("the frame published before the link is read");
+    assert_eq!(id, 3);
+}
