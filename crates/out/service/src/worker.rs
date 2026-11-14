@@ -727,6 +727,7 @@ fn apply_edge(publisher: &mut Publisher, slot: &Slot, edge: Edge) {
                 slot.set_readers(held.producer.stats().readers);
             }
             slot.stalled(since_ns);
+            slot.stall_health(&text);
             slot.retrying(text);
         }
         Edge::Resumed { carried } => {
@@ -741,6 +742,7 @@ fn apply_edge(publisher: &mut Publisher, slot: &Slot, edge: Edge) {
                 slot.set_readers(held.producer.stats().readers);
             }
             slot.clear_stall();
+            slot.return_health();
             slot.camera_back();
             slot.resumed();
             if !kept {

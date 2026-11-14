@@ -199,14 +199,25 @@ fn refused<T>(result: lemnos_core::Result<T>, call: &str) -> Result<T, Fault> {
     result.map_err(|status| Fault::Retry(format!("{call} refused: {status:?}")))
 }
 
-/// A fault's text, for a restart that failed.
-fn fault_text(fault: &Fault) -> String {
-    match fault {
-        Fault::Retry(text) | Fault::Layout { text, .. } => text.clone(),
-        Fault::Permanent(e) => e.to_string(),
-        Fault::Config(e) => e.to_string(),
+/// A restart's failure. `NotYet`: the rebound device is not bound or ready yet (`NO_DEVICE` or
+/// `STALE_HANDLE`, or its handle is gone): the restart is retried on the next call, and the stall
+/// stays in force. `Failed` is a real refusal, which faults the session.
+enum Restart {
+    NotYet,
+    Failed(String),
+}
+
+/// Maps a restart step's status: a device not yet there is `NotYet`, anything else a refusal.
+fn restart_status(status: lemnos_core::Status, call: &str) -> Restart {
+    if status == lemnos_core::Status::NO_DEVICE || status == lemnos_core::Status::STALE_HANDLE {
+        Restart::NotYet
+    } else {
+        Restart::Failed(format!("{call} refused: {status:?}"))
     }
 }
+
+/// How long a call waits before a restart that is not yet possible is tried again.
+const RESTART_RETRY: Duration = Duration::from_millis(10);
 
 /// The devices of a streaming camera, and its frames.
 struct Running {
@@ -300,6 +311,9 @@ pub struct Session<'a, C: Clock> {
     last_frame_at: Option<Duration>,
     /// A silence the report has named, until a frame comes.
     silenced: bool,
+    /// The device was bound again (a Lost return) and the restart is not possible yet: it is tried
+    /// again on each call, and the return is given once it has happened.
+    restart_owed: bool,
     /// A frame that came in with the return from a silence: given out on the next call, after the
     /// `Resumed` event that says the camera is back.
     parked: Option<Lease>,
@@ -352,6 +366,7 @@ impl<'a, C: Clock> Session<'a, C> {
             skipped_done: 0,
             last_frame_at: None,
             silenced: false,
+            restart_owed: false,
             parked: None,
             status: Status::new(),
             settings: None,
@@ -514,6 +529,9 @@ impl<'a, C: Clock> Session<'a, C> {
         if let Some(lease) = self.parked.take() {
             return Ok(Event::Frame(lease));
         }
+        if self.restart_owed {
+            return self.resume_lost(timeout);
+        }
         let polled = match self.running.as_mut() {
             Some(running) => running.frames.next_event(timeout),
             None => return Err(Error::NotStreaming),
@@ -586,13 +604,8 @@ impl<'a, C: Clock> Session<'a, C> {
                 Ok(Event::Resumed(Carried::Kept))
             }
             Ok(FrameEvent::Resumed(Carried::Lost)) => {
-                self.status.stall = None;
-                self.status.last_error =
-                    Some("camera back: its device was bound again".to_string());
-                if let Err(text) = self.restart_same_stream() {
-                    self.fault(text)?;
-                }
-                Ok(Event::Resumed(Carried::Lost))
+                self.restart_owed = true;
+                self.resume_lost(timeout)
             }
             Ok(FrameEvent::Ended(end)) => self.ended(end),
             Err(styx_lemnos::Error::Held(_)) => Ok(Event::Idle),
@@ -639,44 +652,79 @@ impl<'a, C: Clock> Session<'a, C> {
         Event::Stalled { since_ns, text }
     }
 
+    /// Restarts the stream on the device bound again and gives the return once it has happened. A
+    /// device not yet there keeps the stall in force and is tried again on a later call (after a
+    /// short wait, so a caller that loops does not spin). A real refusal is a fault.
+    fn resume_lost(&mut self, timeout: Duration) -> Result<Event, Error> {
+        match self.restart_same_stream() {
+            Ok(()) => {
+                self.restart_owed = false;
+                self.status.stall = None;
+                self.status.last_error =
+                    Some("camera back: its device was bound again".to_string());
+                Ok(Event::Resumed(Carried::Lost))
+            }
+            Err(Restart::NotYet) => {
+                self.restart_owed = true;
+                std::thread::sleep(timeout.min(RESTART_RETRY));
+                Ok(Event::Idle)
+            }
+            Err(Restart::Failed(text)) => {
+                self.restart_owed = false;
+                self.fault(text)?;
+                Ok(Event::Idle)
+            }
+        }
+    }
+
     /// The same stream, a device bound again: selects the mode again, configures the receiver,
     /// posts the controls the session last asked for (the native controls keep them), and starts.
     /// The frame stream and its buffers are kept, so no reopen is needed.
-    fn restart_same_stream(&mut self) -> Result<(), String> {
+    fn restart_same_stream(&mut self) -> Result<(), Restart> {
         let sensor_name = self.camera.sensor().name.clone();
         let client = self.client;
         let running = self
             .running
             .as_mut()
-            .ok_or_else(|| "no running session to restart".to_string())?;
+            .ok_or_else(|| Restart::Failed("no running session to restart".to_string()))?;
         // The device was bound again: the handle the session had belongs to the old instance, so the
-        // sensor is opened again.
+        // sensor is opened again. A device not yet bound does not open: tried again later.
         running.sensor = client
             .open::<dyn CameraSensor>(&sensor_name)
-            .map_err(|e| format!("open {sensor_name} on restart: {e}"))?;
+            .map_err(|_| Restart::NotYet)?;
         let index = running.mode;
         // The receiver is still running from before the bind: it is stopped, so it can be configured
         // and started again with the sensor. The frame stream stays attached.
-        refused(running.receiver.stop(), "receiver.stop on restart").map_err(|f| fault_text(&f))?;
+        running
+            .receiver
+            .stop()
+            .map_err(|status| restart_status(status, "receiver.stop on restart"))?;
         let mode = running
             .sensor
             .mode(index)
-            .map_err(|status| format!("sensor.mode refused on restart: {status:?}"))?;
-        refused(running.sensor.select_mode(index), "sensor.select_mode")
-            .map_err(|fault| fault_text(&fault))?;
-        refused(
-            running.receiver.configure(mode.link, Packing::Packed),
-            "receiver.configure",
-        )
-        .map_err(|fault| fault_text(&fault))?;
+            .map_err(|status| restart_status(status, "sensor.mode on restart"))?;
+        running
+            .sensor
+            .select_mode(index)
+            .map_err(|status| restart_status(status, "sensor.select_mode"))?;
+        running
+            .receiver
+            .configure(mode.link, Packing::Packed)
+            .map_err(|status| restart_status(status, "receiver.configure"))?;
         // The sequence restarts at zero: the controls forget the old one and post what was asked.
         running.controls.restart();
         running
             .controls
             .prepare(&mut running.sensor)
-            .map_err(|e| format!("controls on restart: {e}"))?;
-        refused(running.receiver.start(), "receiver.start").map_err(|f| fault_text(&f))?;
-        refused(running.sensor.start(), "sensor.start").map_err(|f| fault_text(&f))?;
+            .map_err(|e| Restart::Failed(format!("controls on restart: {e}")))?;
+        running
+            .receiver
+            .start()
+            .map_err(|status| restart_status(status, "receiver.start"))?;
+        running
+            .sensor
+            .start()
+            .map_err(|status| restart_status(status, "sensor.start"))?;
         Ok(())
     }
 

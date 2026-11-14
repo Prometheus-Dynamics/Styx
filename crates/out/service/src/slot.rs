@@ -510,6 +510,21 @@ impl Slot {
         status.publish = publish;
     }
 
+    /// The camera is failed in its own recovery: its health says so, with the stall's text. A stall
+    /// is health, not a refusal: the camera stays served.
+    pub(crate) fn stall_health(&self, text: &str) {
+        lock(&self.status).health = Health::Failed(text.to_string());
+    }
+
+    /// The camera came back from a stall: a health that said failed is healthy again. A degraded
+    /// health (a reason the camera works with) is left as it was.
+    pub(crate) fn return_health(&self) {
+        let mut status = lock(&self.status);
+        if matches!(status.health, Health::Failed(_)) {
+            status.health = Health::Healthy;
+        }
+    }
+
     pub(crate) fn set_health(&self, health: Health) {
         lock(&self.status).health = health;
     }
