@@ -23,7 +23,7 @@ use styx_frame::{FrameLease, copy_counters};
 use styx_native_run::Clock;
 use styx_select::listing::{LibcameraLister, ListError, Listed, V4l2Lister};
 use styx_service::{Config, Deps, Discard, Listers, Outlet, Outlets, Service, camera_socket};
-use styx_socket::Reader;
+use styx_socket::{ReadError, Reader, StreamEnd};
 
 /// Two complete chains (sensor, receiver, ISP each) on one daemon.
 /// Mode 0's shortest frame in the double (asked at 120 fps, the contract's whole line nearest that
@@ -1212,5 +1212,108 @@ fn a_reader_that_never_answers_does_not_stall_the_camera_and_is_dropped_at_the_t
     );
     let status = line_of(&control, cam).expect("listed");
     assert_eq!(field(&status, "publish"), Some("publishing"), "{status}");
+    service.shutdown();
+}
+
+#[test]
+fn a_reader_that_never_lets_go_is_cut_off_for_the_reserve_and_the_camera_keeps_streaming() {
+    let dir = test_dir("reserve");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let cam = "lemnos:cam0-sensor";
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\ncameras = [\"{cam}\"]\n\
+         [camera.\"{cam}\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let service = start_service(&text, Arc::new(Recorder::default()), &lemnos_socket);
+    let control = service.control_socket().to_path_buf();
+    wait_until("streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 50
+    });
+    let socket = camera_socket(&dir, cam);
+
+    // The hoarder takes four frames and never lets go. Four is its limit, so the producer's limit
+    // does not cut it off; the camera needs its buffer when the first of them leaves the window.
+    let mut hoarder = Reader::connect(UnixStream::connect(&socket).expect("connect"))
+        .expect("the handshake completes");
+    let mut held = Vec::new();
+    let until = Instant::now() + Duration::from_secs(20);
+    while held.len() < 4 {
+        assert!(
+            Instant::now() < until,
+            "the hoarder took only {} frames",
+            held.len()
+        );
+        match hoarder.next_frame().expect("not cut off yet") {
+            Some(frame) => held.push(frame),
+            None => {
+                let _ = hoarder.wait(Some(Duration::from_millis(5)));
+            }
+        }
+    }
+
+    // The good reader takes every frame and lets go. It keeps going past the hoarder's cut: the
+    // loop ends once it has taken thirty frames after the cut, and the camera has counted thirty
+    // more frames since the cut was seen.
+    let mut good = Reader::connect(UnixStream::connect(&socket).expect("connect"))
+        .expect("the handshake completes");
+    let until = Instant::now() + Duration::from_secs(20);
+    let mut good_after_cut = 0_u64;
+    let mut last_id = None;
+    let mut cut_at: Option<u64> = None;
+    while !(good_after_cut >= 30 && cut_at.is_some_and(|at| frames_of(&control, cam) >= at + 30)) {
+        assert!(
+            Instant::now() < until,
+            "after the cut the good reader took {good_after_cut} frames (cut at {cut_at:?})"
+        );
+        match good.next_frame().expect("the good reader is never cut off") {
+            Some(frame) => {
+                let id = frame.lease().id();
+                assert!(last_id.is_none_or(|last| id > last), "frame ids in order");
+                last_id = Some(id);
+                if cut_at.is_some() {
+                    good_after_cut += 1;
+                }
+            }
+            None => {
+                let _ = good.wait(Some(Duration::from_millis(5)));
+            }
+        }
+        if cut_at.is_none()
+            && line_of(&control, cam).is_some_and(|line| field(&line, "reserve_cuts") == Some("1"))
+        {
+            cut_at = Some(frames_of(&control, cam));
+        }
+    }
+    let cut_at = cut_at.expect("the cut was seen");
+
+    // The camera streamed on through the cut, dropped nothing, and kept its reserve.
+    let status = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&status, "publish"), Some("publishing"), "{status}");
+    assert_eq!(field(&status, "publish_dropped"), Some("0"), "{status}");
+    assert_eq!(field(&status, "reserve_cuts"), Some("1"), "{status}");
+    let number = |key: &str| -> usize {
+        field(&status, key)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{key} in {status}"))
+    };
+    let (keep, buffers, reserve) = (number("keep"), number("buffers"), number("reserve"));
+    assert!(
+        keep + reserve <= buffers,
+        "keep {keep} + reserve {reserve} must fit in {buffers} buffers"
+    );
+    assert!(
+        frames_of(&control, cam) >= cut_at + 30,
+        "the camera's frame count kept rising through the cut"
+    );
+
+    // The hoarder reads the end, with the reason, and takes no more frames.
+    match hoarder.next_frame() {
+        Err(error) => assert_eq!(error, ReadError::Ended(StreamEnd::ConsumerFault)),
+        Ok(_) => panic!("the hoarder was cut off, so it reads no frame"),
+    }
+    drop(held);
     service.shutdown();
 }

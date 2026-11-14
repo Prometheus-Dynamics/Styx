@@ -134,9 +134,11 @@ pub struct CameraConfig {
     /// V4L2 and libcamera: buffers requested from the driver.
     #[serde(default)]
     pub buffers: Option<u32>,
-    /// Buffers of the camera's pool the camera keeps to stream, which the frame ring never holds
-    /// for readers. Default: half the pool's buffers, at least 2 (at most the pool's size). The
-    /// ring keeps `min(history, buffers - hardware_reserve)` newest frames for readers.
+    /// Buffers of the camera's pool the camera keeps for itself to stream (default: half the pool's
+    /// buffers, at least 2, at most the pool's size). The ring's keep window and the frames readers
+    /// hold past it never take more than `buffers - hardware_reserve` of the pool, so the camera
+    /// always has this many free, and a reader that holds a frame past the window while the camera
+    /// needs its buffer is cut off; a larger reserve shortens the readers' window.
     #[serde(default)]
     pub hardware_reserve: Option<u32>,
 }

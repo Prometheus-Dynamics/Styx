@@ -46,7 +46,8 @@ pub enum Start {
 pub enum ReadError {
     /// The stream ended. Every frame already published has been delivered first; no more come.
     /// The [`StreamEnd`] says why. A cut-off reader gets [`StreamEnd::ConsumerFault`]: the
-    /// producer cut it off for breaking its limits, and it takes no more frames. Drop the reader
+    /// producer cut it off, for its limits or for holding a frame past the keep window while the
+    /// camera needed the buffer, and it takes no more frames. Drop the reader
     /// and connect again.
     Ended(StreamEnd),
     /// The producer replaced its pool. This reader does not have the new buffers.
@@ -63,7 +64,7 @@ impl core::fmt::Display for ReadError {
                 f.write_str("the stream ended: the producer closed it, no more frames")
             }
             Self::Ended(StreamEnd::ConsumerFault) => f.write_str(
-                "the stream ended because this reader broke the rules (a hold kept too long or a bad mark)",
+                "the stream ended because this reader broke the rules: it held a frame past the keep window while the camera needed its buffer (or held more than its limit)",
             ),
             Self::Ended(StreamEnd::DeviceFailed) => {
                 f.write_str("the stream ended because the device failed for good")

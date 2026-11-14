@@ -35,6 +35,11 @@
 //!   that is too slow loses frames to the ring's history and counts them as skipped.
 //! - **Limits**: [`Limits`] caps the buffers one reader may hold and how long it may hold one; a
 //!   reader over a limit is cut off, and told so when it next looks.
+//! - **The reserve**: at every publish, the buffers out of the camera's hands (the keep window and
+//!   the frames readers hold past it) are at most `buffers - reserve`, so the camera always has its
+//!   reserve free. A reader that holds a frame past the window while the bound needs it is cut off
+//!   ([`Producer::set_reserve`], [`Producer::reclaim`]); a reader holding only frames in the window
+//!   is never touched.
 //! - **Death**: a reader whose socket closes (the process exits, or the reader is dropped) loses
 //!   its marks at once. Its buffers come back on the next [`Producer::begin`].
 //!

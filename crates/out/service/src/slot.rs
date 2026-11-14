@@ -155,6 +155,9 @@ pub struct KeepWindow {
     pub hardware_reserve: usize,
     /// Frames given back to the pool after leaving the window.
     pub reclaimed: u64,
+    /// Readers cut off because they held a frame past the window while the camera needed its
+    /// buffer (the reserve; see `styx_socket::Producer::reclaim`).
+    pub reserve_cuts: u64,
 }
 
 /// The last frame a camera delivered: its identity and the metadata in force on it.

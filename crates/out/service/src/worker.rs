@@ -578,16 +578,19 @@ fn pump(
                     let buffers = lease.pool().buffers();
                     match Producer::with_pool(lease.pool(), HISTORY) {
                         Ok(mut producer) => {
-                            let reserve = slot
+                            // The reserve first: the keep window is clamped to what it leaves.
+                            let asked = slot
                                 .settings
                                 .hardware_reserve
                                 .map_or(default_reserve(buffers), |r| (r as usize).min(buffers));
+                            let reserve = producer.set_reserve(asked);
                             let keep = producer.set_keep(keep_for(buffers, reserve));
                             window = KeepWindow {
                                 keep,
                                 buffers,
                                 hardware_reserve: reserve,
                                 reclaimed: 0,
+                                reserve_cuts: 0,
                             };
                             slot.set_keep(window);
                             let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
@@ -614,8 +617,11 @@ fn pump(
                     producer.reclaim();
                     let stats = producer.stats();
                     slot.set_readers(stats.readers);
-                    if window.reclaimed != stats.reclaimed {
+                    if window.reclaimed != stats.reclaimed
+                        || window.reserve_cuts != stats.cut_off_for_reserve
+                    {
                         window.reclaimed = stats.reclaimed;
+                        window.reserve_cuts = stats.cut_off_for_reserve;
                         slot.set_keep(window);
                     }
                 }

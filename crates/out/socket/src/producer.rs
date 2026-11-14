@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use shm_fdpass as fdpass;
 use shm_ring::{FieldId, ReadMap, Ring, SampleTime, WriteMap};
-use shm_ring_buffers::{BufferDesc, BufferIndex, BufferWriter, Dropped, Pool};
+use shm_ring_buffers::{
+    BufferDesc, BufferIndex, BufferWriter, Dropped, Holders, MAX_READERS, Pool, page,
+};
 use shm_ring_doorbell::Bell;
 use shm_ring_holds::{HoldTable, Limits};
 use styx_frame::{
@@ -199,6 +201,13 @@ struct Link {
     slot: u32,
     socket: UnixStream,
     bell: Bell,
+    /// This reader's marks, mapped a second time, in a table of its own. The hold table answers for
+    /// all readers together; this one answers which buffers this reader marks, which the reserve
+    /// needs to cut off the right reader. `None` once the reader is cut off for the reserve.
+    marks: Option<HoldTable<ReadMap>>,
+    /// Cut off for the reserve (see [`Producer::reclaim`]). Its slot is then out of the hold table,
+    /// and it stays linked until its socket closes, so the slot is not given to another reader.
+    reserve_cut: bool,
 }
 
 /// One slot of the outside bell set.
@@ -217,12 +226,23 @@ pub struct ProducerStats {
     pub dropped: u64,
     /// Readers connected now.
     pub readers: usize,
-    /// Readers cut off for breaking their limits.
+    /// Readers cut off, for their limits or for the reserve (see [`Producer::reclaim`]).
     pub cut_off: usize,
+    /// Readers cut off for the reserve since the producer started: a running total. A reader cut
+    /// off this way is counted in `cut_off` until its socket closes; this total keeps it.
+    pub cut_off_for_reserve: u64,
     /// Readers whose socket closed (process exit or drop); their holds were removed.
     pub gone: u64,
     /// The keep window: how many of the newest published frames are never given back.
     pub keep: usize,
+    /// Buffers the camera keeps for itself (see [`Producer::set_reserve`]).
+    pub reserve: usize,
+    /// Buffers out of the camera's hands now: the frames the ring still holds, in the keep window
+    /// or held by readers past it. The invariant is `outstanding <= buffers - reserve`.
+    pub outstanding: usize,
+    /// Publishes after which the reserve could not be kept: a frame past the window was held by a
+    /// mark the producer cannot cut off (one an adopter put in the hold table). Zero otherwise.
+    pub bound_unmet: u64,
     /// Frames that left the keep window and were given back to the pool by [`Producer::reclaim`].
     /// Whether a reader read each one first is not visible here: the reader counts its own skips.
     pub reclaimed: u64,
@@ -233,8 +253,11 @@ pub struct ProducerStats {
 pub struct ReaderInfo {
     /// The reader's slot in the ring.
     pub slot: u32,
-    /// Whether the reader has been cut off for its limits.
+    /// Whether the reader has been cut off, for its limits or for the reserve.
     pub cut_off: bool,
+    /// Whether the reader was cut off for the reserve (it held a frame past the keep window while
+    /// the camera needed its buffer).
+    pub for_reserve: bool,
 }
 
 /// Publishes frames to any number of readers in other processes.
@@ -261,6 +284,16 @@ pub struct Producer<M = ()> {
     /// not. A reader that is within `keep` frames of the newest finds its frame. See
     /// [`Producer::set_keep`].
     keep: usize,
+    /// Buffers the camera keeps for itself to stream: the buffers out of the ring's hands never
+    /// exceed `buffers - reserve`. See [`Producer::set_reserve`] and [`Producer::reclaim`].
+    reserve: usize,
+    /// Which reader slots have a reader linked: a slot stays taken while its reader is linked,
+    /// cut off or not, so a cut-off reader's slot is not handed to another reader.
+    taken: [bool; MAX_READERS as usize],
+    /// Readers cut off for the reserve, in total.
+    cut_for_reserve: u64,
+    /// Publishes after which the reserve could not be kept (see [`ProducerStats::bound_unmet`]).
+    bound_unmet: u64,
     /// For each buffer, the publish count (1-based) of the frame it holds: the frame's age is
     /// `published - seq_of[buffer]`.
     seq_of: Vec<u64>,
@@ -382,6 +415,10 @@ impl<M> Producer<M> {
                 .collect(),
             in_flight: (0..geometry.buffers()).map(|_| None).collect(),
             keep: 1,
+            reserve: 0,
+            taken: [false; MAX_READERS as usize],
+            cut_for_reserve: 0,
+            bound_unmet: 0,
             seq_of: vec![0; geometry.buffers()],
             kinds,
             state: StateWriter::create()?,
@@ -399,10 +436,12 @@ impl<M> Producer<M> {
     /// back (unless a reader holds them). The camera service sets it to
     /// `min(history, buffers - hardware_reserve)`.
     ///
-    /// `keep` is clamped to `1..=min(history, buffers)`; the value in force is returned. The
-    /// default is 1 (the newest frame only, the ring's own policy).
+    /// `keep` is clamped to `1..=min(history, buffers - reserve)`, so that `keep + reserve` never
+    /// exceeds the pool; the value in force is returned. The default is 1 (the newest frame only,
+    /// the ring's own policy).
     pub fn set_keep(&mut self, keep: usize) -> usize {
-        let limit = (self.geometry.history() as usize).min(self.geometry.buffers());
+        let limit = (self.geometry.history() as usize)
+            .min(self.geometry.buffers().saturating_sub(self.reserve));
         self.keep = keep.clamp(1, limit.max(1));
         self.keep
     }
@@ -410,6 +449,25 @@ impl<M> Producer<M> {
     /// The keep window in force (see [`Producer::set_keep`]).
     pub const fn keep(&self) -> usize {
         self.keep
+    }
+
+    /// Sets the reserve: how many buffers the camera keeps for itself to stream. The invariant is
+    /// that the buffers out of the camera's hands (the frames in the keep window, plus the frames
+    /// readers hold past it) never exceed `buffers - reserve`, so the camera always has at least
+    /// `reserve` buffers free or in its own flight. [`Producer::reclaim`] enforces it by cutting off
+    /// the reader that holds the oldest frame past the window, when the bound needs it.
+    ///
+    /// `reserve` is clamped to `buffers - keep`, so `keep + reserve <= buffers`; the value in
+    /// force is returned. The default is 0: the bound is then the whole pool, and nothing is cut
+    /// off for it.
+    pub fn set_reserve(&mut self, reserve: usize) -> usize {
+        self.reserve = reserve.min(self.geometry.buffers().saturating_sub(self.keep));
+        self.reserve
+    }
+
+    /// The reserve in force (see [`Producer::set_reserve`]).
+    pub const fn reserve(&self) -> usize {
+        self.reserve
     }
 
     /// Hands a connected reader the ring and the pool, then registers the marks and the
@@ -445,7 +503,9 @@ impl<M> Producer<M> {
     /// [`SocketError::NoReaderSlot`] when every slot is taken; [`SocketError`] when a descriptor
     /// cannot be duplicated.
     pub fn handshake_plan(&self) -> Result<HandshakePlan, SocketError> {
-        let slot = self.holds.free_slot().ok_or(SocketError::NoReaderSlot)?;
+        let slot = (0..MAX_READERS)
+            .find(|slot| !self.taken[*slot as usize])
+            .ok_or(SocketError::NoReaderSlot)?;
         let ring_fd = self.ring.read_fd()?.try_clone()?;
         let page_fd = self.writer.pool().page_fd()?.try_clone()?;
         let state_fd = self.state.reader_fd()?;
@@ -501,6 +561,10 @@ impl<M> Producer<M> {
             eventfd,
             bell_page,
         } = accepted;
+        // The same marks, mapped again for this reader alone (see `Link::marks`). Read-only, as
+        // the table's own mapping is.
+        let mut own: HoldTable<ReadMap> = HoldTable::new(self.geometry.buffers() as u32);
+        own.add(0, marks.try_clone()?, Limits::default())?;
         self.holds.add(slot, marks, limits)?;
         let mut bell = Bell::attach(eventfd, bell_page)?;
         // The reader has had the ring since the first half of the handshake and may already be
@@ -508,7 +572,14 @@ impl<M> Producer<M> {
         // it would sit unread until the next publish: one frame period late. One ring here wakes
         // it for whatever is already there; with nothing there it looks and sleeps again.
         bell.ring();
-        self.links.push(Link { slot, socket, bell });
+        self.taken[slot as usize] = true;
+        self.links.push(Link {
+            slot,
+            socket,
+            bell,
+            marks: Some(own),
+            reserve_cut: false,
+        });
         Ok(slot)
     }
 
@@ -702,23 +773,111 @@ impl<M> Producer<M> {
     /// that that a reader holds is given back when the reader lets go (it is retried here). A
     /// given-back frame's lease is dropped, so its pool buffer is free for a stream or a device.
     /// Returns how many were given back. Call it after publishing.
+    ///
+    /// **The reserve.** At every call, the buffers out of the camera's hands (the frames in the
+    /// keep window, plus the frames readers hold past it) are at most `buffers - reserve`. Frames
+    /// in the window are at most `keep <= buffers - reserve`, so any excess is a frame past the
+    /// window that a reader holds. While there is excess, the oldest such frame is given back by
+    /// cutting off every reader that marks it: its marks leave the hold table, the reader is told
+    /// through the pool page and woken, and it reads [`crate::ReadError::Ended`] with
+    /// [`StreamEnd::ConsumerFault`]. A reader that holds only frames in the window is never cut off
+    /// for this, and a reader past the window is cut off only when the bound needs its frame.
+    /// No frame is copied and nothing waits. A mark the producer cannot see (one an adopter put
+    /// in the hold table through [`Producer::holds_mut`]) cannot be cut off here: the bound is
+    /// then unmet, and [`ProducerStats::bound_unmet`] counts it.
     pub fn reclaim(&mut self) -> usize {
         let mut given = 0;
         for index in 0..self.in_flight.len() {
-            if self.in_flight[index].is_none() {
-                continue;
-            }
-            let age = self.published - self.seq_of[index];
-            if age < self.keep as u64 {
+            if self.in_flight[index].is_none() || self.age_of(index) < self.keep as u64 {
                 continue;
             }
             if self.writer.reclaim(BufferIndex(index as u32), &self.holds) {
-                self.in_flight[index] = None;
-                self.reclaimed += 1;
+                self.release(index);
                 given += 1;
             }
         }
+        let budget = self.geometry.buffers() - self.reserve;
+        while self.outstanding() > budget {
+            let Some(index) = self.oldest_past_window() else {
+                break;
+            };
+            self.cut_off_holders(index);
+            if !self.writer.reclaim(BufferIndex(index as u32), &self.holds) {
+                self.bound_unmet += 1;
+                break;
+            }
+            self.release(index);
+            given += 1;
+        }
         given
+    }
+
+    /// Frames the producer's ring has published that the camera has not got back: its own
+    /// `in_flight` view. Buffers in the camera's hands are `buffers - outstanding()`.
+    fn outstanding(&self) -> usize {
+        self.in_flight
+            .iter()
+            .filter(|lease| lease.is_some())
+            .count()
+    }
+
+    /// How many publishes ago buffer `index`'s frame was published (0 for the newest).
+    fn age_of(&self, index: usize) -> u64 {
+        self.published - self.seq_of[index]
+    }
+
+    /// The oldest frame the ring still holds that has left the keep window, if any.
+    fn oldest_past_window(&self) -> Option<usize> {
+        let keep = self.keep as u64;
+        let mut oldest: Option<(u64, usize)> = None;
+        for index in 0..self.in_flight.len() {
+            if self.in_flight[index].is_none() || self.age_of(index) < keep {
+                continue;
+            }
+            if oldest.is_none_or(|(seq, _)| self.seq_of[index] < seq) {
+                oldest = Some((self.seq_of[index], index));
+            }
+        }
+        oldest.map(|(_, index)| index)
+    }
+
+    /// Gives back buffer `index`'s frame to the camera's side: its lease is dropped.
+    fn release(&mut self, index: usize) {
+        self.in_flight[index] = None;
+        self.reclaimed += 1;
+    }
+
+    /// Cuts off every reader that marks buffer `index`, for the reserve. Each one's marks leave the
+    /// hold table, so its holds stop counting at once, and the table's own mapping of its slot is
+    /// cleared with them; the reader is told through the pool page and its doorbell is rung, so a
+    /// reader asleep wakes and reads the end. The link stays, with the slot taken, until the socket
+    /// closes (then [`Producer::reap`] removes it as it does any other). Readers the hold table has
+    /// already cut off by their own limits do not hold anything and are skipped.
+    fn cut_off_holders(&mut self, index: usize) {
+        let buffer = BufferIndex(index as u32);
+        let buffers = self.geometry.buffers() as u32;
+        for link in &mut self.links {
+            if link.reserve_cut || self.holds.is_cut_off(link.slot) {
+                continue;
+            }
+            let Some(own) = link.marks.as_ref() else {
+                continue;
+            };
+            if !own.held(buffer) {
+                continue;
+            }
+            self.holds.remove(link.slot, self.writer.pool().page());
+            page::cut_off(self.writer.pool().page(), buffers, link.slot);
+            link.bell.ring();
+            link.marks = None;
+            link.reserve_cut = true;
+            self.cut_for_reserve += 1;
+        }
+    }
+
+    /// Whether `link` has been cut off, for its limits or for the reserve.
+    fn is_cut(&self, link: &Link) -> bool {
+        link.reserve_cut || self.holds.is_cut_off(link.slot)
     }
 
     /// The shape the producer runs with: what [`Producer::new`] was asked for, resolved.
@@ -760,23 +919,24 @@ impl<M> Producer<M> {
             dropped: self.dropped,
             readers: self.links.len(),
             keep: self.keep,
+            reserve: self.reserve,
+            outstanding: self.outstanding(),
+            bound_unmet: self.bound_unmet,
             reclaimed: self.reclaimed,
-            cut_off: self
-                .links
-                .iter()
-                .filter(|link| self.holds.is_cut_off(link.slot))
-                .count(),
+            cut_off: self.links.iter().filter(|link| self.is_cut(link)).count(),
+            cut_off_for_reserve: self.cut_for_reserve,
             gone: self.gone,
         }
     }
 
-    /// Each connected reader's slot and whether it has been cut off.
+    /// Each connected reader's slot and whether it has been cut off, and for which reason.
     pub fn readers(&self) -> Vec<ReaderInfo> {
         self.links
             .iter()
             .map(|link| ReaderInfo {
                 slot: link.slot,
-                cut_off: self.holds.is_cut_off(link.slot),
+                cut_off: self.is_cut(link),
+                for_reserve: link.reserve_cut,
             })
             .collect()
     }
@@ -788,6 +948,7 @@ impl<M> Producer<M> {
         while index < self.links.len() {
             if peer_closed(&self.links[index].socket) {
                 let link = self.links.swap_remove(index);
+                self.taken[link.slot as usize] = false;
                 self.holds.remove(link.slot, self.writer.pool().page());
                 self.gone += 1;
             } else {
