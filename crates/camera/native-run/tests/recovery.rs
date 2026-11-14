@@ -16,8 +16,8 @@ use lemnos_host::board::parse;
 use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
 use lemnosd::{Config, Service};
-use styx_lemnos::Client;
-use styx_native_run::{AutoOff, Clock, Error, Initial, Policy, Request, Session, State};
+use styx_lemnos::{Carried, Client, StreamEnd};
+use styx_native_run::{AutoOff, Clock, Error, Event, Initial, Policy, Request, Session, State};
 
 /// The sensor's initial values: exposure 8 ms, gain 1.0x, 60 fps.
 const CONTROLS: Initial = Initial {
@@ -26,13 +26,26 @@ const CONTROLS: Initial = Initial {
     frame_rate_milli: 60_000,
 };
 
-/// A clock that records each wait and returns at once. A session can be told to cancel after a
-/// number of waits, as a stop from another thread would.
-#[derive(Default)]
+/// A clock that records each backoff wait and returns at once. Its time is the real time that has
+/// passed (so a silence measured while the test polls is real) plus the backoff waits, which
+/// are simulated. A session can be told to cancel after a number of waits, as a stop from another
+/// thread would.
 struct FakeClock {
-    now: Cell<Duration>,
+    origin: Instant,
+    simulated: Cell<Duration>,
     waits: RefCell<Vec<Duration>>,
     cancel_after: Cell<Option<usize>>,
+}
+
+impl Default for FakeClock {
+    fn default() -> Self {
+        Self {
+            origin: Instant::now(),
+            simulated: Cell::new(Duration::ZERO),
+            waits: RefCell::new(Vec::new()),
+            cancel_after: Cell::new(None),
+        }
+    }
 }
 
 impl FakeClock {
@@ -47,12 +60,12 @@ impl FakeClock {
 
 impl Clock for FakeClock {
     fn now(&self) -> Duration {
-        self.now.get()
+        self.origin.elapsed() + self.simulated.get()
     }
 
     fn wait(&self, for_: Duration, cancel: &AtomicBool) {
         self.waits.borrow_mut().push(for_);
-        self.now.set(self.now.get() + for_);
+        self.simulated.set(self.simulated.get() + for_);
         if self.cancel_after.get() == Some(self.waits.borrow().len()) {
             cancel.store(true, Ordering::Release);
         }
@@ -65,12 +78,9 @@ fn socket_dir() -> PathBuf {
     dir
 }
 
-fn start(name: &str, text: &str) -> (Service, PathBuf) {
-    let dir = socket_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
-    let config = Config {
-        socket: socket.clone(),
+fn daemon_config(socket: &std::path::Path, text: &str) -> Config {
+    Config {
+        socket: socket.to_path_buf(),
         name: "styx-native-run-test".to_string(),
         board: parse(text).expect("board"),
         drivers: vec![
@@ -83,8 +93,36 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
             call_deadline: Duration::from_millis(200),
             ..Options::default()
         },
-    };
-    (Service::start(config).expect("start lemnosd"), socket)
+    }
+}
+
+fn start(name: &str, text: &str) -> (Service, PathBuf) {
+    let dir = socket_dir().join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    let socket = dir.join("sock");
+    let service = Service::start(daemon_config(&socket, text)).expect("start lemnosd");
+    (service, socket)
+}
+
+/// Polls `next_event` until `done` accepts an event. Returns that event and how many frames came
+/// before it.
+fn until<C: Clock>(
+    session: &mut Session<'_, C>,
+    what: &str,
+    mut done: impl FnMut(&Event) -> bool,
+) -> (Event, usize) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut frames = 0;
+    loop {
+        assert!(Instant::now() < deadline, "{what}");
+        let event = session.next_event(Duration::from_millis(20)).expect("next_event");
+        if matches!(event, Event::Frame(_)) {
+            frames += 1;
+        }
+        if done(&event) {
+            return (event, frames);
+        }
+    }
 }
 
 fn ms(values: &[u64]) -> Vec<Duration> {
@@ -125,7 +163,6 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
         format: None,
         bayer: Some(BayerOrder::Rggb),
     };
-    // The frame-wait limits the test uses: a stall is three 20 ms waits with no frame.
     let policy = Policy {
         frame_timeout: Duration::from_millis(500),
         stall_waits: 3,
@@ -161,24 +198,47 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     );
     frames_flow(&mut session, 4, "after the failed starts");
 
-    // 2. The receiver stops making frames mid-stream. Three empty 20 ms waits make a stall: the
-    //    devices stop (which clears the fault, as a receiver reset does), one backoff runs, and the
-    //    camera starts again inside next_frame.
+    // 2. The receiver stops making frames and reports no fault: a silent camera. Nothing ends and
+    //    nothing reopens. The no-frame report names the silence once its bound passes (one second
+    //    at this rate), and the status says so. When frames come back, `Resumed(Kept)` comes before
+    //    the first of them, on the same session.
     clock.clear();
     sim::STALL_NOW.store(true, Ordering::SeqCst);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while session.status().starts == 1 {
-        assert!(Instant::now() < deadline, "no recovery from the stall");
-        let _ = session
-            .next_frame(Duration::from_millis(20))
-            .expect("next_frame");
+    let (event, frames) = until(&mut session, "the silence report", |e| {
+        matches!(e, Event::Stalled { .. })
+    });
+    match event {
+        Event::Stalled { since_ns, text } => {
+            assert_eq!(since_ns, 0, "a silence has no failure time");
+            assert!(text.starts_with("no frame for "), "{text}");
+        }
+        other => panic!("{other:?}"),
     }
-    assert!(!sim::STALL_NOW.load(Ordering::SeqCst));
-    assert_eq!(clock.waits(), ms(&[250]));
+    assert_eq!(frames, 0, "a silent camera makes no frame");
     assert_eq!(session.status().state, State::Streaming);
-    assert_eq!(session.status().starts, 2);
-    assert_eq!(session.status().total_failures, 9);
-    frames_flow(&mut session, 4, "after the stall");
+    assert_eq!(session.status().starts, 1);
+    assert_eq!(session.status().total_failures, 8);
+    assert!(
+        session
+            .status()
+            .stall
+            .as_deref()
+            .is_some_and(|s| s.starts_with("no frame for ")),
+        "{:?}",
+        session.status().stall
+    );
+    assert!(clock.waits().is_empty(), "a silence waits no backoff");
+    sim::STALL_NOW.store(false, Ordering::SeqCst);
+    let (event, frames) = until(&mut session, "the return", |e| {
+        matches!(e, Event::Resumed(_))
+    });
+    assert_eq!(frames, 0, "Resumed comes before the first frame after the silence");
+    assert!(matches!(event, Event::Resumed(Carried::Kept)), "{event:?}");
+    assert_eq!(session.status().state, State::Streaming);
+    assert_eq!(session.status().starts, 1, "no reopen");
+    assert_eq!(session.status().stall, None);
+    assert!(clock.waits().is_empty(), "no backoff after the return");
+    frames_flow(&mut session, 4, "after the silence");
     drop(session);
 
     // 3. Auto-off as a policy: three failures in a row turn the session off, without a wait for
@@ -223,7 +283,50 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     session.start().expect("starts once the fault is gone");
     frames_flow(&mut session, 2, "after the manual restart");
     session.stop().expect("stop");
+    drop(session);
 
+    // 5. A real end: the daemon stops, and the host ends the stream (its ring says closed). The
+    //    session returns `StreamEnded` with the kind, is stopped and holds nothing; the owner
+    //    reopens it. The reopen against a daemon that is not up yet backs off as a failed start does,
+    //    and streams once the daemon answers.
+    let clock = FakeClock::default();
+    let mut session =
+        Session::new(&client, camera, request, Policy::default(), &clock).with_controls(CONTROLS);
+    session.start().expect("start before the end");
+    frames_flow(&mut session, 2, "before the end");
+    service.stop();
+    // A bound on the owner's waits: the stop must be the end, not a retry loop with no daemon.
+    clock.cancel_after.set(Some(64));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let end = loop {
+        assert!(Instant::now() < deadline, "no end after the daemon stopped");
+        match session.next_event(Duration::from_millis(20)) {
+            Ok(_) => {}
+            Err(e) => break e,
+        }
+    };
+    match end {
+        Error::StreamEnded { end, .. } => assert_eq!(end, StreamEnd::Closed),
+        other => panic!("expected the stream's end, got {other:?}"),
+    }
+    assert_eq!(session.status().state, State::Stopped);
+    assert!(session.selection().is_none(), "the end leaves nothing running");
+    drop(session);
+    drop(client);
+
+    let service = Service::start(daemon_config(&socket, &sim::board(Some("csi0"))))
+        .expect("the daemon starts again");
+    let client = Client::connect(&socket, "styx-native-run-test").expect("connect again");
+    let found = styx_native::discover(&client).expect("discover again");
+    let camera = &found.cameras[0];
+    let clock = FakeClock::default();
+    let mut session =
+        Session::new(&client, camera, request, Policy::default(), &clock).with_controls(CONTROLS);
+    sim::FAIL_STARTS.store(2, Ordering::SeqCst);
+    session.start().expect("the reopen streams after two refused starts");
+    assert_eq!(clock.waits(), ms(&[250, 500]));
+    frames_flow(&mut session, 2, "after the reopen");
+    session.stop().expect("stop");
     drop(session);
     drop(client);
     service.stop();

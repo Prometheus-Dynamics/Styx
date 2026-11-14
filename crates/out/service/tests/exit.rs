@@ -9,6 +9,7 @@ mod sim;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -26,18 +27,26 @@ const CAMERAS: [&str; 2] = ["lemnos:cam0-sensor", "lemnos:cam1-sensor"];
 /// The simulator's call log is process-wide, so the tests in this file run one at a time.
 static SERIAL: Mutex<()> = Mutex::new(());
 
-/// Two complete chains (sensor, receiver, ISP each) on one daemon.
+/// Two complete chains (sensor, receiver, ISP each) on one daemon. Each board names its cameras
+/// uniquely: the simulated sensors and receivers share a frame clock by that name, process-wide.
 fn two_cameras() -> String {
-    "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
-     [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
-     [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n"
-        .to_string()
+    static BOARDS: AtomicU32 = AtomicU32::new(0);
+    let n = BOARDS.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
+         [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
+         [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
+         [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n"
+    )
 }
 
 fn test_dir(name: &str) -> PathBuf {
