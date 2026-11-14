@@ -13,8 +13,24 @@
 //!   the job's identity.
 //!
 //! What the block records about each job is kept in [`JOBS`], for the test to read.
+//!
+//! The block takes a returned buffer when it looks at the stream, before each job it reads (the
+//! contract's `next_buffer`). [`STALE_REFRESH`] turns that off: the block then looks once per
+//! serve, as Lemnos's `drivers/codec-jobs` server does at its lock, and a job read later in the
+//! serve can name a buffer returned after that look. [`AWAIT_JOBS`] makes a serve wait for the
+//! next job after it publishes a completion, so a test can post the next job at the moment it
+//! chooses.
 
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
+use std::time::{Duration, Instant};
+
+use lemnos_host::board::parse;
+use lemnos_host::{Options, entry};
+use lemnos_sim::SimBoard;
+use lemnosd::{Config as ServiceConfig, Service};
+use styx_block::hevc;
 
 use lemnos_contract_codec_block::work::Work;
 use lemnos_contract_codec_block::{
@@ -47,6 +63,61 @@ pub struct Seen {
 
 /// Every job the block has seen, in order.
 pub static JOBS: Mutex<Vec<Seen>> = Mutex::new(Vec::new());
+
+/// Whether the block looks at returned buffers once per serve only (see the module's notes).
+pub static STALE_REFRESH: AtomicBool = AtomicBool::new(false);
+/// Jobs a serve waits for after it publishes a completion: each one is spent when a completion
+/// is published, and the serve waits for the job after it (up to [`AWAIT_LIMIT`]).
+pub static AWAIT_JOBS: AtomicU32 = AtomicU32::new(0);
+/// How long a serve waits for the job it awaits before it gives up.
+const AWAIT_LIMIT: Duration = Duration::from_secs(10);
+/// Jobs the block refuses outright, whatever they name: a block that cannot take a job now.
+pub static REFUSE_JOBS: AtomicU32 = AtomicU32::new(0);
+
+/// The bitstream of the fixture: two IDR frames' worth of parameter sets and slices.
+pub const STREAM: &[u8] = include_bytes!("../../src/hevc/fixtures/idr320.h265");
+
+/// The board the tests run on: one `codec.block/1` device with eight job-stream buffers.
+pub const BOARD: &str = "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
+    [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
+    [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = 20\n";
+
+/// A directory for a test's socket, under the temp directory.
+pub fn socket_dir(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("styx-block-{name}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// Starts `lemnosd` in this process with the simulated block on its board. The socket is in a
+/// directory named after `name`.
+pub fn start(name: &str) -> (Service, PathBuf) {
+    let dir = socket_dir(name);
+    let socket = dir.join("sock");
+    let config = ServiceConfig {
+        socket: socket.clone(),
+        name: "styx-block-test".to_string(),
+        board: parse(BOARD).expect("board"),
+        drivers: vec![entry::<SimCodec>()],
+        backend: Box::new(SimBoard::new()),
+        options: Options {
+            call_deadline: Duration::from_millis(500),
+            ..Options::default()
+        },
+    };
+    (Service::start(config).expect("start lemnosd"), socket)
+}
+
+/// The access unit of one IDR frame: the stream's IDR slice, with its start code, first.
+pub fn idr_access_unit() -> Vec<u8> {
+    let (_, raw) = hevc::nal_units(STREAM)
+        .map(|nal| (nal.unit_type, nal.raw.to_vec()))
+        .find(|(unit_type, _)| *unit_type == 19)
+        .expect("the fixture has an IDR slice");
+    let mut au = vec![0, 0, 1];
+    au.extend_from_slice(&raw);
+    au
+}
 
 /// What the picture holds at `index` for a job stamped `stamp`.
 #[must_use]
@@ -124,7 +195,24 @@ impl SimCodec {
     fn serve(&mut self, now_ns: u64) {
         self.refresh();
         let mut bytes = [0u8; 64];
-        while let Ok(Some(len)) = self.jobs.next_job(&mut bytes) {
+        // The deadline of the job this serve awaits, while it awaits one.
+        let mut awaiting: Option<Instant> = None;
+        loop {
+            let len = match self.jobs.next_job(&mut bytes) {
+                Ok(Some(len)) => len,
+                Ok(None) => match awaiting {
+                    Some(deadline) if Instant::now() < deadline => {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    _ => return,
+                },
+                Err(_) => return,
+            };
+            let waited = awaiting.take().is_some();
+            if !STALE_REFRESH.load(Ordering::SeqCst) {
+                self.refresh();
+            }
             let Ok(job) = Job::decode(&mut Reader::new(&bytes[..len])) else {
                 let _ = self.jobs.fault_consumer();
                 return;
@@ -136,6 +224,15 @@ impl SimCodec {
             }
             let _ = self.run(&job, now_ns);
             self.held &= !(1 << job.result);
+            if waited && STALE_REFRESH.load(Ordering::SeqCst) {
+                return;
+            }
+            if AWAIT_JOBS
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+                .is_ok()
+            {
+                awaiting = Some(Instant::now() + AWAIT_LIMIT);
+            }
         }
     }
 
@@ -170,6 +267,19 @@ impl SimCodec {
 
     /// The job's status, and what the block saw of it once the work parsed.
     fn decode_job(&mut self, job: &Job) -> (JobStatus, Option<Seen>) {
+        if REFUSE_JOBS
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+        {
+            let seen = Seen {
+                identity: job.identity,
+                refs: Vec::new(),
+                items: Vec::new(),
+                start_code: false,
+                outcome: JobStatus::Refused,
+            };
+            return (JobStatus::Refused, Some(seen));
+        }
         let mut work = vec![0u8; job.work_bytes as usize];
         if !self.holds(job.work) || !matches!(self.jobs.read(job.work, 0, &mut work), Ok(true)) {
             return (JobStatus::Refused, None);
