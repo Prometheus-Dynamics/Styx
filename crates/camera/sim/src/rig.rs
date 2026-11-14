@@ -7,6 +7,7 @@
 //! while it is paused (a silent camera, with no fault), and stops while the sensor reports a fault
 //! or is dead. Faults are injected as on [`SimCamera`].
 
+use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -135,6 +136,14 @@ impl SimRig {
     /// The sensor's code for an analogue gain in thousandths, as the simulated sensor writes it.
     pub fn gain_code(milli: u32) -> u32 {
         silicon::gain_code(milli)
+    }
+}
+
+impl fmt::Debug for SimRig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SimRig")
+            .field("socket", &self.socket)
+            .finish_non_exhaustive()
     }
 }
 

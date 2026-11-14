@@ -89,7 +89,6 @@ fn a_transient_failure_is_one_stall_then_a_kept_return_and_the_sequence_goes_on(
         .with_controls(CONTROLS);
     session.start().expect("start");
     let mut last = frames(&mut session, 3);
-    let skipped_before = session.skipped();
 
     // The sensor fails: the stream stays attached and one stall is reported, with its time and the
     // device's reason. Frames stop while it lasts.
@@ -126,6 +125,10 @@ fn a_transient_failure_is_one_stall_then_a_kept_return_and_the_sequence_goes_on(
         assert!(matches!(event, Event::Idle), "{event:?}");
     }
 
+    // The reader's skips from here on are the only gap the sequence can show: none is made in the
+    // stall, which numbers no frame.
+    let skipped_at_stall = session.skipped();
+
     // The sensor is back: the same stream resumes, Kept, before the first frame after the stall.
     rig.inject_fault(None);
     let (event, ids) = until(&mut session, "the return", |e| {
@@ -138,7 +141,7 @@ fn a_transient_failure_is_one_stall_then_a_kept_return_and_the_sequence_goes_on(
     // The sequence goes on: the first frame after the return is the next number, plus any frames
     // the reader was too late for (which the session counts).
     let next = frames(&mut session, 1);
-    let late = session.skipped() - skipped_before;
+    let late = session.skipped() - skipped_at_stall;
     assert_eq!(next, last + 1 + late, "a stall numbers no frame");
     // No restart was counted: the same session streams on.
     assert_eq!(session.status().starts, 1);

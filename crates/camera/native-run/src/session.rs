@@ -524,6 +524,15 @@ impl<'a, C: Clock> Session<'a, C> {
                 let running = self.running.as_mut().ok_or(Error::NotStreaming)?;
                 let posted = running.controls.frame_start(&mut running.sensor, id);
                 match posted {
+                    // The sensor is down (its device is being retried, or its handle is the old
+                    // instance's): the frame is dropped, and the stall, or the return, comes from the
+                    // stream as its edge. The session does not reopen for it.
+                    Err(styx_native_controls::Error::Sensor(status))
+                        if status == lemnos_core::Status::NO_DEVICE
+                            || status == lemnos_core::Status::STALE_HANDLE =>
+                    {
+                        Ok(Event::Idle)
+                    }
                     Ok(()) => {
                         let metadata: FrameMetadata = running.controls.metadata(id, timestamp_ns);
                         if let Some(meta) = lease.meta_mut() {
@@ -634,10 +643,17 @@ impl<'a, C: Clock> Session<'a, C> {
     /// posts the controls the session last asked for (the native controls keep them), and starts.
     /// The frame stream and its buffers are kept, so no reopen is needed.
     fn restart_same_stream(&mut self) -> Result<(), String> {
+        let sensor_name = self.camera.sensor().name.clone();
+        let client = self.client;
         let running = self
             .running
             .as_mut()
             .ok_or_else(|| "no running session to restart".to_string())?;
+        // The device was bound again: the handle the session had belongs to the old instance, so the
+        // sensor is opened again.
+        running.sensor = client
+            .open::<dyn CameraSensor>(&sensor_name)
+            .map_err(|e| format!("open {sensor_name} on restart: {e}"))?;
         let index = running.mode;
         // The receiver is still running from before the bind: it is stopped, so it can be configured
         // and started again with the sensor. The frame stream stays attached.
