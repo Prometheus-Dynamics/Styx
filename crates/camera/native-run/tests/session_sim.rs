@@ -119,9 +119,7 @@ fn a_transient_failure_is_one_stall_then_a_kept_return_and_the_sequence_goes_on(
         session.status().stall
     );
     for _ in 0..3 {
-        let event = session
-            .next_event(Duration::from_millis(30))
-            .expect("wait");
+        let event = session.next_event(Duration::from_millis(30)).expect("wait");
         assert!(matches!(event, Event::Idle), "{event:?}");
     }
 
@@ -134,7 +132,10 @@ fn a_transient_failure_is_one_stall_then_a_kept_return_and_the_sequence_goes_on(
     let (event, ids) = until(&mut session, "the return", |e| {
         matches!(e, Event::Resumed(_))
     });
-    assert!(ids.is_empty(), "Resumed comes before the first frame after the stall");
+    assert!(
+        ids.is_empty(),
+        "Resumed comes before the first frame after the stall"
+    );
     assert!(matches!(event, Event::Resumed(Carried::Kept)), "{event:?}");
     assert_eq!(session.status().stall, None);
 
@@ -197,7 +198,10 @@ fn a_device_bound_again_resumes_lost_on_the_same_mode_and_posts_what_was_asked_a
     let (event, ids) = until(&mut session, "the return", |e| {
         matches!(e, Event::Resumed(_))
     });
-    assert!(ids.is_empty(), "Resumed comes before the first frame after the rebind");
+    assert!(
+        ids.is_empty(),
+        "Resumed comes before the first frame after the rebind"
+    );
     assert!(matches!(event, Event::Resumed(Carried::Lost)), "{event:?}");
 
     assert_eq!(session.status().mode, mode, "the same mode");

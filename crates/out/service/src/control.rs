@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
 //! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
@@ -332,7 +332,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -377,6 +377,7 @@ fn camera_line(status: &CameraStatus) -> String {
         layout_refused,
         fault,
         keep.bound_unmet,
+        status.discontinuities,
         error,
     )
 }
@@ -430,6 +431,9 @@ pub struct CameraLine {
     /// Publishes on which the reserve could not be kept (`bound_unmet=`); non-zero means a mark the
     /// producer cannot see holds frames past the window (an adopter's).
     pub bound_unmet: Option<u64>,
+    /// Frame-stream discontinuities: each lost resume (the camera was bound again and the sequence
+    /// restarts). Not gaps: `skipped` does not count them.
+    pub discontinuities: Option<u64>,
     /// The last failure's message: the free text at the end of the line.
     pub last_error: Option<String>,
 }
@@ -516,6 +520,7 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "kept" => camera.kept = number,
             "reserve_cuts" => camera.reserve_cuts = number,
             "bound_unmet" => camera.bound_unmet = number,
+            "discontinuities" => camera.discontinuities = number,
             _ => {}
         }
     }
@@ -717,7 +722,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "layout_refused=marks:1:2 fault=1 bound_unmet=0 last_error=frame stream cam0: the marks page"
+                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 last_error=frame stream cam0: the marks page"
             ),
             "the fields come before the free text: {line}"
         );

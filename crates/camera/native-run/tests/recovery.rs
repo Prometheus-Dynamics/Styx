@@ -115,7 +115,9 @@ fn until<C: Clock>(
     let mut frames = 0;
     loop {
         assert!(Instant::now() < deadline, "{what}");
-        let event = session.next_event(Duration::from_millis(20)).expect("next_event");
+        let event = session
+            .next_event(Duration::from_millis(20))
+            .expect("next_event");
         if matches!(event, Event::Frame(_)) {
             frames += 1;
         }
@@ -165,7 +167,6 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     };
     let policy = Policy {
         frame_timeout: Duration::from_millis(500),
-        stall_waits: 3,
         ..Policy::default()
     };
 
@@ -232,7 +233,10 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     let (event, frames) = until(&mut session, "the return", |e| {
         matches!(e, Event::Resumed(_))
     });
-    assert_eq!(frames, 0, "Resumed comes before the first frame after the silence");
+    assert_eq!(
+        frames, 0,
+        "Resumed comes before the first frame after the silence"
+    );
     assert!(matches!(event, Event::Resumed(Carried::Kept)), "{event:?}");
     assert_eq!(session.status().state, State::Streaming);
     assert_eq!(session.status().starts, 1, "no reopen");
@@ -310,7 +314,10 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
         other => panic!("expected the stream's end, got {other:?}"),
     }
     assert_eq!(session.status().state, State::Stopped);
-    assert!(session.selection().is_none(), "the end leaves nothing running");
+    assert!(
+        session.selection().is_none(),
+        "the end leaves nothing running"
+    );
     drop(session);
     drop(client);
 
@@ -323,7 +330,9 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     let mut session =
         Session::new(&client, camera, request, Policy::default(), &clock).with_controls(CONTROLS);
     sim::FAIL_STARTS.store(2, Ordering::SeqCst);
-    session.start().expect("the reopen streams after two refused starts");
+    session
+        .start()
+        .expect("the reopen streams after two refused starts");
     assert_eq!(clock.waits(), ms(&[250, 500]));
     frames_flow(&mut session, 2, "after the reopen");
     session.stop().expect("stop");

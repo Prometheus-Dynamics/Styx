@@ -26,7 +26,14 @@ fn each_stream_end_kind_keeps_its_kind_and_says_its_own_meaning() {
             Error::StreamEnded { end: kind, text } => {
                 assert_eq!(kind, end);
                 assert!(text.contains(words), "{end:?}: {text}");
-                assert_eq!(Error::StreamEnded { end: kind, text: text.clone() }.to_string(), text);
+                assert_eq!(
+                    Error::StreamEnded {
+                        end: kind,
+                        text: text.clone()
+                    }
+                    .to_string(),
+                    text
+                );
             }
             other => panic!("{other:?}"),
         }

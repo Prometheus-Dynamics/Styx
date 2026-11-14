@@ -482,7 +482,6 @@ fn native_policy(shared: &Shared) -> Policy {
         // worker waits (through the service's clock) and opens the camera again.
         auto_off: AutoOff::AfterFailures(NonZeroU32::MIN),
         frame_timeout: FRAME_WAIT,
-        stall_waits: 4,
     }
 }
 
