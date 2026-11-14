@@ -8,7 +8,14 @@
 //! (absent: no figure) are the lens's answers to `direction` and `settle_us`.
 
 use lemnos_contract_lens::{FocusDirection, Lens, Range};
-use lemnos_core::{Config, ConfigValue, Lifecycle, Result, Status, driver};
+use lemnos_core::{Config, ConfigError, ConfigValue, Key, Kind, Lifecycle, Result, Status, driver};
+
+/// The settings this simulated lens reads. A device setting nothing declares is refused at start.
+const LENS_KEYS: &[Key] = &[
+    Key::optional("fail_moves", Kind::Int),
+    Key::optional("direction", Kind::Int),
+    Key::optional("settle_us", Kind::Int),
+];
 
 /// The lens's range: a 10-bit actuator, as the DW9807 and DW9714.
 pub const RANGE: Range = Range { min: 0, max: 1023 };
@@ -24,6 +31,10 @@ pub struct SimLens {
 
 impl Lifecycle for SimLens {
     type Needs = SimLensNeeds;
+
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(LENS_KEYS)
+    }
 
     fn start(_needs: SimLensNeeds, cfg: &Config<'_>) -> Result<Self> {
         let fail_moves = match cfg.get("fail_moves") {
