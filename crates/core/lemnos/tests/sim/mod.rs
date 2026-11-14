@@ -287,6 +287,15 @@ impl CameraReceiver for SimReceiver {
         Ok(0)
     }
 
+    // Added at Lemnos de395ab4: a simulated receiver has no video inputs, so NOT_SUPPORTED.
+    fn inputs(&mut self, _into: &mut [u8]) -> Result<usize> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn input(&mut self) -> Result<u32> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
     fn source(&mut self, _into: &mut [u8]) -> Result<usize> {
         Err(Status::NOT_SUPPORTED)
     }
