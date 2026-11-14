@@ -9,10 +9,10 @@ use std::time::Duration;
 use styx_controls::{FrameMetadata, Update};
 use styx_frame::FrameLease;
 use styx_libcamera::{Capture as LibcameraStream, CaptureConfig, Error as LibcameraError};
-use styx_native_run::{Clock, Session, State};
+use styx_native_run::{Clock, Event, Session, State};
 use styx_v4l2::{State as V4l2State, Stream, StreamConfig};
 
-use crate::capture::{Capture, CaptureError, RateReport, Status};
+use crate::capture::{Capture, CaptureError, Edge, RateReport, Status};
 
 impl<C: Clock> std::fmt::Debug for NativeCapture<'_, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -31,6 +31,8 @@ pub struct NativeCapture<'a, C: Clock> {
     session: Session<'a, C>,
     /// The achieved rate of the last frame delivered, from its metadata (0 until one is).
     achieved_milli: u32,
+    /// The stall or return the last wait found, for the caller to take ([`Capture::take_edge`]).
+    edge: Option<Edge>,
 }
 
 impl<'a, C: Clock> NativeCapture<'a, C> {
@@ -42,6 +44,7 @@ impl<'a, C: Clock> NativeCapture<'a, C> {
         Ok(Self {
             session,
             achieved_milli: 0,
+            edge: None,
         })
     }
 }
@@ -55,16 +58,31 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
         &mut self,
         timeout: Duration,
     ) -> Result<Option<FrameLease<FrameMetadata>>, CaptureError> {
-        let lease = self.session.next_frame(timeout).map_err(|e| match e {
+        let event = self.session.next_event(timeout).map_err(|e| match e {
             styx_native_run::Error::Stopped => CaptureError::Stopped,
             other => CaptureError::Failed(other.to_string()),
         })?;
-        if let Some(lease) = &lease
-            && lease.meta().achieved_fps_milli != 0
-        {
-            self.achieved_milli = lease.meta().achieved_fps_milli;
+        match event {
+            Event::Frame(lease) => {
+                if lease.meta().achieved_fps_milli != 0 {
+                    self.achieved_milli = lease.meta().achieved_fps_milli;
+                }
+                Ok(Some(lease))
+            }
+            Event::Idle => Ok(None),
+            Event::Stalled { since_ns, text } => {
+                self.edge = Some(Edge::Stalled { since_ns, text });
+                Ok(None)
+            }
+            Event::Resumed(carried) => {
+                self.edge = Some(Edge::Resumed { carried });
+                Ok(None)
+            }
         }
-        Ok(lease)
+    }
+
+    fn take_edge(&mut self) -> Option<Edge> {
+        self.edge.take()
     }
 
     fn set_controls(&mut self, updates: &[Update]) -> Result<(), CaptureError> {
@@ -77,6 +95,11 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
     fn status(&self) -> Status {
         let status = self.session.status();
         match &status.state {
+            // A stall: the camera is retried and the stream stays attached (health, not a fault).
+            State::Streaming if status.stall.is_some() => Status::Retrying {
+                reason: status.stall.clone().unwrap_or_default(),
+                layout: status.layout,
+            },
             State::Streaming => Status::Streaming,
             State::Stopped => Status::Stopped,
             State::Backoff => Status::Retrying {

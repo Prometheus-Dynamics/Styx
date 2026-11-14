@@ -19,7 +19,12 @@ use lemnos_contract_camera_sensor::frame_length_for_fps_milli;
 use lemnos_contract_camera_sensor::{
     CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
 };
-use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
+use lemnos_core::{
+    Config, ConfigError, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
+};
+
+/// The setting the simulated sensor and receivers read: the camera whose silicon they share.
+const CAMERA_KEYS: &[Key] = &[Key::required("camera", Kind::Str)];
 use lemnos_hal::blocks::StreamFrame;
 
 /// Lanes of the frame clock: exposure, analogue gain, frame length.
@@ -161,7 +166,7 @@ fn mode(index: usize) -> Option<Mode> {
         line_time_ps: 9_100_000,
         line_length: 1456,
         // The shortest frame at this rate: the contract's whole line nearest to the rate.
-        frame_length_min: frame_length_for_fps_milli(9_100_000, 1, u32::MAX, fps * 1_000)
+        frame_length_min: frame_length_for_fps_milli(9_100_000, 0, 1, u32::MAX, fps * 1_000)
             .map_or(0, |(lines, _)| lines),
         frame_length_max: 52_000,
         exposure_min: 16,
@@ -178,6 +183,7 @@ fn mode(index: usize) -> Option<Mode> {
         exposure_delay: 2,
         gain_delay: 1,
         frame_length_delay: 2,
+        frame_offset_ps: 0,
         readout_ps: 0,
         drop_frames: 2,
         ..Mode::default()
@@ -286,6 +292,9 @@ impl SimSensor {
 
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(CAMERA_KEYS)
+    }
 
     fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
         let clock = clock_named(cfg)?;
@@ -476,6 +485,9 @@ pub struct SimReceiver {
 
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(CAMERA_KEYS)
+    }
     const TICKS: bool = true;
 
     fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {

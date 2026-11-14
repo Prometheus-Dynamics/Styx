@@ -231,6 +231,9 @@ pub struct CameraStatus {
     pub frames: u64,
     /// Frame identities skipped (a gap in the stream), since the service started.
     pub skipped: u64,
+    /// Sequence restarts (a device bound again on the same frame stream), since the service
+    /// started. A restart is a discontinuity, not a gap: `skipped` does not count it.
+    pub discontinuities: u64,
     /// Frames the camera's own Lemnos stream reader was too late for, since the service started
     /// (`FrameStream::skipped`: overwritten or taken back before a read). Set from the capture.
     pub lemnos_skipped: u64,
@@ -346,6 +349,7 @@ impl Slot {
             last_recovery: None,
             frames: 0,
             skipped: 0,
+            discontinuities: 0,
             lemnos_skipped: 0,
             last_frame: None,
             requested_milli: settings.fps_milli,
@@ -464,6 +468,13 @@ impl Slot {
         status.failures = failures;
         status.total_failures += 1;
         status.last_error = Some(reason);
+    }
+
+    /// The frame sequence restarted: the next frame starts a new count, with no gap counted.
+    pub(crate) fn discontinuity(&self) {
+        let mut status = lock(&self.status);
+        status.discontinuities += 1;
+        status.last_frame = None;
     }
 
     pub(crate) fn backing_off(&self, delay: Duration) {

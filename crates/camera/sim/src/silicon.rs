@@ -13,6 +13,7 @@
 //! which frame that was.
 
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -93,11 +94,25 @@ struct State {
     frames: VecDeque<(u64, InForce)>,
 }
 
+/// A fault a test injects into the simulated sensor. The sensor reports it as its health, which
+/// the host reads on each tick: `Failed` is a stall the host retries (the sensor stays bound, and
+/// its frame stream stays attached until the fault clears); `Gone` is a dead instance the host
+/// binds again (the next instance is healthy: the fault is spent when the host sees it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    Failed(&'static str),
+    Gone(&'static str),
+}
+
 /// One simulated camera's clock, timing and settings.
 pub(crate) struct Silicon {
     timing: SensorTiming,
     state: Mutex<State>,
     changed: Condvar,
+    fault: Mutex<Option<Fault>>,
+    /// Set when a sensor instance reported itself dead (`Gone`), and cleared when a new instance
+    /// reads healthy: the device makes no frames in between, as a device the host has not bound yet.
+    dead: AtomicBool,
 }
 
 impl std::fmt::Debug for Silicon {
@@ -125,7 +140,34 @@ impl Silicon {
                 frames: VecDeque::with_capacity(FRAMES + 1),
             }),
             changed: Condvar::new(),
+            fault: Mutex::new(None),
+            dead: AtomicBool::new(false),
         }
+    }
+
+    /// Whether the device is dead until the host binds it again.
+    pub(crate) fn is_dead(&self) -> bool {
+        self.dead.load(Ordering::Acquire)
+    }
+
+    /// The device is dead until a new instance binds (`revive`).
+    pub(crate) fn mark_dead(&self) {
+        self.dead.store(true, Ordering::Release);
+    }
+
+    /// A new instance reads healthy: the device is alive again.
+    pub(crate) fn revive(&self) {
+        self.dead.store(false, Ordering::Release);
+    }
+
+    /// The fault injected now, if any.
+    pub(crate) fn fault(&self) -> Option<Fault> {
+        *self.fault.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Injects `fault` (`None` clears it).
+    pub(crate) fn set_fault(&self, fault: Option<Fault>) {
+        *self.fault.lock().unwrap_or_else(PoisonError::into_inner) = fault;
     }
 
     pub(crate) fn timing(&self) -> SensorTiming {

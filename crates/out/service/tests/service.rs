@@ -30,7 +30,8 @@ use styx_socket::{ReadError, Reader, StreamEnd};
 /// rate), and the exposure ceiling that frame gives: (frame - the mode's margin of 25 lines) at its
 /// 9.1 us line, rounded to the microsecond.
 fn mode0_shortest() -> (u32, u32) {
-    let (lines, _) = frame_length_for_fps_milli(9_100_000, 1, u32::MAX, 120_000).expect("a frame");
+    let (lines, _) =
+        frame_length_for_fps_milli(9_100_000, 0, 1, u32::MAX, 120_000).expect("a frame");
     let us = (u64::from(lines) - 25) * 9_100_000;
     (
         lines,

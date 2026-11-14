@@ -167,7 +167,12 @@ impl std::error::Error for ModeError {}
 /// (`frame_length_min` lines) over its line time, by the contract's `fps_milli_of`. `0` for a mode
 /// with no line time or no frame.
 pub fn fastest_fps_milli(mode: &Mode) -> u32 {
-    fps_milli_of(mode.line_time_ps, mode.frame_length_min).unwrap_or(0)
+    fps_milli_of(
+        mode.line_time_ps,
+        mode.frame_offset_ps,
+        mode.frame_length_min,
+    )
+    .unwrap_or(0)
 }
 
 /// The rate a mode gives for `asked` (milli-fps), and the reason it differs from the ask, if it
@@ -190,12 +195,18 @@ fn rate_for(mode: &Mode, asked: u32) -> (u32, Option<Reason>) {
         Some(mode.frame_length_max.max(min))
     };
     if let Some(max) = max {
-        let floor = fps_milli_of(mode.line_time_ps, max).unwrap_or(0);
+        let floor = fps_milli_of(mode.line_time_ps, mode.frame_offset_ps, max).unwrap_or(0);
         if asked < floor {
             return (floor, Some(Reason::RateClampedToFloor));
         }
     }
-    match frame_length_for_fps_milli(mode.line_time_ps, min, max.unwrap_or(u32::MAX), asked) {
+    match frame_length_for_fps_milli(
+        mode.line_time_ps,
+        mode.frame_offset_ps,
+        min,
+        max.unwrap_or(u32::MAX),
+        asked,
+    ) {
         Some((_lines, rate)) => (rate, None),
         // Unreachable for an asked rate under the ceiling (the ceiling needs a line time and a
         // frame), kept total rather than panicking.
@@ -463,7 +474,7 @@ mod tests {
     fn mode(width: u32, height: u32, fps: u32, bayer: BayerOrder, bits: u8) -> Mode {
         let line_time_ps = 9_100_000u32;
         let (frame_length_min, _) =
-            frame_length_for_fps_milli(line_time_ps, 1, u32::MAX, fps * 1_000).unwrap();
+            frame_length_for_fps_milli(line_time_ps, 0, 1, u32::MAX, fps * 1_000).unwrap();
         Mode {
             link: LinkConfig {
                 width,
@@ -506,7 +517,7 @@ mod tests {
         };
         assert_eq!(
             fastest_fps_milli(&m),
-            fps_milli_of(9_100_000, 1832).unwrap()
+            fps_milli_of(9_100_000, 0, 1832).unwrap()
         );
         assert_eq!(fastest_fps_milli(&Mode::default()), 0);
     }

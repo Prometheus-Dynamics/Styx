@@ -37,10 +37,11 @@ fn mean(samples: &[u16]) -> f64 {
     samples.iter().map(|&s| f64::from(s)).sum::<f64>() / samples.len() as f64
 }
 
-/// The longest exposure the simulated sensor takes: the shortest frame (915 lines) less the mode's
-/// margin (25 lines), at 9.1 us a line, is 890 lines, 8 099 us. The sensor clamps a longer request to
-/// it and reports that (the report is in whole lines, so it is exact here).
-const EXPOSURE_CEILING_US: u32 = 8_099;
+/// The longest exposure the simulated sensor takes: the shortest frame (914 lines: the link's frame
+/// time less the mode's one-line frame offset) less the mode's margin (25 lines), at 9.1 us a line,
+/// is 889 lines, 8 090 us. The sensor clamps a longer request to it and reports that (the report is
+/// in whole lines, so it is exact here).
+const EXPOSURE_CEILING_US: u32 = 8_090;
 
 /// Exposure in force on frame `n`: the last update at or before it, from the schedule the test
 /// set up (independent of the camera's own bookkeeping).

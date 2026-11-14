@@ -27,6 +27,7 @@ fn mode(lines: u32, line_time_ps: u32) -> Mode {
         exposure_delay: 2,
         gain_delay: 2,
         frame_length_delay: 2,
+        frame_offset_ps: 0,
         readout_ps: 0,
         ..Mode::default()
     }
@@ -52,7 +53,10 @@ fn a_mode_whose_shortest_frame_is_114_80_fps_gives_114_80_when_120_is_asked() {
     controls.frame_start(&mut sensor, 0).expect("frame start");
     let rate = controls.initial_rate();
     assert_eq!(rate.lines, 1_000, "the shortest frame");
-    assert_eq!(rate.achieved_milli, fps_milli_of(8_710_801, 1_000).unwrap());
+    assert_eq!(
+        rate.achieved_milli,
+        fps_milli_of(8_710_801, 0, 1_000).unwrap()
+    );
     assert!(
         rate.clamped,
         "120 fps is outside the mode's frame lengths: {rate:?}"
@@ -69,7 +73,7 @@ fn a_mode_whose_shortest_frame_is_137_76_fps_gives_120_within_0_06_percent_by_le
     assert!(rate.lines > 1_000, "the frame is lengthened: {rate:?}");
     assert_eq!(
         rate.achieved_milli,
-        fps_milli_of(7_257_556, rate.lines).unwrap(),
+        fps_milli_of(7_257_556, 0, rate.lines).unwrap(),
         "the rate is the contract's for the frame it picked"
     );
     let error = rate.achieved_milli.abs_diff(120_000);
@@ -93,7 +97,7 @@ fn achieved_rate_is_the_contracts_rate_for_several_frame_lengths_including_the_s
     let line_time_ps = 8_710_801;
     let m = mode(1_000, line_time_ps);
     for lines in [1_000, 1_001, 1_500, 2_000, 10_000, 52_000] {
-        let rate_of_lines = fps_milli_of(line_time_ps, lines).expect("a rate");
+        let rate_of_lines = fps_milli_of(line_time_ps, 0, lines).expect("a rate");
         // The contract's period gives the same rate: 1e15 over the period, rounded.
         let period = m.period_ps(lines);
         let from_period = u32::try_from((1_000_000_000_000_000 + period / 2) / period).unwrap();
@@ -104,14 +108,46 @@ fn achieved_rate_is_the_contracts_rate_for_several_frame_lengths_including_the_s
         // can be another length with the same rate. The rate is what is asserted.
         assert_eq!(rate.achieved_milli, rate_of_lines, "{lines} lines");
         assert_eq!(
-            fps_milli_of(line_time_ps, rate.lines),
+            fps_milli_of(line_time_ps, 0, rate.lines),
             Some(rate.achieved_milli),
             "{lines} lines"
         );
         assert_eq!(
-            frame_length_for_fps_milli(line_time_ps, 1, u32::MAX, rate_of_lines)
+            frame_length_for_fps_milli(line_time_ps, 0, 1, u32::MAX, rate_of_lines)
                 .map(|(_, rate)| rate),
             Some(rate_of_lines),
+        );
+    }
+}
+
+#[test]
+fn with_a_frame_offset_the_achieved_rate_is_the_contracts_period_for_the_shortest_and_longer_frames()
+ {
+    // A mode whose frame carries one line time beyond its lines (the gated 8-bit mode's offset at
+    // this pin is 7 197 916 ps; any non-zero offset shows the point). The rate Styx reports for a
+    // frame must be the rate of the period the contract gives it: `period_ps(lines)`, rounded.
+    let line_time_ps = 7_968_750;
+    let offset_ps = 7_197_916;
+    let m = Mode {
+        frame_offset_ps: offset_ps,
+        ..mode(1_000, line_time_ps)
+    };
+    for lines in [1_000, 1_500, 2_000] {
+        let period = m.period_ps(lines);
+        let expected = u32::try_from((1_000_000_000_000_000 + period / 2) / period).unwrap();
+        // The offset is in the rate: the same lines without it run at a different rate.
+        assert_ne!(
+            expected,
+            fps_milli_of(line_time_ps, 0, lines).unwrap(),
+            "{lines} lines: the offset must change the rate"
+        );
+        let controls = NativeControls::new(&m, initial(expected)).expect("controls");
+        let rate = controls.initial_rate();
+        assert_eq!(rate.achieved_milli, expected, "{lines} lines");
+        assert_eq!(
+            fps_milli_of(line_time_ps, offset_ps, rate.lines),
+            Some(rate.achieved_milli),
+            "{lines} lines: the rate is the contract's for the frame picked, with the offset"
         );
     }
 }

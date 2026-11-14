@@ -14,9 +14,10 @@
 use std::fmt;
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub use lemnos_client::{Client, DeviceEntry, FrameStream, HeldFrame, StreamPlatform, follow};
+use lemnos_client::{Next, ProducerState};
 use lemnos_linux_stream::LinuxStreams;
 use styx_format::{FourCc, MediaFormat};
 use styx_frame::{
@@ -238,6 +239,85 @@ impl fmt::Display for LayoutRefusal {
     }
 }
 
+/// Why a frame stream ended, as the host wrote its end word. Three kinds are read as three outcomes
+/// and an unknown code as a fourth: a stream is never read as running after any end word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    /// The host ended the stream: a stop, a close, or the host going away.
+    Closed,
+    /// The stream ended because this reader broke the rules. That is a bug in Styx, never a camera
+    /// fault: the reader is told so, and its status says so.
+    ConsumerFault,
+    /// The stream ended because the device producing it failed for good (its auto-off policy).
+    DeviceFailed,
+    /// An end code this build does not know: the stream ended, its kind unknown.
+    Unknown(u32),
+}
+
+impl From<lemnos_client::StreamEnd> for StreamEnd {
+    fn from(end: lemnos_client::StreamEnd) -> Self {
+        match end {
+            lemnos_client::StreamEnd::Closed => Self::Closed,
+            lemnos_client::StreamEnd::ConsumerFault => Self::ConsumerFault,
+            lemnos_client::StreamEnd::DeviceFailed => Self::DeviceFailed,
+            lemnos_client::StreamEnd::Unknown(code) => Self::Unknown(code),
+        }
+    }
+}
+
+impl fmt::Display for StreamEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => f.write_str("the host ended the frame stream"),
+            Self::ConsumerFault => f.write_str(
+                "the frame stream ended because this reader broke the rules: a bug in Styx",
+            ),
+            Self::DeviceFailed => {
+                f.write_str("the frame stream ended: the device producing it failed")
+            }
+            Self::Unknown(code) => {
+                write!(f, "the frame stream ended, kind unknown (end code {code})")
+            }
+        }
+    }
+}
+
+/// Whether the camera kept what it was given through a stall. `Kept`: the same device instance
+/// recovered and the frames continue (a gap in time, not a restart). `Lost`: the host bound the
+/// device again as a new instance, so its mode and controls must be set again, and the frame
+/// sequence restarts: a discontinuity, not a gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carried {
+    Kept,
+    Lost,
+}
+
+impl From<lemnos_client::Carried> for Carried {
+    fn from(carried: lemnos_client::Carried) -> Self {
+        match carried {
+            lemnos_client::Carried::Kept => Self::Kept,
+            lemnos_client::Carried::Lost => Self::Lost,
+        }
+    }
+}
+
+/// What a wait for the next event on a frame stream found.
+#[derive(Debug)]
+pub enum Event<M = ()> {
+    /// A frame, as a lease over its buffer.
+    Frame(FrameLease<M>),
+    /// The time passed with the stream running and no frame.
+    TimedOut,
+    /// The camera failed and is being retried since `since_ns` (CLOCK_MONOTONIC nanoseconds; 0
+    /// when the host did not say). Once for each failure the reader sees, before the frames after
+    /// it. The stream stays attached: this is health, not an end.
+    Stalled { since_ns: u64 },
+    /// The camera is back, once after a `Stalled` and before the first frame after it.
+    Resumed(Carried),
+    /// The stream ended and every frame it had is read.
+    Ended(StreamEnd),
+}
+
 /// Errors from opening and reading frame streams.
 #[derive(Debug)]
 pub enum Error {
@@ -245,10 +325,9 @@ pub enum Error {
     /// A shared ring or marks page of the stream is another layout than this build reads. Only
     /// that stream is affected; nothing was mapped.
     SharedLayout(LayoutRefusal),
-    /// The host ended the stream and no frame is left to read. The client does not say at this
-    /// lock whether the end was a close or a fault, so this is one answer for both; no more
-    /// frames will come from this stream.
-    StreamEnded,
+    /// The stream ended and no frame is left to read: why, as the host wrote it. No more frames
+    /// come from this stream; a session reopens it.
+    StreamEnded(StreamEnd),
     Chain(ChainError),
     /// The stream's buffers could not be mapped.
     Map(io::Error),
@@ -319,7 +398,7 @@ impl fmt::Display for Error {
         match self {
             Self::Client(e) => write!(f, "lemnos client: {e}"),
             Self::SharedLayout(refusal) => write!(f, "frame stream: {refusal}"),
-            Self::StreamEnded => f.write_str("the host ended the frame stream: no more frames"),
+            Self::StreamEnded(end) => write!(f, "{end}"),
             Self::Chain(e) => write!(f, "{e}"),
             Self::Map(e) => write!(f, "mapping stream buffers: {e}"),
             Self::NoBuffers => write!(f, "stream has no mappable buffers"),
@@ -770,23 +849,53 @@ impl<M> Frames<M> {
         Ok(())
     }
 
-    /// Waits up to `timeout` for a frame and returns it as a lease over its buffer.
+    /// Waits up to `timeout` for the next event: a frame, the time running out, the producer's
+    /// stall or its return (each once), or the end once every frame is read. See [`Event`].
     ///
     /// # Errors
     ///
-    /// [`Error::StreamEnded`] once the host has ended the stream and no frame is left: the loop
-    /// that calls this ends there, rather than waiting on a stream that will not produce.
-    pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<M>>, Error> {
+    /// The frame's own errors ([`Error::Held`], [`Error::Oversize`], ...) and a stream's refused
+    /// reads; an end is an event, not an error.
+    pub fn next_event(&mut self, timeout: Duration) -> Result<Event<M>, Error> {
         self.sweep()?;
-        let Some(frame) = self
+        let next = self
             .taken
             .stream_mut()
-            .next_frame(timeout)
-            .map_err(Error::from_client)?
-        else {
-            return self.ended_or_none();
-        };
-        self.lease_for(frame).map(Some)
+            .next_or_end(timeout)
+            .map_err(Error::from_client)?;
+        match next {
+            Next::Frame(frame) => self.lease_for(frame).map(Event::Frame),
+            Next::TimedOut => Ok(Event::TimedOut),
+            Next::Stalled(state) => Ok(Event::Stalled {
+                since_ns: match state {
+                    ProducerState::Retrying { since_ns } => since_ns,
+                    ProducerState::Running | ProducerState::Unknown(_) => 0,
+                },
+            }),
+            Next::Resumed { state } => Ok(Event::Resumed(state.into())),
+            Next::Ended(end) => Ok(Event::Ended(end.into())),
+        }
+    }
+
+    /// Waits up to `timeout` for a frame and returns it as a lease over its buffer. A stall and its
+    /// return are not frames: the wait goes on past them, so a caller that wants them uses
+    /// [`Frames::next_event`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] with the host's reason once the stream has ended and no frame is left:
+    /// the loop that calls this ends there, rather than waiting on a stream that will not produce.
+    pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<M>>, Error> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next_event(left)? {
+                Event::Frame(lease) => return Ok(Some(lease)),
+                Event::TimedOut => return Ok(None),
+                Event::Stalled { .. } | Event::Resumed(_) => {}
+                Event::Ended(end) => return Err(Error::StreamEnded(end)),
+            }
+        }
     }
 
     /// Takes a frame if one is ready, without waiting.
@@ -807,19 +916,12 @@ impl<M> Frames<M> {
         self.lease_for(frame).map(Some)
     }
 
-    // PRODUCER STALL: `Frames::next` will report the producer's stall and resume here once the
-    // Lemnos rev with `FrameStream::producer()` and `Next::Stalled`/`Resumed` is pinned. Until then
-    // a stall is not visible through this client: the frame loop waits as it always has.
-    /// No frame was pending: `None` while the stream runs, [`Error::StreamEnded`] once the host has
-    /// ended it.
+    /// No frame was pending: `None` while the stream runs, [`Error::StreamEnded`] with the host's
+    /// reason once it has ended.
     fn ended_or_none<T>(&self) -> Result<Option<T>, Error> {
-        if self.taken.stream().is_open() {
-            Ok(None)
-        } else {
-            // STREAM END: the client cannot tell a closed end from a faulted one at this pin (no
-            // `FrameStream::end()` yet). When the Lemnos rev that has it is pinned, map its
-            // `StreamEnd` here (Closed, ConsumerFault, DeviceFailed, Unknown) to its own error.
-            Err(Error::StreamEnded)
+        match self.taken.stream().end() {
+            None => Ok(None),
+            Some(end) => Err(Error::StreamEnded(end.into())),
         }
     }
 
@@ -970,9 +1072,10 @@ impl<M> JobStream<M> {
             .map_err(Error::from_client)?;
         match frame {
             Some(frame) => Ok(Some(frame)),
-            None if self.taken.stream().is_open() => Ok(None),
-            // STREAM END: see `ended_or_none`; the same mapping goes here once end() is pinned.
-            None => Err(Error::StreamEnded),
+            None => match self.taken.stream().end() {
+                None => Ok(None),
+                Some(end) => Err(Error::StreamEnded(end.into())),
+            },
         }
     }
 

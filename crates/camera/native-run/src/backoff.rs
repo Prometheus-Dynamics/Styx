@@ -96,7 +96,9 @@ pub struct Policy {
     pub auto_off: AutoOff,
     /// How long one wait for a frame lasts.
     pub frame_timeout: Duration,
-    /// Empty frame waits in a row before the stream counts as stalled. At least 1.
+    /// Empty frame waits in a row. No longer ends a session: a silent stream is reported (see
+    /// `Session::next_event`), and the bound of that report is the frame period, not this count.
+    /// Kept so existing configurations still build; nothing reads it.
     pub stall_waits: u32,
 }
 

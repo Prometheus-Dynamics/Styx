@@ -32,7 +32,11 @@ use lemnosd::{Config, Service};
 use styx_controls::{Control, ControlValue, FrameMetadata, Update, ValueError};
 use styx_format::FourCc;
 use styx_frame::FrameLease;
-use styx_lemnos::{ChainError, Frames, Geometry, find_chain, open_frames_writable_at};
+use styx_lemnos::{
+    ChainError, Event as FrameEvent, Frames, Geometry, find_chain, open_frames_writable_at,
+};
+
+use crate::silicon::Fault;
 
 use crate::drivers::{self, SimIsp, SimReceiver, SimSensor};
 use crate::scene::{self, Scene};
@@ -48,6 +52,21 @@ const DIGITAL_GAIN_MILLI: u32 = 1_000;
 const GRANT_WAIT: Duration = Duration::from_secs(10);
 
 /// Errors from starting a simulated camera, setting a control and reading a frame.
+/// What one wait on a simulated camera's stream found (see [`SimCamera::next_event`]).
+#[derive(Debug)]
+pub enum SimEvent {
+    /// A frame, rendered.
+    Frame(SimFrame),
+    /// No frame in time, and nothing else.
+    Idle,
+    /// The camera failed and is retried since `since_ns` (the stream stays attached).
+    Stalled { since_ns: u64 },
+    /// The camera is back: kept, or bound again (the frame sequence restarts).
+    Resumed(styx_lemnos::Carried),
+    /// The stream ended for good, and why.
+    Ended(styx_lemnos::StreamEnd),
+}
+
 #[derive(Debug)]
 pub enum Error {
     /// The working directory or the daemon's board or service could not be made.
@@ -216,9 +235,11 @@ impl SimCamera {
             .map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let silicon = Arc::new(Silicon::new(timing));
         silicon::register(&token, Arc::clone(&silicon));
+        // The registration lives as long as the camera: a device the host binds again after a fault
+        // finds its silicon by this token. A camera that fails to start gives it up here.
         let result = Self::start_in(&dir, scene, mode, &token, silicon);
-        silicon::unregister(&token);
         if result.is_err() {
+            silicon::unregister(&token);
             let _ = fs::remove_dir_all(&dir);
         }
         result
@@ -408,23 +429,50 @@ impl SimCamera {
         Ok(())
     }
 
+    /// Injects `fault` into the simulated sensor (`None` clears it). The sensor reports it as its
+    /// health; the host turns that into the stream's stall, and its return, as [`SimCamera::next_event`]
+    /// reports them.
+    pub fn inject_fault(&self, fault: Option<Fault>) {
+        self.silicon.set_fault(fault);
+    }
+
     /// Grants the next frame, waits up to `timeout` for it, renders it at the settings the sensor
-    /// latched on it and returns it. `None` when no frame came in time.
+    /// latched on it and returns it. `None` when no frame came in time (or a stall or its return came
+    /// instead: see [`SimCamera::next_event`]).
     ///
     /// Values posted through the contract (or by [`SimCamera::set_control`]) since the last frame
     /// was read are written during that frame; the frame latched next shows the ones due on it.
     pub fn next(&mut self, timeout: Duration) -> Result<Option<SimFrame>, Error> {
-        let granted = self
-            .silicon
-            .await_granted(self.allowed, timeout.min(GRANT_WAIT));
-        if granted < self.allowed {
-            return Ok(None);
+        match self.next_event(timeout)? {
+            SimEvent::Frame(frame) => Ok(Some(frame)),
+            SimEvent::Idle | SimEvent::Stalled { .. } | SimEvent::Resumed(_) => Ok(None),
+            SimEvent::Ended(end) => Err(Error::Stream(styx_lemnos::Error::StreamEnded(end))),
         }
-        self.post_due(granted as i64 - 1)?;
-        self.allowed = self.taken + 1;
-        self.silicon.allow(self.allowed);
-        let Some(mut lease) = self.frames.next(timeout).map_err(Error::Stream)? else {
-            return Ok(None);
+    }
+
+    /// As [`SimCamera::next`], but the wait also reports the camera's stall and its return, and
+    /// the end of the stream, as the Lemnos stream reports them.
+    pub fn next_event(&mut self, timeout: Duration) -> Result<SimEvent, Error> {
+        // A failing sensor makes no frames: the stream is quiet while the fault lasts, and the stall
+        // is what the wait reports.
+        let failing = self.silicon.fault().is_some() || self.silicon.is_dead();
+        if !failing {
+            let granted = self
+                .silicon
+                .await_granted(self.allowed, timeout.min(GRANT_WAIT));
+            if granted < self.allowed {
+                return Ok(SimEvent::Idle);
+            }
+            self.post_due(granted as i64 - 1)?;
+            self.allowed = self.taken + 1;
+            self.silicon.allow(self.allowed);
+        }
+        let mut lease = match self.frames.next_event(timeout).map_err(Error::Stream)? {
+            FrameEvent::Frame(lease) => lease,
+            FrameEvent::TimedOut => return Ok(SimEvent::Idle),
+            FrameEvent::Stalled { since_ns } => return Ok(SimEvent::Stalled { since_ns }),
+            FrameEvent::Resumed(carried) => return Ok(SimEvent::Resumed(carried)),
+            FrameEvent::Ended(end) => return Ok(SimEvent::Ended(end)),
         };
         let id = lease.id();
         let in_force = self.silicon.in_force(id).ok_or(Error::NoRecord(id))?;
@@ -453,7 +501,7 @@ impl SimCamera {
             colour_temperature_k: None,
             achieved_fps_milli: 0,
         };
-        Ok(Some(SimFrame { lease, meta }))
+        Ok(SimEvent::Frame(SimFrame { lease, meta }))
     }
 
     /// Gives a frame back to the stream. Its buffer is reused once the lease is gone.

@@ -132,6 +132,10 @@ const REPORTS: usize = 256;
 struct Limits {
     /// The mode's line time, as the contract has it (`u32` picoseconds).
     line_time_ps: u32,
+    /// The mode's frame offset beyond its lines, in picoseconds (the contract's `frame_offset_ps`):
+    /// every rate and frame length is the contract's with this offset, so a frame's period is
+    /// `lines × line_time_ps + frame_offset_ps`.
+    frame_offset_ps: u64,
     fraction_bits: u8,
     /// The analogue gain's codes and law (the contract's `GainRange`).
     gain: GainRange,
@@ -188,12 +192,10 @@ impl Limits {
     /// The rate a frame of `lines` lines runs at, in millihertz: the contract's `fps_milli_of`.
     /// Zero lines (no period) is rate 0; a rate too large for `u32` saturates.
     fn rate_of(&self, lines: u32) -> u32 {
-        // PER-FRAME TERM: the frame length becomes a period here. A per-frame correction from the
-        // contract (for one frame's own period, not the mode's line time) plugs in at this point.
         if lines == 0 {
             return 0;
         }
-        fps_milli_of(self.line_time_ps, lines).unwrap_or(u32::MAX)
+        fps_milli_of(self.line_time_ps, self.frame_offset_ps, lines).unwrap_or(u32::MAX)
     }
 
     /// The frame length for a frame rate, in whole lines: the contract's
@@ -201,17 +203,18 @@ impl Limits {
     /// Not bounded to the mode's frame lengths: the driver clamps it and reports it. Only a rate of
     /// zero is refused.
     fn frame_rate(&self, mhz: u32) -> Result<FrameRate, Error> {
-        let lines = frame_length_for_fps_milli(self.line_time_ps, 1, u32::MAX, mhz)
-            .map(|(lines, _rate)| lines)
-            .ok_or_else(|| {
-                Error::Limit(Limit {
-                    control: Control::FrameRate,
-                    requested: mhz,
-                    min: self.rate_of(self.fl_max),
-                    max: self.rate_of(self.fl_min),
-                    frame_lines: None,
-                })
-            })?;
+        let lines =
+            frame_length_for_fps_milli(self.line_time_ps, self.frame_offset_ps, 1, u32::MAX, mhz)
+                .map(|(lines, _rate)| lines)
+                .ok_or_else(|| {
+                    Error::Limit(Limit {
+                        control: Control::FrameRate,
+                        requested: mhz,
+                        min: self.rate_of(self.fl_max),
+                        max: self.rate_of(self.fl_min),
+                        frame_lines: None,
+                    })
+                })?;
         Ok(FrameRate {
             lines,
             achieved_milli: self.rate_of(lines),
@@ -272,6 +275,7 @@ impl NativeControls {
         }
         let limits = Limits {
             line_time_ps: mode.line_time_ps,
+            frame_offset_ps: mode.frame_offset_ps,
             fraction_bits: mode.exposure_fraction_bits,
             gain: mode.analogue_gain,
             fl_min: mode.frame_length_min,

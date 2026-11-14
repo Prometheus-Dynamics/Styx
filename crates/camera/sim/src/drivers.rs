@@ -26,10 +26,25 @@ use lemnos_contract_camera_sensor::{
     Controls, EmbeddedData, FrameValues, GainLaw, GainRange, InForce, Landing, Mode, Rect,
     SensorInfo, fps_milli_of,
 };
-use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
+use lemnos_core::{
+    Config, ConfigError, Health, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
+};
+
+/// The settings the simulated sensor and receivers read: the camera whose silicon they share.
+const CAMERA_KEYS: &[Key] = &[Key::required("camera", Kind::Str)];
+/// A new instance of a sensor binds to a device that is alive once the injected fault is gone.
+fn alive(clock: Arc<Silicon>) -> Arc<Silicon> {
+    if clock.fault().is_none() {
+        clock.revive();
+    }
+    clock
+}
+
+/// How often the sensor is ticked, so its health is read (nanoseconds).
+const SENSOR_TICK_NS: u64 = 1_000_000;
 use lemnos_hal::blocks::StreamFrame;
 
-use crate::silicon::{self, SensorTiming, Silicon};
+use crate::silicon::{self, Fault, SensorTiming, Silicon};
 
 /// Calls in the order they arrived, across every simulated device in this process.
 static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -69,11 +84,15 @@ pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
     };
     // The shortest frame the mode runs: the frame time the link implies, in whole lines (rounded
     // down, so the frame never runs slower than the link carries it).
+    // The frame's offset beyond its lines is one line time (see `frame_offset_ps` below), so the
+    // lines of the shortest frame are the link's frame time less that offset, in whole lines.
     let line_time_ps = u64::from(silicon::LINE_TIME_PS as u32);
-    let frame_length_min = frame_interval_ns(&link) * 1_000 / line_time_ps;
+    let offset_ps = line_time_ps;
+    let frame_length_min =
+        (frame_interval_ns(&link) * 1_000).saturating_sub(offset_ps) / line_time_ps;
     let frame_length_min = u32::try_from(frame_length_min).ok()?;
     let line_time_ps = u32::try_from(line_time_ps).ok()?;
-    let max_fps_milli = fps_milli_of(line_time_ps, frame_length_min)?;
+    let max_fps_milli = fps_milli_of(line_time_ps, offset_ps, frame_length_min)?;
     Some(Mode {
         link,
         bayer: BayerOrder::Rggb,
@@ -102,6 +121,9 @@ pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
         exposure_delay: timing.exposure_delay,
         gain_delay: timing.gain_delay,
         frame_length_delay: timing.frame_length_delay,
+        // One line time beyond the lines: a frame is `lines + 1` line times long, so the simulated
+        // sensor's rates exercise the contract's offset (a reader that drops it runs 1 line in N short).
+        frame_offset_ps: offset_ps,
         ..Mode::default()
     })
 }
@@ -120,10 +142,41 @@ pub struct SimSensor {
     /// The `CLAMP_*` bits of the last request: the values the sensor could not take as asked.
     clamped: u8,
     clock: Option<Arc<Silicon>>,
+    /// The reason this instance is dead, once an injected `Gone` fault reached it: the host binds
+    /// the sensor again (a new instance, healthy).
+    gone: Option<&'static str>,
 }
 
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
+    // The sensor ticks so the host reads its health on a steady clock: a stall the test injects
+    // is seen within a millisecond, not at the next contract call.
+    const TICKS: bool = true;
+
+    fn tick(&mut self, now_ns: u64) -> Option<u64> {
+        Some(now_ns + SENSOR_TICK_NS)
+    }
+
+    fn health(&self) -> Health {
+        if let Some(reason) = self.gone {
+            return Health::Gone(reason);
+        }
+        match self.clock.as_deref().and_then(Silicon::fault) {
+            Some(Fault::Failed(reason)) => Health::Failed(reason),
+            // A device that stays dead: every bind reads it, until the fault is cleared.
+            Some(Fault::Gone(reason)) => {
+                if let Some(silicon) = self.clock.as_deref() {
+                    silicon.mark_dead();
+                }
+                Health::Gone(reason)
+            }
+            None => Health::Ok,
+        }
+    }
+
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(CAMERA_KEYS)
+    }
 
     fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
@@ -131,7 +184,8 @@ impl Lifecycle for SimSensor {
             streaming: false,
             applied: None,
             clamped: 0,
-            clock: Some(clock(cfg)?),
+            clock: Some(alive(clock(cfg)?)),
+            gone: None,
         })
     }
 }
@@ -366,6 +420,9 @@ struct Running {
 
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(CAMERA_KEYS)
+    }
     const TICKS: bool = true;
 
     fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {

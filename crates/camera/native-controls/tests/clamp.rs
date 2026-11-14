@@ -32,6 +32,7 @@ fn board_mode(line_time_ps: u32) -> Mode {
         exposure_delay: 2,
         gain_delay: 2,
         frame_length_delay: 2,
+        frame_offset_ps: 0,
         ..Mode::default()
     }
 }

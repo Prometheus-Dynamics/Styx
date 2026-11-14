@@ -69,7 +69,7 @@ fn mode(index: usize) -> Option<Mode> {
         line_time_ps: 9_100_000,
         line_length: 1456,
         // The shortest frame at this rate: the contract's whole line nearest to the rate.
-        frame_length_min: frame_length_for_fps_milli(9_100_000, 1, u32::MAX, fps * 1_000)
+        frame_length_min: frame_length_for_fps_milli(9_100_000, 0, 1, u32::MAX, fps * 1_000)
             .map_or(0, |(lines, _)| lines),
         frame_length_max: 52_000,
         exposure_min: 16,
@@ -86,6 +86,7 @@ fn mode(index: usize) -> Option<Mode> {
         exposure_delay: 2,
         gain_delay: 1,
         frame_length_delay: 2,
+        frame_offset_ps: 0,
         readout_ps: 0,
         drop_frames: 2,
         ..Mode::default()

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use styx_controls::{FrameMetadata, Update};
 use styx_frame::FrameLease;
-use styx_lemnos::LayoutRefusal;
+use styx_lemnos::{Carried, LayoutRefusal};
 
 /// What an opened camera is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +29,19 @@ pub enum Status {
         reason: String,
         layout: Option<LayoutRefusal>,
     },
+}
+
+/// A change in the camera between two frames, which a caller hears of through
+/// [`Capture::take_edge`]. A stall is health: the camera is retried and the frame stream stays
+/// attached, so the caller's readers stay attached too.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Edge {
+    /// The camera failed and is being retried since `since_ns` (CLOCK_MONOTONIC nanoseconds). `text`
+    /// is the status line: `camera failed, retrying since <ns>: <reason>`.
+    Stalled { since_ns: u64, text: String },
+    /// The camera is back. `Carried::Kept`: the same device carried on. `Carried::Lost`: the device
+    /// was bound again and the frame sequence restarted, a discontinuity rather than a gap.
+    Resumed { carried: Carried },
 }
 
 /// Why a capture call failed.
@@ -91,6 +104,12 @@ pub trait Capture {
     /// count.
     fn lemnos_skipped(&self) -> u64 {
         0
+    }
+
+    /// The change in the camera since the last call, if one came with the last `next_frame`
+    /// (which then returned no frame). A backend without stalls says nothing.
+    fn take_edge(&mut self) -> Option<Edge> {
+        None
     }
 
     /// Stops the camera. Idempotent.

@@ -190,9 +190,9 @@ fn a_late_request_lands_late_and_says_so() {
 fn a_frame_rate_lands_on_the_frame_length_delay() {
     let mode = mode(2, 2, 2);
     let (lines_60, rate_60) =
-        frame_length_for_fps_milli(LINE_TIME_PS, 1, u32::MAX, 60_000).unwrap();
-    let (lines_30, _) = frame_length_for_fps_milli(LINE_TIME_PS, 1, u32::MAX, 30_000).unwrap();
-    assert_eq!(rate_60, fps_milli_of(LINE_TIME_PS, lines_60).unwrap());
+        frame_length_for_fps_milli(LINE_TIME_PS, 0, 1, u32::MAX, 60_000).unwrap();
+    let (lines_30, _) = frame_length_for_fps_milli(LINE_TIME_PS, 0, 1, u32::MAX, 30_000).unwrap();
+    assert_eq!(rate_60, fps_milli_of(LINE_TIME_PS, 0, lines_60).unwrap());
     // Written in frame 8, shown from frame 10.
     let run = run(&mode, 8, &[update(Control::FrameRate, 30_000, 10)], 16).unwrap();
     assert_eq!(run.landings, [(Control::FrameRate, 10, 10)]);

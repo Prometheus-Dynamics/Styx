@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update, WIRE_BYTES};
 use styx_format::{FourCc, Interval};
+use styx_lemnos::Carried;
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
 use styx_native::{Camera, discover};
@@ -22,7 +23,7 @@ use styx_native_run::{
     AutoOff, Clock, ExposureReport, Initial, Policy, Request, Selection, Session,
 };
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
-use styx_select::{Capture, CaptureError, Selected, Status};
+use styx_select::{Capture, CaptureError, Edge, Selected, Status};
 use styx_socket::{Accepted, HandshakePlan, Producer, StreamEnd};
 use styx_v4l2::StreamConfig;
 
@@ -641,6 +642,9 @@ fn pump(
                 };
             }
         }
+        if let Some(edge) = capture.take_edge() {
+            apply_edge(publisher, slot, edge);
+        }
         match capture.status() {
             Status::Streaming => {
                 slot.layout_refused(None);
@@ -703,6 +707,48 @@ fn pump(
         release(publisher, slot, None);
     }
     ended
+}
+
+/// Applies a camera's stall or return to the producer its readers are on. A stall is health: the
+/// producer stays attached and its readers are told `Retrying` since the failure, with the camera's
+/// own reason. A return ends it: the readers are told the camera runs. A return that lost what it
+/// was given restarts the frame sequence: the slot starts counting from its first frame again, so
+/// no gap is counted for it.
+fn apply_edge(publisher: &mut Publisher, slot: &Slot, edge: Edge) {
+    match edge {
+        Edge::Stalled { since_ns, text } => {
+            // A silence the session names has no time of its own (0): it starts now.
+            let since_ns = if since_ns == 0 {
+                styx_socket::clock_ns()
+            } else {
+                since_ns
+            };
+            if let Some(held) = publisher.as_mut() {
+                held.producer.stall(since_ns);
+                slot.set_readers(held.producer.stats().readers);
+            }
+            slot.stalled(since_ns);
+            slot.retrying(text);
+        }
+        Edge::Resumed { carried } => {
+            let kept = carried == Carried::Kept;
+            if let Some(held) = publisher.as_mut() {
+                let carried = if kept {
+                    styx_socket::Carried::Kept
+                } else {
+                    styx_socket::Carried::Lost
+                };
+                held.producer.resume(carried);
+                slot.set_readers(held.producer.stats().readers);
+            }
+            slot.clear_stall();
+            slot.camera_back();
+            slot.resumed();
+            if !kept {
+                slot.discontinuity();
+            }
+        }
+    }
 }
 
 fn set(capture: &mut dyn Capture, updates: &[Update]) -> Result<(), String> {

@@ -28,6 +28,7 @@ fn mode() -> Mode {
         exposure_delay: 2,
         gain_delay: 2,
         frame_length_delay: 2,
+        frame_offset_ps: 0,
         readout_ps: 0,
         ..Mode::default()
     }
@@ -158,7 +159,7 @@ fn a_frame_rate_the_frame_length_cannot_reach_is_clamped_and_reported() {
     assert!(rate.clamped, "{rate:?}");
     assert_eq!(
         (rate.lines, rate.achieved_milli),
-        (900, fps_milli_of(9_100_000, 900).unwrap())
+        (900, fps_milli_of(9_100_000, 0, 900).unwrap())
     );
 }
 
@@ -172,7 +173,7 @@ fn a_frame_rate_the_frame_length_reaches_is_not_clamped() {
     let landing = landings.iter().next().expect("one landing");
     assert!(!landing.clamped);
     // The nearest whole frame to 120 fps is the contract's choice; its rate is the landing's.
-    let (lines, rate) = frame_length_for_fps_milli(9_100_000, 900, 52_000, 120_000).unwrap();
+    let (lines, rate) = frame_length_for_fps_milli(9_100_000, 0, 900, 52_000, 120_000).unwrap();
     assert!((900..=52_000).contains(&lines), "{lines}");
     assert_eq!(landing.achieved_milli, Some(rate));
 }
