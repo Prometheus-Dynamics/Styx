@@ -291,7 +291,7 @@ fn every_entry_point_survives_null_and_garbage_arguments() {
 #[test]
 fn the_header_and_the_library_agree_on_statuses_and_enum_values() {
     let header = read("include/styx.h");
-    let table: [(&str, i32); 11] = [
+    let table: [(&str, i32); 14] = [
         ("STYX_OK", OK),
         ("STYX_E_INVALID", E_INVALID),
         ("STYX_E_NOT_FOUND", E_NOT_FOUND),
@@ -303,6 +303,9 @@ fn the_header_and_the_library_agree_on_statuses_and_enum_values() {
         ("STYX_E_PANIC", E_PANIC),
         ("STYX_E_STOPPED", E_STOPPED),
         ("STYX_E_RANGE", E_RANGE),
+        ("STYX_E_LAYOUT", E_LAYOUT),
+        ("STYX_LAYOUT_RING", LAYOUT_RING),
+        ("STYX_LAYOUT_MARKS", LAYOUT_MARKS),
     ];
     for (name, value) in table {
         let line = header
@@ -388,8 +391,8 @@ fn the_header_declares_exactly_the_functions_the_library_exports() {
     }
     assert_eq!(
         declared.len(),
-        21,
-        "the header declares 21 functions: {declared:?}"
+        22,
+        "the header declares 22 functions: {declared:?}"
     );
     assert_eq!(declared, exported, "the header and the exports agree");
 }

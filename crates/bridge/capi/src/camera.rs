@@ -24,11 +24,14 @@ use styx_native::discover;
 use styx_native_run::{AutoOff, Initial, Policy, Request, Session, SystemClock};
 use styx_select::adapters::NativeCapture;
 use styx_select::{Backend, Capture, CaptureError, Selected};
-use styx_socket::Reader;
+use styx_socket::{Reader, SharedLayout, SocketError};
 
 use crate::frame::Frame;
 use crate::source::{self, CLIENT_NAME, Kind, Source};
-use crate::status::{E_BUSY, E_IO, E_NOT_FOUND, E_RANGE, E_STOPPED, E_UNSUPPORTED, Fail, Res};
+use crate::status::{
+    E_BUSY, E_IO, E_NOT_FOUND, E_PROTOCOL, E_RANGE, E_STOPPED, E_UNSUPPORTED, Fail, LAYOUT_MARKS,
+    LAYOUT_RING, Res,
+};
 use crate::wire::{self, ControlLink, IO_WAIT};
 
 /// How long opening a camera may take before it fails.
@@ -434,7 +437,66 @@ fn connect_reader(path: &Path) -> Res<Reader> {
     let stream: UnixStream = UnixStream::connect(path)
         .map_err(|e| Fail::io(format!("frame socket {}: {e}", path.display())))?;
     stream.set_read_timeout(Some(IO_WAIT)).map_err(Fail::io)?;
-    let reader = Reader::connect(stream)
-        .map_err(|e| Fail::io(format!("frame socket {}: {e}", path.display())))?;
+    let reader = Reader::connect(stream).map_err(|e| socket_fail(e, path))?;
     Ok(reader)
+}
+
+/// A handshake's refusal as the call's status. A layout refusal keeps its structure and both
+/// values (`STYX_E_LAYOUT`, read with `styx_layout_refusal`); a version refusal is a protocol
+/// mismatch whose message names both versions; anything else is an i/o failure.
+fn socket_fail(error: SocketError, path: &Path) -> Fail {
+    let text = format!("frame socket {}: {error}", path.display());
+    match error {
+        SocketError::Layout {
+            which,
+            found,
+            expected,
+        } => Fail::layout(
+            match which {
+                SharedLayout::Ring => LAYOUT_RING,
+                SharedLayout::Marks => LAYOUT_MARKS,
+            },
+            text,
+            found,
+            expected,
+        ),
+        SocketError::Version { .. } => Fail::new(E_PROTOCOL, text),
+        _ => Fail::io(text),
+    }
+}
+
+#[cfg(test)]
+mod socket_error_tests {
+    use super::*;
+    use crate::status::{E_LAYOUT, E_PROTOCOL, Layout};
+
+    #[test]
+    fn a_frame_socket_layout_refusal_is_the_layout_status_with_its_values() {
+        let fail = socket_fail(
+            SocketError::Layout {
+                which: SharedLayout::Marks,
+                found: 1,
+                expected: 2,
+            },
+            Path::new("/run/styx/frames.sock"),
+        );
+        assert_eq!(fail.status, E_LAYOUT);
+        assert_eq!(
+            fail.layout,
+            Some(Layout {
+                which: LAYOUT_MARKS,
+                found: 1,
+                expected: 2,
+            })
+        );
+        assert!(fail.message.contains("layout 1") && fail.message.contains("layout 2"));
+    }
+
+    #[test]
+    fn a_version_refusal_is_a_protocol_mismatch_naming_both_versions() {
+        let fail = socket_fail(SocketError::Version { ours: 5, theirs: 4 }, Path::new("/s"));
+        assert_eq!(fail.status, E_PROTOCOL);
+        assert_eq!(fail.layout, None);
+        assert!(fail.message.contains("version 4") && fail.message.contains("version 5"));
+    }
 }

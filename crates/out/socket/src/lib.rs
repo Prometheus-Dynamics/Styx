@@ -59,6 +59,35 @@ pub use producer::{
 pub use reader::{Frame, ReadError, Reader, ReaderStats, Start};
 pub use shm_ring_holds::Limits;
 pub use wire::USER_MAX;
+/// The end code a ring holds once its publisher has closed it cleanly ([`Producer::close`], or the
+/// producer's drop). Readers see it as [`ReadError::PublisherClosed`].
+pub const ENDED_CLOSED: u32 = 1;
+/// The end code a ring holds once its publisher has ended with a fault. Readers see it as
+/// [`ReadError::PublisherFaulted`]. A test sets it with [`Producer::ring`]`.set_end`.
+pub const ENDED_FAULTED: u32 = 2;
+/// The handshake version this build speaks. A peer on another version is refused by name
+/// ([`SocketError::Version`]).
+pub const HANDSHAKE_VERSION: u32 = wire::VERSION;
+
+/// A shared structure whose layout value this build does not read. See [`SocketError::Layout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedLayout {
+    /// The frame ring's header (`shm_ring::LAYOUT`, word 1).
+    Ring,
+    /// A reader's marks page (`shm_ring_holds::LAYOUT`).
+    Marks,
+}
+
+impl SharedLayout {
+    /// The structure as a person reads it: the start of the refusal's message.
+    #[must_use]
+    pub const fn what(self) -> &'static str {
+        match self {
+            Self::Ring => "this ring",
+            Self::Marks => "this marks page",
+        }
+    }
+}
 
 /// Why a handshake, a publish or a connection failed.
 #[derive(Debug)]
@@ -79,6 +108,25 @@ pub enum SocketError {
     Protocol(&'static str),
     /// The configuration asks for something this crate does not allow.
     Config(&'static str),
+    /// A shared structure (the ring or a marks page) carries a layout value this build does not
+    /// read: the peer is another layout. `found` is the value in the memory, `expected` the one
+    /// this build reads. Nothing is mapped or linked when this is returned.
+    Layout {
+        /// The structure whose layout is refused.
+        which: SharedLayout,
+        /// The value in the memory.
+        found: u64,
+        /// The value this build reads.
+        expected: u64,
+    },
+    /// The handshake's version is not this build's: `theirs` is the peer's, `ours` this build's.
+    /// Nothing is linked when this is returned.
+    Version {
+        /// This build's handshake version ([`HANDSHAKE_VERSION`]).
+        ours: u32,
+        /// The version the peer sent.
+        theirs: u32,
+    },
     /// Every reader slot the ring has is taken.
     NoReaderSlot,
     /// Every outside doorbell slot ([`OUTSIDE_BELLS`]) is in use.
@@ -95,6 +143,19 @@ impl fmt::Display for SocketError {
             Self::Buffer(err) => write!(f, "{err}"),
             Self::Pool(err) => write!(f, "{err}"),
             Self::Protocol(why) => write!(f, "handshake: {why}"),
+            Self::Layout {
+                which,
+                found,
+                expected,
+            } => write!(
+                f,
+                "{} is layout {found}; this build reads layout {expected}",
+                which.what()
+            ),
+            Self::Version { ours, theirs } => write!(
+                f,
+                "handshake version {theirs} from the other side; this build speaks version {ours}"
+            ),
             Self::Config(why) => write!(f, "configuration: {why}"),
             Self::NoReaderSlot => f.write_str("every reader slot of the ring is taken"),
             Self::NoBellSlot => f.write_str("every outside doorbell slot is in use"),
@@ -124,7 +185,23 @@ impl From<shm_fdpass::RecvError> for SocketError {
 
 impl From<shm_ring::RingError> for SocketError {
     fn from(err: shm_ring::RingError) -> Self {
-        Self::Ring(err)
+        // The shm crate's layout refusal keeps its two values, and the structure it names.
+        match err {
+            shm_ring::RingError::Layout { what, found, reads } => match what {
+                "this ring" => Self::Layout {
+                    which: SharedLayout::Ring,
+                    found,
+                    expected: reads,
+                },
+                "this marks page" => Self::Layout {
+                    which: SharedLayout::Marks,
+                    found,
+                    expected: reads,
+                },
+                _ => Self::Ring(shm_ring::RingError::Layout { what, found, reads }),
+            },
+            other => Self::Ring(other),
+        }
     }
 }
 

@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use styx_controls::FrameMetadata;
-use styx_socket::{Frame, ReadError, Reader, ReaderStats, Start};
+use styx_socket::{Frame, ReadError, Reader, ReaderStats, SocketError, Start};
 
 use crate::clock::monotonic_ns;
 use crate::isp::{IspError, IspRunner};
@@ -22,8 +22,9 @@ const POLL: Duration = Duration::from_millis(50);
 pub enum SessionError {
     /// The frame socket could not be reached.
     Connect { socket: PathBuf, error: io::Error },
-    /// The handshake or the buffer table failed.
-    Handshake(String),
+    /// The handshake or the buffer table failed; the socket's own error, typed (a layout or a
+    /// version refusal names its values).
+    Handshake(SocketError),
     /// The producer cut this reader off, or replaced its pool.
     Read(ReadError),
     /// The wait for frames failed.
@@ -38,7 +39,7 @@ impl fmt::Display for SessionError {
             SessionError::Connect { socket, error } => {
                 write!(f, "connect {}: {error}", socket.display())
             }
-            SessionError::Handshake(why) => write!(f, "handshake: {why}"),
+            SessionError::Handshake(e) => write!(f, "handshake: {e}"),
             SessionError::Read(e) => write!(f, "{e}"),
             SessionError::Wait(e) => write!(f, "waiting for frames: {e}"),
             SessionError::Isp(e) => write!(f, "{e}"),
@@ -91,8 +92,7 @@ impl Session {
             socket: socket.to_path_buf(),
             error,
         })?;
-        let reader = Reader::connect_with(stream, start)
-            .map_err(|e| SessionError::Handshake(e.to_string()))?;
+        let reader = Reader::connect_with(stream, start).map_err(SessionError::Handshake)?;
         let reader_start = reader.stats();
         Ok(Self {
             socket: socket.to_path_buf(),

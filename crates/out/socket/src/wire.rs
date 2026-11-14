@@ -22,9 +22,12 @@ const USER_LEN: usize = 2;
 /// The most metadata bytes one frame's ring entry carries: the frame's own, then the opaque part.
 pub(crate) const META_MAX: usize = FRAME_META_MAX + USER_LEN + USER_MAX;
 
-/// Version of the handshake messages and of the ring entry's layout. A reader refuses any other.
-/// Version 4 added the opaque per-frame part after the planes.
-pub(crate) const VERSION: u32 = 4;
+/// Version of the handshake messages and of the ring entry's layout. A peer on any other version
+/// is refused by name ([`crate::SocketError::Version`]). Version 4 added the opaque per-frame part
+/// after the planes. Version 5 is the first built on Lemnos's layout-2 ring and marks page (word 10
+/// of the ring is the end code). The layout check refuses most mixed pairs; a version 4 publisher's
+/// marks page is one it does not, so the handshake refuses the version itself.
+pub(crate) const VERSION: u32 = 5;
 /// The offer: version, buffers, the reader's slot, the most buffers it may hold, history, the
 /// metadata size, the payload, the slack and the number of descriptors the pool's buffers sit in.
 /// Its descriptors are the ring's read end and the pool page, in that order. One [`Record`]
@@ -61,6 +64,11 @@ pub(crate) fn encode_offer(offer: &Offer) -> [u8; OFFER_LEN] {
     out[32..40].copy_from_slice(&(geometry.slack() as u64).to_le_bytes());
     out[40..44].copy_from_slice(&offer.descriptors.to_le_bytes());
     out
+}
+
+/// The version a handshake message carries in its first word, when it is long enough to have one.
+pub(crate) fn version_of(bytes: &[u8]) -> Option<u32> {
+    Some(u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?))
 }
 
 /// Reads an offer; `None` for one this build does not understand or whose geometry it refuses.

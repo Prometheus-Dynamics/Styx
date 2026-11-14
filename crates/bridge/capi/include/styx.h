@@ -52,6 +52,12 @@ typedef int32_t styx_status;
 #define STYX_E_PANIC (-8)       /* an internal failure, caught at the boundary */
 #define STYX_E_STOPPED (-9)     /* the camera stopped or faulted: open it again */
 #define STYX_E_RANGE (-10)      /* a control value outside its range */
+#define STYX_E_LAYOUT (-11)     /* a frame socket's shared ring or marks page is another layout:
+                                   styx_layout_refusal gives which, found and expected */
+
+/* The structure a STYX_E_LAYOUT refusal names (styx_layout_refusal's first value). */
+#define STYX_LAYOUT_RING 1  /* the frame ring's header */
+#define STYX_LAYOUT_MARKS 2 /* a reader's marks page */
 
 /* Handles. Each is freed by its own close or release call. */
 typedef struct styx_source styx_source;
@@ -126,6 +132,11 @@ const char *styx_status_name(styx_status status);
 
 /* Thread-safe (per thread). Copies this thread's last failure message. */
 styx_status styx_last_error(uint8_t *buf, size_t cap, size_t *len);
+
+/* Thread-safe (per thread). After a STYX_E_LAYOUT failure: which structure (STYX_LAYOUT_RING or
+   STYX_LAYOUT_MARKS), the layout value in the peer's memory and the one this build reads. Any
+   other failure, or none, is STYX_E_NOT_FOUND. Each out-pointer may be NULL. */
+styx_status styx_layout_refusal(int32_t *which, uint64_t *found, uint64_t *expected);
 
 /* ---- Sources --------------------------------------------------------------------------- */
 

@@ -161,9 +161,40 @@ pub extern "C" fn styx_status_name(status: i32) -> *const c_char {
         status::E_PANIC => b"internal failure\0",
         status::E_STOPPED => b"stopped\0",
         status::E_RANGE => b"value out of range\0",
+        status::E_LAYOUT => b"shared layout is another build's\0",
         _ => return std::ptr::null(),
     };
     name.as_ptr().cast()
+}
+
+/// The values of this thread's last failure, when it was a shared-layout refusal
+/// (`STYX_E_LAYOUT`): `which` is `STYX_LAYOUT_RING` or `STYX_LAYOUT_MARKS`, `found` the layout
+/// value in the peer's memory and `expected` the one this build reads. Any other failure, or none,
+/// is `STYX_E_NOT_FOUND`.
+///
+/// # Safety
+///
+/// `which`, `found` and `expected` are NULL or point to writable values.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_layout_refusal(
+    which: *mut i32,
+    found: *mut u64,
+    expected: *mut u64,
+) -> i32 {
+    guard(|| {
+        let layout = status::last_layout().ok_or_else(|| {
+            Fail::new(
+                E_NOT_FOUND,
+                "this thread's last failure is no layout refusal",
+            )
+        })?;
+        // SAFETY: the out-pointers are NULL or writable, per the contract above.
+        unsafe {
+            put(which, layout.which)?;
+            put(found, layout.found)?;
+            put(expected, layout.expected)
+        }
+    })
 }
 
 /// Copies this thread's last failure message into `buf` (see `write_bytes` in the header: the

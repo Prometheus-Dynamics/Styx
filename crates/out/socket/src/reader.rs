@@ -21,7 +21,7 @@ use crate::SocketError;
 use crate::geometry::Geometry;
 use crate::wire::{
     ACK_LEN, OFFER_LEN, Offer, RECORD_LEN, Record, USER_MAX, VERSION, decode_meta, decode_offer,
-    decode_record, decode_user,
+    decode_record, decode_user, version_of,
 };
 
 const FIELD: FieldId = FieldId(0);
@@ -51,6 +51,15 @@ pub enum ReadError {
         /// The new pool's generation.
         generation: u32,
     },
+    /// The producer closed its ring cleanly (it was shut down, or dropped). Every frame it
+    /// published has been delivered; no more will come. Not a fault: the reader ends.
+    PublisherClosed,
+    /// The producer's ring ended with a fault ([`crate::ENDED_FAULTED`], or another nonzero end code).
+    /// Every frame it published has been delivered; no more will come.
+    PublisherFaulted {
+        /// The end code the ring holds.
+        code: u32,
+    },
 }
 
 impl core::fmt::Display for ReadError {
@@ -61,6 +70,13 @@ impl core::fmt::Display for ReadError {
                 write!(
                     f,
                     "the producer replaced its pool (generation {generation})"
+                )
+            }
+            Self::PublisherClosed => f.write_str("the producer closed its ring: no more frames"),
+            Self::PublisherFaulted { code } => {
+                write!(
+                    f,
+                    "the producer's ring ended with a fault (end code {code})"
                 )
             }
         }
@@ -295,6 +311,15 @@ impl Reader {
         let received = fdpass::recv(socket.as_fd(), &mut offer_bytes, 2, false)?.ok_or(
             SocketError::Protocol("the producer closed before its offer"),
         )?;
+        // The version first: another version may send an offer of another length.
+        if let Some(theirs) = version_of(offer_bytes.get(..received.len).unwrap_or_default())
+            && theirs != VERSION
+        {
+            return Err(SocketError::Version {
+                ours: VERSION,
+                theirs,
+            });
+        }
         if received.len != OFFER_LEN {
             return Err(SocketError::Protocol(
                 "the offer is not this protocol version",
@@ -448,6 +473,9 @@ impl Reader {
     /// [`ReadError::CutOff`] once the producer has cut this reader off.
     pub fn next_frame(&mut self) -> Result<Option<Frame>, ReadError> {
         loop {
+            // The end code is read before the ring: a ring that has ended has published every frame
+            // before its end, and a read after this load sees them all.
+            let ended = self.buffers.end();
             match self.buffers.next() {
                 NextBatch::Batch(batch) => {
                     if let Some(frame) = admit(&self.frames, &mut self.counters, batch) {
@@ -455,7 +483,13 @@ impl Reader {
                     }
                 }
                 NextBatch::Skipped(_) => {}
-                NextBatch::Empty => return Ok(None),
+                NextBatch::Empty => {
+                    return match ended {
+                        0 => Ok(None),
+                        crate::ENDED_CLOSED => Err(ReadError::PublisherClosed),
+                        code => Err(ReadError::PublisherFaulted { code }),
+                    };
+                }
                 NextBatch::Limited => {
                     self.counters.limited += 1;
                     return Ok(None);
@@ -480,8 +514,13 @@ impl Reader {
         let mut budget = self.buffers.pending().saturating_add(1);
         while budget > 0 {
             budget -= 1;
-            let Some(frame) = self.next_frame()? else {
-                break;
+            let frame = match self.next_frame() {
+                Ok(Some(frame)) => frame,
+                Ok(None) => break,
+                // The frame held already is the newest the reader has. An end is sticky: the next
+                // call reports it again, so it is not lost.
+                Err(_) if newest.is_some() => break,
+                Err(e) => return Err(e),
             };
             if let Some(older) = newest.replace(frame) {
                 drop(older);
@@ -498,7 +537,9 @@ impl Reader {
     /// If polling the doorbell fails.
     pub fn wait(&mut self, timeout: Option<Duration>) -> io::Result<Wake> {
         let buffers = &self.buffers;
-        self.doorbell.wait(timeout, || buffers.pending() > 0)
+        // An ended ring is ready at once: the next read reports the end.
+        self.doorbell
+            .wait(timeout, || buffers.pending() > 0 || buffers.end() != 0)
     }
 
     /// Counts, now.

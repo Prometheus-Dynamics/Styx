@@ -19,7 +19,7 @@ use crate::SocketError;
 use crate::geometry::Geometry;
 use crate::wire::{
     ACK_LEN, MAX_DESCRIPTORS, META_MAX, Offer, Record, VERSION, encode_entry, encode_offer,
-    encode_record,
+    encode_record, version_of,
 };
 
 /// How long a reader has to answer the handshake.
@@ -105,6 +105,15 @@ impl HandshakePlan {
         let received = fdpass::recv(socket.as_fd(), &mut ack, 3, false)?.ok_or(
             SocketError::Protocol("the reader closed before it answered"),
         )?;
+        // The version first: an old reader's answer may not be of this length.
+        if let Some(theirs) = version_of(ack.get(..received.len).unwrap_or_default())
+            && theirs != VERSION
+        {
+            return Err(SocketError::Version {
+                ours: VERSION,
+                theirs,
+            });
+        }
         if received.len != ACK_LEN
             || ack[0..4] != VERSION.to_le_bytes()
             || ack[4..8] != slot.to_le_bytes()
@@ -611,6 +620,24 @@ impl<M> Producer<M> {
         Ok(seq)
     }
 
+    /// Ends the ring cleanly: readers get the frames already published, then
+    /// [`ReadError::PublisherClosed`] from their next read, and a reader waiting on its doorbell
+    /// wakes at once. Idempotent; a ring already ended keeps its code. Dropping the producer does
+    /// this too.
+    pub fn close(&mut self) {
+        if self.ring.end() == 0 {
+            self.ring.set_end(crate::ENDED_CLOSED);
+        }
+        for link in &mut self.links {
+            link.bell.ring();
+        }
+        for slot in &mut self.bells {
+            if let Some(bell) = slot.bell.as_mut() {
+                bell.ring();
+            }
+        }
+    }
+
     /// Gives back the buffers of frames that have left the keep window and that no reader holds.
     /// The newest `keep` frames are kept whether or not a reader holds them; a frame older than
     /// that that a reader holds is given back when the reader lets go (it is retried here). A
@@ -723,4 +750,11 @@ fn file_identity(fd: BorrowedFd<'_>) -> io::Result<(u64, u64)> {
 /// might send is left unread here; this only looks for end of stream.
 fn peer_closed(socket: &UnixStream) -> bool {
     matches!(fdpass::recv(socket.as_fd(), &mut [], 0, true), Ok(None))
+}
+
+impl<M> Drop for Producer<M> {
+    /// A producer that goes away has ended its ring: its readers see the end, not a silence.
+    fn drop(&mut self) {
+        self.close();
+    }
 }
