@@ -17,11 +17,13 @@
 
 mod camera;
 mod drivers;
+mod rig;
 mod scene;
 mod silicon;
 
 pub use camera::{Error, SimCamera, SimEvent, SimFrame};
 pub use drivers::call_log;
+pub use rig::SimRig;
 pub use scene::{FULL_SCALE, REFERENCE_EXPOSURE_US, REFERENCE_GAIN_MILLI, Scene};
 pub use silicon::Fault;
 pub use silicon::SensorTiming;

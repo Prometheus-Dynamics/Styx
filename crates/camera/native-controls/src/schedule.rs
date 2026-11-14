@@ -11,6 +11,8 @@ pub(crate) const PENDING: usize = 16;
 /// Posts kept per control for [`Lane::value_at`]. Frames older than the first kept post report
 /// the first kept value.
 pub(crate) const HISTORY: usize = 64;
+/// The landing of a value posted again after a rebind, until the post lands: no frame has it yet.
+const UNLANDED: u64 = u64::MAX;
 
 /// One control's schedule.
 #[derive(Debug)]
@@ -94,6 +96,35 @@ impl Lane {
             .find(|&&(landing, _)| landing <= frame)
             .or_else(|| self.history.front())
             .map_or(0, |&(_, code)| code)
+    }
+
+    /// The code last asked for: the newest request still pending, else the newest value posted.
+    pub(crate) fn last_requested(&self) -> u32 {
+        self.pending
+            .last()
+            .map(|&(_, code)| code)
+            .or_else(|| self.history.back().map(|&(_, code)| code))
+            .unwrap_or(0)
+    }
+
+    /// A rebind: the sensor's values are its own again and the frame sequence restarts at zero. The
+    /// last code asked for is the one to post again, and nothing is settled until that post lands
+    /// ([`Lane::landed_at_start`]). Pending requests of the old sequence are dropped.
+    pub(crate) fn restart(&mut self) {
+        let code = self.last_requested();
+        self.pending.clear();
+        self.history.clear();
+        self.history.push_back((UNLANDED, code));
+    }
+
+    /// The post made for a rebind lands before the first frame of the new sequence, as the sensor
+    /// takes the values before it starts.
+    pub(crate) fn landed_at_start(&mut self) {
+        if let Some(back) = self.history.back_mut()
+            && back.0 == UNLANDED
+        {
+            back.0 = 0;
+        }
     }
 
     /// Requests replaced by a later one for the same post frame, or superseded by a later due one.

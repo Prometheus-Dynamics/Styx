@@ -68,6 +68,8 @@ pub(crate) const MODES: [(u32, u32); 2] = [(320, 40), (640, 40)];
 const PIXEL_RATE_HZ: u64 = 1_536_000;
 /// How often the receiver looks for a granted frame while it waits (nanoseconds).
 const POLL_NS: u64 = 200_000;
+/// Frames the receiver latches in one tick, at most.
+const LATCH_PER_TICK: u32 = 64;
 
 pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
     let (width, height) = *MODES.get(index)?;
@@ -161,7 +163,11 @@ impl Lifecycle for SimSensor {
         if let Some(reason) = self.gone {
             return Health::Gone(reason);
         }
-        match self.clock.as_deref().and_then(Silicon::fault) {
+        let fault = self.clock.as_deref().and_then(Silicon::fault);
+        if let Some(silicon) = self.clock.as_deref() {
+            silicon.note_health(fault.is_none());
+        }
+        match fault {
             Some(Fault::Failed(reason)) => Health::Failed(reason),
             // A device that stays dead: every bind reads it, until the fault is cleared.
             Some(Fault::Gone(reason)) => {
@@ -443,7 +449,10 @@ impl Lifecycle for SimReceiver {
         let silicon = self.clock.clone()?;
         let size = self.layout.map_or(0, |layout| layout.size);
         let mut next = running.next_ns.unwrap_or(now_ns);
-        while let Some(id) = silicon.latch() {
+        // At most this many frames per tick: a free-running camera would otherwise hold the tick for
+        // ever; the next tick takes up the rest.
+        for _ in 0..LATCH_PER_TICK {
+            let Some(id) = silicon.latch() else { break };
             match self.frames.next_buffer() {
                 Ok(Some(buffer)) => {
                     let frame = StreamFrame {

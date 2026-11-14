@@ -639,6 +639,9 @@ impl<'a, C: Clock> Session<'a, C> {
             .as_mut()
             .ok_or_else(|| "no running session to restart".to_string())?;
         let index = running.mode;
+        // The receiver is still running from before the bind: it is stopped, so it can be configured
+        // and started again with the sensor. The frame stream stays attached.
+        refused(running.receiver.stop(), "receiver.stop on restart").map_err(|f| fault_text(&f))?;
         let mode = running
             .sensor
             .mode(index)
@@ -650,6 +653,8 @@ impl<'a, C: Clock> Session<'a, C> {
             "receiver.configure",
         )
         .map_err(|fault| fault_text(&fault))?;
+        // The sequence restarts at zero: the controls forget the old one and post what was asked.
+        running.controls.restart();
         running
             .controls
             .prepare(&mut running.sensor)

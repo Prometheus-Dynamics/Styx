@@ -336,7 +336,9 @@ impl NativeControls {
         self.rate
     }
 
-    /// Writes the initial values with `set_controls`, before the sensor starts. Frame 0 shows them.
+    /// Writes the values in force from frame 0 with `set_controls`, before the sensor starts: the
+    /// initial values, or after [`NativeControls::restart`] the values asked for last. Frame 0 shows
+    /// them.
     pub fn prepare<S: CameraSensor + ?Sized>(&mut self, sensor: &mut S) -> Result<(), Error> {
         let controls = Controls {
             exposure: Some(self.lanes[EXPOSURE].value_at(0)),
@@ -344,7 +346,26 @@ impl NativeControls {
             frame_length: Some(self.lanes[FRAME_LENGTH].value_at(0)),
             digital_gain: None,
         };
-        sensor.set_controls(controls).map_err(Error::Sensor)
+        sensor.set_controls(controls).map_err(Error::Sensor)?;
+        for lane in &mut self.lanes {
+            lane.landed_at_start();
+        }
+        Ok(())
+    }
+
+    /// The device was bound again and the frame sequence restarts at zero (a lost resume). What was
+    /// asked for is kept: [`NativeControls::prepare`] posts it again. What the old sequence had in
+    /// force, and what the driver reported for it, is forgotten, so no frame's applied values are
+    /// known until the posts land on the new sequence.
+    pub fn restart(&mut self) {
+        self.frame = None;
+        self.reports.clear();
+        self.exposure_applied_us = None;
+        self.exposure_clamp = None;
+        self.gain_clamp = None;
+        for lane in &mut self.lanes {
+            lane.restart();
+        }
     }
 
     /// Takes a report of what is in force: the exposure, gain and frame length the driver holds,

@@ -86,8 +86,11 @@ pub(crate) struct InForce {
 struct State {
     /// Frames latched so far; the next frame to latch is `granted`.
     granted: u64,
-    /// Frames the camera has granted, through its `next` calls.
+    /// Frames the camera has granted, through its `next` calls (or all of them, for a free-running
+    /// camera).
     allowed: u64,
+    /// Writes posted to the lanes, since the camera started.
+    writes: u64,
     /// Per lane: `(first frame shown, code)` in landing order. Starts at frame 0 with automatic.
     lanes: [VecDeque<(u64, Option<u32>)>; LANES],
     /// Settings of recently latched frames, by identity.
@@ -113,6 +116,9 @@ pub(crate) struct Silicon {
     /// Set when a sensor instance reported itself dead (`Gone`), and cleared when a new instance
     /// reads healthy: the device makes no frames in between, as a device the host has not bound yet.
     dead: AtomicBool,
+    /// Set while the host has read the sensor as failing and not yet as healthy again: the stream
+    /// makes no frame then, so the host's stall and return come before the first frame after them.
+    stalled: AtomicBool,
 }
 
 impl std::fmt::Debug for Silicon {
@@ -136,12 +142,14 @@ impl Silicon {
             state: Mutex::new(State {
                 granted: 0,
                 allowed: 0,
+                writes: 0,
                 lanes: [start_lane(), start_lane(), start_lane()],
                 frames: VecDeque::with_capacity(FRAMES + 1),
             }),
             changed: Condvar::new(),
             fault: Mutex::new(None),
             dead: AtomicBool::new(false),
+            stalled: AtomicBool::new(false),
         }
     }
 
@@ -158,6 +166,11 @@ impl Silicon {
     /// A new instance reads healthy: the device is alive again.
     pub(crate) fn revive(&self) {
         self.dead.store(false, Ordering::Release);
+    }
+
+    /// The host read the sensor's health: a failing read holds frames back, a healthy one lets them go.
+    pub(crate) fn note_health(&self, healthy: bool) {
+        self.stalled.store(!healthy, Ordering::Release);
     }
 
     /// The fault injected now, if any.
@@ -208,10 +221,28 @@ impl Silicon {
         state.granted
     }
 
-    /// Latches the next frame if the camera has granted it, and returns its identity.
+    /// Grants every frame: the camera runs free, as fast as its receiver takes them.
+    pub(crate) fn run_free(&self) {
+        let mut state = self.lock();
+        state.allowed = u64::MAX;
+        self.changed.notify_all();
+    }
+
+    /// Grants no more frames than latched so far: a silent camera, which reports no fault.
+    pub(crate) fn pause(&self) {
+        let mut state = self.lock();
+        state.allowed = state.granted;
+    }
+
+    /// Latches the next frame if the camera has granted it, and returns its identity. A failing or
+    /// dead sensor makes no frame, as a stopped one makes none.
     pub(crate) fn latch(&self) -> Option<u64> {
         let mut state = self.lock();
-        if state.granted >= state.allowed {
+        if state.granted >= state.allowed
+            || self.is_dead()
+            || self.fault().is_some()
+            || self.stalled.load(Ordering::Acquire)
+        {
             return None;
         }
         let id = state.granted;
@@ -263,6 +294,12 @@ impl Silicon {
         let mut state = self.lock();
         let landing = (state.granted + self.timing.delay(lane)).saturating_sub(1);
         push(&mut state.lanes[lane], landing, code);
+        state.writes += 1;
+    }
+
+    /// Writes posted since the camera started.
+    pub(crate) fn writes(&self) -> u64 {
+        self.lock().writes
     }
 
     /// Writes `code` to `lane` to show on the next frame to be latched, whatever the delay.
@@ -270,6 +307,7 @@ impl Silicon {
         let mut state = self.lock();
         let landing = state.granted;
         push(&mut state.lanes[lane], landing, code);
+        state.writes += 1;
     }
 }
 
