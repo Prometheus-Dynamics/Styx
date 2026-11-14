@@ -19,7 +19,9 @@ use lemnos_contract_camera_receiver::{
 use lemnos_contract_camera_sensor::{
     CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
 };
-use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
+use lemnos_core::{
+    Config, ConfigError, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
+};
 use lemnos_hal::blocks::StreamFrame;
 
 /// Calls in the order they arrived, across every simulated device.
@@ -82,8 +84,17 @@ pub struct SimSensor {
     identity: Option<String>,
 }
 
+/// The settings the simulated sensor reads. A device setting nothing declares is refused at start.
+const SENSOR_KEYS: &[Key] = &[Key::optional("identity", Kind::Str)];
+/// The settings the simulated receiver reads.
+const RECEIVER_KEYS: &[Key] = &[Key::optional("source", Kind::Str)];
+
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
+
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(SENSOR_KEYS)
+    }
 
     fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
@@ -252,6 +263,10 @@ fn write_name(name: &str, into: &mut [u8]) -> Result<usize> {
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
     const TICKS: bool = true;
+
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(RECEIVER_KEYS)
+    }
 
     fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
