@@ -346,7 +346,6 @@ fn coded_fault(x: i64, ctx: &Ctx) -> Result<i64, Fault> {
 }
 
 #[test]
-#[ignore = "needs the Daedalus rev that carries the code"]
 fn a_steps_code_reaches_the_host() {
     let mut registry = Registry::new();
     registry
@@ -381,19 +380,34 @@ fn a_steps_code_reaches_the_host() {
     let _ = loaded
         .host()
         .step_until_settled(std::time::Duration::from_secs(5));
-    let (reason, detail) = {
+    let (reason, reason_cut, code, own_code, has_detail, step) = {
         let report = loaded.fault_reports().next().expect("one fault");
-        (report.reason().to_string(), report.step)
+        (
+            report.reason().to_string(),
+            report.reason_cut,
+            report.code,
+            report.own_code,
+            report.detail,
+            report.step,
+        )
     };
     assert_eq!(reason, "a step wrote to a read-only buffer");
+    assert!(!reason_cut, "the reason is short: not cut");
+    // The node's own code, passed through untouched (not one of Daedalus's own numbers).
+    assert_eq!(
+        code,
+        FaultCode::StreamReadOnly as u32,
+        "the code reaches the host"
+    );
+    assert!(!own_code, "the code is the node's, not Daedalus's");
+    assert!(has_detail, "the step gave a detail");
     let detail = loaded
-        .fault_detail(detail)
+        .fault_detail(step)
         .expect("the detail reached the host");
+    assert!(!detail.cut, "the detail is short: not cut");
     assert!(
         detail.text.contains("mapped for reading only"),
         "{}",
         detail.text
     );
-    // At the re-point to the rev that carries the code, also assert the report's code is
-    // `FaultCode::StreamReadOnly as u32`.
 }

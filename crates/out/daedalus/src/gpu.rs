@@ -51,11 +51,31 @@ pub fn fault_text(reason: &str, reason_cut: bool) -> String {
     }
 }
 
-/// A fault as Styx's status line shows it: the reason with its cut flag, then the step's detail
-/// (the host's [`FaultDetail`], when the step wrote one) with its own cut flag. Line breaks in the
-/// detail are shown as ` / `, so a multi-line detail stays one line.
-pub fn fault_status(reason: &str, reason_cut: bool, detail: Option<FaultDetail<'_>>) -> String {
-    let mut line = fault_text(reason, reason_cut);
+/// A fault's code as Styx shows it: the node's own number, or `no code` for a node that gave none,
+/// and Daedalus's own codes say so.
+pub fn fault_code_text(code: u32, own_code: bool) -> String {
+    match (code, own_code) {
+        (0, false) => "no code".to_string(),
+        (code, false) => format!("code {code}"),
+        (code, true) => format!("code {code} (Daedalus's own)"),
+    }
+}
+
+/// A fault as Styx's status line shows it: the code, the reason with its cut flag, then the step's
+/// detail (the host's [`FaultDetail`], when the step wrote one) with its own cut flag. Line breaks
+/// in the detail are shown as ` / `, so a multi-line detail stays one line.
+pub fn fault_status(
+    code: u32,
+    own_code: bool,
+    reason: &str,
+    reason_cut: bool,
+    detail: Option<FaultDetail<'_>>,
+) -> String {
+    let mut line = format!(
+        "{}: {}",
+        fault_code_text(code, own_code),
+        fault_text(reason, reason_cut)
+    );
     if let Some(detail) = detail {
         let text = detail.text.trim_end().replace('\n', " / ");
         line.push_str("; detail: ");

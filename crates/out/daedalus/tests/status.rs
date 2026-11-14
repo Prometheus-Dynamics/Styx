@@ -79,7 +79,11 @@ fn graph_of(node: &str) -> String {
 
 /// Runs the one-node graph with a value that makes the node fault. Gives the fault's reason, its
 /// cut flag, and the host's detail for it, as Styx would show them.
-fn fault_of(node: &'static NodeRecord, id: &str) -> (String, bool, Option<(String, bool)>) {
+/// The fault's code (the number and whether it is Daedalus's own), reason, reason cut flag, and the
+/// detail with its cut flag.
+type Coded = (u32, bool, String, bool, Option<(String, bool)>);
+
+fn fault_of(node: &'static NodeRecord, id: &str) -> Coded {
     let mut registry = Registry::new();
     registry.register_all(&[node]).expect("the node registers");
     let graph = GraphDoc::parse(&graph_of(id))
@@ -92,43 +96,68 @@ fn fault_of(node: &'static NodeRecord, id: &str) -> (String, bool, Option<(Strin
         .feed_typed("x", Arc::new(1_i64))
         .expect("the value is fed");
     let _ = loaded.host().step_until_settled(Duration::from_secs(5));
-    let reports: Vec<(u32, String, bool)> = loaded
+    let reports: Vec<(u32, String, bool, u32, bool)> = loaded
         .fault_reports()
-        .map(|report| (report.step, report.reason().to_string(), report.reason_cut))
+        .map(|report| {
+            (
+                report.step,
+                report.reason().to_string(),
+                report.reason_cut,
+                report.code,
+                report.own_code,
+            )
+        })
         .collect();
     assert_eq!(reports.len(), 1, "one fault: {reports:?}");
-    let (step, reason, cut) = reports.into_iter().next().unwrap();
+    let (step, reason, cut, code, own) = reports.into_iter().next().unwrap();
     let detail = loaded
         .fault_detail(step)
         .map(|detail| (detail.text.to_string(), detail.cut));
-    (reason, cut, detail)
+    (code, own, reason, cut, detail)
 }
 
 #[test]
 fn a_fault_reason_longer_than_a_fault_keeps_is_shown_cut() {
-    let (reason, cut, detail) = fault_of(&FAIL_LONG_NODE, "styx_test.fail_long");
+    let (code, own, reason, cut, detail) = fault_of(&FAIL_LONG_NODE, "styx_test.fail_long");
     assert!(cut, "the host says the reason was cut");
-    let line = fault_status(&reason, cut, None);
+    let line = fault_status(code, own, &reason, cut, None);
     assert!(
-        line.starts_with("a reason that goes on well past"),
+        line.starts_with("code 1: a reason that goes on well past"),
         "{line}"
     );
-    // The reason kept is 120 bytes, and the flag adds " (cut)".
-    assert_eq!(line.len(), 120 + " (cut)".len(), "{line}");
+    // The reason kept is 120 bytes, and the flag adds " (cut)"; the code is "code 1: ".
+    assert_eq!(
+        line.len(),
+        "code 1: ".len() + 120 + " (cut)".len(),
+        "{line}"
+    );
     assert!(detail.is_none(), "the node wrote no detail");
 }
 
 #[test]
 fn a_fault_reason_that_fits_is_shown_whole() {
-    let (reason, cut, _) = fault_of(&FAIL_SHORT_NODE, "styx_test.fail_short");
+    let (code, own, reason, cut, _) = fault_of(&FAIL_SHORT_NODE, "styx_test.fail_short");
     assert!(!cut);
-    assert_eq!(fault_status(&reason, cut, None), "a short reason");
+    assert_eq!(
+        (code, own),
+        (1, false),
+        "the rev's code for a plain error string"
+    );
+    assert_eq!(
+        fault_status(code, own, &reason, cut, None),
+        "code 1: a short reason"
+    );
 }
 
 #[test]
 fn a_styx_nodes_detail_arrives_at_the_host_beside_its_reason() {
-    let (reason, cut, detail) = fault_of(&FAIL_DETAIL_NODE, "styx_test.fail_detail");
+    let (code, own, reason, cut, detail) = fault_of(&FAIL_DETAIL_NODE, "styx_test.fail_detail");
     assert_eq!(reason, "a plane is short");
+    assert_eq!(
+        (code, own),
+        (9, false),
+        "the node's code 9 reaches the host"
+    );
     assert!(!cut);
     let (text, detail_cut) = detail.expect("the node's detail reached the host");
     assert!(
@@ -137,6 +166,8 @@ fn a_styx_nodes_detail_arrives_at_the_host_beside_its_reason() {
     );
     assert!(!detail_cut, "the detail fits the host's bound");
     let line = fault_status(
+        code,
+        own,
         &reason,
         cut,
         Some(daedalus::layers::host::FaultDetail {
@@ -146,7 +177,7 @@ fn a_styx_nodes_detail_arrives_at_the_host_beside_its_reason() {
         }),
     );
     assert!(
-        line.starts_with("a plane is short; detail: value -1 is not"),
+        line.starts_with("code 9: a plane is short; detail: value 1 is not"),
         "{line}"
     );
     assert!(!line.contains('\n'), "{line:?}");
@@ -154,7 +185,8 @@ fn a_styx_nodes_detail_arrives_at_the_host_beside_its_reason() {
 
 #[test]
 fn a_detail_longer_than_the_host_keeps_is_shown_cut() {
-    let (reason, cut, detail) = fault_of(&FAIL_DETAIL_LONG_NODE, "styx_test.fail_detail_long");
+    let (_code, _own, reason, cut, detail) =
+        fault_of(&FAIL_DETAIL_LONG_NODE, "styx_test.fail_detail_long");
     assert!(!cut);
     let (text, detail_cut) = detail.expect("the detail reached the host");
     assert!(detail_cut, "the host says the detail was cut");
