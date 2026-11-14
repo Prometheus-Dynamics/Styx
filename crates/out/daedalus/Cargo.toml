@@ -21,6 +21,8 @@ daedalus = [
     "dep:styx-format",
     "dep:styx-socket",
 ]
+# Orion's own refusals (`ClientError::Revision`, `ClientError::Level`) mapped to their fault codes.
+orion = ["dep:orion"]
 
 [dependencies]
 styx-frame = { path = "../../core/frame" }
@@ -31,6 +33,7 @@ daedalus-types = { workspace = true, optional = true }
 daedalus-wgpu = { workspace = true, optional = true }
 daedalus-abi = { workspace = true, optional = true }
 styx-format = { path = "../../core/format", optional = true }
+orion = { workspace = true, optional = true }
 
 [dev-dependencies]
 lemnos-linux-sys = { workspace = true }

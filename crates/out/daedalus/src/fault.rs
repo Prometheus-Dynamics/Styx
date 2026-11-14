@@ -305,9 +305,8 @@ pub fn orion_fault(kind: u32, revision: &str, feature: &str) -> StyxFault {
     )
 }
 
-/// Orion's refusal as Styx sees it. Orion's own `ClientError::Revision { node, client }` and
-/// `ClientError::Level { feature, needs, node }` are not at the pinned Orion revision, so this
-/// stand-in carries the same words; when Orion's rev moves, the caller maps Orion's error into it.
+/// Orion's refusal as Styx sees it: the words of Orion's own `ClientError::Revision { node, client }`
+/// and `ClientError::Level { feature, needs, node }` (feature `orion`: [`OrionRefusal::from_client_error`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OrionRefusal {
     /// The node's revision is not the one the client was built for.
@@ -326,6 +325,31 @@ pub enum OrionRefusal {
         /// The node, as Orion names it.
         node: String,
     },
+}
+
+#[cfg(feature = "orion")]
+impl OrionRefusal {
+    /// Orion's own refusal, if `error` is one: `ClientError::Revision` (the node speaks another wire
+    /// revision) or `ClientError::Level` (the node is below the level a feature needs). `None` for
+    /// any other error, which the caller reports with its own code.
+    pub fn from_client_error(error: &orion::ClientError) -> Option<Self> {
+        match error {
+            orion::ClientError::Revision { node, client } => Some(Self::Revision {
+                node: format!("at wire revision {node}"),
+                client: format!("wire revision {client}"),
+            }),
+            orion::ClientError::Level {
+                feature,
+                needs,
+                node,
+            } => Some(Self::Level {
+                feature: feature.to_string(),
+                needs: needs.to_string(),
+                node: format!("at level {node}"),
+            }),
+            _ => None,
+        }
+    }
 }
 
 /// The fault for an Orion refusal: [`FaultCode::OrionRevision`] or [`FaultCode::OrionFeature`],

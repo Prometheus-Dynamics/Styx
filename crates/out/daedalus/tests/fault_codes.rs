@@ -134,12 +134,41 @@ fn orion_revision_and_feature_refusals_have_their_own_codes() {
     );
 }
 
-/// The real refusal types are Orion's `ClientError::Revision` and `ClientError::Level`. They are
-/// not at the pinned Orion revision, so this test cannot name them yet.
+/// Orion's own refusals, `ClientError::Revision` and `ClientError::Level`, map to the revision and
+/// feature codes with Orion's numbers in the detail; any other client error is not a refusal of
+/// either kind.
+#[cfg(feature = "orion")]
 #[test]
-#[ignore = "needs Orion's rev with ClientError::Revision/Level"]
 fn orion_s_own_refusals_map_to_the_revision_and_feature_codes() {
-    unimplemented!("map Orion's ClientError::Revision and ClientError::Level into OrionRefusal");
+    let revision = orion::ClientError::Revision { node: 3, client: 4 };
+    let refusal = OrionRefusal::from_client_error(&revision).expect("a revision refusal");
+    let (code, _, detail) = step_fault(&orion_refusal_fault(&refusal));
+    assert_eq!(code, FaultCode::OrionRevision as u32);
+    assert!(
+        detail.contains("at wire revision 3") && detail.contains("wire revision 4"),
+        "{detail}"
+    );
+
+    let feature = orion::Feature::SubscribeFromLatest;
+    let level = orion::ClientError::Level {
+        feature,
+        needs: feature.level(),
+        node: 0,
+    };
+    let refusal = OrionRefusal::from_client_error(&level).expect("a level refusal");
+    let (code, _, detail) = step_fault(&orion_refusal_fault(&refusal));
+    assert_eq!(code, FaultCode::OrionFeature as u32);
+    assert!(
+        detail.contains(&feature.to_string())
+            && detail.contains(&format!("needs level {}", feature.level()))
+            && detail.contains("at level 0"),
+        "{detail}"
+    );
+
+    assert_eq!(
+        OrionRefusal::from_client_error(&orion::ClientError::Lost),
+        None
+    );
 }
 
 // Stand-in: the pre-existing code for an Orion refusal with no kind of its own.
