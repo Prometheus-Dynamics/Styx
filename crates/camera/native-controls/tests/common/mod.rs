@@ -65,6 +65,18 @@ pub fn report_us(code: u64) -> u32 {
     us_for_code((code >> FRACTION) << FRACTION) as u32
 }
 
+/// Exposure in microseconds for a code, to the microsecond: what the driver's schedule shows on a
+/// frame whose report confirms its line, and the value the metadata carries.
+pub fn exact_us(code: u64) -> u32 {
+    us_for_code(code) as u32
+}
+
+/// The exposure a frame's metadata carries: the exact value, unless the driver's report names
+/// another line (a clamp), which is the line's value. Without a clamp, that is the exact value.
+pub fn shown_us(code: u64) -> [u32; 1] {
+    [exact_us(code)]
+}
+
 /// Gain code for thousandths of gain at unity 16.
 pub fn code_for_milli(milli: u64) -> u64 {
     (milli * 16 + 500) / 1000

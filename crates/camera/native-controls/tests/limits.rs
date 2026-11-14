@@ -255,8 +255,8 @@ fn a_frame_rate_that_cuts_the_exposure_in_force_clamps_the_exposure_and_keeps_th
         controls.frame_start(&mut sensor, k).unwrap();
     }
     assert_eq!(controls.metadata(11, 0).exposure_us, 8_108);
-    // The driver reports 12 ms as whole lines: 1 318 lines of 9.1 us, 11 994 us.
-    assert_eq!(controls.metadata(10, 0).exposure_us, 11_994);
+    // 12 ms is 1 318 lines of 9.1 us, and the driver's report names that line: the frame shows 12 ms.
+    assert_eq!(controls.metadata(10, 0).exposure_us, 12_000);
     let report = controls.exposure_report();
     assert_eq!(report.requested_us, 12_000);
     assert_eq!(report.applied_us, Some(8_108));

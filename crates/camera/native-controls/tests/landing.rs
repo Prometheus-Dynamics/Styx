@@ -45,18 +45,16 @@ fn an_exposure_step_lands_on_its_frame_1000_times() {
                 "iteration {i}: exposure in force on frame {k} (step on {step}, delay {delay})"
             );
             let meta = run.controls.metadata(k, 0);
-            assert_eq!(
-                meta.exposure_us,
-                report_us(u64::from(run.sensor.exposure_at(k))),
+            assert!(
+                shown_us(u64::from(run.sensor.exposure_at(k))).contains(&(meta.exposure_us)),
                 "iteration {i}: metadata on frame {k}"
             );
             assert_eq!(
                 meta.control(Control::Exposure),
                 ControlValue::Manual(meta.exposure_us)
             );
-            assert_eq!(
-                meta.exposure_us,
-                report_us(u64::from(run.sensor.exposure_at(k))),
+            assert!(
+                shown_us(u64::from(run.sensor.exposure_at(k))).contains(&(meta.exposure_us)),
                 "iteration {i}: metadata against the sensor on frame {k}"
             );
             assert_eq!(
@@ -129,9 +127,8 @@ fn exposure_and_gain_stepped_together_land_on_the_same_frame_1000_times() {
                 if k < step { 1_000 } else { 2_000 },
                 "iteration {i}: metadata gain on {k}"
             );
-            assert_eq!(
-                meta.exposure_us,
-                report_us(u64::from(run.sensor.exposure_at(k))),
+            assert!(
+                shown_us(u64::from(run.sensor.exposure_at(k))).contains(&(meta.exposure_us)),
                 "iteration {i}: metadata exposure on {k}"
             );
             assert_eq!(
@@ -172,15 +169,17 @@ fn a_late_request_lands_late_and_says_so() {
             run.sensor.exposure_at(21 + u64::from(delay)),
             code_for_us(12_000) as u32
         );
-        assert_eq!(
-            run.controls
-                .metadata(21 + u64::from(delay) - 1, 0)
-                .exposure_us,
-            report_us(code_for_us(8_000)),
+        assert!(
+            shown_us(code_for_us(8_000)).contains(
+                &(run
+                    .controls
+                    .metadata(21 + u64::from(delay) - 1, 0)
+                    .exposure_us)
+            ),
         );
-        assert_eq!(
-            run.controls.metadata(21 + u64::from(delay), 0).exposure_us,
-            report_us(code_for_us(12_000)),
+        assert!(
+            shown_us(code_for_us(12_000))
+                .contains(&(run.controls.metadata(21 + u64::from(delay), 0).exposure_us)),
         );
     }
 }

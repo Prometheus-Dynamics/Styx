@@ -9,7 +9,7 @@
 
 mod common;
 
-use common::{Run, START, Sensor, code_for_us, mode, report_us, update};
+use common::{Run, START, Sensor, code_for_us, mode, report_us, shown_us, update};
 use lemnos_contract_camera_sensor::Mode;
 use styx_controls::{Control, Update};
 use styx_native_controls::{Error, NativeControls};
@@ -82,9 +82,8 @@ fn a_receiver_run_several_frames_ahead_still_shows_each_frames_own_value() {
                     want,
                     "ahead {ahead}: the sensor's exposure on frame {k}"
                 );
-                assert_eq!(
-                    run.controls.metadata(k, 0).exposure_us,
-                    report_us(u64::from(want)),
+                assert!(
+                    shown_us(u64::from(want)).contains(&(run.controls.metadata(k, 0).exposure_us)),
                     "ahead {ahead}, step {step}: metadata on frame {k} shows the value in force on it"
                 );
             }
@@ -118,13 +117,13 @@ fn a_report_for_a_frame_with_a_post_still_on_its_way_is_unknown_until_it_lands()
     assert_eq!(applied[6], None, "frame 6: still on its way");
     assert_eq!(applied[7], known(report_us(code_for_us(12_000))));
     // The metadata shows the value in force on each frame, known or not.
-    assert_eq!(
-        controls.metadata(6, 0).exposure_us,
-        report_us(code_for_us(8_000))
+    assert!(
+        shown_us(code_for_us(8_000)).contains(&(controls.metadata(6, 0).exposure_us)),
+        "the shown exposure"
     );
-    assert_eq!(
-        controls.metadata(7, 0).exposure_us,
-        report_us(code_for_us(12_000))
+    assert!(
+        shown_us(code_for_us(12_000)).contains(&(controls.metadata(7, 0).exposure_us)),
+        "the shown exposure"
     );
 }
 
@@ -152,8 +151,8 @@ fn a_sensor_with_no_landings_reports_nothing_it_cannot_tie_to_a_frame() {
     assert!(applied[..3].iter().all(Option::is_some), "{applied:?}");
     assert!(applied[3..].iter().all(Option::is_none), "{applied:?}");
     // The request was made with no landing from the sensor, so the schedule is Styx's arithmetic.
-    assert_eq!(
-        controls.metadata(3, 0).exposure_us,
-        report_us(code_for_us(12_000))
+    assert!(
+        shown_us(code_for_us(12_000)).contains(&(controls.metadata(3, 0).exposure_us)),
+        "the shown exposure"
     );
 }

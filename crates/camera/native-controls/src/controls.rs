@@ -150,8 +150,12 @@ fn lane_of(control: Control) -> Option<usize> {
 
 impl Limits {
     /// The exposure in microseconds for a whole number of lines, as a driver reports it.
-    fn exposure_us_at_line(&self, code: u32) -> u32 {
-        self.exposure_us_of_lines(code >> self.fraction_bits)
+    fn exposure_us(&self, code: u32) -> u32 {
+        units::exposure_us(
+            u64::from(code),
+            u64::from(self.line_time_ps),
+            self.fraction_bits,
+        )
     }
 
     fn exposure_us_of_lines(&self, lines: u32) -> u32 {
@@ -633,25 +637,24 @@ impl NativeControls {
             .rev()
             .find(|&&(f, _)| f == frame)
             .map(|&(_, in_force)| in_force);
-        // Exposure is whole lines, as the driver reports it: a value from the schedule is taken to
-        // the line too, so a frame's metadata has one resolution whether or not its report is known.
-        let (exposure_us, gain_milli, fl) = match report {
+        // The scheduled exposure is exact. The driver reports whole lines: where its report names the
+        // scheduled line, the exact value stands (the line is the same); where it names another, a
+        // clamp, the driver's line is the value in force.
+        let exposure_us = match report.and_then(|r| r.exposure_lines) {
+            Some(lines) if lines != exposure_code >> self.limits.fraction_bits => {
+                self.limits.exposure_us_of_lines(lines)
+            }
+            _ => self.limits.exposure_us(exposure_code),
+        };
+        let (gain_milli, fl) = match report {
             Some(in_force) => (
-                in_force.exposure_lines.map_or_else(
-                    || self.limits.exposure_us_at_line(exposure_code),
-                    |lines| self.limits.exposure_us_of_lines(lines),
-                ),
                 in_force.analogue_gain.map_or_else(
                     || self.limits.gain_milli(gain_code),
                     |code| self.limits.gain_milli(code),
                 ),
                 in_force.frame_length.unwrap_or(fl),
             ),
-            None => (
-                self.limits.exposure_us_at_line(exposure_code),
-                self.limits.gain_milli(gain_code),
-                fl,
-            ),
+            None => (self.limits.gain_milli(gain_code), fl),
         };
         let mut controls = [ControlValue::Auto; Control::COUNT];
         for control in Control::ALL {

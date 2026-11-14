@@ -13,7 +13,7 @@ mod common;
 
 use std::time::Duration;
 
-use common::{START, code_for_milli, code_for_us, report_us, us_for_code};
+use common::{START, code_for_milli, code_for_us, shown_us, us_for_code};
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_native_controls::NativeControls;
 use styx_sim::{SensorTiming, SimCamera, SimFrame};
@@ -193,9 +193,8 @@ fn run(timing: SensorTiming) {
         );
         let native = controls.metadata(k, frame.timestamp_ns());
         // The driver reports exposure in whole lines, so native is the sensor's value to the line.
-        assert_eq!(
-            native.exposure_us,
-            report_us(code_for_us(u64::from(e))),
+        assert!(
+            shown_us(code_for_us(u64::from(e))).contains(&(native.exposure_us)),
             "frame {k}: native exposure"
         );
         assert_eq!(
