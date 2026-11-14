@@ -12,7 +12,8 @@
 #![allow(dead_code)] // each test binary uses part of this.
 
 use lemnos_contract_camera_sensor::{
-    BayerOrder, CameraSensor, Controls, FrameValues, GainRange, Mode, SensorInfo,
+    BayerOrder, CLAMP_ANALOGUE_GAIN, CLAMP_EXPOSURE, CLAMP_FRAME_LENGTH, CameraSensor, Controls,
+    FrameValues, GainRange, InForce, Mode, SensorInfo,
 };
 use lemnos_core::{Result, Status};
 use styx_controls::{Control, ControlValue, Update};
@@ -58,6 +59,12 @@ pub fn us_for_code(code: u64) -> u64 {
     (code * u64::from(LINE_TIME_PS) + 8_000_000) / 16_000_000
 }
 
+/// Microseconds of an exposure code as the driver reports it: in whole lines (the contract's
+/// `InForce::exposure_lines`), so the sub-line part of the code is not in the report.
+pub fn report_us(code: u64) -> u32 {
+    us_for_code((code >> FRACTION) << FRACTION) as u32
+}
+
 /// Gain code for thousandths of gain at unity 16.
 pub fn code_for_milli(milli: u64) -> u64 {
     (milli * 16 + 500) / 1000
@@ -68,6 +75,10 @@ pub fn code_for_milli(milli: u64) -> u64 {
 #[derive(Debug)]
 pub struct Sensor {
     delays: [u64; 3],
+    /// The mode's limits: what the double clamps to, as the driver does.
+    mode: Mode,
+    /// The `CLAMP_*` bits of the last request.
+    clamped: u8,
     pub frame: u64,
     /// `(first frame shown, code)` per control, in landing order; index 0 is the initial value.
     pub exposure: Vec<(u64, u32)>,
@@ -85,6 +96,8 @@ impl Sensor {
                 u64::from(mode.gain_delay),
                 u64::from(mode.frame_length_delay),
             ],
+            mode: mode.clone(),
+            clamped: 0,
             frame: 0,
             exposure: Vec::new(),
             gain: Vec::new(),
@@ -107,6 +120,52 @@ impl Sensor {
 
     pub fn gain_at(&self, frame: u64) -> u32 {
         Self::in_force(&self.gain, frame)
+    }
+
+    /// The request as the double (a driver) takes it: each value moved to the nearest one the mode
+    /// allows, and the `CLAMP_*` bits of what was moved. The exposure ceiling is the frame less the
+    /// mode's margin, in the frame length asked for or last written; a shorter frame also clamps the
+    /// exposure in force.
+    fn fit(&mut self, controls: Controls) -> Controls {
+        let m = self.mode.clone();
+        let mut clamped = 0;
+        let frame_length = controls.frame_length.map(|lines| {
+            let fit = lines.clamp(m.frame_length_min, m.frame_length_max);
+            if fit != lines {
+                clamped |= CLAMP_FRAME_LENGTH;
+            }
+            fit
+        });
+        let fl_now = frame_length
+            .or_else(|| self.frame_length.last().map(|&(_, fl)| fl))
+            .unwrap_or(m.frame_length_min);
+        let exposure_max = (fl_now.saturating_sub(m.exposure_margin) << FRACTION).max(m.exposure_min);
+        let asked = match controls.exposure {
+            Some(code) => Some(code),
+            None if frame_length.is_some() => self.exposure.last().map(|&(_, e)| e),
+            None => None,
+        };
+        let exposure = asked.map(|code| {
+            let fit = code.clamp(m.exposure_min, exposure_max);
+            if fit != code {
+                clamped |= CLAMP_EXPOSURE;
+            }
+            fit
+        });
+        let analogue_gain = controls.analogue_gain.map(|code| {
+            let fit = code.clamp(m.analogue_gain.min, m.analogue_gain.max);
+            if fit != code {
+                clamped |= CLAMP_ANALOGUE_GAIN;
+            }
+            fit
+        });
+        self.clamped = clamped;
+        Controls {
+            exposure,
+            analogue_gain,
+            frame_length,
+            digital_gain: controls.digital_gain,
+        }
     }
 
     /// The frame's brightness: the exposure code times the gain code in force on it.
@@ -133,10 +192,16 @@ impl CameraSensor for Sensor {
         Err(lemnos_core::Status::NOT_SUPPORTED)
     }
 
-    fn in_force(
-        &mut self,
-    ) -> core::result::Result<lemnos_contract_camera_sensor::InForce, lemnos_core::Status> {
-        Err(lemnos_core::Status::NOT_SUPPORTED)
+    fn in_force(&mut self) -> core::result::Result<InForce, lemnos_core::Status> {
+        let frame = self.frame;
+        Ok(InForce {
+            exposure_lines: (!self.exposure.is_empty())
+                .then(|| self.exposure_at(frame) >> FRACTION),
+            analogue_gain: (!self.gain.is_empty()).then(|| self.gain_at(frame)),
+            frame_length: (!self.frame_length.is_empty())
+                .then(|| Self::in_force(&self.frame_length, frame)),
+            clamped: self.clamped,
+        })
     }
 
     fn set_exposure(
@@ -189,20 +254,21 @@ impl CameraSensor for Sensor {
 
     /// Before streaming: the value is shown from frame 0.
     fn set_controls(&mut self, controls: Controls) -> Result<()> {
-        if let Some(e) = controls.exposure {
+        let c = self.fit(controls);
+        if let Some(e) = c.exposure {
             self.exposure = vec![(0, e)];
         }
-        if let Some(g) = controls.analogue_gain {
+        if let Some(g) = c.analogue_gain {
             self.gain = vec![(0, g)];
         }
-        if let Some(fl) = controls.frame_length {
+        if let Some(fl) = c.frame_length {
             self.frame_length = vec![(0, fl)];
         }
         Ok(())
     }
 
     fn post_values(&mut self, values: FrameValues) -> Result<()> {
-        let c = values.controls;
+        let c = self.fit(values.controls);
         if let Some(e) = c.exposure {
             self.exposure.push((self.frame + self.delays[0], e));
         }

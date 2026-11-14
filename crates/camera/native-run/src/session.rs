@@ -435,6 +435,9 @@ impl<'a, C: Clock> Session<'a, C> {
                         if let Some(meta) = lease.meta_mut() {
                             *meta = metadata;
                         }
+                        // The driver's report at this frame may show a landing (or a clamp) that no
+                        // request announced: the status hears of it here.
+                        self.report_exposure();
                         Ok(Some(lease))
                     }
                     Err(e) => {

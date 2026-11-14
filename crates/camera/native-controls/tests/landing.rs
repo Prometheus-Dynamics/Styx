@@ -46,7 +46,7 @@ fn an_exposure_step_lands_on_its_frame_1000_times() {
             let meta = run.controls.metadata(k, 0);
             assert_eq!(
                 meta.exposure_us,
-                if k < step { 8_000 } else { 12_000 },
+                report_us(u64::from(run.sensor.exposure_at(k))),
                 "iteration {i}: metadata on frame {k}"
             );
             assert_eq!(
@@ -54,8 +54,8 @@ fn an_exposure_step_lands_on_its_frame_1000_times() {
                 ControlValue::Manual(meta.exposure_us)
             );
             assert_eq!(
-                u64::from(meta.exposure_us),
-                us_for_code(u64::from(run.sensor.exposure_at(k))),
+                meta.exposure_us,
+                report_us(u64::from(run.sensor.exposure_at(k))),
                 "iteration {i}: metadata against the sensor on frame {k}"
             );
             assert_eq!(
@@ -130,7 +130,7 @@ fn exposure_and_gain_stepped_together_land_on_the_same_frame_1000_times() {
             );
             assert_eq!(
                 meta.exposure_us,
-                if k < step { 8_000 } else { 12_000 },
+                report_us(u64::from(run.sensor.exposure_at(k))),
                 "iteration {i}: metadata exposure on {k}"
             );
             assert_eq!(
@@ -175,11 +175,11 @@ fn a_late_request_lands_late_and_says_so() {
             run.controls
                 .metadata(21 + u64::from(delay) - 1, 0)
                 .exposure_us,
-            8_000
+            report_us(code_for_us(8_000)),
         );
         assert_eq!(
             run.controls.metadata(21 + u64::from(delay), 0).exposure_us,
-            12_000
+            report_us(code_for_us(12_000)),
         );
     }
 }

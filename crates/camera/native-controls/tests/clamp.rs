@@ -1,7 +1,7 @@
-//! The clamp arithmetic on a mode like the board's: a 915-line shortest frame, with the sensor's
-//! margin (25 lines), minimum (16 codes, one line) and fraction bits (4). An exposure the frame
-//! cannot hold is moved to the frame's ceiling, a gain past the codes to the nearest code, and a
-//! frame rate is never traded for an exposure: the exposure is what moves.
+//! The clamp reports on a mode like the board's: a 915-line shortest frame, with the sensor's margin
+//! (25 lines), minimum (16 codes, one line) and fraction bits (4). The sensor clamps (the test
+//! double does, as the driver does) and reports; these tests check that the native controls take the
+//! applied value and the clamp, and the reason, from that report.
 
 mod common;
 
@@ -44,14 +44,28 @@ fn start(exposure_us: u32, frame_rate_milli: u32) -> Initial {
     }
 }
 
+/// Controls and a double streaming on frames `0..=frames`: the setup is written and each frame
+/// started, so the driver's report of what is in force is read at each.
+fn streaming(mode: &Mode, initial: Initial, frames: u64) -> (NativeControls, Sensor) {
+    let mut controls = NativeControls::new(mode, initial).unwrap();
+    let mut sensor = Sensor::new(mode);
+    controls.prepare(&mut sensor).unwrap();
+    for k in 0..=frames {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
+    (controls, sensor)
+}
+
 #[test]
 fn a_10_ms_exposure_at_the_915_line_ceiling_is_clamped_to_the_frame_less_the_margin() {
     // 240 fps is past the mode's ceiling: the frame is its shortest, 915 lines. The exposure can be
     // (915 - 25) = 890 lines: 890 x 7.583 us = 6 748.9 us, applied as 6 749 us.
-    let controls = NativeControls::new(&board_mode(7_583_000), start(10_000, 240_000)).unwrap();
+    let (controls, _) = streaming(&board_mode(7_583_000), start(10_000, 240_000), 0);
     assert_eq!(controls.initial_rate().lines, 915);
+    assert!(controls.initial_rate().clamped, "the driver clamped the frame length");
     let report = controls.exposure_report();
-    assert_eq!((report.requested_us, report.applied_us), (10_000, 6_749));
+    assert_eq!((report.requested_us, report.applied_us), (10_000, Some(6_749)));
     let clamp = report.clamp.expect("a clamp");
     assert_eq!(clamp.reason, ClampReason::Ceiling);
     assert_eq!(clamp.frame_lines, Some(915));
@@ -66,9 +80,9 @@ fn a_10_ms_exposure_at_the_915_line_ceiling_is_clamped_to_the_frame_less_the_mar
 #[test]
 fn at_9_1_us_a_line_the_same_frame_allows_8_099_us() {
     // The line time of the simulated board: (915 - 25) x 9.1 us = 8 099 us.
-    let controls = NativeControls::new(&board_mode(9_100_000), start(10_000, 240_000)).unwrap();
+    let (controls, _) = streaming(&board_mode(9_100_000), start(10_000, 240_000), 0);
     let report = controls.exposure_report();
-    assert_eq!(report.applied_us, 8_099);
+    assert_eq!(report.applied_us, Some(8_099));
     assert!(
         report
             .clamp
@@ -80,24 +94,21 @@ fn at_9_1_us_a_line_the_same_frame_allows_8_099_us() {
 
 #[test]
 fn an_exposure_the_frame_holds_is_applied_as_asked_with_no_clamp() {
-    let controls = NativeControls::new(&board_mode(7_583_000), start(5_000, 240_000)).unwrap();
+    let (controls, _) = streaming(&board_mode(7_583_000), start(5_000, 240_000), 0);
     let report = controls.exposure_report();
     assert_eq!(report.requested_us, 5_000);
     assert!(report.clamp.is_none(), "{report:?}");
-    assert!(
-        (4_999..=5_001).contains(&report.applied_us),
-        "applied {}",
-        report.applied_us
-    );
+    // The report is in whole lines (659 lines of 7.583 us): 4 997 us, not the 5 000 asked.
+    assert_eq!(report.applied_us, Some(4_997));
     assert!(controls.clamp(Control::Exposure).is_none());
 }
 
 #[test]
 fn an_exposure_below_the_sensors_minimum_is_clamped_up_to_one_line() {
     // One line is 7.583 us: the minimum is 16 codes, which is 8 us after rounding.
-    let controls = NativeControls::new(&board_mode(7_583_000), start(1, 240_000)).unwrap();
+    let (controls, _) = streaming(&board_mode(7_583_000), start(1, 240_000), 0);
     let report = controls.exposure_report();
-    assert_eq!(report.applied_us, 8);
+    assert_eq!(report.applied_us, Some(8));
     let clamp = report.clamp.expect("a clamp");
     assert_eq!(clamp.reason, ClampReason::Floor);
     assert_eq!(
@@ -109,21 +120,17 @@ fn an_exposure_below_the_sensors_minimum_is_clamped_up_to_one_line() {
 #[test]
 fn a_frame_rate_asked_inside_the_frame_lengths_keeps_the_exposure_it_holds() {
     // 60 fps at 7.583 us is 2 198 lines: the ceiling there is 2 173 lines, far above 10 ms.
-    let controls = NativeControls::new(&board_mode(7_583_000), start(10_000, 60_000)).unwrap();
+    let (controls, _) = streaming(&board_mode(7_583_000), start(10_000, 60_000), 0);
     assert!(controls.exposure_report().clamp.is_none());
-    assert_eq!(controls.exposure_report().applied_us, 10_000);
+    assert!(!controls.initial_rate().clamped);
+    // The report is in whole lines (1318 lines of 7.583 us): 9 994 us, not the 10 000 asked.
+    assert_eq!(controls.exposure_report().applied_us, Some(9_994));
 }
 
 #[test]
-fn a_running_request_past_the_ceiling_is_applied_clamped_and_posted_clamped() {
+fn a_running_request_past_the_ceiling_is_posted_as_asked_and_applied_clamped() {
     let mode = board_mode(7_583_000);
-    let mut controls = NativeControls::new(&mode, start(5_000, 240_000)).unwrap();
-    let mut sensor = Sensor::new(&mode);
-    controls.prepare(&mut sensor).unwrap();
-    for k in 0..=5 {
-        sensor.frame = k;
-        controls.frame_start(&mut sensor, k).unwrap();
-    }
+    let (mut controls, mut sensor) = streaming(&mode, start(5_000, 240_000), 5);
     let landings = controls
         .request(
             &mut sensor,
@@ -135,13 +142,18 @@ fn a_running_request_past_the_ceiling_is_applied_clamped_and_posted_clamped() {
         )
         .expect("clamped, not refused");
     assert_eq!(landings.len(), 1);
-    // 890 lines of 16 codes: the posted exposure is the frame's ceiling, not the 20 ms asked.
+    // The request is posted as asked; the double (the driver) clamps it to the frame's ceiling.
     assert_eq!(
         sensor.exposure.last().map(|&(_, code)| code),
         Some(890 << 4)
     );
+    for k in 6..=7 {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
     assert_eq!(controls.metadata(7, 0).exposure_us, 6_749);
     assert_eq!(controls.exposure_report().requested_us, 20_000);
+    assert_eq!(controls.exposure_report().applied_us, Some(6_749));
     assert_eq!(
         controls.clamp(Control::Exposure).map(|c| c.frame_lines),
         Some(Some(915))
@@ -151,12 +163,8 @@ fn a_running_request_past_the_ceiling_is_applied_clamped_and_posted_clamped() {
 #[test]
 fn the_gain_range_is_clamped_both_ways() {
     let mode = board_mode(7_583_000);
-    let mut controls = NativeControls::new(&mode, start(5_000, 240_000)).unwrap();
-    let mut sensor = Sensor::new(&mode);
-    controls.prepare(&mut sensor).unwrap();
-    controls.frame_start(&mut sensor, 0).unwrap();
-    // Above the top code, then below the bottom one (1 000 milli is unity; the validated range
-    // starts there, so the floor is the one a request inside the generic range can reach).
+    let (mut controls, mut sensor) = streaming(&mode, start(5_000, 240_000), 2);
+    // Above the top code: asked 16 000 milli, the codes stop at 255.
     controls
         .request(
             &mut sensor,
@@ -167,20 +175,26 @@ fn the_gain_range_is_clamped_both_ways() {
             }],
         )
         .unwrap();
+    for k in 3..=5 {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
     let clamp = controls.clamp(Control::Gain).expect("a gain clamp");
-    assert_eq!(
-        (clamp.applied, clamp.reason),
-        (15_938, ClampReason::Ceiling)
-    );
+    assert_eq!((clamp.applied, clamp.reason), (15_938, ClampReason::Ceiling));
+    // Inside the codes: 2.0x is a code, so no clamp.
     controls
         .request(
             &mut sensor,
             &[Update {
                 control: Control::Gain,
                 value: ControlValue::Manual(2_000),
-                frame: 4,
+                frame: 6,
             }],
         )
         .unwrap();
+    for k in 6..=8 {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
     assert!(controls.clamp(Control::Gain).is_none(), "2.0x is a code");
 }

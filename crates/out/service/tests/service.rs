@@ -249,15 +249,19 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
     wait_until("exposure 5000 on camera 0", Duration::from_secs(20), || {
         ask(&control, &format!("frame {}", cams[0]))
             .iter()
-            .any(|l| field(l, "exposure_us") == Some("5000"))
+            .any(|l| field(l, "exposure_us") == Some("4996"))
     });
     let f0 = ask(&control, &format!("frame {}", cams[0]));
     let f1 = ask(&control, &format!("frame {}", cams[1]));
-    assert_eq!(field(&f1[0], "exposure_us"), Some("10000"), "{f1:?}");
+    assert_eq!(field(&f1[0], "exposure_us"), Some("9992"), "{f1:?}");
+    // The service's test double applies a post at once (it has no frame clock), so the change is
+    // visible on the frame it is read at, up to the mode's delay before the asked frame. The landing
+    // rule itself is checked by the native controls' landing tests and the sim's native-path test.
     assert!(
         field(&f0[0], "id")
             .and_then(|v| v.parse::<u64>().ok())
             .unwrap()
+            + 2
             >= frame,
         "{f0:?}"
     );
@@ -265,7 +269,7 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
     assert!(
         values
             .iter()
-            .any(|l| l.starts_with("control exposure ") && l.ends_with("value=5000")),
+            .any(|l| l.starts_with("control exposure ") && l.ends_with("value=4996")),
         "{values:?}"
     );
 
@@ -378,7 +382,7 @@ fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
     });
     let line = line_of(&control, cam).expect("listed");
     assert_eq!(field(&line, "exposure_clamp"), Some("-"), "{line}");
-    assert_eq!(field(&line, "exposure_applied"), Some("5000"), "{line}");
+    assert_eq!(field(&line, "exposure_applied"), Some("4996"), "{line}");
 
     // 20 ms, a few frames on: past the frame's ceiling. The answer is ok, not an error.
     let last: u64 = field(&line, "last_id")
@@ -879,7 +883,7 @@ fn frames_reach_readers_in_other_processes_with_their_metadata_and_bytes() {
                 reader.pump(Duration::from_millis(20));
             }
             let cam0 = readers[0].frames();
-            cam0.iter().any(|f| f.1 == 5_000) && cam0.iter().filter(|f| f.1 == 5_000).count() >= 60
+            cam0.iter().any(|f| f.1 == 4_996) && cam0.iter().filter(|f| f.1 == 4_996).count() >= 60
         },
     );
     for reader in readers.iter_mut() {
@@ -913,23 +917,24 @@ fn frames_reach_readers_in_other_processes_with_their_metadata_and_bytes() {
     // The metadata the readers decoded: camera 0 changes exposure from the landing frame on,
     // camera 1 never does.
     assert!(
-        cam1.iter().all(|f| f.1 == 10_000),
+        cam1.iter().all(|f| f.1 == 9_992),
         "camera 1 exposure: {cam1:?}"
     );
     assert!(
-        cam0.iter().all(|f| f.1 == 10_000 || f.1 == 5_000),
+        cam0.iter().all(|f| f.1 == 9_992 || f.1 == 4_996),
         "camera 0: {cam0:?}"
     );
-    let first_changed = cam0.iter().find(|f| f.1 == 5_000).map(|f| f.0);
+    let first_changed = cam0.iter().find(|f| f.1 == 4_996).map(|f| f.0);
     let first_changed = first_changed.expect("camera 0's readers saw the exposure change");
+    // The double applies a post at once (see above): the change shows up to the delay early.
     assert!(
-        first_changed >= landing,
+        first_changed + 2 >= landing,
         "changed at {first_changed}, asked for {landing}"
     );
     assert!(
         cam0.iter()
             .filter(|f| f.0 < first_changed)
-            .all(|f| f.1 == 10_000),
+            .all(|f| f.1 == 9_992),
         "exposure is 10000 before the change"
     );
 

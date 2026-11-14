@@ -79,6 +79,7 @@ impl SensorTiming {
 pub(crate) struct InForce {
     pub(crate) exposure: Option<u32>,
     pub(crate) gain: Option<u32>,
+    pub(crate) frame_length: Option<u32>,
 }
 
 struct State {
@@ -184,6 +185,7 @@ impl Silicon {
         }
         in_force.exposure = codes[EXPOSURE];
         in_force.gain = codes[GAIN];
+        in_force.frame_length = codes[FRAME_LENGTH];
         if state.frames.len() == FRAMES {
             state.frames.pop_front();
         }
@@ -191,6 +193,17 @@ impl Silicon {
         state.granted += 1;
         self.changed.notify_all();
         Some(id)
+    }
+
+    /// The codes in force on the newest latched frame, if one is latched.
+    pub(crate) fn latest_in_force(&self) -> Option<InForce> {
+        self.lock().frames.back().map(|&(_, in_force)| in_force)
+    }
+
+    /// The code last written to `lane`, whether or not it has landed yet. `None` when nothing was
+    /// written (automatic).
+    pub(crate) fn last_written(&self, lane: usize) -> Option<u32> {
+        self.lock().lanes[lane].back().and_then(|&(_, code)| code)
     }
 
     /// The codes in force on frame `id`, once it is latched.

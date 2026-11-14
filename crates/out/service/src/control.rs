@@ -16,9 +16,10 @@
 //! `mode` is the sensor mode's index (`-` when none), `format` its frame format, `bits` its bit
 //! depth, `mode_reason` one word (`exact`, `rate_clamped_to_ceiling`, `rate_clamped_to_floor`,
 //! `depth_lowered_for_rate`) and `mode_text` the reason in a sentence. `exposure_requested` and
-//! `exposure_applied` are the exposure asked for and the exposure the sensor is given, in
-//! microseconds; `exposure_clamp` is the reason in a sentence when the exposure was moved to the
-//! nearest one the frame allows (`-` when it was not). `last_error` and the other free text come
+//! `exposure_applied` are the exposure asked for and the exposure the sensor reports in force, in
+//! microseconds (`unknown` until it reports, or when it reports none); `exposure_clamp` is the
+//! sensor's clamp in a sentence when it moved the exposure to the nearest one it takes (`-` when it
+//! did not). `last_error` and the other free text come
 //! last on their line; `mode_text`, `exposure_clamp` and `rate_reason` are one word (spaces are `_`).
 
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -291,7 +292,9 @@ fn camera_line(status: &CameraStatus) -> String {
     let (exposure_requested, exposure_applied, exposure_clamp) = match &status.exposure {
         Some(exposure) => (
             exposure.requested_us.to_string(),
-            exposure.applied_us.to_string(),
+            exposure
+                .applied_us
+                .map_or_else(|| "unknown".to_string(), |us| us.to_string()),
             exposure
                 .clamp
                 .as_ref()

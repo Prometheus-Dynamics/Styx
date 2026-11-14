@@ -22,8 +22,8 @@ use lemnos_contract_camera_receiver::{
     MAX_STREAM_NAME, Packing,
 };
 use lemnos_contract_camera_sensor::{
-    AppliedLanding, CameraSensor, Controls, EmbeddedData, FrameValues, GainLaw, GainRange, InForce,
-    Landing, Mode, Rect, SensorInfo,
+    AppliedLanding, CLAMP_ANALOGUE_GAIN, CLAMP_EXPOSURE, CLAMP_FRAME_LENGTH, CameraSensor, Controls,
+    EmbeddedData, FrameValues, GainLaw, GainRange, InForce, Landing, Mode, Rect, SensorInfo,
 };
 use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
 use lemnos_hal::blocks::StreamFrame;
@@ -117,6 +117,8 @@ pub struct SimSensor {
     selected: Option<u16>,
     streaming: bool,
     applied: Option<FrameValues>,
+    /// The `CLAMP_*` bits of the last request: the values the sensor could not take as asked.
+    clamped: u8,
     clock: Option<Arc<Silicon>>,
 }
 
@@ -128,6 +130,7 @@ impl Lifecycle for SimSensor {
             selected: None,
             streaming: false,
             applied: None,
+            clamped: 0,
             clock: Some(clock(cfg)?),
         })
     }
@@ -136,6 +139,61 @@ impl Lifecycle for SimSensor {
 impl SimSensor {
     fn silicon(&self) -> Result<&Silicon> {
         self.clock.as_deref().ok_or(Status::INVALID_ARGUMENT)
+    }
+
+    /// The request as the sensor takes it: each value moved to the nearest one the selected mode
+    /// allows, and the `CLAMP_*` bits of what was moved (kept as the last request's report). The
+    /// exposure ceiling is the frame length less the mode's margin, where the frame length is the
+    /// one asked for or, when none is, the one last written; a shorter frame also clamps an exposure
+    /// that was written before, so the report names it.
+    fn fit(&mut self, controls: Controls) -> Result<Controls> {
+        let index = self.selected.ok_or(Status::INVALID_ARGUMENT)?;
+        let timing = self.silicon()?.timing();
+        let mode = mode(usize::from(index), timing).ok_or(Status::NOT_FOUND)?;
+        let silicon = self.silicon()?;
+        let mut clamped = 0;
+
+        let frame_length = controls.frame_length.map(|lines| {
+            let fit = lines.clamp(mode.frame_length_min, mode.frame_length_max);
+            if fit != lines {
+                clamped |= CLAMP_FRAME_LENGTH;
+            }
+            fit
+        });
+        let frame_length_now = frame_length
+            .or_else(|| silicon.last_written(silicon::FRAME_LENGTH))
+            .unwrap_or(mode.frame_length_min);
+        let exposure_max = frame_length_now
+            .saturating_sub(mode.exposure_margin)
+            .checked_shl(u32::from(silicon::EXPOSURE_FRACTION_BITS))
+            .unwrap_or(u32::MAX)
+            .max(mode.exposure_min);
+        let exposure_asked = match controls.exposure {
+            Some(code) => Some(code),
+            None if frame_length.is_some() => silicon.last_written(silicon::EXPOSURE),
+            None => None,
+        };
+        let exposure = exposure_asked.map(|code| {
+            let fit = code.clamp(mode.exposure_min, exposure_max);
+            if fit != code {
+                clamped |= CLAMP_EXPOSURE;
+            }
+            fit
+        });
+        let analogue_gain = controls.analogue_gain.map(|code| {
+            let fit = code.clamp(mode.analogue_gain.min, mode.analogue_gain.max);
+            if fit != code {
+                clamped |= CLAMP_ANALOGUE_GAIN;
+            }
+            fit
+        });
+        self.clamped = clamped;
+        Ok(Controls {
+            exposure,
+            analogue_gain,
+            frame_length,
+            digital_gain: controls.digital_gain,
+        })
     }
 }
 
@@ -150,8 +208,18 @@ impl CameraSensor for SimSensor {
         Err(Status::NOT_SUPPORTED)
     }
 
+    /// The codes in force on the newest latched frame, in the contract's units (exposure in whole
+    /// lines), with the clamp bits of the last request.
     fn in_force(&mut self) -> Result<InForce> {
-        Err(Status::NOT_SUPPORTED)
+        let held = self.silicon()?.latest_in_force().unwrap_or_default();
+        Ok(InForce {
+            exposure_lines: held
+                .exposure
+                .map(|code| code >> silicon::EXPOSURE_FRACTION_BITS),
+            analogue_gain: held.gain,
+            frame_length: held.frame_length,
+            clamped: self.clamped,
+        })
     }
 
     fn set_exposure(&mut self, _lines: u32) -> Result<Landing> {
@@ -223,6 +291,7 @@ impl CameraSensor for SimSensor {
             return Err(Status::INVALID_ARGUMENT);
         }
         log("sensor.set_controls");
+        let controls = self.fit(controls)?;
         let silicon = self.silicon()?;
         if let Some(code) = controls.exposure {
             silicon.set_now(silicon::EXPOSURE, Some(code));
@@ -242,8 +311,8 @@ impl CameraSensor for SimSensor {
         if self.selected.is_none() {
             return Err(Status::INVALID_ARGUMENT);
         }
+        let controls = self.fit(values.controls)?;
         let silicon = self.silicon()?;
-        let controls = values.controls;
         if let Some(code) = controls.exposure {
             silicon.post(silicon::EXPOSURE, Some(code));
         }
@@ -253,7 +322,10 @@ impl CameraSensor for SimSensor {
         if let Some(code) = controls.frame_length {
             silicon.post(silicon::FRAME_LENGTH, Some(code));
         }
-        self.applied = Some(values);
+        self.applied = Some(FrameValues {
+            identity: values.identity,
+            controls,
+        });
         Ok(())
     }
 

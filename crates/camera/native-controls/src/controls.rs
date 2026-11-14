@@ -1,6 +1,12 @@
 //! The native controls of one camera: what is posted, when, and what is in force.
 
-use lemnos_contract_camera_sensor::{CameraSensor, Controls, FrameValues, GainRange, Mode};
+use lemnos_contract_camera_sensor::{
+    CLAMP_ANALOGUE_GAIN, CLAMP_EXPOSURE, CLAMP_FRAME_LENGTH, CameraSensor, Controls, FrameValues,
+    GainRange, InForce, Mode,
+};
+use std::collections::VecDeque;
+
+use lemnos_core::Status;
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 
 use crate::clamp::{Clamp, ClampReason, ExposureReport};
@@ -35,10 +41,10 @@ pub struct FrameRate {
     /// The frame length, in whole lines.
     pub lines: u32,
     /// The rate the frame length gives, in millihertz: the rate asked for to the nearest whole
-    /// line, or the nearest rate the sensor's frame lengths reach when the ask is outside them.
+    /// line. Once the driver has reported, the rate its frame length gives.
     pub achieved_milli: u32,
-    /// The rate asked for is outside the sensor's frame-length limits, so the frame length is the
-    /// nearest limit. The achieved rate says what the sensor runs at.
+    /// The driver clamped the frame length to its limits, as its report says (`CLAMP_FRAME_LENGTH`).
+    /// `false` until a report is read: the limits are the driver's to apply, not Styx's.
     pub clamped: bool,
 }
 
@@ -51,10 +57,11 @@ pub struct Landing {
     pub requested: u64,
     /// The first frame predicted to show it. Equal to `requested` when the request was on time.
     pub frame: u64,
-    /// For a frame rate: the rate the frame length gives, in millihertz, which is what the frames
-    /// will run at. `None` for other controls.
+    /// For a frame rate: the rate the frame length asked for gives, in millihertz. The frames run at
+    /// what the driver reports in force, which may differ if it clamps. `None` for other controls.
     pub achieved_milli: Option<u32>,
-    /// For a frame rate: the request was clamped to the sensor's frame-length limits.
+    /// For a frame rate: whether the driver clamped it, as its report says once the value has
+    /// landed. Always `false` in the landing itself: the answer to a request does not know it.
     pub clamped: bool,
 }
 
@@ -95,41 +102,32 @@ pub struct NativeControls {
     limits: Limits,
     lanes: [Lane; LANES],
     frame: Option<u64>,
-    initial_rate: FrameRate,
+    /// The frame rate: the request's own at first, then as the driver reports it in force.
+    rate: FrameRate,
     /// The exposure asked for last, in microseconds.
     exposure_requested_us: u32,
-    /// The exposure the last decision on exposure applied, in microseconds.
-    exposure_applied_us: u32,
-    /// The clamp of the last decision on exposure, if it was clamped.
+    /// The exposure the driver reports in force, in microseconds. `None` until a report says, and
+    /// after a request until the next one.
+    exposure_applied_us: Option<u32>,
+    /// The clamp the driver reported for exposure, if it clamped the last request.
     exposure_clamp: Option<Clamp>,
-    /// The clamp of the last gain request, if it was clamped.
+    /// The gain asked for last, in thousandths.
+    gain_requested_milli: u32,
+    /// The clamp the driver reported for gain, if it clamped the last request.
     gain_clamp: Option<Clamp>,
+    /// The reports read at the start of recent frames, by frame, for the frames' metadata.
+    reports: VecDeque<(u64, InForce)>,
 }
 
-/// A value fitted to the sensor's range: its code, its value in the control's unit, and the end it
-/// was moved to, if it was moved.
-#[derive(Debug, Clone, Copy)]
-struct Fitted {
-    code: u32,
-    applied: u32,
-    bound: Option<ClampReason>,
-}
+/// Frames whose reports are kept for their metadata.
+const REPORTS: usize = 256;
 
-impl Fitted {
-    /// The clamp for a request of `requested`, if this fit moved it.
-    fn clamp(self, control: Control, requested: u32, frame_lines: Option<u32>) -> Option<Clamp> {
-        self.bound
-            .map(|reason| Clamp::new(control, requested, self.applied, frame_lines, reason))
-    }
-}
-
-/// The sensor's limits for one mode: what the contract's mode says, in the sensor's own codes.
+/// The sensor's mode, as the controls use it: the line time, the exposure's fraction bits, the gain
+/// codes and law, and the frame lengths the mode names (for the error of a zero rate).
 #[derive(Debug, Clone, Copy)]
 struct Limits {
     line_time_ps: u64,
     fraction_bits: u8,
-    exposure_min: u32,
-    exposure_margin: u32,
     /// The analogue gain's codes and law (the contract's `GainRange`).
     gain: GainRange,
     fl_min: u32,
@@ -150,10 +148,28 @@ impl Limits {
         units::exposure_us(u64::from(code), self.line_time_ps, self.fraction_bits)
     }
 
+    /// The exposure in microseconds for a whole number of lines, as a driver reports it.
+    fn exposure_us_of_lines(&self, lines: u32) -> u32 {
+        let code = u64::from(lines) << self.fraction_bits;
+        units::exposure_us(code, self.line_time_ps, self.fraction_bits)
+    }
+
+    /// The exposure code for `us`. Not bounded here: the driver clamps it to what its frame allows.
+    fn exposure_code(&self, us: u32) -> u32 {
+        u32::try_from(units::exposure_code(us, self.line_time_ps, self.fraction_bits))
+            .unwrap_or(u32::MAX)
+    }
+
     /// Thousandths of gain for a code. Only called with a code this crate made, under the range's
     /// law that [`NativeControls::new`] has already converted, so the conversion cannot be refused.
     fn gain_milli(&self, code: u32) -> u32 {
         gain::code_to_gain(&self.gain, code).unwrap_or(0)
+    }
+
+    /// The gain code for `milli`, by the mode's law. Not bounded here: the driver clamps it to its
+    /// codes.
+    fn gain_code(&self, milli: u32) -> Result<u32, Error> {
+        gain::gain_to_code(&self.gain, milli)
     }
 
     /// The rate a frame of `lines` lines runs at, in millihertz.
@@ -161,89 +177,72 @@ impl Limits {
         units::frame_rate_milli(u64::from(lines), self.line_time_ps)
     }
 
-    /// The frame length for a frame rate, in the sensor's frame lengths. The length is the nearest
-    /// whole line to the rate; a rate outside the sensor's frame lengths is clamped to the nearest
-    /// one, and the rate it runs at is reported. Only a rate of zero is refused.
+    /// The frame length for a frame rate, in whole lines: the nearest whole line to the rate. Not
+    /// bounded here: the driver clamps it to the mode's frame lengths and reports it. Only a rate of
+    /// zero is refused.
     fn frame_rate(&self, mhz: u32) -> Result<FrameRate, Error> {
-        let lines = units::frame_length(mhz, self.line_time_ps).ok_or_else(|| {
-            Error::Limit(Limit {
-                control: Control::FrameRate,
-                requested: mhz,
-                min: self.rate_of(self.fl_max),
-                max: self.rate_of(self.fl_min),
-                frame_lines: None,
-            })
-        })?;
-        let (min, max) = (u64::from(self.fl_min), u64::from(self.fl_max));
-        let clamped = lines < min || lines > max;
-        let lines = lines.clamp(min, max) as u32;
+        let lines = units::frame_length(mhz, self.line_time_ps)
+            .and_then(|lines| u32::try_from(lines).ok())
+            .ok_or_else(|| {
+                Error::Limit(Limit {
+                    control: Control::FrameRate,
+                    requested: mhz,
+                    min: self.rate_of(self.fl_max),
+                    max: self.rate_of(self.fl_min),
+                    frame_lines: None,
+                })
+            })?;
         Ok(FrameRate {
             lines,
             achieved_milli: self.rate_of(lines),
-            clamped,
+            clamped: false,
         })
     }
+}
 
-    /// The exposure codes the sensor takes at a frame of `fl` lines: its minimum, and the ceiling the
-    /// frame allows (the frame less the mode's margin). A frame too short for the margin gives the
-    /// minimum as its ceiling, so the range is never empty.
-    fn exposure_bounds(&self, fl: u32) -> (u64, u64) {
-        let min = u64::from(self.exposure_min);
-        let max = units::exposure_max_code(u64::from(fl), self.exposure_margin, self.fraction_bits);
-        (min, max.max(min))
+/// The reason a clamped value was moved: up if the sensor took less than was asked, down if more.
+fn reason_of(applied: u32, requested: u32) -> ClampReason {
+    if applied < requested {
+        ClampReason::Ceiling
+    } else {
+        ClampReason::Floor
     }
+}
 
-    /// The exposure for `us` at a frame of `fl` lines, moved to the nearest code the sensor takes
-    /// there. A request moved to a bound by rounding alone, with the same microseconds, is not a
-    /// clamp.
-    fn exposure(&self, us: u32, fl: u32) -> Fitted {
-        let code = units::exposure_code(us, self.line_time_ps, self.fraction_bits);
-        let (min, max) = self.exposure_bounds(fl);
-        let (code, bound) = if code > max {
-            (max, Some(ClampReason::Ceiling))
-        } else if code < min {
-            (min, Some(ClampReason::Floor))
-        } else {
-            (code, None)
-        };
-        let code = u32::try_from(code).unwrap_or(u32::MAX);
-        let applied = self.exposure_us(code);
-        Fitted {
-            code,
-            applied,
-            bound: bound.filter(|_| applied != us),
+/// The clamp for a report: the one already held when it says the same (so a clamp that persists
+/// costs nothing per frame), a new one when it differs, and none when the driver did not clamp it or
+/// applied what was asked.
+fn clamp_report(
+    held: Option<Clamp>,
+    control: Control,
+    requested: u32,
+    applied: u32,
+    frame_lines: Option<u32>,
+    clamped: bool,
+) -> Option<Clamp> {
+    if !clamped || applied == requested {
+        return None;
+    }
+    let reason = reason_of(applied, requested);
+    match held {
+        Some(clamp)
+            if clamp.requested == requested
+                && clamp.applied == applied
+                && clamp.frame_lines == frame_lines
+                && clamp.reason == reason =>
+        {
+            Some(clamp)
         }
-    }
-
-    /// The gain for `milli`, moved to the nearest gain of the sensor's codes. The codes are the
-    /// range's `min`..=`max`; a gain outside them is moved to the end it is past.
-    fn gain(&self, milli: u32) -> Result<Fitted, Error> {
-        let (low, high) = (
-            self.gain_milli(self.gain.min),
-            self.gain_milli(self.gain.max),
-        );
-        let (wanted, bound) = if milli < low {
-            (low, Some(ClampReason::Floor))
-        } else if milli > high {
-            (high, Some(ClampReason::Ceiling))
-        } else {
-            (milli, None)
-        };
-        let code = gain::gain_to_code(&self.gain, wanted)?.clamp(self.gain.min, self.gain.max);
-        let applied = self.gain_milli(code);
-        Ok(Fitted {
-            code,
-            applied,
-            bound: bound.filter(|_| applied != milli),
-        })
+        _ => Some(Clamp::new(control, requested, applied, frame_lines, reason)),
     }
 }
 
 impl NativeControls {
     /// The controls of a sensor in `mode`, starting at `initial`. Gain converts by the mode's own
-    /// gain law (the contract's `GainRange::law`). A frame rate outside the sensor's frame lengths
-    /// is clamped and reported ([`NativeControls::initial_rate`]). Refuses an initial value the
-    /// sensor cannot take, and a mode with no line time or no gain unity code.
+    /// gain law (the contract's `GainRange::law`). Values are posted as asked: the sensor clamps
+    /// what it cannot take, and its report says what it applied ([`NativeControls::observe`]).
+    /// Refuses an initial value the controls cannot convert, and a mode with no line time or no
+    /// gain unity code.
     pub fn new(mode: &Mode, initial: Initial) -> Result<Self, Error> {
         if mode.line_time_ps == 0 {
             return Err(Error::Mode("line_time_ps is zero"));
@@ -254,8 +253,6 @@ impl NativeControls {
         let limits = Limits {
             line_time_ps: u64::from(mode.line_time_ps),
             fraction_bits: mode.exposure_fraction_bits,
-            exposure_min: mode.exposure_min,
-            exposure_margin: mode.exposure_margin,
             gain: mode.analogue_gain,
             fl_min: mode.frame_length_min,
             fl_max: mode.frame_length_max,
@@ -268,28 +265,28 @@ impl NativeControls {
             control.validate(ControlValue::Manual(value))?;
         }
         let rate = limits.frame_rate(initial.frame_rate_milli)?;
-        let fl = rate.lines;
-        // The frame rate has priority: the exposure is fitted to the frame length it gives.
-        let exposure = limits.exposure(initial.exposure_us, fl);
-        let gain = limits.gain(initial.gain_milli)?;
+        let exposure_code = limits.exposure_code(initial.exposure_us);
+        let gain_code = limits.gain_code(initial.gain_milli)?;
         Ok(Self {
             lanes: [
-                Lane::new(mode.exposure_delay.into(), exposure.code),
-                Lane::new(mode.gain_delay.into(), gain.code),
-                Lane::new(mode.frame_length_delay.into(), fl),
+                Lane::new(mode.exposure_delay.into(), exposure_code),
+                Lane::new(mode.gain_delay.into(), gain_code),
+                Lane::new(mode.frame_length_delay.into(), rate.lines),
             ],
             frame: None,
-            initial_rate: rate,
+            rate,
             exposure_requested_us: initial.exposure_us,
-            exposure_applied_us: exposure.applied,
-            exposure_clamp: exposure.clamp(Control::Exposure, initial.exposure_us, Some(fl)),
-            gain_clamp: gain.clamp(Control::Gain, initial.gain_milli, None),
+            exposure_applied_us: None,
+            exposure_clamp: None,
+            gain_requested_milli: initial.gain_milli,
+            gain_clamp: None,
+            reports: VecDeque::with_capacity(REPORTS),
             limits,
         })
     }
 
-    /// Exposure as it stands: the value asked for last, the value applied, and the clamp of the
-    /// last decision on it (`None` when that decision was not clamped).
+    /// Exposure as it stands: the value asked for last, the value the driver reports in force (`None`
+    /// until it reports), and the clamp it reported for the last request.
     pub fn exposure_report(&self) -> ExposureReport {
         ExposureReport {
             requested_us: self.exposure_requested_us,
@@ -298,8 +295,8 @@ impl NativeControls {
         }
     }
 
-    /// The clamp of the last decision on `control` (exposure or gain), if that decision was
-    /// clamped. `None` for the other controls, and when it was not.
+    /// The clamp the driver reported for `control` (exposure or gain) on the last request, if it
+    /// clamped it. `None` for the other controls, and when it did not.
     pub fn clamp(&self, control: Control) -> Option<&Clamp> {
         match control {
             Control::Exposure => self.exposure_clamp.as_ref(),
@@ -308,10 +305,10 @@ impl NativeControls {
         }
     }
 
-    /// The frame rate the initial value gave: the frame length and the rate it runs at, and whether
-    /// the sensor's limits clamped the ask.
+    /// The frame rate: the frame length and the rate that length gives. Before the driver reports it
+    /// is the rate asked for; afterwards the driver's frame length and whether it clamped it.
     pub fn initial_rate(&self) -> FrameRate {
-        self.initial_rate
+        self.rate
     }
 
     /// Writes the initial values with `set_controls`, before the sensor starts. Frame 0 shows them.
@@ -325,27 +322,108 @@ impl NativeControls {
         sensor.set_controls(controls).map_err(Error::Sensor)
     }
 
+    /// Takes the driver's report of what is in force: the exposure, gain and frame length it holds,
+    /// and which of them it clamped on the last request. Styx takes the applied values and the fact
+    /// of a clamp from here; the reason (ceiling or floor) is read off the requested and applied
+    /// values. Exposure is whole lines in the report, so its applied value is to the line.
+    pub fn observe(&mut self, in_force: &InForce) {
+        if let Some(lines) = in_force.frame_length {
+            self.rate = FrameRate {
+                lines,
+                achieved_milli: self.limits.rate_of(lines),
+                clamped: in_force.clamped & CLAMP_FRAME_LENGTH != 0,
+            };
+        }
+        match in_force.exposure_lines {
+            Some(lines) => {
+                let applied = self.limits.exposure_us_of_lines(lines);
+                let clamped = in_force.clamped & CLAMP_EXPOSURE != 0;
+                self.exposure_applied_us = Some(applied);
+                self.exposure_clamp = clamp_report(
+                    self.exposure_clamp.take(),
+                    Control::Exposure,
+                    self.exposure_requested_us,
+                    applied,
+                    Some(self.rate.lines),
+                    clamped,
+                );
+            }
+            None => {
+                self.exposure_applied_us = None;
+                self.exposure_clamp = None;
+            }
+        }
+        match in_force.analogue_gain {
+            Some(code) => {
+                let applied = self.limits.gain_milli(code);
+                let clamped = in_force.clamped & CLAMP_ANALOGUE_GAIN != 0;
+                self.gain_clamp = clamp_report(
+                    self.gain_clamp.take(),
+                    Control::Gain,
+                    self.gain_requested_milli,
+                    applied,
+                    None,
+                    clamped,
+                );
+            }
+            None => self.gain_clamp = None,
+        }
+    }
+
     /// Frame `frame` has started (the frame ids of the frame stream). Posts what is due in it: each
-    /// value whose frame is `frame + delay`, grouped by frame and delay so one post holds values
-    /// that land together.
+    /// value whose frame is `frame + delay`, grouped by frame and delay so one post holds values that
+    /// land together. Then reads what the driver holds in force, so a value posted for a delay of
+    /// zero is in that report. A driver that answers `NOT_SUPPORTED` to the report says nothing about
+    /// what is in force: the applied values are then unknown, and nothing is refused for it.
     pub fn frame_start<S: CameraSensor + ?Sized>(
         &mut self,
         sensor: &mut S,
         frame: u64,
     ) -> Result<(), Error> {
         self.frame = Some(frame);
-        self.post_due(sensor, frame)
+        self.post_due(sensor, frame)?;
+        self.read_report(sensor, frame)
+    }
+
+    /// Reads the driver's report of what is in force, for `frame`: it is observed, and kept for the
+    /// frame's metadata (replacing an earlier read of the same frame).
+    fn read_report<S: CameraSensor + ?Sized>(
+        &mut self,
+        sensor: &mut S,
+        frame: u64,
+    ) -> Result<(), Error> {
+        match sensor.in_force() {
+            Ok(in_force) => {
+                self.observe(&in_force);
+                match self.reports.back_mut() {
+                    Some(last) if last.0 == frame => last.1 = in_force,
+                    _ => {
+                        if self.reports.len() == REPORTS {
+                            self.reports.pop_front();
+                        }
+                        self.reports.push_back((frame, in_force));
+                    }
+                }
+            }
+            Err(Status::NOT_SUPPORTED) => {
+                self.exposure_applied_us = None;
+                self.exposure_clamp = None;
+                self.gain_clamp = None;
+            }
+            Err(status) => return Err(Error::Sensor(status)),
+        }
+        Ok(())
     }
 
     /// Asks for values from their frames on. Each is posted now if its post frame has come (the
     /// current frame or earlier), and otherwise in the frame that is its delay before it. Returns
     /// where each is predicted to land.
     ///
-    /// A value the sensor cannot take exactly is moved to the nearest one it can take, and the
-    /// clamp says why ([`NativeControls::clamp`], [`NativeControls::exposure_report`]): an exposure
-    /// past its frame length's ceiling or the minimum, a gain past the sensor's codes, and an
-    /// exposure in force that a shorter frame cannot hold (the frame rate has priority, so the
-    /// frame is never lengthened for an exposure).
+    /// Nothing is fitted here. A value the sensor cannot take exactly, an exposure past what its
+    /// frame allows, a gain past its codes, a frame length past the mode's, is posted as asked: the
+    /// driver clamps it and reports the clamp and the applied value on its next report
+    /// ([`NativeControls::observe`]), and [`NativeControls::exposure_report`] and
+    /// [`NativeControls::clamp`] show that report.
     ///
     /// Refused, with nothing posted: a control with no sensor value here, a value outside the
     /// generic range, an automatic value, a duplicate, and a frame rate of zero.
@@ -356,8 +434,8 @@ impl NativeControls {
     ) -> Result<Landings, Error> {
         let at = self.frame.ok_or(Error::NotStreaming)?;
         let mut asked: [Option<(u64, u32)>; LANES] = [None; LANES];
-        let mut exposure_us: Option<(u64, u32)> = None;
-        let mut gain_fit: Option<(u32, Fitted)> = None;
+        let mut exposure_us: Option<u32> = None;
+        let mut gain_milli: Option<u32> = None;
         let mut landings = Landings::default();
         for update in updates {
             let control = update.control;
@@ -375,11 +453,13 @@ impl NativeControls {
             };
             let frame = update.frame;
             match lane {
-                EXPOSURE => exposure_us = Some((frame, value)),
+                EXPOSURE => {
+                    exposure_us = Some(value);
+                    asked[EXPOSURE] = Some((frame, self.limits.exposure_code(value)));
+                }
                 GAIN => {
-                    let fit = self.limits.gain(value)?;
-                    asked[GAIN] = Some((frame, fit.code));
-                    gain_fit = Some((value, fit));
+                    gain_milli = Some(value);
+                    asked[GAIN] = Some((frame, self.limits.gain_code(value)?));
                 }
                 _ => {
                     let frame_rate = self.limits.frame_rate(value)?;
@@ -399,67 +479,32 @@ impl NativeControls {
                 requested: frame,
                 frame: landing,
                 achieved_milli: rate.map(|r| r.achieved_milli),
-                clamped: rate.is_some_and(|r| r.clamped),
+                clamped: false,
             });
             landings.len += 1;
         }
 
-        // Exposure is fitted to the frame length in force on its frame, which may be the one this
-        // request sets. Then a frame length is checked against the exposure in force on its frame,
-        // which may be the one this request sets: the frame rate has priority, so the exposure is
-        // moved to the frame's ceiling and the frame length is kept.
-        let fl_asked = asked[FRAME_LENGTH];
-        let requested_us = exposure_us.map_or(self.exposure_requested_us, |(_, us)| us);
-        let mut exposure_clamp = None;
-        if let Some((frame, us)) = exposure_us {
-            let fl = self.lanes[FRAME_LENGTH].planned_at(frame, fl_asked);
-            let fit = self.limits.exposure(us, fl);
-            asked[EXPOSURE] = Some((frame, fit.code));
-            exposure_clamp = fit.clamp(Control::Exposure, us, Some(fl));
+        // A request changes what is asked, so what the driver reported for it is not known until
+        // its next report.
+        if let Some(us) = exposure_us {
+            self.exposure_requested_us = us;
         }
-        if let Some((frame, fl)) = fl_asked {
-            let planned = self.lanes[EXPOSURE].planned_at(frame, asked[EXPOSURE]);
-            let (_, max) = self.limits.exposure_bounds(fl);
-            if u64::from(planned) > max {
-                let code = u32::try_from(max).unwrap_or(u32::MAX);
-                let applied = self.limits.exposure_us(code);
-                asked[EXPOSURE] = Some((frame, code));
-                exposure_clamp = (applied != requested_us).then(|| {
-                    Clamp::new(
-                        Control::Exposure,
-                        requested_us,
-                        applied,
-                        Some(fl),
-                        ClampReason::Ceiling,
-                    )
-                });
-            }
+        if exposure_us.is_some() || asked[FRAME_LENGTH].is_some() {
+            self.exposure_applied_us = None;
+            self.exposure_clamp = None;
         }
-        let exposure_decided = exposure_us.is_some() || fl_asked.is_some();
-        let applied_us = match exposure_us.map(|(f, _)| f).or(fl_asked.map(|(f, _)| f)) {
-            Some(frame) if exposure_decided => {
-                let code = self.lanes[EXPOSURE].planned_at(frame, asked[EXPOSURE]);
-                self.limits.exposure_us(code)
-            }
-            _ => self.exposure_applied_us,
-        };
-
+        if let Some(milli) = gain_milli {
+            self.gain_requested_milli = milli;
+            self.gain_clamp = None;
+        }
         for (lane, asked) in asked.into_iter().enumerate() {
             if let Some((frame, code)) = asked {
                 self.lanes[lane].insert(frame, code);
             }
         }
-        if exposure_us.is_some() {
-            self.exposure_requested_us = requested_us;
-        }
-        if exposure_decided {
-            self.exposure_applied_us = applied_us;
-            self.exposure_clamp = exposure_clamp;
-        }
-        if let Some((requested, fit)) = gain_fit {
-            self.gain_clamp = fit.clamp(Control::Gain, requested, None);
-        }
         self.post_due(sensor, at)?;
+        // A value posted now for the current frame (a delay of zero) is in the report of that frame.
+        self.read_report(sensor, at)?;
         Ok(landings)
     }
 
@@ -512,18 +557,41 @@ impl NativeControls {
     }
 
     /// The controls in force on `frame`, and what the frame measured. Timestamp is the frame's
-    /// `CLOCK_MONOTONIC` nanoseconds. Values come from what was posted and the delays, not from the
-    /// frame: the sensor's embedded data (`SensorInfo::embedded_data`) is not read back here yet.
-    ///
-    /// On a free-running sensor a value may land one frame later than recorded here: the write
-    /// frame is taken as the last frame delivered, and the sensor may already be exposing the
-    /// next one. Until read-back exists, treat the recorded frame as the earliest it can land.
+    /// `CLOCK_MONOTONIC` nanoseconds. For a frame the driver reported at its start, the values are
+    /// that report; otherwise (no report, or a frame not yet started) they come from what was posted
+    /// and the delays.
     pub fn metadata(&self, frame: u64, sensor_timestamp_ns: u64) -> FrameMetadata {
-        let exposure = self.lanes[EXPOSURE].value_at(frame);
-        let gain = self.lanes[GAIN].value_at(frame);
-        let fl = self.lanes[FRAME_LENGTH].value_at(frame);
-        let exposure_us = self.limits.exposure_us(exposure);
-        let gain_milli = self.limits.gain_milli(gain);
+        let (exposure_code, gain_code, fl) = (
+            self.lanes[EXPOSURE].value_at(frame),
+            self.lanes[GAIN].value_at(frame),
+            self.lanes[FRAME_LENGTH].value_at(frame),
+        );
+        let report = self
+            .reports
+            .iter()
+            .rev()
+            .find(|&&(f, _)| f == frame)
+            .map(|&(_, in_force)| in_force);
+        let (exposure_us, gain_milli, fl) = match report {
+            Some(in_force) => (
+                in_force
+                    .exposure_lines
+                    .map_or_else(|| self.limits.exposure_us(exposure_code), |lines| {
+                        self.limits.exposure_us_of_lines(lines)
+                    }),
+                in_force
+                    .analogue_gain
+                    .map_or_else(|| self.limits.gain_milli(gain_code), |code| {
+                        self.limits.gain_milli(code)
+                    }),
+                in_force.frame_length.unwrap_or(fl),
+            ),
+            None => (
+                self.limits.exposure_us(exposure_code),
+                self.limits.gain_milli(gain_code),
+                fl,
+            ),
+        };
         let mut controls = [ControlValue::Auto; Control::COUNT];
         for control in Control::ALL {
             controls[control.index()] = control.spec().default;

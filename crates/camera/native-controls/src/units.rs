@@ -20,11 +20,6 @@ pub fn exposure_us(code: u64, line_time_ps: u64, fraction_bits: u8) -> u32 {
     u32::try_from((num + den / 2) / den).unwrap_or(u32::MAX)
 }
 
-/// Largest exposure code a frame of `frame_length` lines allows: the frame less `margin` lines.
-pub fn exposure_max_code(frame_length: u64, margin: u32, fraction_bits: u8) -> u64 {
-    frame_length.saturating_sub(u64::from(margin)) << fraction_bits
-}
-
 /// Frame length in lines for `mhz` millihertz at `line_time_ps` per line, rounded to the nearest
 /// whole line. `None` for a frame rate of zero. The frame rate is the frame length over the line
 /// time, so this is the length the rate asks for; the sensor's limits clamp it.
@@ -64,12 +59,6 @@ mod tests {
         // 8000 us at 9.1 us a line is 879.12 lines, 14066 sixteenths.
         assert_eq!(exposure_code(8_000, LT, 4), 14_066);
         assert_eq!(exposure_code(8_000, LT, 0), 879);
-    }
-
-    #[test]
-    fn exposure_max_is_the_frame_less_the_margin() {
-        assert_eq!(exposure_max_code(1822, 25, 4), 1797 << 4);
-        assert_eq!(exposure_max_code(10, 25, 4), 0);
     }
 
     #[test]

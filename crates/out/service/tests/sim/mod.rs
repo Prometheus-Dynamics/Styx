@@ -104,6 +104,62 @@ pub struct SimSensor {
     selected: Option<u16>,
     streaming: bool,
     applied: Option<FrameValues>,
+    /// The codes last written (exposure, gain, frame length), after the sensor's clamp.
+    written: [Option<u32>; 3],
+    /// The `CLAMP_*` bits of the last request.
+    clamped: u8,
+}
+
+impl SimSensor {
+    /// The request as the sensor takes it: each value moved to the nearest one the selected mode
+    /// allows (the exposure ceiling is the frame less the mode's margin, in the frame length asked
+    /// for or last written), with the `CLAMP_*` bits of what was moved.
+    fn fit(&mut self, controls: Controls) -> Controls {
+        let m = self.selected.and_then(|i| mode(usize::from(i)));
+        let Some(m) = m else {
+            return controls;
+        };
+        let mut clamped = 0;
+        let frame_length = controls.frame_length.map(|lines| {
+            let fit = lines.clamp(m.frame_length_min, m.frame_length_max);
+            if fit != lines {
+                clamped |= lemnos_contract_camera_sensor::CLAMP_FRAME_LENGTH;
+            }
+            fit
+        });
+        let frame_length_now = frame_length
+            .or(self.written[2])
+            .unwrap_or(m.frame_length_min);
+        let exposure_max = (frame_length_now.saturating_sub(m.exposure_margin) << 4)
+            .max(m.exposure_min);
+        let asked = match controls.exposure {
+            Some(code) => Some(code),
+            None if frame_length.is_some() => self.written[0],
+            None => None,
+        };
+        let exposure = asked.map(|code| {
+            let fit = code.clamp(m.exposure_min, exposure_max);
+            if fit != code {
+                clamped |= lemnos_contract_camera_sensor::CLAMP_EXPOSURE;
+            }
+            fit
+        });
+        let analogue_gain = controls.analogue_gain.map(|code| {
+            let fit = code.clamp(m.analogue_gain.min, m.analogue_gain.max);
+            if fit != code {
+                clamped |= lemnos_contract_camera_sensor::CLAMP_ANALOGUE_GAIN;
+            }
+            fit
+        });
+        self.clamped = clamped;
+        self.written = [exposure.or(self.written[0]), analogue_gain.or(self.written[1]), frame_length.or(self.written[2])];
+        Controls {
+            exposure,
+            analogue_gain,
+            frame_length,
+            digital_gain: controls.digital_gain,
+        }
+    }
 }
 
 impl Lifecycle for SimSensor {
@@ -114,6 +170,8 @@ impl Lifecycle for SimSensor {
             selected: None,
             streaming: false,
             applied: None,
+            written: [None; 3],
+            clamped: 0,
         })
     }
 }
@@ -139,7 +197,12 @@ impl CameraSensor for SimSensor {
     fn in_force(
         &mut self,
     ) -> core::result::Result<lemnos_contract_camera_sensor::InForce, lemnos_core::Status> {
-        Err(lemnos_core::Status::NOT_SUPPORTED)
+        Ok(lemnos_contract_camera_sensor::InForce {
+            exposure_lines: self.written[0].map(|code| code >> 4),
+            analogue_gain: self.written[1],
+            frame_length: self.written[2],
+            clamped: self.clamped,
+        })
     }
 
     fn set_exposure(
@@ -211,16 +274,21 @@ impl CameraSensor for SimSensor {
         Ok(())
     }
 
-    fn set_controls(&mut self, _controls: Controls) -> Result<()> {
+    fn set_controls(&mut self, controls: Controls) -> Result<()> {
         if self.selected.is_none() {
             return Err(Status::INVALID_ARGUMENT);
         }
         log("sensor.set_controls");
+        self.fit(controls);
         Ok(())
     }
 
     fn post_values(&mut self, values: FrameValues) -> Result<()> {
-        self.applied = Some(values);
+        let controls = self.fit(values.controls);
+        self.applied = Some(FrameValues {
+            identity: values.identity,
+            controls,
+        });
         Ok(())
     }
 

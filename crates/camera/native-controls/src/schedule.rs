@@ -87,21 +87,6 @@ impl Lane {
             .map_or(0, |&(_, code)| code)
     }
 
-    /// The code planned for `frame` once everything requested so far has been posted, with
-    /// `extra` (a request not yet inserted) counted too.
-    pub(crate) fn planned_at(&self, frame: u64, extra: Option<(u64, u32)>) -> u32 {
-        let mut best: Option<(u64, u32)> = None;
-        for &(f, c) in self.pending.iter().chain(extra.as_ref()) {
-            if f <= frame && best.is_none_or(|(bf, _)| f >= bf) {
-                best = Some((f, c));
-            }
-        }
-        match best {
-            Some((_, c)) => c,
-            None => self.value_at(frame),
-        }
-    }
-
     /// Requests replaced by a later one for the same post frame, or superseded by a later due one.
     pub(crate) fn superseded(&self) -> u64 {
         self.superseded

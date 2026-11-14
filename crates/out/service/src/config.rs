@@ -70,8 +70,8 @@
 //! lower depth only when the rate needs it. A rate above the chosen mode's ceiling (its shortest
 //! frame) is answered with the ceiling. The status line says which mode, and why (`mode_reason`).
 //! An exposure the chosen mode's frame cannot hold (its shortest frame less the sensor's margin) is
-//! moved to that ceiling, and the status says so (`exposure_clamp`); the frame rate keeps its
-//! priority, so a frame is never lengthened for an exposure. A control request past the limit is
+//! moved to that ceiling by the sensor, which reports it, and the status says so (`exposure_clamp`);
+//! the frame rate keeps its priority, so a frame is never lengthened for an exposure. A control request past the limit is
 //! answered `ok` with the value applied (see `frame` and `list`), not refused.
 
 use std::collections::BTreeMap;

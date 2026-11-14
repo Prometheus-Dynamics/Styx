@@ -1,5 +1,8 @@
 //! A frame rate is the frame length over the line time, in the mode's own numbers. A rate the
-//! mode's frame lengths cannot reach is clamped and reported; nothing is a nominal table.
+//! mode's frame lengths cannot reach is clamped by the driver and reported; nothing is a nominal
+//! table.
+
+mod common;
 
 use lemnos_contract_camera_sensor::{GainRange, Mode};
 use styx_native_controls::{Initial, NativeControls};
@@ -41,7 +44,12 @@ fn initial(frame_rate_milli: u32) -> Initial {
 fn a_mode_whose_shortest_frame_is_114_80_fps_gives_114_80_when_120_is_asked() {
     // 1000 lines of 8.710801 ms each: 1e15 / (1000 * 8_710_801) = 114.800 fps.
     let m = mode(1_000, 8_710_801);
-    let controls = NativeControls::new(&m, initial(120_000)).expect("controls");
+    let mut controls = NativeControls::new(&m, initial(120_000)).expect("controls");
+    // Styx asks for the nearest frame (957 lines); the driver clamps it to the mode's shortest and
+    // reports that, which is read at the first frame.
+    let mut sensor = common::Sensor::new(&m);
+    controls.prepare(&mut sensor).expect("prepare");
+    controls.frame_start(&mut sensor, 0).expect("frame start");
     let rate = controls.initial_rate();
     assert_eq!(rate.lines, 1_000, "the shortest frame");
     assert_eq!(rate.achieved_milli, 114_800);

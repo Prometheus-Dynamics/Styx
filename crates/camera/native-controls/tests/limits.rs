@@ -68,9 +68,14 @@ fn an_exposure_past_the_frame_is_clamped_to_its_ceiling_and_the_reason_is_kept()
         .request(&mut sensor, &[manual(Control::Exposure, 17_000, 12)])
         .expect("clamped, not refused");
     assert_eq!(landings.len(), 1);
+    // The driver clamps on the post and reports it once the value has landed (frame 12 shows it).
+    for k in 11..=13 {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
     let report = controls.exposure_report();
     assert_eq!(report.requested_us, 17_000);
-    assert_eq!(report.applied_us, 16_444);
+    assert_eq!(report.applied_us, Some(16_444));
     let clamp = report.clamp.expect("a clamp");
     assert_eq!(clamp.reason, ClampReason::Ceiling);
     assert_eq!(clamp.frame_lines, Some(1832));
@@ -93,6 +98,11 @@ fn a_gain_past_the_sensors_codes_is_clamped_to_the_nearest_and_the_reason_is_kep
     controls
         .request(&mut sensor, &[manual(Control::Gain, 16_000, 12)])
         .expect("clamped, not refused");
+    // The driver clamps the gain on the post and reports it once the value has landed (frame 12).
+    for k in 11..=12 {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
     assert_eq!(controls.metadata(12, 0).analogue_gain_milli, 15_938);
     let clamp = controls.clamp(Control::Gain).expect("a gain clamp");
     assert_eq!(clamp.reason, ClampReason::Ceiling);
@@ -137,9 +147,16 @@ fn a_frame_rate_the_frame_length_cannot_reach_is_clamped_and_reported() {
         .iter()
         .find(|l| l.control == Control::FrameRate)
         .expect("a frame rate landing");
-    assert!(landing.clamped);
-    assert_eq!(landing.achieved_milli, Some(122_100));
+    // The landing predicts the rate asked for; the driver's clamp is read once it has landed.
+    assert!(!landing.clamped);
     assert_eq!(sensor.frame_length.last().map(|&(_, fl)| fl), Some(900));
+    for k in 11..=12 {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
+    let rate = controls.initial_rate();
+    assert!(rate.clamped, "{rate:?}");
+    assert_eq!((rate.lines, rate.achieved_milli), (900, 122_100));
 }
 
 #[test]
@@ -228,11 +245,16 @@ fn a_frame_rate_that_cuts_the_exposure_in_force_clamps_the_exposure_and_keeps_th
     assert_eq!(sensor.frame_length.last().map(|&(_, fl)| fl), Some(916));
     // The request is posted in frame 9 (the frame started), so it lands on frame 9 + 2 = 11, as the
     // frame length does; frame 10 still shows the 12 ms it was given.
+    for k in 10..=12 {
+        sensor.frame = k;
+        controls.frame_start(&mut sensor, k).unwrap();
+    }
     assert_eq!(controls.metadata(11, 0).exposure_us, 8_108);
-    assert_eq!(controls.metadata(10, 0).exposure_us, 12_000);
+    // The driver reports 12 ms as whole lines: 1 318 lines of 9.1 us, 11 994 us.
+    assert_eq!(controls.metadata(10, 0).exposure_us, 11_994);
     let report = controls.exposure_report();
     assert_eq!(report.requested_us, 12_000);
-    assert_eq!(report.applied_us, 8_108);
+    assert_eq!(report.applied_us, Some(8_108));
     let clamp = report.clamp.expect("the exposure in force was clamped");
     assert_eq!(clamp.frame_lines, Some(916));
     assert_eq!(clamp.reason, ClampReason::Ceiling);
@@ -240,16 +262,22 @@ fn a_frame_rate_that_cuts_the_exposure_in_force_clamps_the_exposure_and_keeps_th
 
 #[test]
 fn an_initial_exposure_the_frame_cannot_hold_is_clamped_at_setup_with_the_reason() {
-    let controls = NativeControls::new(
-        &mode(),
+    let mode = mode();
+    let mut controls = NativeControls::new(
+        &mode,
         Initial {
             exposure_us: 17_000,
             ..START
         },
     )
     .expect("clamped, not refused");
+    // The applied value is the driver's report: read at the first frame, which shows the setup.
+    let mut sensor = Sensor::new(&mode);
+    controls.prepare(&mut sensor).unwrap();
+    sensor.frame = 0;
+    controls.frame_start(&mut sensor, 0).unwrap();
     let report = controls.exposure_report();
-    assert_eq!((report.requested_us, report.applied_us), (17_000, 16_444));
+    assert_eq!((report.requested_us, report.applied_us), (17_000, Some(16_444)));
     let clamp = report.clamp.expect("a clamp");
     assert_eq!(clamp.frame_lines, Some(1832));
     assert_eq!(controls.metadata(0, 0).exposure_us, 16_444);

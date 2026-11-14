@@ -13,27 +13,23 @@
 //!
 //! A request that comes too late for its frame (the post frame has passed) is posted at once and
 //! reports the later frame it lands on ([`Landing::late`]). Nothing is refused for a value the
-//! sensor cannot take exactly; it is answered with the nearest value it can take, and the answer
-//! says why ([`Clamp`]):
+//! sensor cannot take exactly, and nothing is fitted here: the value is posted as asked, the driver
+//! clamps it to what it can take, and its report says what it applied and that it clamped
+//! ([`NativeControls::observe`], read at each frame start from the sensor's `in_force`). The clamp
+//! and the applied value shown by [`NativeControls::exposure_report`] and
+//! [`NativeControls::clamp`] are the driver's; the reason (ceiling or floor) is read off the
+//! requested and applied values. A driver that answers `NOT_SUPPORTED` to `in_force` gives no
+//! report: the applied values are then unknown, and nothing is clamped by Styx.
 //!
-//! - an exposure longer than its frame length allows (the frame less the mode's margin) is moved to
-//!   that ceiling, and one below the sensor's minimum to the minimum. A frame rate is never
-//!   lengthened to fit an exposure: the frame rate has priority, so an exposure in force that the
-//!   new frame cannot hold is clamped from its frame on;
-//! - a gain outside the sensor's codes is moved to the nearest code's gain;
-//! - a frame rate outside the sensor's frame lengths is clamped to the nearest one, and the rate it
-//!   runs at is reported ([`FrameRate`]).
-//!
-//! Refused, with nothing posted: a value outside the generic control range ([`Error::Value`], from
+////! Refused, with nothing posted: a value outside the generic control range ([`Error::Value`], from
 //! `styx-controls`), a control this path does not post, automatic values, a zero frame rate, and a
 //! mode that cannot take controls.
 //!
 //! Units: exposure in microseconds becomes lines times `2^exposure_fraction_bits` with the mode's
 //! line time; gain in thousandths becomes the sensor's code by the mode's gain law
 //! (`GainRange::law`, the contract's, in `gain.rs`); frame rate in millihertz becomes the frame
-//! length in whole lines, the frame length over the line time, clamped to the mode's
-//! `frame_length_min`..=`frame_length_max` with the rate it achieves reported ([`FrameRate`]). No
-//! nominal rate is kept anywhere: the mode's line time and frame lengths are the facts.
+//! length in whole lines, the frame length over the line time. The sensor's limits are the driver's
+//! to apply; [`FrameRate`] carries the driver's report. No nominal rate is kept anywhere.
 //!
 //! [`NativeControls::metadata`] reports the values in force on a frame, from what was posted and
 //! the delays. `camera.sensor/1` at the lock has no per-frame read-back, so nothing is read back

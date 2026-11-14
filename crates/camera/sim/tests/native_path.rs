@@ -37,6 +37,11 @@ fn mean(samples: &[u16]) -> f64 {
     samples.iter().map(|&s| f64::from(s)).sum::<f64>() / samples.len() as f64
 }
 
+/// The longest exposure the simulated sensor takes: the shortest frame (915 lines) less the mode's
+/// margin (25 lines), at 9.1 us a line, is 890 lines, 8 099 us. The sensor clamps a longer request to
+/// it and reports that (the report is in whole lines, so it is exact here).
+const EXPOSURE_CEILING_US: u32 = 8_099;
+
 /// Exposure in force on frame `n`: the last update at or before it, from the schedule the test
 /// set up (independent of the camera's own bookkeeping).
 fn in_force(schedule: &[Update], control: Control, n: u64) -> Option<u32> {
@@ -97,12 +102,14 @@ fn thousand_frames_native_path_controls_land_on_their_frames_and_nothing_is_copi
             gaps += n - last - 1;
         }
         last_id = Some(n);
-        let exposure = in_force(&schedule, Control::Exposure, n).unwrap_or(10_000);
+        let exposure = in_force(&schedule, Control::Exposure, n)
+            .map_or(10_000, |v| v.min(EXPOSURE_CEILING_US));
         let gain = in_force(&schedule, Control::Gain, n).unwrap_or(1_000);
         let meta = frame.meta();
         assert_eq!(
             meta.control(Control::Exposure),
             in_force(&schedule, Control::Exposure, n)
+                .map(|v| v.min(EXPOSURE_CEILING_US))
                 .map_or(ControlValue::Auto, ControlValue::Manual),
             "frame {n}: exposure in force"
         );
