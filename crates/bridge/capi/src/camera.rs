@@ -282,7 +282,9 @@ impl Drop for LocalLink {
 fn next_error(error: CaptureError) -> Fail {
     match error {
         CaptureError::Stopped => Fail::new(E_STOPPED, "the camera stopped"),
-        CaptureError::Failed(text) => Fail::new(E_STOPPED, format!("the camera failed: {text}")),
+        CaptureError::Failed(text) | CaptureError::Contract { text, .. } => {
+            Fail::new(E_STOPPED, format!("the camera failed: {text}"))
+        }
         CaptureError::Unsupported(what) => Fail::new(E_UNSUPPORTED, what),
     }
 }
@@ -290,7 +292,7 @@ fn next_error(error: CaptureError) -> Fail {
 fn set_error(error: CaptureError) -> Fail {
     match error {
         CaptureError::Stopped => Fail::new(E_STOPPED, "the camera stopped"),
-        CaptureError::Failed(text) => Fail::new(E_IO, text),
+        CaptureError::Failed(text) | CaptureError::Contract { text, .. } => Fail::new(E_IO, text),
         CaptureError::Unsupported(what) => Fail::new(E_UNSUPPORTED, what),
     }
 }

@@ -381,6 +381,14 @@ fn open<R>(
                     .with_selection_sink(choices.clone())
                     .with_exposure_sink(exposure_sink.clone())
             };
+            // A device contract another build's, found as the session opens its devices: the same
+            // status and fault code as discovery's refusal (one meaning, one form).
+            let refused = |e: CaptureError| {
+                if let CaptureError::Contract { contract, .. } = &e {
+                    slot.set_contract(Some(contract.clone()));
+                }
+                e.to_string()
+            };
             let mut capture = match NativeCapture::start(session()) {
                 Ok(capture) => capture,
                 Err(e) if left_started(&e.to_string()) => {
@@ -390,9 +398,9 @@ fn open<R>(
                     let note = stop_left_started(&client, camera);
                     slot.recovered(note.clone());
                     eprintln!("styx-service: camera {}: {note}", slot.id);
-                    NativeCapture::start(session()).map_err(|e| e.to_string())?
+                    NativeCapture::start(session()).map_err(refused)?
                 }
-                Err(e) => return Err(e.to_string()),
+                Err(e) => return Err(refused(e)),
             };
             let reports = Reports {
                 modes: chosen,
@@ -656,10 +664,16 @@ fn pump(
         match capture.status() {
             Status::Streaming => {
                 slot.layout_refused(None);
+                slot.set_contract(None);
                 slot.resumed();
             }
-            Status::Retrying { reason, layout } => {
+            Status::Retrying {
+                reason,
+                layout,
+                contract,
+            } => {
                 slot.layout_refused(layout);
+                slot.set_contract(contract);
                 slot.retrying(reason);
             }
             Status::Stopped => {
@@ -668,8 +682,13 @@ fn pump(
                     delivered,
                 };
             }
-            Status::Failed { reason, layout } => {
+            Status::Failed {
+                reason,
+                layout,
+                contract,
+            } => {
                 slot.layout_refused(layout);
+                slot.set_contract(contract);
                 break Ended::Fault {
                     text: reason,
                     delivered,

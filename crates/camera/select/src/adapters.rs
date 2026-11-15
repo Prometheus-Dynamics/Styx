@@ -36,11 +36,18 @@ pub struct NativeCapture<'a, C: Clock> {
 }
 
 impl<'a, C: Clock> NativeCapture<'a, C> {
-    /// Starts the session.
+    /// Starts the session. A start refused for a device contract another build's is
+    /// [`CaptureError::Contract`], with the contract the session names.
     pub fn start(mut session: Session<'a, C>) -> Result<Self, CaptureError> {
-        session
-            .start()
-            .map_err(|e| CaptureError::Failed(e.to_string()))?;
+        if let Err(e) = session.start() {
+            return Err(match session.status().contract.clone() {
+                Some(contract) => CaptureError::Contract {
+                    contract,
+                    text: e.to_string(),
+                },
+                None => CaptureError::Failed(e.to_string()),
+            });
+        }
         Ok(Self {
             session,
             achieved_milli: 0,
@@ -99,16 +106,19 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
             State::Streaming if status.stall.is_some() => Status::Retrying {
                 reason: status.stall.clone().unwrap_or_default(),
                 layout: status.layout,
+                contract: status.contract.clone(),
             },
             State::Streaming => Status::Streaming,
             State::Stopped => Status::Stopped,
             State::Backoff => Status::Retrying {
                 reason: status.last_error.clone().unwrap_or_default(),
                 layout: status.layout,
+                contract: status.contract.clone(),
             },
             State::Off => Status::Failed {
                 reason: status.last_error.clone().unwrap_or_default(),
                 layout: status.layout,
+                contract: status.contract.clone(),
             },
         }
     }
@@ -189,11 +199,13 @@ impl Capture for V4l2Capture {
                 V4l2State::Retrying { error, .. } => Status::Retrying {
                     reason: error,
                     layout: None,
+                    contract: None,
                 },
                 V4l2State::Stopped => Status::Stopped,
                 V4l2State::Failed { error } => Status::Failed {
                     reason: error,
                     layout: None,
+                    contract: None,
                 },
             },
         }
