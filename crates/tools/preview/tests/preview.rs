@@ -4,6 +4,8 @@
 mod common;
 
 use std::os::unix::net::UnixStream;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -23,17 +25,27 @@ fn offer(preview: &Preview<(), Frame>, frame: Frame) -> Offer {
     preview.offer_held(frame, &share)
 }
 
-/// Reads JPEG frames from `reader` until `want` have arrived or `within` has passed.
-fn collect(reader: &mut Reader, want: usize, within: Duration) -> Vec<(u32, u32, bool)> {
-    let deadline = Instant::now() + within;
+/// Waits until `done` holds, for at most a minute: a guard against a hang, not a tolerance. Every
+/// count the test checks is exact, whatever the machine's load.
+fn wait_until(what: &str, done: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !done() {
+        assert!(Instant::now() < deadline, "never happened: {what}");
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// Reads JPEG frames from `reader` until `want` have arrived, counting each in `read` as it comes.
+fn collect(reader: &mut Reader, want: usize, read: &AtomicUsize) -> Vec<(u32, u32, bool)> {
     let mut seen = Vec::new();
-    while seen.len() < want && Instant::now() < deadline {
+    while seen.len() < want {
         match reader.next_frame().expect("output reader") {
             Some(frame) => {
                 let lease = frame.lease();
                 let (w, h) = size(lease);
-                let read = lease.read().expect("readable");
-                seen.push((w, h, is_jpeg(read.plane(0).expect("one plane").data)));
+                let bytes = lease.read().expect("readable");
+                seen.push((w, h, is_jpeg(bytes.plane(0).expect("one plane").data)));
+                read.fetch_add(1, Ordering::SeqCst);
             }
             None => thread::sleep(Duration::from_millis(1)),
         }
@@ -41,6 +53,10 @@ fn collect(reader: &mut Reader, want: usize, within: Duration) -> Vec<(u32, u32,
     seen
 }
 
+/// The cap runs on the frames' own clock, their timestamps: 60 frames 1/60 s apart are offered,
+/// and frames 0, 4, 8, ... pass a 15 fps cap. Nothing in the test runs on the wall clock: the
+/// viewer is attached before the first frame, and each admitted frame is published and read
+/// before the next is offered, so the counts are exact on any machine under any load.
 #[test]
 fn sixty_fps_source_previews_at_fifteen_as_jpeg_frames() {
     let mut ring = source(WIDTH, HEIGHT, 8);
@@ -48,25 +64,37 @@ fn sixty_fps_source_previews_at_fifteen_as_jpeg_frames() {
     let preview = Preview::<(), Frame>::new(PreviewConfig::new(WIDTH, HEIGHT)).expect("preview");
     let (ours, theirs) = UnixStream::pair().expect("pair");
     preview.attach(ours);
-    // The worker runs the handshake between frames: the reader connects while frames flow, and
-    // reads as they come, as a viewer does.
-    let viewer = thread::spawn(move || {
-        let mut output = Reader::connect(theirs).expect("output reader");
-        collect(&mut output, 15, Duration::from_secs(10))
-    });
+    let read = Arc::new(AtomicUsize::new(0));
+    let viewer = {
+        let read = Arc::clone(&read);
+        thread::spawn(move || {
+            let mut output = Reader::connect(theirs).expect("output reader");
+            collect(&mut output, 15, &read)
+        })
+    };
+    wait_until("the viewer attached", || preview.stats().readers == 1);
 
-    // Sixty frames at 60 fps by their timestamps, offered one at a time.
     let base = now_ns();
+    let mut admitted = 0_usize;
     for i in 0..60_u64 {
         assert!(publish(&mut ring, WIDTH, HEIGHT, i, base + i * FRAME_NS));
         let frame = next_frame(&mut input);
-        assert_ne!(offer(&preview, frame), Offer::Refused);
-        // Admitted frames are four offers apart (80 ms here): the encoder has the time to finish
-        // each one before the next is queued, even on a busy machine.
-        thread::sleep(Duration::from_millis(20));
+        match offer(&preview, frame) {
+            Offer::Queued => {
+                admitted += 1;
+                wait_until(&format!("frame {i} published"), || {
+                    preview.stats().published == admitted as u64
+                });
+                wait_until(&format!("frame {i} read"), || {
+                    read.load(Ordering::SeqCst) == admitted
+                });
+            }
+            Offer::RateCapped => {}
+            Offer::Refused => panic!("frame {i} refused"),
+        }
     }
-    // Frames 0, 4, 8, ... pass the cap: 15 of 60.
     let frames = viewer.join().expect("viewer");
+    assert_eq!(admitted, 15, "frames 0, 4, 8, ... pass the cap: 15 of 60");
     assert_eq!(frames.len(), 15, "output frames: {frames:?}");
     assert!(
         frames
