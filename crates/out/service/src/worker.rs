@@ -219,10 +219,11 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     continue;
                 }
                 // The camera retries: the producer stays attached through the backoff, and its
-                // readers are told of the stall.
-                // PRODUCER STALL: the hardware layer's own `Next::Stalled` will plug in here once its
-                // rev is pinned (the capture reports the device's state); until then the service
-                // stalls on the failure it sees.
+                // readers are told of the stall. This stall is the service's own: the capture has
+                // ended and its devices are halted, so no Lemnos stream is left to report one. A
+                // stall the hardware reports while the stream is attached (`Next::Stalled` and
+                // `Next::Resumed`) reaches the readers through the capture's edges instead
+                // (`apply_edge`).
                 let since = styx_socket::clock_ns();
                 if let Some(held) = publisher.as_mut() {
                     held.producer.stall(since);
