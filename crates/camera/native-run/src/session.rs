@@ -58,6 +58,10 @@ pub struct Status {
     /// The last shared-layout refusal of the frame stream, as its values (the text of it is in
     /// `last_error` too). Cleared by a successful start.
     pub layout: Option<LayoutRefusal>,
+    /// The device contract the board's Lemnos lays out another way than this build, when a device
+    /// open was refused for it (the sentence is in `last_error` too). The session keeps retrying, as
+    /// for any failure. Cleared by a successful start.
+    pub contract: Option<String>,
     /// The wait before the next attempt, while in backoff.
     pub next_delay: Option<Duration>,
     /// When the next attempt is due, on the session clock's timeline.
@@ -81,6 +85,7 @@ impl Status {
             total_failures: 0,
             last_error: None,
             layout: None,
+            contract: None,
             next_delay: None,
             retry_at: None,
             stall: None,
@@ -177,6 +182,12 @@ enum Fault {
         refusal: LayoutRefusal,
         text: String,
     },
+    /// A device's contract is another build's than this Styx's: a retry (the board's Lemnos may be
+    /// replaced), with the contract named.
+    Contract {
+        contract: String,
+        text: String,
+    },
     Permanent(ModeError),
     /// The session's settings cannot run on this camera. Retrying cannot fix it.
     Config(Error),
@@ -191,6 +202,19 @@ fn stream_fault(error: styx_lemnos::Error, call: &str) -> Fault {
             text: format!("{call}: {error}"),
         },
         None => Fault::Retry(format!("{call}: {error}")),
+    }
+}
+
+/// A device open's error as an attempt's fault: a contract another build's keeps its name and the
+/// Lemnos error's sentence (the same words discovery gives); anything else is text.
+fn open_fault(device: &str, error: lemnos_client::Error) -> Fault {
+    let error = styx_lemnos::Error::from_client(error);
+    match error.contract_mismatch() {
+        Some(contract) => Fault::Contract {
+            contract: contract.to_string(),
+            text: format!("open {device}: {error}"),
+        },
+        None => Fault::Retry(format!("open {device}: {error}")),
     }
 }
 
@@ -691,7 +715,12 @@ impl<'a, C: Clock> Session<'a, C> {
         // sensor is opened again. A device not yet bound does not open: tried again later.
         running.sensor = client
             .open::<dyn CameraSensor>(&sensor_name)
-            .map_err(|_| Restart::NotYet)?;
+            .map_err(|error| match open_fault(&sensor_name, error) {
+                // Another build's contract is not a device still binding: the session faults, and
+                // its next start names the contract.
+                Fault::Contract { text, .. } => Restart::Failed(text),
+                _ => Restart::NotYet,
+            })?;
         let index = running.mode;
         // The receiver is still running from before the bind: it is stopped, so it can be configured
         // and started again with the sensor. The frame stream stays attached.
@@ -799,6 +828,7 @@ impl<'a, C: Clock> Session<'a, C> {
                     self.status.starts += 1;
                     self.status.consecutive_failures = 0;
                     self.status.layout = None;
+                    self.status.contract = None;
                     self.status.next_delay = None;
                     self.status.retry_at = None;
                     self.running = Some(running);
@@ -816,6 +846,10 @@ impl<'a, C: Clock> Session<'a, C> {
                 Err(Fault::Retry(text)) => self.backoff_after(text)?,
                 Err(Fault::Layout { refusal, text }) => {
                     self.status.layout = Some(refusal);
+                    self.backoff_after(text)?;
+                }
+                Err(Fault::Contract { contract, text }) => {
+                    self.status.contract = Some(contract);
                     self.backoff_after(text)?;
                 }
                 Err(Fault::Config(e)) => {
@@ -863,11 +897,11 @@ impl<'a, C: Clock> Session<'a, C> {
         let mut sensor: Sensor = self
             .client
             .open::<dyn CameraSensor>(sensor_name)
-            .map_err(|e| Fault::Retry(format!("open {sensor_name}: {e}")))?;
+            .map_err(|e| open_fault(sensor_name, e))?;
         let mut receiver: Receiver = self
             .client
             .open::<dyn CameraReceiver>(receiver_name)
-            .map_err(|e| Fault::Retry(format!("open {receiver_name}: {e}")))?;
+            .map_err(|e| open_fault(receiver_name, e))?;
 
         let info = refused(sensor.info(), "sensor.info")?;
         let mut modes: Vec<Mode> = Vec::with_capacity(usize::from(info.modes));
@@ -950,5 +984,37 @@ mod layout_tests {
             stream_fault(error, "frame stream"),
             Fault::Retry(_)
         ));
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+
+    fn mismatch() -> lemnos_client::Error {
+        lemnos_client::Error::ContractMismatch {
+            contract: "camera.sensor/1".to_string(),
+            ours: 0x33b8_60b0_2987_233d,
+            theirs: 0x4d6f_4b4b_ddf7_8636,
+        }
+    }
+
+    #[test]
+    fn a_contract_mismatch_at_a_device_open_is_a_contract_fault_with_discoverys_words() {
+        match open_fault("cam0-sensor", mismatch()) {
+            Fault::Contract { contract, text } => {
+                assert_eq!(contract, "camera.sensor/1");
+                // The same sentence discovery's refusal carries, after the device named.
+                let words = styx_lemnos::Error::from_client(mismatch()).to_string();
+                assert_eq!(text, format!("open cam0-sensor: {words}"));
+            }
+            _ => panic!("a contract mismatch must be a contract fault"),
+        }
+    }
+
+    #[test]
+    fn any_other_open_error_stays_a_retry() {
+        let error = lemnos_client::Error::Disconnected;
+        assert!(matches!(open_fault("cam0-sensor", error), Fault::Retry(_)));
     }
 }

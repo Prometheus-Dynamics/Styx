@@ -17,17 +17,20 @@ pub enum Status {
     /// Frames flow.
     Streaming,
     /// The device failed; the backend is retrying. `reason` is its last error. `layout` is the
-    /// frame stream's shared-layout refusal when that is the cause, as its values.
+    /// frame stream's shared-layout refusal when that is the cause, as its values. `contract` is
+    /// the device contract the board's Lemnos lays out another way, when that is the cause.
     Retrying {
         reason: String,
         layout: Option<LayoutRefusal>,
+        contract: Option<String>,
     },
     /// Stopped by the caller.
     Stopped,
-    /// The backend gave up. `layout` as for [`Status::Retrying`].
+    /// The backend gave up. `layout` and `contract` as for [`Status::Retrying`].
     Failed {
         reason: String,
         layout: Option<LayoutRefusal>,
+        contract: Option<String>,
     },
 }
 
@@ -51,6 +54,9 @@ pub enum CaptureError {
     Stopped,
     /// The backend failed (its message).
     Failed(String),
+    /// The camera could not start because a device's contract is another build's than this
+    /// Styx's: `contract` names it and `text` is the failure's sentence. Retried like any failure.
+    Contract { contract: String, text: String },
     /// The backend does not do what was asked; the name of the missing operation.
     Unsupported(&'static str),
 }
@@ -59,7 +65,9 @@ impl fmt::Display for CaptureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             CaptureError::Stopped => f.write_str("camera stopped"),
-            CaptureError::Failed(message) => f.write_str(message),
+            CaptureError::Failed(message) | CaptureError::Contract { text: message, .. } => {
+                f.write_str(message)
+            }
             CaptureError::Unsupported(what) => write!(f, "unsupported by this backend: {what}"),
         }
     }
