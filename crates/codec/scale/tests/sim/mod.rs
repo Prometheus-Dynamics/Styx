@@ -47,7 +47,7 @@ fn channels(code: FourCc, index: usize) -> usize {
 
 #[driver("sim-scaler", provides = [ImageScaler])]
 pub struct SimScaler {
-    #[needs]
+    #[needs(job)]
     scale: StreamHandle,
     /// The buffers this driver holds: taken from the consumer, not yet published.
     held: u64,

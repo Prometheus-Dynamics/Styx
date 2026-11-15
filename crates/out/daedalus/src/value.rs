@@ -170,12 +170,12 @@ impl DmaBufBacked for StyxFrame {
     const READ_ONLY: bool = true;
 
     /// The dma-buf holding the frame, and the import length. `None` for a frame that is not in a
-    /// dma-buf (host, memfd, GPU), for a dma-buf the frame starts past its start (several buffers
-    /// in one descriptor: a dma-buf's size is its whole length, so the offset is not expressible
-    /// here), and for a length the dma-buf can't hold.
+    /// dma-buf (host, memfd, GPU), and for a length the dma-buf can't hold. A frame cut from a
+    /// dma-buf at an offset is named here too: the descriptor is the whole dma-buf, and
+    /// [`DmaBufBacked::offset`] says where the frame starts in it.
     fn dmabuf(&self) -> Option<(BorrowedFd<'_>, u64)> {
         let memory = self.hold.memory();
-        if memory.kind() != MemoryKind::Dmabuf || memory.fd_offset() != 0 {
+        if memory.kind() != MemoryKind::Dmabuf {
             return None;
         }
         if self.import_len > memory.len() as u64 {
@@ -184,10 +184,21 @@ impl DmaBufBacked for StyxFrame {
         Some((memory.fd()?, self.import_len))
     }
 
+    /// Where the frame starts in its dma-buf: the memory's offset in the descriptor. A device that
+    /// can bind there imports the frame in place; one that can't copies it from the dma-buf at
+    /// this offset, so a misaligned frame still arrives with its own bytes. `u64::MAX` when the
+    /// offset doesn't fit a `u64`, which no device can bind at, so the copy fails rather than
+    /// reading the wrong bytes.
+    fn offset(&self) -> u64 {
+        u64::try_from(self.hold.memory().fd_offset()).unwrap_or(u64::MAX)
+    }
+
     /// The frame's bytes, borrowed from the mapping with no copy: the buffer's CPU mapping, from
-    /// the frame's own start (a frame cut from a descriptor at an offset starts there). A dma-buf
-    /// is read under its CPU read bracket, opened here and held until the frame drops, so the
-    /// borrow is always inside one. `None` for a buffer that is not mapped here.
+    /// the frame's own start. Daedalus reads these only for a frame with no dma-buf (host and
+    /// memfd frames, and a dma-buf too long for its descriptor): a frame that has a dma-buf is
+    /// imported, or copied from it, and is never uploaded from these bytes as well. A dma-buf
+    /// read here is under its CPU read bracket, opened here and held until the frame drops, so
+    /// the borrow is always inside one. `None` for a buffer that is not mapped here.
     fn bytes(&self) -> Option<&[u8]> {
         let memory = self.hold.memory();
         let ptr = memory.cpu_ptr()?;

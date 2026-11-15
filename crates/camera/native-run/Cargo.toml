@@ -28,6 +28,8 @@ lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }
 lemnos-hal = { workspace = true, features = ["std"] }
 lemnos-contract-camera-isp = { workspace = true }
+# The simulated camera's daemon for the session tests (test only).
+styx-sim = { path = "../../camera/sim" }
 
 [lints]
 workspace = true

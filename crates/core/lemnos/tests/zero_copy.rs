@@ -5,12 +5,11 @@
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::sync::Arc;
 
 use lemnos_linux_sys::dma_buf;
 use styx_format::{FourCc, MediaFormat, Resolution};
-use styx_frame::{FdMemory, FrameEntry, FramePool, copy_counters, packed_layouts};
-use styx_lemnos::{each_memories, pool_over, whole_memories};
+use styx_frame::{BufferMemory, FdMemory, FrameEntry, FramePool, copy_counters, packed_layouts};
+use styx_lemnos::pool_over;
 
 const WIDTH: u32 = 16;
 const HEIGHT: u32 = 4;
@@ -32,8 +31,14 @@ fn stream_buffers_become_leases_with_zero_copies() {
     file.read_exact(&mut readback).unwrap();
     assert_eq!(readback, [0x22; BUFFER_BYTES]);
 
-    let whole = Arc::new(FdMemory::memfd(file.into(), (STRIDE * 2) as usize, true).unwrap());
-    let memories = whole_memories(&whole, 2, BUFFER_BYTES).unwrap();
+    // Each buffer is mapped from its own region of the memfd, as `buffer_memories` maps a stream's.
+    let memories: Vec<Box<dyn BufferMemory>> = (0..2u64)
+        .map(|i| {
+            let fd = file.try_clone().unwrap().into();
+            let mapped = FdMemory::memfd_at(fd, (i * STRIDE) as usize, BUFFER_BYTES, true).unwrap();
+            Box::new(mapped) as Box<dyn BufferMemory>
+        })
+        .collect();
     let pool: FramePool = pool_over(memories, BUFFER_BYTES).unwrap();
     assert_eq!(pool.buffers(), 2);
 
@@ -72,10 +77,9 @@ fn a_dma_buf_per_buffer_maps_the_same_way() {
     let fd = dma_buf::memfd(c"styx-lemnos-each").expect("memfd");
     let file = File::from(fd);
     file.set_len(BUFFER_BYTES as u64).unwrap();
-    let each = vec![Arc::new(
-        FdMemory::memfd(file.into(), BUFFER_BYTES, false).unwrap(),
+    let memories: Vec<Box<dyn BufferMemory>> = vec![Box::new(
+        FdMemory::dmabuf(file.into(), BUFFER_BYTES, false).unwrap(),
     )];
-    let memories = each_memories(&each, BUFFER_BYTES).unwrap();
     assert_eq!(memories.len(), 1);
     let _: FramePool = pool_over(memories, BUFFER_BYTES).unwrap();
 }

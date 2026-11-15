@@ -11,7 +11,9 @@ use lemnos_contract_camera_receiver::{CameraReceiver, MAX_STREAM_NAME, Packing};
 use lemnos_contract_camera_sensor::{CameraSensor, Mode};
 use lemnos_core::Bound;
 use styx_controls::{FrameMetadata, Update};
-use styx_lemnos::{Geometry, open_frames_at};
+use styx_lemnos::{
+    Carried, Event as FrameEvent, Geometry, LayoutRefusal, StreamEnd, open_frames_at,
+};
 use styx_native::Camera;
 use styx_native_controls::{ExposureReport, FrameRate, Initial, Landings, NativeControls};
 
@@ -53,10 +55,19 @@ pub struct Status {
     pub total_failures: u64,
     /// The last failure, as text.
     pub last_error: Option<String>,
+    /// The last shared-layout refusal of the frame stream, as its values (the text of it is in
+    /// `last_error` too). Cleared by a successful start.
+    pub layout: Option<LayoutRefusal>,
     /// The wait before the next attempt, while in backoff.
     pub next_delay: Option<Duration>,
     /// When the next attempt is due, on the session clock's timeline.
     pub retry_at: Option<Duration>,
+    /// While the camera is stalled (its device failed and is being retried, and the stream stays
+    /// attached): `camera failed, retrying since <ns>: <reason>`, or `no frame for <ms>` when the
+    /// stream has been silent past its bound (see [`Session::next_event`]). `None` while it runs.
+    pub stall: Option<String>,
+    /// Silences the report named, since the session was made.
+    pub silences: u64,
 }
 
 impl Status {
@@ -69,10 +80,30 @@ impl Status {
             consecutive_failures: 0,
             total_failures: 0,
             last_error: None,
+            layout: None,
             next_delay: None,
             retry_at: None,
+            stall: None,
+            silences: 0,
         }
     }
+}
+
+/// What one wait on a running session found: [`Session::next_event`].
+#[derive(Debug)]
+pub enum Event {
+    /// A frame, with its metadata.
+    Frame(Lease),
+    /// No frame in time, and nothing else to say.
+    Idle,
+    /// The camera failed and is being retried. Health, not a fault: the session stays, and the
+    /// status says so. `text` is the status line: `camera failed, retrying since <ns>: <reason>`.
+    /// Once for each failure the stream sees, and before any frame after it.
+    Stalled { since_ns: u64, text: String },
+    /// The camera is back. `Kept`: the same device carried on. `Lost`: the device was bound again;
+    /// the session selected its mode, posted its controls and started again on the same frame
+    /// stream, so the frame sequence restarts (a discontinuity, not a gap).
+    Resumed(Carried),
 }
 
 /// Why a session call did not give frames.
@@ -84,6 +115,9 @@ pub enum Error {
     AutoOff { failures: u32, last_error: String },
     /// [`Session::next_frame`] was called while the session is not streaming.
     NotStreaming,
+    /// The frame stream ended for good: the session is stopped and its devices halted. `text` says
+    /// why (for [`StreamEnd::ConsumerFault`], that it is a bug in Styx). The owner reopens it.
+    StreamEnded { end: StreamEnd, text: String },
     /// No sensor mode fits the request. Retrying cannot fix this, so [`Session::start`] returns it
     /// at once.
     Mode(ModeError),
@@ -109,6 +143,7 @@ impl fmt::Display for Error {
                 "turned off after {failures} failures in a row: {last_error}"
             ),
             Self::NotStreaming => write!(f, "no session is streaming"),
+            Self::StreamEnded { text, .. } => write!(f, "{text}"),
             Self::Mode(e) => write!(f, "no usable sensor mode: {e}"),
             Self::Device(text) => write!(f, "{text}"),
             Self::NoControls => write!(
@@ -137,15 +172,52 @@ impl StopHandle {
 /// One attempt that did not stream: a retry, or a request no retry can fix.
 enum Fault {
     Retry(String),
+    /// A frame stream's shared layout is another build's: a retry, with the refusal's values.
+    Layout {
+        refusal: LayoutRefusal,
+        text: String,
+    },
     Permanent(ModeError),
     /// The session's settings cannot run on this camera. Retrying cannot fix it.
     Config(Error),
+}
+
+/// A frame stream's error as an attempt's fault: a layout refusal keeps its values, anything
+/// else is text.
+fn stream_fault(error: styx_lemnos::Error, call: &str) -> Fault {
+    match error.layout_refusal() {
+        Some(refusal) => Fault::Layout {
+            refusal,
+            text: format!("{call}: {error}"),
+        },
+        None => Fault::Retry(format!("{call}: {error}")),
+    }
 }
 
 /// A lemnos call's refusal, as text for the status.
 fn refused<T>(result: lemnos_core::Result<T>, call: &str) -> Result<T, Fault> {
     result.map_err(|status| Fault::Retry(format!("{call} refused: {status:?}")))
 }
+
+/// A restart's failure. `NotYet`: the rebound device is not bound or ready yet (`NO_DEVICE` or
+/// `STALE_HANDLE`, or its handle is gone): the restart is retried on the next call, and the stall
+/// stays in force. `Failed` is a real refusal, which faults the session.
+enum Restart {
+    NotYet,
+    Failed(String),
+}
+
+/// Maps a restart step's status: a device not yet there is `NotYet`, anything else a refusal.
+fn restart_status(status: lemnos_core::Status, call: &str) -> Restart {
+    if status == lemnos_core::Status::NO_DEVICE || status == lemnos_core::Status::STALE_HANDLE {
+        Restart::NotYet
+    } else {
+        Restart::Failed(format!("{call} refused: {status:?}"))
+    }
+}
+
+/// How long a call waits before a restart that is not yet possible is tried again.
+const RESTART_RETRY: Duration = Duration::from_millis(10);
 
 /// The devices of a streaming camera, and its frames.
 struct Running {
@@ -181,7 +253,7 @@ impl Running {
                         "no frame while dropping the first {drop_frames} ({dropped} seen)"
                     )));
                 }
-                Err(e) => return Err(Fault::Retry(format!("frame stream: {e}"))),
+                Err(e) => return Err(stream_fault(e, "frame stream")),
             }
         }
         Ok(())
@@ -211,6 +283,10 @@ fn unwind(running: Running, fault: Fault) -> Fault {
     match (halt(running), fault) {
         (Ok(()), fault) => fault,
         (Err(stop), Fault::Retry(text)) => Fault::Retry(format!("{text}; {stop}")),
+        (Err(stop), Fault::Layout { refusal, text }) => Fault::Layout {
+            refusal,
+            text: format!("{text}; {stop}"),
+        },
         (Err(_), permanent) => permanent,
     }
 }
@@ -227,7 +303,20 @@ pub struct Session<'a, C: Clock> {
     clock: C,
     stop: Arc<AtomicBool>,
     running: Option<Running>,
-    stalls: u32,
+    /// Frames the readers of earlier runs were too late for (`Frames::skipped`), summed over the
+    /// runs this session has stopped.
+    skipped_done: u64,
+    /// When the last frame came (the session clock), or when the session started running: the
+    /// silence the no-frame report measures from.
+    last_frame_at: Option<Duration>,
+    /// A silence the report has named, until a frame comes.
+    silenced: bool,
+    /// The device was bound again (a Lost return) and the restart is not possible yet: it is tried
+    /// again on each call, and the return is given once it has happened.
+    restart_owed: bool,
+    /// A frame that came in with the return from a silence: given out on the next call, after the
+    /// `Resumed` event that says the camera is back.
+    parked: Option<Lease>,
     status: Status,
     /// The sensor's initial values, for each run's native controls.
     settings: Option<Initial>,
@@ -242,7 +331,7 @@ pub struct Session<'a, C: Clock> {
 /// A dropped session stops its devices. Its frames are released with the stream.
 impl<C: Clock> Drop for Session<'_, C> {
     fn drop(&mut self) {
-        if let Some(running) = self.running.take() {
+        if let Some(running) = self.take_running() {
             let _ = halt(running);
         }
     }
@@ -274,7 +363,11 @@ impl<'a, C: Clock> Session<'a, C> {
             clock,
             stop: Arc::new(AtomicBool::new(false)),
             running: None,
-            stalls: 0,
+            skipped_done: 0,
+            last_frame_at: None,
+            silenced: false,
+            restart_owed: false,
+            parked: None,
             status: Status::new(),
             settings: None,
             selections: None,
@@ -394,14 +487,13 @@ impl<'a, C: Clock> Session<'a, C> {
     /// Manual off: stops the sensor, then the receiver, and ends any backoff in progress.
     pub fn stop(&mut self) -> Result<(), Error> {
         self.stop.store(true, Ordering::Release);
-        self.stalls = 0;
         self.status.state = State::Stopped;
         self.status.mode = None;
         self.status.selection = None;
         self.status.next_delay = None;
         self.status.retry_at = None;
         self.exposure_sent = None;
-        match self.running.take() {
+        match self.take_running() {
             Some(running) => halt(running).map_err(Error::Device),
             None => Ok(()),
         }
@@ -410,56 +502,273 @@ impl<'a, C: Clock> Session<'a, C> {
     /// The next frame, waiting up to `timeout`.
     ///
     /// `Ok(None)` means no frame this time (or a frame was dropped because its buffer was still
-    /// held), and the caller calls again. A stream that gives no frame for `stall_waits` waits in a
-    /// row, or fails, is a fault: the devices are stopped, the backoff runs, and the camera starts
-    /// again inside this call. Errors are returned only for a stop, an auto-off, or no running
-    /// session.
+    /// held), and the caller calls again. A camera stall and its return are not frames: they are
+    /// waited through here, and a caller that must see them uses [`Session::next_event`]. Errors
+    /// are returned only for a stop, an auto-off, an ended stream, or no running session.
     pub fn next_frame(&mut self, timeout: Duration) -> Result<Option<Lease>, Error> {
+        let deadline = self.clock.now() + timeout;
+        loop {
+            let left = deadline.saturating_sub(self.clock.now());
+            match self.next_event(left)? {
+                Event::Frame(lease) => return Ok(Some(lease)),
+                Event::Idle => return Ok(None),
+                Event::Stalled { .. } | Event::Resumed(_) => {}
+            }
+        }
+    }
+
+    /// The next event, waiting up to `timeout`: a frame, nothing in time, a stall of the camera
+    /// (once per failure) or its return (once, before the first frame after it).
+    ///
+    /// A stall is health: the session stays, its status says `camera failed, retrying since <ns>:
+    /// <reason>`, and frames resume on the same stream when the camera is back. A return that
+    /// lost what it was given selects, posts and starts again on the same stream. A stream that
+    /// ends for good stops the session and returns [`Error::StreamEnded`]: the owner reopens it.
+    /// Other faults are backed off and the camera starts again inside this call (see `fault`).
+    pub fn next_event(&mut self, timeout: Duration) -> Result<Event, Error> {
+        if let Some(lease) = self.parked.take() {
+            return Ok(Event::Frame(lease));
+        }
+        if self.restart_owed {
+            return self.resume_lost(timeout);
+        }
         let polled = match self.running.as_mut() {
-            Some(running) => running.frames.next(timeout),
+            Some(running) => running.frames.next_event(timeout),
             None => return Err(Error::NotStreaming),
         };
         match polled {
-            Ok(Some(mut lease)) => {
-                self.stalls = 0;
+            Ok(FrameEvent::Frame(mut lease)) => {
                 let (id, timestamp_ns) = (lease.id(), lease.timestamp_ns());
                 let running = self.running.as_mut().ok_or(Error::NotStreaming)?;
                 let posted = running.controls.frame_start(&mut running.sensor, id);
                 match posted {
+                    // The sensor is down (its device is being retried, or its handle is the old
+                    // instance's): the frame is dropped, and the stall, or the return, comes from the
+                    // stream as its edge. The session does not reopen for it.
+                    Err(styx_native_controls::Error::Sensor(status))
+                        if status == lemnos_core::Status::NO_DEVICE
+                            || status == lemnos_core::Status::STALE_HANDLE =>
+                    {
+                        Ok(Event::Idle)
+                    }
                     Ok(()) => {
                         let metadata: FrameMetadata = running.controls.metadata(id, timestamp_ns);
                         if let Some(meta) = lease.meta_mut() {
                             *meta = metadata;
                         }
-                        Ok(Some(lease))
+                        // The driver's report at this frame may show a landing (or a clamp) that no
+                        // request announced: the status hears of it here.
+                        self.report_exposure();
+                        self.last_frame_at = Some(self.clock.now());
+                        if self.silenced {
+                            // The frames are back after a named silence: the return is told first,
+                            // and this frame is given on the next call.
+                            self.silenced = false;
+                            self.status.stall = None;
+                            self.status.last_error = Some("camera back: frames resume".to_string());
+                            self.parked = Some(lease);
+                            return Ok(Event::Resumed(Carried::Kept));
+                        }
+                        Ok(Event::Frame(lease))
                     }
                     Err(e) => {
                         self.fault(format!("controls: {e}"))?;
-                        Ok(None)
+                        Ok(Event::Idle)
                     }
                 }
             }
-            Ok(None) => {
-                self.stalls += 1;
-                if self.stalls < self.policy.stall_waits.max(1) {
-                    return Ok(None);
+            Ok(FrameEvent::TimedOut) => {
+                // A camera that is retrying (a named stall) is already reported: nothing more here.
+                if self.status.stall.is_some() {
+                    return Ok(Event::Idle);
                 }
-                let text = format!("no frame in {} waits", self.stalls);
-                self.fault(text)?;
-                Ok(None)
+                // The no-frame report is report-only: it names the silence and tells the ring's
+                // readers, and it never ends or reopens the session. A reopen happens only on a real
+                // end of the stream or a fault the session's own calls found.
+                let since = self.last_frame_at.unwrap_or_default();
+                let silent_for = self.clock.now().saturating_sub(since);
+                if self.silenced || silent_for <= self.silence_bound() {
+                    return Ok(Event::Idle);
+                }
+                self.silenced = true;
+                self.status.silences += 1;
+                let text = format!("no frame for {} ms", silent_for.as_millis());
+                self.status.stall = Some(text.clone());
+                self.status.last_error = Some(text.clone());
+                Ok(Event::Stalled { since_ns: 0, text })
             }
-            Err(styx_lemnos::Error::Held(_)) => Ok(None),
+            Ok(FrameEvent::Stalled { since_ns }) => Ok(self.stalled(since_ns)),
+            Ok(FrameEvent::Resumed(Carried::Kept)) => {
+                self.status.stall = None;
+                self.status.last_error = Some("camera back".to_string());
+                Ok(Event::Resumed(Carried::Kept))
+            }
+            Ok(FrameEvent::Resumed(Carried::Lost)) => {
+                self.restart_owed = true;
+                self.resume_lost(timeout)
+            }
+            Ok(FrameEvent::Ended(end)) => self.ended(end),
+            Err(styx_lemnos::Error::Held(_)) => Ok(Event::Idle),
             Err(e) => {
+                if let Some(refusal) = e.layout_refusal() {
+                    self.status.layout = Some(refusal);
+                }
                 self.fault(format!("frame stream: {e}"))?;
-                Ok(None)
+                Ok(Event::Idle)
             }
         }
     }
 
+    /// The longest silence the report accepts before it names one: the larger of one second and four
+    /// frame periods in force plus 450 ms (the frame period from the rate the camera runs at).
+    fn silence_bound(&self) -> Duration {
+        let floor = Duration::from_secs(1);
+        let period = self
+            .frame_rate()
+            .map(|rate| rate.achieved_milli)
+            .filter(|milli| *milli > 0)
+            .map_or(Duration::ZERO, |milli| {
+                // A period in nanoseconds is 1e12 / (thousandths of a frame per second).
+                Duration::from_nanos(1_000_000_000_000 / u64::from(milli))
+            });
+        floor.max(4 * period + Duration::from_millis(450))
+    }
+
+    /// The camera failed and is retried since `since_ns`. The reason is the sensor's own, as its
+    /// device entry gives it now (empty when it gives none).
+    fn stalled(&mut self, since_ns: u64) -> Event {
+        let sensor = self.camera.sensor().name.clone();
+        let reason = self
+            .client
+            .list()
+            .ok()
+            .and_then(|devices| devices.into_iter().find(|d| d.name == sensor))
+            .map(|d| d.reason)
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or_else(|| "the device gave no reason".to_string());
+        let text = format!("camera failed, retrying since {since_ns}: {reason}");
+        self.status.stall = Some(text.clone());
+        self.status.last_error = Some(text.clone());
+        Event::Stalled { since_ns, text }
+    }
+
+    /// Restarts the stream on the device bound again and gives the return once it has happened. A
+    /// device not yet there keeps the stall in force and is tried again on a later call (after a
+    /// short wait, so a caller that loops does not spin). A real refusal is a fault.
+    fn resume_lost(&mut self, timeout: Duration) -> Result<Event, Error> {
+        match self.restart_same_stream() {
+            Ok(()) => {
+                self.restart_owed = false;
+                self.status.stall = None;
+                self.status.last_error =
+                    Some("camera back: its device was bound again".to_string());
+                Ok(Event::Resumed(Carried::Lost))
+            }
+            Err(Restart::NotYet) => {
+                self.restart_owed = true;
+                std::thread::sleep(timeout.min(RESTART_RETRY));
+                Ok(Event::Idle)
+            }
+            Err(Restart::Failed(text)) => {
+                self.restart_owed = false;
+                self.fault(text)?;
+                Ok(Event::Idle)
+            }
+        }
+    }
+
+    /// The same stream, a device bound again: selects the mode again, configures the receiver,
+    /// posts the controls the session last asked for (the native controls keep them), and starts.
+    /// The frame stream and its buffers are kept, so no reopen is needed.
+    fn restart_same_stream(&mut self) -> Result<(), Restart> {
+        let sensor_name = self.camera.sensor().name.clone();
+        let client = self.client;
+        let running = self
+            .running
+            .as_mut()
+            .ok_or_else(|| Restart::Failed("no running session to restart".to_string()))?;
+        // The device was bound again: the handle the session had belongs to the old instance, so the
+        // sensor is opened again. A device not yet bound does not open: tried again later.
+        running.sensor = client
+            .open::<dyn CameraSensor>(&sensor_name)
+            .map_err(|_| Restart::NotYet)?;
+        let index = running.mode;
+        // The receiver is still running from before the bind: it is stopped, so it can be configured
+        // and started again with the sensor. The frame stream stays attached.
+        running
+            .receiver
+            .stop()
+            .map_err(|status| restart_status(status, "receiver.stop on restart"))?;
+        let mode = running
+            .sensor
+            .mode(index)
+            .map_err(|status| restart_status(status, "sensor.mode on restart"))?;
+        running
+            .sensor
+            .select_mode(index)
+            .map_err(|status| restart_status(status, "sensor.select_mode"))?;
+        running
+            .receiver
+            .configure(mode.link, Packing::Packed)
+            .map_err(|status| restart_status(status, "receiver.configure"))?;
+        // The sequence restarts at zero: the controls forget the old one and post what was asked.
+        running.controls.restart();
+        running
+            .controls
+            .prepare(&mut running.sensor)
+            .map_err(|e| Restart::Failed(format!("controls on restart: {e}")))?;
+        running
+            .receiver
+            .start()
+            .map_err(|status| restart_status(status, "receiver.start"))?;
+        running
+            .sensor
+            .start()
+            .map_err(|status| restart_status(status, "sensor.start"))?;
+        Ok(())
+    }
+
+    /// The stream ended for good: the devices are halted, the session is stopped, and the end is
+    /// returned as an error so the owner reopens it.
+    fn ended(&mut self, end: StreamEnd) -> Result<Event, Error> {
+        let text = end.to_string();
+        let text = match self.take_running() {
+            Some(running) => match halt(running) {
+                Ok(()) => text,
+                Err(stop) => format!("{text}; {stop}"),
+            },
+            None => text,
+        };
+        self.status.stall = None;
+        self.silenced = false;
+        self.parked = None;
+        self.status.state = State::Stopped;
+        self.status.mode = None;
+        self.status.selection = None;
+        self.status.total_failures += 1;
+        self.status.consecutive_failures += 1;
+        self.status.last_error = Some(text.clone());
+        Err(Error::StreamEnded { end, text })
+    }
+
+    /// Takes the running devices out, keeping their skipped-frame count in `skipped_done`.
+    fn take_running(&mut self) -> Option<Running> {
+        let running = self.running.take()?;
+        self.skipped_done += running.frames.skipped();
+        Some(running)
+    }
+
+    /// Frames this session's readers were too late for, in all: the Lemnos stream's own count
+    /// (`FrameStream::skipped`) over every run so far. A reader that keeps up never counts one.
+    pub fn skipped(&self) -> u64 {
+        self.skipped_done + self.running.as_ref().map_or(0, |r| r.frames.skipped())
+    }
+
     /// Stops the devices after a fault, backs off, and starts again.
     fn fault(&mut self, text: String) -> Result<(), Error> {
-        self.stalls = 0;
-        let text = match self.running.take() {
+        self.silenced = false;
+        self.parked = None;
+        let text = match self.take_running() {
             Some(running) => match halt(running) {
                 Ok(()) => text,
                 Err(stop) => format!("{text}; {stop}"),
@@ -489,9 +798,12 @@ impl<'a, C: Clock> Session<'a, C> {
                     }
                     self.status.starts += 1;
                     self.status.consecutive_failures = 0;
+                    self.status.layout = None;
                     self.status.next_delay = None;
                     self.status.retry_at = None;
                     self.running = Some(running);
+                    self.last_frame_at = Some(self.clock.now());
+                    self.silenced = false;
                     self.exposure_sent = None;
                     self.report_exposure();
                     return Ok(());
@@ -502,6 +814,10 @@ impl<'a, C: Clock> Session<'a, C> {
                     return Err(Error::Mode(e));
                 }
                 Err(Fault::Retry(text)) => self.backoff_after(text)?,
+                Err(Fault::Layout { refusal, text }) => {
+                    self.status.layout = Some(refusal);
+                    self.backoff_after(text)?;
+                }
                 Err(Fault::Config(e)) => {
                     self.status.state = State::Stopped;
                     self.status.last_error = Some(e.to_string());
@@ -528,6 +844,10 @@ impl<'a, C: Clock> Session<'a, C> {
                 last_error: text,
             });
         }
+        // PRODUCER STALL: the hardware layer's `Next::Stalled` is due here (a failed start with a
+        // backoff step is a stall edge, the stream stays attached) and its `Next::Resumed` on the
+        // next successful start (`Carried::Kept` for the same instance, `Lost` after a rebind).
+        // Until that rev is pinned the service stalls its own producer on the failure it sees.
         let delay = self.policy.backoff.delay(failures);
         self.status.state = State::Backoff;
         self.status.next_delay = Some(delay);
@@ -581,7 +901,7 @@ impl<'a, C: Clock> Session<'a, C> {
             stride: layout.stride,
         };
         let frames = open_frames_at(self.client, self.camera.receiver().index, stream, geometry)
-            .map_err(|e| Fault::Retry(format!("frame stream {stream}: {e}")))?;
+            .map_err(|e| stream_fault(e, &format!("frame stream {stream}")))?;
 
         let mut running = Running {
             sensor,
@@ -595,5 +915,40 @@ impl<'a, C: Clock> Session<'a, C> {
             Ok(()) => Ok(running),
             Err(fault) => Err(unwind(running, fault)),
         }
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use styx_lemnos::{LayoutRefusal, SharedLayout};
+
+    #[test]
+    fn a_layout_refusal_from_a_frame_stream_is_a_layout_fault_with_its_values() {
+        let refusal = LayoutRefusal {
+            which: SharedLayout::Marks,
+            found: 1,
+            expected: 2,
+        };
+        let error = styx_lemnos::Error::SharedLayout(refusal);
+        match stream_fault(error, "frame stream cam") {
+            Fault::Layout { refusal: got, text } => {
+                assert_eq!(got, refusal);
+                assert!(
+                    text.contains("layout 1") && text.contains("layout 2"),
+                    "{text}"
+                );
+            }
+            _ => panic!("a layout refusal is a layout fault"),
+        }
+    }
+
+    #[test]
+    fn other_frame_stream_errors_stay_retries() {
+        let error = styx_lemnos::Error::NoBuffers;
+        assert!(matches!(
+            stream_fault(error, "frame stream"),
+            Fault::Retry(_)
+        ));
     }
 }

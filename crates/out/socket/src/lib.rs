@@ -35,6 +35,18 @@
 //!   that is too slow loses frames to the ring's history and counts them as skipped.
 //! - **Limits**: [`Limits`] caps the buffers one reader may hold and how long it may hold one; a
 //!   reader over a limit is cut off, and told so when it next looks.
+//! - **The reserve**: at every publish, the buffers out of the camera's hands (the frames the ring
+//!   holds: the keep window and the frames readers hold past it) are at most `buffers - reserve`,
+//!   so the camera always has its reserve free. A held frame takes precedence over the window: the
+//!   window shrinks first ([`Producer::kept_now`]), and a reader is cut off only if the bound is
+//!   still not met, the one holding the oldest frame past the window ([`Producer::set_reserve`],
+//!   [`Producer::reclaim`]). A reader may hold up to `buffers - reserve - 1` frames older than the
+//!   newest.
+//! - **Known residuals** (limits of the ring crate at this revision): a mark an adopter writes
+//!   directly into the hold table is invisible to the producer and cannot be cut off
+//!   ([`ProducerStats::bound_unmet`] counts it); and a cut reader may still be reading the frame it
+//!   held when its buffer is reused, so on [`ReadError::Ended`] it must drop every frame it holds,
+//!   and the content of its last frame is not guaranteed.
 //! - **Death**: a reader whose socket closes (the process exits, or the reader is dropped) loses
 //!   its marks at once. Its buffers come back on the next [`Producer::begin`].
 //!
@@ -47,6 +59,7 @@
 mod geometry;
 mod producer;
 mod reader;
+mod state;
 mod wire;
 
 use core::fmt;
@@ -56,9 +69,87 @@ pub use producer::{
     Accepted, BeginError, BellId, HANDSHAKE_TIMEOUT, HandshakePlan, OUTSIDE_BELLS, Producer,
     ProducerConfig, ProducerStats, ReaderInfo,
 };
-pub use reader::{Frame, ReadError, Reader, ReaderStats, Start};
+pub use reader::{Frame, Next, ReadError, Reader, ReaderStats, Start};
 pub use shm_ring_holds::Limits;
+pub use state::{Carried, ProducerState};
 pub use wire::USER_MAX;
+/// Why a stream ended. The same four meanings as the hardware layer's stream ends (I2h), so a
+/// reader learns one thing whichever ring it reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    /// The producer ended the stream on purpose: a clean stop, the camera removed, the service
+    /// going away. Every frame published has been delivered first.
+    Closed,
+    /// The stream ended because THIS READER broke the rules: a hold kept too long, a bad mark.
+    /// The producer cut the reader off for it. It is not a fault of the producer.
+    ConsumerFault,
+    /// The device failed for good and will not continue on this attachment. Only a producer
+    /// whose camera was turned off for good writes it; a transient failure is a stall, not an end.
+    DeviceFailed,
+    /// Any other end code. The value is kept; the stream is never treated as running.
+    Unknown(u32),
+}
+
+impl StreamEnd {
+    /// The end code the ring holds for this end (`Unknown` keeps its value).
+    pub const fn code(self) -> u32 {
+        match self {
+            Self::Closed => ENDED_CLOSED,
+            Self::ConsumerFault => ENDED_CONSUMER_FAULT,
+            Self::DeviceFailed => ENDED_DEVICE_FAILED,
+            Self::Unknown(code) => code,
+        }
+    }
+
+    /// The end a ring's end code names; `None` for 0, which means the ring still runs.
+    pub const fn from_code(code: u32) -> Option<Self> {
+        match code {
+            0 => None,
+            ENDED_CLOSED => Some(Self::Closed),
+            ENDED_CONSUMER_FAULT => Some(Self::ConsumerFault),
+            ENDED_DEVICE_FAILED => Some(Self::DeviceFailed),
+            other => Some(Self::Unknown(other)),
+        }
+    }
+}
+
+/// The end code of [`StreamEnd::Closed`]: the producer closed its ring cleanly ([`Producer::close`],
+/// or its drop).
+pub const ENDED_CLOSED: u32 = 1;
+/// The end code of [`StreamEnd::ConsumerFault`]. A producer does not write it on its own behalf:
+/// a cut-off reader gets this outcome from its own read, not from the ring's end word.
+pub const ENDED_CONSUMER_FAULT: u32 = 2;
+/// The end code of [`StreamEnd::DeviceFailed`].
+pub const ENDED_DEVICE_FAILED: u32 = 3;
+/// The clock stall times are stated in: `CLOCK_MONOTONIC`, in nanoseconds (the same clock as
+/// [`ProducerState::Retrying`]'s `since_ns`).
+pub fn clock_ns() -> u64 {
+    shm_ring::SampleTime::now().as_nanos()
+}
+
+/// The handshake version this build speaks. A peer on another version is refused by name
+/// ([`SocketError::Version`]).
+pub const HANDSHAKE_VERSION: u32 = wire::VERSION;
+
+/// A shared structure whose layout value this build does not read. See [`SocketError::Layout`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedLayout {
+    /// The frame ring's header (`shm_ring::LAYOUT`, word 1).
+    Ring,
+    /// A reader's marks page (`shm_ring_holds::LAYOUT`).
+    Marks,
+}
+
+impl SharedLayout {
+    /// The structure as a person reads it: the start of the refusal's message.
+    #[must_use]
+    pub const fn what(self) -> &'static str {
+        match self {
+            Self::Ring => "this ring",
+            Self::Marks => "this marks page",
+        }
+    }
+}
 
 /// Why a handshake, a publish or a connection failed.
 #[derive(Debug)]
@@ -79,6 +170,25 @@ pub enum SocketError {
     Protocol(&'static str),
     /// The configuration asks for something this crate does not allow.
     Config(&'static str),
+    /// A shared structure (the ring or a marks page) carries a layout value this build does not
+    /// read: the peer is another layout. `found` is the value in the memory, `expected` the one
+    /// this build reads. Nothing is mapped or linked when this is returned.
+    Layout {
+        /// The structure whose layout is refused.
+        which: SharedLayout,
+        /// The value in the memory.
+        found: u64,
+        /// The value this build reads.
+        expected: u64,
+    },
+    /// The handshake's version is not this build's: `theirs` is the peer's, `ours` this build's.
+    /// Nothing is linked when this is returned.
+    Version {
+        /// This build's handshake version ([`HANDSHAKE_VERSION`]).
+        ours: u32,
+        /// The version the peer sent.
+        theirs: u32,
+    },
     /// Every reader slot the ring has is taken.
     NoReaderSlot,
     /// Every outside doorbell slot ([`OUTSIDE_BELLS`]) is in use.
@@ -95,6 +205,19 @@ impl fmt::Display for SocketError {
             Self::Buffer(err) => write!(f, "{err}"),
             Self::Pool(err) => write!(f, "{err}"),
             Self::Protocol(why) => write!(f, "handshake: {why}"),
+            Self::Layout {
+                which,
+                found,
+                expected,
+            } => write!(
+                f,
+                "{} is layout {found}; this build reads layout {expected}",
+                which.what()
+            ),
+            Self::Version { ours, theirs } => write!(
+                f,
+                "handshake version {theirs} from the other side; this build speaks version {ours}"
+            ),
             Self::Config(why) => write!(f, "configuration: {why}"),
             Self::NoReaderSlot => f.write_str("every reader slot of the ring is taken"),
             Self::NoBellSlot => f.write_str("every outside doorbell slot is in use"),
@@ -124,7 +247,23 @@ impl From<shm_fdpass::RecvError> for SocketError {
 
 impl From<shm_ring::RingError> for SocketError {
     fn from(err: shm_ring::RingError) -> Self {
-        Self::Ring(err)
+        // The shm crate's layout refusal keeps its two values, and the structure it names.
+        match err {
+            shm_ring::RingError::Layout { what, found, reads } => match what {
+                "this ring" => Self::Layout {
+                    which: SharedLayout::Ring,
+                    found,
+                    expected: reads,
+                },
+                "this marks page" => Self::Layout {
+                    which: SharedLayout::Marks,
+                    found,
+                    expected: reads,
+                },
+                _ => Self::Ring(shm_ring::RingError::Layout { what, found, reads }),
+            },
+            other => Self::Ring(other),
+        }
     }
 }
 

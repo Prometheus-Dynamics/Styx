@@ -74,15 +74,22 @@ impl Isp {
         let info = isp
             .info()
             .map_err(|e| Error::Device(format!("{}: info: {e:?}", device.name)))?;
-        let generation = [Generation::Isp21, Generation::Isp30, Generation::Isp35]
-            .into_iter()
-            .find(|g| g.statistics_layout().layout == info.statistics_layout)
-            .ok_or_else(|| {
-                Error::Device(format!(
-                    "{}: statistics layout {:#x} is not one of the library's",
-                    device.name, info.statistics_layout
-                ))
-            })?;
+        let generation = [
+            Generation::Isp21,
+            Generation::Isp30,
+            Generation::Isp35,
+            Generation::Isp32,
+            Generation::Isp32Lite,
+            Generation::Isp39,
+        ]
+        .into_iter()
+        .find(|g| g.statistics_layout().layout == info.statistics_layout)
+        .ok_or_else(|| {
+            Error::Device(format!(
+                "{}: statistics layout {:#x} is not one of the library's",
+                device.name, info.statistics_layout
+            ))
+        })?;
         let config = generation.config_layout();
         let want = ConfigLayout {
             layout: config.layout,

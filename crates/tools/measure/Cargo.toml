@@ -29,6 +29,8 @@ styx-v4l2 = { path = "../../camera/v4l2" }
 [dev-dependencies]
 # The in-process service on the simulated camera (as crates/out/service's tests do).
 styx-service = { path = "../../out/service" }
+# The simulated camera (SimRig): a stall and a return, read by the tool.
+styx-sim = { path = "../../camera/sim" }
 styx-native-run = { path = "../../camera/native-run" }
 styx-select = { path = "../../camera/select" }
 serde_json = "1"

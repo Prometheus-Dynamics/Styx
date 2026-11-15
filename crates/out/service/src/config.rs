@@ -61,7 +61,8 @@
 //! format = "YUYV"        # V4L2 and libcamera: the pixel format's four-character code
 //! fps_milli = 30000
 //! buffers = 4            # V4L2 and libcamera: buffers requested
-//! hardware_reserve = 4   # optional: pool buffers the camera keeps to stream (default: half, min 2)
+//! hardware_reserve = 4   # optional: pool buffers the camera keeps to stream (default: half, min 2);
+//!                        # all readers together may hold buffers - hardware_reserve - 1 frames older than the newest
 //! ```
 //!
 //! Native cameras: `width` and `height` are the smallest mode that is acceptable, and `format` and
@@ -70,8 +71,8 @@
 //! lower depth only when the rate needs it. A rate above the chosen mode's ceiling (its shortest
 //! frame) is answered with the ceiling. The status line says which mode, and why (`mode_reason`).
 //! An exposure the chosen mode's frame cannot hold (its shortest frame less the sensor's margin) is
-//! moved to that ceiling, and the status says so (`exposure_clamp`); the frame rate keeps its
-//! priority, so a frame is never lengthened for an exposure. A control request past the limit is
+//! moved to that ceiling by the sensor, which reports it, and the status says so (`exposure_clamp`);
+//! the frame rate keeps its priority, so a frame is never lengthened for an exposure. A control request past the limit is
 //! answered `ok` with the value applied (see `frame` and `list`), not refused.
 
 use std::collections::BTreeMap;
@@ -134,9 +135,14 @@ pub struct CameraConfig {
     /// V4L2 and libcamera: buffers requested from the driver.
     #[serde(default)]
     pub buffers: Option<u32>,
-    /// Buffers of the camera's pool the camera keeps to stream, which the frame ring never holds
-    /// for readers. Default: half the pool's buffers, at least 2 (at most the pool's size). The
-    /// ring keeps `min(history, buffers - hardware_reserve)` newest frames for readers.
+    /// Buffers of the camera's pool the camera keeps for itself to stream (default: half the pool's
+    /// buffers, at least 2, at most the pool's size). Frames the ring holds, in its window and held
+    /// by readers, never take more than `buffers - hardware_reserve` of the pool, so the camera
+    /// always has this many free. In plain words: all readers TOGETHER may hold up to `buffers -
+    /// hardware_reserve - 1` frames older than the newest (a frame another reader has in hand counts
+    /// too); past that the reader holding the oldest frame is cut off with a consumer fault. A lone
+    /// reader may hold all of them. The ring's window of recent frames for late readers shrinks to
+    /// make room and grows back when the holds are released.
     #[serde(default)]
     pub hardware_reserve: Option<u32>,
 }

@@ -8,11 +8,12 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
+use lemnos_contract_camera_sensor::frame_length_for_fps_milli;
 use lemnos_host::board::parse;
 use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
@@ -22,20 +23,42 @@ use styx_frame::{FrameLease, copy_counters};
 use styx_native_run::Clock;
 use styx_select::listing::{LibcameraLister, ListError, Listed, V4l2Lister};
 use styx_service::{Config, Deps, Discard, Listers, Outlet, Outlets, Service, camera_socket};
-use styx_socket::Reader;
+use styx_socket::{ReadError, Reader, StreamEnd};
 
 /// Two complete chains (sensor, receiver, ISP each) on one daemon.
+/// Mode 0's shortest frame in the double (asked at 120 fps, the contract's whole line nearest that
+/// rate), and the exposure ceiling that frame gives: (frame - the mode's margin of 25 lines) at its
+/// 9.1 us line, rounded to the microsecond.
+fn mode0_shortest() -> (u32, u32) {
+    let (lines, _) =
+        frame_length_for_fps_milli(9_100_000, 0, 1, u32::MAX, 120_000).expect("a frame");
+    let us = (u64::from(lines) - 25) * 9_100_000;
+    (
+        lines,
+        u32::try_from((us + 500_000) / 1_000_000).expect("us"),
+    )
+}
+
+/// Two cameras, each with its own receiver and ISP. Each call names its cameras' frame clocks
+/// uniquely, so the tests of this binary (which run in one process) do not share one.
 fn two_cameras() -> String {
-    "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
-     [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
-     [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n"
-        .to_string()
+    static BOARDS: AtomicU32 = AtomicU32::new(0);
+    let n = BOARDS.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
+         [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
+         [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
+         [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n"
+    )
 }
 
 fn test_dir(name: &str) -> PathBuf {
@@ -254,6 +277,8 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
     let f0 = ask(&control, &format!("frame {}", cams[0]));
     let f1 = ask(&control, &format!("frame {}", cams[1]));
     assert_eq!(field(&f1[0], "exposure_us"), Some("10000"), "{f1:?}");
+    // The change shows from the asked frame on: the newest frame read has it, so it is on or past
+    // that frame.
     assert!(
         field(&f0[0], "id")
             .and_then(|v| v.parse::<u64>().ok())
@@ -323,8 +348,8 @@ fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_back
     let lemnos_socket = dir.join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let recorder = Arc::new(Recorder::default());
-    // 240 fps is past mode 0's ceiling, so the frame is its shortest: 915 lines. Its exposure
-    // ceiling is (915 - 25) lines of 9.1 us, 8 099 us. The 10 ms asked is moved to it, and the
+    // 240 fps is past mode 0's ceiling, so the frame is its shortest (`mode0_shortest`). Its exposure
+    // ceiling is (the frame - 25) lines of 9.1 us. The 10 ms asked is moved to it, and the
     // camera streams: a clamp is not a failure.
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
@@ -346,13 +371,26 @@ fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_back
     assert_eq!(field(&line, "total_failures"), Some("0"), "{line}");
     assert_eq!(field(&line, "starts"), Some("1"), "{line}");
     assert_eq!(field(&line, "exposure_requested"), Some("10000"), "{line}");
-    assert_eq!(field(&line, "exposure_applied"), Some("8099"), "{line}");
+    let (lines, ceiling) = mode0_shortest();
+    let ceiling = ceiling.to_string();
+    assert_eq!(
+        field(&line, "exposure_applied"),
+        Some(ceiling.as_str()),
+        "{line}"
+    );
     let why = field(&line, "exposure_clamp").expect("the clamp's reason");
-    assert!(why.contains("the_frame_is_915_lines"), "{line}");
-    assert!(why.contains("at_most_8099_us"), "{line}");
+    assert!(
+        why.contains(&format!("the_frame_is_{lines}_lines")),
+        "{line}"
+    );
+    assert!(why.contains(&format!("at_most_{ceiling}_us")), "{line}");
     // The frames show what was applied.
     let frame = ask(&control, &format!("frame {cam}"));
-    assert_eq!(field(&frame[0], "exposure_us"), Some("8099"), "{frame:?}");
+    assert_eq!(
+        field(&frame[0], "exposure_us"),
+        Some(ceiling.as_str()),
+        "{frame:?}"
+    );
     service.shutdown();
 }
 
@@ -378,7 +416,7 @@ fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
     });
     let line = line_of(&control, cam).expect("listed");
     assert_eq!(field(&line, "exposure_clamp"), Some("-"), "{line}");
-    assert_eq!(field(&line, "exposure_applied"), Some("5000"), "{line}");
+    assert_eq!(field(&line, "exposure_applied"), Some("4996"), "{line}");
 
     // 20 ms, a few frames on: past the frame's ceiling. The answer is ok, not an error.
     let last: u64 = field(&line, "last_id")
@@ -392,15 +430,24 @@ fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
     wait_until("the clamp in status", Duration::from_secs(20), || {
         line_of(&control, cam).is_some_and(|l| field(&l, "exposure_requested") == Some("20000"))
     });
-    wait_until("8099 us on frames", Duration::from_secs(20), || {
+    let (_, ceiling) = mode0_shortest();
+    let ceiling = ceiling.to_string();
+    wait_until("the ceiling on frames", Duration::from_secs(20), || {
         ask(&control, &format!("frame {cam}"))
             .iter()
-            .any(|l| field(l, "exposure_us") == Some("8099"))
+            .any(|l| field(l, "exposure_us") == Some(ceiling.as_str()))
     });
     let line = line_of(&control, cam).expect("listed");
-    assert_eq!(field(&line, "exposure_applied"), Some("8099"), "{line}");
+    let (_, ceiling) = mode0_shortest();
+    let ceiling = ceiling.to_string();
+    assert_eq!(
+        field(&line, "exposure_applied"),
+        Some(ceiling.as_str()),
+        "{line}"
+    );
     assert!(
-        field(&line, "exposure_clamp").is_some_and(|c| c.contains("at_most_8099_us")),
+        field(&line, "exposure_clamp")
+            .is_some_and(|c| c.contains(&format!("at_most_{ceiling}_us"))),
         "{line}"
     );
     assert_eq!(field(&line, "state"), Some("streaming"), "{line}");
@@ -985,17 +1032,31 @@ fn a_camera_that_leaves_and_returns_is_read_again_by_its_reader() {
         reader.frames().len() >= 20
     });
 
-    // The camera leaves: lemnosd goes away, and the reader is told by its connection closing.
+    // The camera leaves: lemnosd goes away. The service retries with backoff and its producer stays
+    // attached meanwhile: the reader is NOT closed while the camera retries, and the status says so.
     drop(lemnos);
-    wait_until("the reader sees the close", Duration::from_secs(30), || {
+    wait_until("the camera retries", Duration::from_secs(30), || {
+        line_of(&control, cam)
+            .and_then(|l| field(&l, "producer").map(|p| p.starts_with("retrying:")))
+            .unwrap_or(false)
+    });
+    let retry_deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < retry_deadline {
+        reader.pump(Duration::from_millis(20));
+    }
+    assert!(
+        !reader.has(|l| l == "CLOSED"),
+        "the reader stays attached while the camera retries"
+    );
+    // It comes back on new buffers: the old ring ends (CLOSED) and the reader connects again.
+    let _lemnos = daemon(&lemnos_socket, &board);
+    wait_until("the reader sees the close", Duration::from_secs(60), || {
         reader.pump(Duration::from_millis(20));
         reader.has(|l| l == "CLOSED")
     });
     let before = reader.frames().len();
 
-    // It comes back: the same socket. The service makes a new pool and producer; the reader
-    // connects again and takes frames from the new pool.
-    let _lemnos = daemon(&lemnos_socket, &board);
+    // The reader connects again and takes frames from the new pool.
     wait_until("the reader connects again", Duration::from_secs(60), || {
         reader.pump(Duration::from_millis(20));
         reader
@@ -1152,5 +1213,108 @@ fn a_reader_that_never_answers_does_not_stall_the_camera_and_is_dropped_at_the_t
     );
     let status = line_of(&control, cam).expect("listed");
     assert_eq!(field(&status, "publish"), Some("publishing"), "{status}");
+    service.shutdown();
+}
+
+#[test]
+fn a_reader_that_never_lets_go_is_cut_off_for_the_reserve_and_the_camera_keeps_streaming() {
+    let dir = test_dir("reserve");
+    let lemnos_socket = dir.join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let cam = "lemnos:cam0-sensor";
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\ncameras = [\"{cam}\"]\n\
+         [camera.\"{cam}\"]\nfps_milli = 60000\n",
+        dir.display(),
+        lemnos_socket.display()
+    );
+    let service = start_service(&text, Arc::new(Recorder::default()), &lemnos_socket);
+    let control = service.control_socket().to_path_buf();
+    wait_until("streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 50
+    });
+    let socket = camera_socket(&dir, cam);
+
+    // The hoarder takes four frames and never lets go. Four is its limit, so the producer's limit
+    // does not cut it off; the camera needs its buffer when the first of them leaves the window.
+    let mut hoarder = Reader::connect(UnixStream::connect(&socket).expect("connect"))
+        .expect("the handshake completes");
+    let mut held = Vec::new();
+    let until = Instant::now() + Duration::from_secs(20);
+    while held.len() < 4 {
+        assert!(
+            Instant::now() < until,
+            "the hoarder took only {} frames",
+            held.len()
+        );
+        match hoarder.next_frame().expect("not cut off yet") {
+            Some(frame) => held.push(frame),
+            None => {
+                let _ = hoarder.wait(Some(Duration::from_millis(5)));
+            }
+        }
+    }
+
+    // The good reader takes every frame and lets go. It keeps going past the hoarder's cut: the
+    // loop ends once it has taken thirty frames after the cut, and the camera has counted thirty
+    // more frames since the cut was seen.
+    let mut good = Reader::connect(UnixStream::connect(&socket).expect("connect"))
+        .expect("the handshake completes");
+    let until = Instant::now() + Duration::from_secs(20);
+    let mut good_after_cut = 0_u64;
+    let mut last_id = None;
+    let mut cut_at: Option<u64> = None;
+    while !(good_after_cut >= 30 && cut_at.is_some_and(|at| frames_of(&control, cam) >= at + 30)) {
+        assert!(
+            Instant::now() < until,
+            "after the cut the good reader took {good_after_cut} frames (cut at {cut_at:?})"
+        );
+        match good.next_frame().expect("the good reader is never cut off") {
+            Some(frame) => {
+                let id = frame.lease().id();
+                assert!(last_id.is_none_or(|last| id > last), "frame ids in order");
+                last_id = Some(id);
+                if cut_at.is_some() {
+                    good_after_cut += 1;
+                }
+            }
+            None => {
+                let _ = good.wait(Some(Duration::from_millis(5)));
+            }
+        }
+        if cut_at.is_none()
+            && line_of(&control, cam).is_some_and(|line| field(&line, "reserve_cuts") == Some("1"))
+        {
+            cut_at = Some(frames_of(&control, cam));
+        }
+    }
+    let cut_at = cut_at.expect("the cut was seen");
+
+    // The camera streamed on through the cut, dropped nothing, and kept its reserve.
+    let status = line_of(&control, cam).expect("listed");
+    assert_eq!(field(&status, "publish"), Some("publishing"), "{status}");
+    assert_eq!(field(&status, "publish_dropped"), Some("0"), "{status}");
+    assert_eq!(field(&status, "reserve_cuts"), Some("1"), "{status}");
+    let number = |key: &str| -> usize {
+        field(&status, key)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| panic!("{key} in {status}"))
+    };
+    let (keep, buffers, reserve) = (number("keep"), number("buffers"), number("reserve"));
+    assert!(
+        keep + reserve <= buffers,
+        "keep {keep} + reserve {reserve} must fit in {buffers} buffers"
+    );
+    assert!(
+        frames_of(&control, cam) >= cut_at + 30,
+        "the camera's frame count kept rising through the cut"
+    );
+
+    // The hoarder reads the end, with the reason, and takes no more frames.
+    match hoarder.next_frame() {
+        Err(error) => assert_eq!(error, ReadError::Ended(StreamEnd::ConsumerFault)),
+        Ok(_) => panic!("the hoarder was cut off, so it reads no frame"),
+    }
+    drop(held);
     service.shutdown();
 }

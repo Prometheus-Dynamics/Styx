@@ -19,7 +19,9 @@ use lemnos_contract_camera_receiver::{
 use lemnos_contract_camera_sensor::{
     CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
 };
-use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
+use lemnos_core::{
+    Config, ConfigError, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
+};
 use lemnos_hal::blocks::StreamFrame;
 
 /// Calls in the order they arrived, across every simulated device.
@@ -82,8 +84,17 @@ pub struct SimSensor {
     identity: Option<String>,
 }
 
+/// The settings the simulated sensor reads. A device setting nothing declares is refused at start.
+const SENSOR_KEYS: &[Key] = &[Key::optional("identity", Kind::Str)];
+/// The settings the simulated receiver reads.
+const RECEIVER_KEYS: &[Key] = &[Key::optional("source", Kind::Str)];
+
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
+
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(SENSOR_KEYS)
+    }
 
     fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
@@ -96,6 +107,50 @@ impl Lifecycle for SimSensor {
 }
 
 impl CameraSensor for SimSensor {
+    // Added at Lemnos 58098f97: this simulated driver has no landings, so it answers NOT_SUPPORTED.
+    fn post_values_at(
+        &mut self,
+        _values: lemnos_contract_camera_sensor::FrameValues,
+    ) -> core::result::Result<lemnos_contract_camera_sensor::Landing, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn applied_landing(
+        &mut self,
+    ) -> core::result::Result<
+        Option<lemnos_contract_camera_sensor::AppliedLanding>,
+        lemnos_core::Status,
+    > {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn in_force(
+        &mut self,
+    ) -> core::result::Result<lemnos_contract_camera_sensor::InForce, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn set_exposure(
+        &mut self,
+        _lines: u32,
+    ) -> core::result::Result<lemnos_contract_camera_sensor::Landing, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn set_analogue_gain(
+        &mut self,
+        _code: u32,
+    ) -> core::result::Result<lemnos_contract_camera_sensor::Landing, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn set_frame_length(
+        &mut self,
+        _lines: u32,
+    ) -> core::result::Result<lemnos_contract_camera_sensor::Landing, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
     fn identity(&mut self, into: &mut [u8]) -> Result<usize> {
         let name = self.identity.as_deref().ok_or(Status::NOT_SUPPORTED)?;
         write_name(name, into)
@@ -185,7 +240,7 @@ struct Run {
 
 #[driver("sim-receiver", provides = [CameraReceiver])]
 pub struct SimReceiver {
-    #[needs]
+    #[needs(free)]
     frames: StreamHandle,
     configured: Option<LinkConfig>,
     layout: Option<FrameLayout>,
@@ -208,6 +263,10 @@ fn write_name(name: &str, into: &mut [u8]) -> Result<usize> {
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
     const TICKS: bool = true;
+
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(RECEIVER_KEYS)
+    }
 
     fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
@@ -259,6 +318,25 @@ impl Lifecycle for SimReceiver {
 }
 
 impl CameraReceiver for SimReceiver {
+    // Added at Lemnos 41736042 (U2d): this simulated receiver has no inputs, so NOT_SUPPORTED.
+    fn inputs(&mut self, _into: &mut [u8]) -> core::result::Result<usize, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn input(&mut self) -> core::result::Result<u32, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    // Added at Lemnos 58098f97: no frame-start counts here, so NOT_SUPPORTED.
+    fn frame_starts(
+        &mut self,
+    ) -> core::result::Result<
+        Option<lemnos_contract_camera_receiver::FrameStarts>,
+        lemnos_core::Status,
+    > {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
     fn embedded_stream(&mut self, _into: &mut [u8]) -> Result<usize> {
         Ok(0)
     }
@@ -374,6 +452,22 @@ impl Lifecycle for SimIsp {
 }
 
 impl CameraIsp for SimIsp {
+    // Added at Lemnos 58098f97: no layout answers here, so NOT_SUPPORTED.
+    fn input_layout(
+        &mut self,
+    ) -> core::result::Result<Option<lemnos_contract_camera_isp::OutputLayout>, lemnos_core::Status>
+    {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn output_layout(
+        &mut self,
+        _output: u8,
+    ) -> core::result::Result<Option<lemnos_contract_camera_isp::OutputLayout>, lemnos_core::Status>
+    {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
     fn info(&mut self) -> Result<IspInfo> {
         Ok(IspInfo {
             max_outputs: 0,

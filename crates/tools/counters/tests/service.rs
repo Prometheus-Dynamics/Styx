@@ -42,18 +42,28 @@ const CHILD_SOCKET: &str = "STYX_COUNTERS_CHILD_SOCKET";
 const CHILD_OUT: &str = "STYX_COUNTERS_CHILD_OUT";
 const CHILD_COUNT: &str = "STYX_COUNTERS_CHILD_COUNT";
 
-/// Two complete chains (sensor, receiver, ISP each) on one daemon.
+/// Two complete chains (sensor, receiver, ISP each) on one daemon. Each call names its cameras'
+/// frame clocks uniquely, so the tests of this binary (which run in one process) do not share one.
 fn two_cameras() -> String {
-    "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
-     [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
-     [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
-     [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
-     [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n"
-        .to_string()
+    static BOARDS: AtomicU64 = AtomicU64::new(0);
+    let n = BOARDS.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
+         [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
+         config = {{ camera = \"cam0-{n}\" }}\n\
+         [[devices]]\nid = \"isp1\"\ndriver = \"sim-isp\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n\
+         [[devices]]\nid = \"csi1\"\ndriver = \"sim-receiver\"\nlink = \"isp1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi1\"\n\
+         config = {{ camera = \"cam1-{n}\" }}\n"
+    )
 }
 
 fn test_dir(name: &str) -> PathBuf {

@@ -140,11 +140,14 @@ impl V4l2Lister for NoOthers {
     }
 }
 
+/// The board: one camera. Its frame clock is named by `camera`, the simulated devices' one setting.
 const BOARD: &str = "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
      [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
      [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+     config = { camera = \"steady-cam0\" }\n\
      [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n";
+     [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n\
+     config = { camera = \"steady-cam0\" }\n";
 
 fn daemon(socket: &std::path::Path) -> LemnosDaemon {
     let config = DaemonConfig {

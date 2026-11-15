@@ -15,11 +15,11 @@
 //! What the block records about each job is kept in [`JOBS`], for the test to read.
 //!
 //! The block takes a returned buffer when it looks at the stream, before each job it reads (the
-//! contract's `next_buffer`). [`STALE_REFRESH`] turns that off: the block then looks once per
-//! serve, as Lemnos's `drivers/codec-jobs` server does at its lock, and a job read later in the
-//! serve can name a buffer returned after that look. [`AWAIT_JOBS`] makes a serve wait for the
-//! next job after it publishes a completion, so a test can post the next job at the moment it
-//! chooses.
+//! contract's `next_buffer`), as Lemnos's `drivers/codec-jobs` server does at the pinned rev.
+//! [`STALE_REFRESH`] is the OLD behaviour, one look per serve: a job read later in the serve can
+//! then name a buffer returned after that look, and the block refuses it. [`AWAIT_JOBS`] makes a
+//! serve wait for the next job after it publishes a completion, so a test can post the next job
+//! at the moment it chooses.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -34,8 +34,8 @@ use styx_block::hevc;
 
 use lemnos_contract_codec_block::work::Work;
 use lemnos_contract_codec_block::{
-    BlockInfo, BufferRef, COMPLETION_BYTES, CodecBlock, Completion, Counters, DATA_OFFSET, Job,
-    JobStatus,
+    BlockInfo, BufferRef, COMPLETION_BYTES, CodecBlock, Completion, Counters, DATA_OFFSET,
+    JOB_BYTES, Job, JobStatus,
 };
 use lemnos_core::{
     Config, Decode, Encode, Lifecycle, Reader, Result, Status, StreamHandle, Writer, driver,
@@ -55,6 +55,8 @@ const SLOT_PICTURE: u32 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Seen {
     pub identity: u64,
+    /// The buffer the job's result was to be written to.
+    pub result: u32,
     pub refs: Vec<BufferRef>,
     pub items: Vec<(u32, Vec<u8>)>,
     pub start_code: bool,
@@ -77,10 +79,15 @@ pub static REFUSE_JOBS: AtomicU32 = AtomicU32::new(0);
 /// The bitstream of the fixture: two IDR frames' worth of parameter sets and slices.
 pub const STREAM: &[u8] = include_bytes!("../../src/hevc/fixtures/idr320.h265");
 
-/// The board the tests run on: one `codec.block/1` device with eight job-stream buffers.
-pub const BOARD: &str = "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
-    [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
-    [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = 20\n";
+/// The board the tests run on: one `codec.block/1` device with eight job-stream buffers. Its jobs
+/// are the contract's `JOB_BYTES`, so the board follows the pinned contract's record size.
+pub fn board() -> String {
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
+         [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
+         [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = {JOB_BYTES}\n"
+    )
+}
 
 /// A directory for a test's socket, under the temp directory.
 pub fn socket_dir(name: &str) -> PathBuf {
@@ -97,7 +104,7 @@ pub fn start(name: &str) -> (Service, PathBuf) {
     let config = ServiceConfig {
         socket: socket.clone(),
         name: "styx-block-test".to_string(),
-        board: parse(BOARD).expect("board"),
+        board: parse(&board()).expect("board"),
         drivers: vec![entry::<SimCodec>()],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -127,7 +134,7 @@ pub fn pattern(index: usize, stamp: u64) -> u8 {
 
 #[driver("sim-codec", provides = [CodecBlock])]
 pub struct SimCodec {
-    #[needs]
+    #[needs(job)]
     jobs: StreamHandle,
     /// The buffers the block holds, one bit each.
     held: u64,
@@ -273,6 +280,7 @@ impl SimCodec {
         {
             let seen = Seen {
                 identity: job.identity,
+                result: job.result,
                 refs: Vec::new(),
                 items: Vec::new(),
                 start_code: false,
@@ -328,6 +336,7 @@ impl SimCodec {
         }
         let seen = Seen {
             identity: job.identity,
+            result: job.result,
             refs,
             items,
             start_code,

@@ -14,6 +14,8 @@ pub struct ServiceCamera {
     pub state: String,
     pub frames: Option<u64>,
     pub skipped: Option<u64>,
+    /// The Lemnos stream reader's own skipped count (`lemnos_skipped`), apart from `skipped`.
+    pub lemnos_skipped: Option<u64>,
     pub last_id: Option<u64>,
     pub publish: String,
     pub readers: Option<u64>,
@@ -69,6 +71,12 @@ pub struct Report {
     pub frames: FrameStats,
     /// Reader counts for this run (ring skips and so on): end minus start.
     pub skipped: u64,
+    /// Producer stall edges and resume edges seen in this run, and how many resumes were lost.
+    pub stalls: u64,
+    pub resumes: u64,
+    pub lost_resumes: u64,
+    /// The time the camera spent stalled in this run, in ns (the edges' times).
+    pub stall_ns_total: u64,
     pub superseded: u64,
     pub limited: u64,
     pub malformed: u64,
@@ -117,6 +125,7 @@ fn camera_json(c: &Option<ServiceCamera>) -> Json {
             ("state", Json::Str(c.state.clone())),
             ("frames", Json::opt_int(c.frames)),
             ("skipped", Json::opt_int(c.skipped)),
+            ("lemnos_skipped", Json::opt_int(c.lemnos_skipped)),
             ("last_id", Json::opt_int(c.last_id)),
             ("publish", Json::Str(c.publish.clone())),
             ("readers", Json::opt_int(c.readers)),
@@ -195,6 +204,13 @@ impl Report {
             ("frames", Json::Object(vec![
                 ("delivered", Json::Int(delivered)),
                 ("skipped_by_ring", Json::Int(self.skipped)),
+                ("stalls", Json::Int(self.stalls)),
+                ("stall_ms_total", Json::Float(self.stall_ns_total as f64 / 1e6)),
+                ("stall_gaps_ms", Json::Array(f.stall_gaps_ns.iter().map(|ns| Json::Float(*ns as f64 / 1e6)).collect())),
+                ("discontinuities", Json::Int(self.lost_resumes)),
+                ("producer_stalls", Json::Int(self.stalls)),
+                ("producer_resumes", Json::Int(self.resumes)),
+                ("producer_resumes_lost", Json::Int(self.lost_resumes)),
                 ("superseded", Json::Int(self.superseded)),
                 ("limited", Json::Int(self.limited)),
                 ("malformed", Json::Int(self.malformed)),
@@ -295,6 +311,16 @@ impl Report {
         let mut row = |k: &str, v: String| rows.push((k.to_string(), v));
         row("frames delivered", f.delivered.to_string());
         row("frames skipped by ring", self.skipped.to_string());
+        row(
+            "producer stalls (stalls, resumes, lost)",
+            format!("{}, {}, {}", self.stalls, self.resumes, self.lost_resumes),
+        );
+        for (edge, ns) in f.stall_gaps_ns.iter().enumerate() {
+            row(
+                &format!("stall {}", edge + 1),
+                format!("stall, {:.3} ms", *ns as f64 / 1e6),
+            );
+        }
         row(
             "gaps (count, largest)",
             format!("{}, {}", f.gaps, f.largest_gap),

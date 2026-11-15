@@ -29,12 +29,31 @@ pub const E_PANIC: i32 = -8;
 pub const E_STOPPED: i32 = -9;
 /// A control value outside the control's range.
 pub const E_RANGE: i32 = -10;
+/// A frame socket's shared ring or marks page is another layout than this build reads. The values
+/// are in `styx_layout_refusal`.
+pub const E_LAYOUT: i32 = -11;
+
+/// The layout values a [`E_LAYOUT`] refusal names, as the header gives them.
+pub const LAYOUT_RING: i32 = 1;
+/// See [`LAYOUT_RING`].
+pub const LAYOUT_MARKS: i32 = 2;
+
+/// A layout refusal as the library keeps it for `styx_layout_refusal`: which structure, the value
+/// in the memory and the value this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Layout {
+    pub(crate) which: i32,
+    pub(crate) found: u64,
+    pub(crate) expected: u64,
+}
 
 /// A failed call: its status and a message for `styx_last_error`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Fail {
     pub(crate) status: i32,
     pub(crate) message: String,
+    /// The layout refusal, when this failure is one ([`E_LAYOUT`]).
+    pub(crate) layout: Option<Layout>,
 }
 
 pub(crate) type Res<T> = Result<T, Fail>;
@@ -44,6 +63,25 @@ impl Fail {
         Self {
             status,
             message: message.into(),
+            layout: None,
+        }
+    }
+
+    /// A shared-layout refusal: [`E_LAYOUT`], its message, and the values for `styx_layout_refusal`.
+    pub(crate) fn layout(
+        which: i32,
+        message: impl Into<String>,
+        found: u64,
+        expected: u64,
+    ) -> Self {
+        Self {
+            status: E_LAYOUT,
+            message: message.into(),
+            layout: Some(Layout {
+                which,
+                found,
+                expected,
+            }),
         }
     }
 
@@ -58,6 +96,12 @@ impl Fail {
 
 thread_local! {
     static LAST: RefCell<String> = const { RefCell::new(String::new()) };
+    static LAST_LAYOUT: RefCell<Option<Layout>> = const { RefCell::new(None) };
+}
+
+/// This thread's last failure, when it was a layout refusal (for `styx_layout_refusal`).
+pub(crate) fn last_layout() -> Option<Layout> {
+    LAST_LAYOUT.try_with(|last| *last.borrow()).ok().flatten()
 }
 
 /// The message of this thread's last failed call (empty when none has failed).
@@ -69,15 +113,17 @@ pub(crate) fn last_error() -> String {
 /// Runs an entry point's body. Returns its status; a failure's message is kept for
 /// `styx_last_error`; a panic is `E_PANIC`.
 pub(crate) fn guard(body: impl FnOnce() -> Res<()>) -> i32 {
-    let (status, message) = match catch_unwind(AssertUnwindSafe(body)) {
+    let (status, message, layout) = match catch_unwind(AssertUnwindSafe(body)) {
         Ok(Ok(())) => return OK,
-        Ok(Err(fail)) => (fail.status, fail.message),
+        Ok(Err(fail)) => (fail.status, fail.message, fail.layout),
         Err(_) => (
             E_PANIC,
             "internal failure, caught at the C boundary".to_string(),
+            None,
         ),
     };
     let _ = LAST.try_with(|last| *last.borrow_mut() = message);
+    let _ = LAST_LAYOUT.try_with(|last| *last.borrow_mut() = layout);
     status
 }
 
@@ -232,5 +278,29 @@ mod tests {
         // SAFETY: a zero capacity with a NULL buffer writes only the length.
         unsafe { write_bytes(b"xy", std::ptr::null_mut(), 0, &mut len) }.expect("length only");
         assert_eq!(len, 2);
+    }
+
+    #[test]
+    fn a_layout_refusal_keeps_its_structure_and_values_until_the_next_failure() {
+        let status = guard(|| {
+            Err(Fail::layout(
+                LAYOUT_MARKS,
+                "this marks page is layout 1; this build reads layout 2",
+                1,
+                2,
+            ))
+        });
+        assert_eq!(status, E_LAYOUT);
+        assert_eq!(
+            last_layout(),
+            Some(Layout {
+                which: LAYOUT_MARKS,
+                found: 1,
+                expected: 2,
+            })
+        );
+        assert!(last_error().contains("this build reads layout 2"));
+        assert_eq!(guard(|| Err(Fail::invalid("x"))), E_INVALID);
+        assert_eq!(last_layout(), None, "a plain failure is no layout refusal");
     }
 }

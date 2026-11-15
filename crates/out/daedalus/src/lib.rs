@@ -21,6 +21,16 @@ mod value;
 mod ring;
 
 #[cfg(all(feature = "daedalus", target_os = "linux"))]
+mod gpu;
+
+#[cfg(all(feature = "daedalus", target_os = "linux"))]
+pub mod fault;
+
+#[cfg(all(feature = "daedalus", target_os = "linux"))]
+pub use gpu::{
+    GpuOptions, fault_status, fault_text, group_of_node, open_error_status, open_error_status_with,
+};
+#[cfg(all(feature = "daedalus", target_os = "linux"))]
 pub use ring::{latest_value, next_value};
 #[cfg(all(feature = "daedalus", target_os = "linux"))]
 pub use value::{FRAME_KEY, StyxFrame, dmabuf_memory};

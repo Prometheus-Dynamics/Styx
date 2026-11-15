@@ -23,7 +23,7 @@ use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, FrameLease, copy_counters, packed_layouts};
 use styx_socket::{
     BeginError, Limits, OUTSIDE_BELLS, Producer, ProducerConfig, ReadError, Reader, ReaderStats,
-    SocketError,
+    SocketError, StreamEnd,
 };
 
 const WIDTH: u32 = 64;
@@ -331,7 +331,10 @@ fn a_reader_over_its_own_limit_is_limited_and_over_the_producers_hold_time_is_cu
         producer.stats()
     );
     assert!(producer.readers()[0].cut_off);
-    assert!(matches!(reader.next_frame(), Err(ReadError::CutOff)));
+    assert!(matches!(
+        reader.next_frame(),
+        Err(ReadError::Ended(StreamEnd::ConsumerFault))
+    ));
     drop(first);
     assert_eq!(
         reader.stats().held,

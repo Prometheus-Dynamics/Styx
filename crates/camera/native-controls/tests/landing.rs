@@ -4,6 +4,7 @@
 mod common;
 
 use common::*;
+use lemnos_contract_camera_sensor::{fps_milli_of, frame_length_for_fps_milli};
 use styx_controls::{Control, ControlValue};
 
 /// One exposure step, 1,000 times: the step frame and both delays vary, the request is made both
@@ -44,18 +45,16 @@ fn an_exposure_step_lands_on_its_frame_1000_times() {
                 "iteration {i}: exposure in force on frame {k} (step on {step}, delay {delay})"
             );
             let meta = run.controls.metadata(k, 0);
-            assert_eq!(
-                meta.exposure_us,
-                if k < step { 8_000 } else { 12_000 },
+            assert!(
+                shown_us(u64::from(run.sensor.exposure_at(k))).contains(&(meta.exposure_us)),
                 "iteration {i}: metadata on frame {k}"
             );
             assert_eq!(
                 meta.control(Control::Exposure),
                 ControlValue::Manual(meta.exposure_us)
             );
-            assert_eq!(
-                u64::from(meta.exposure_us),
-                us_for_code(u64::from(run.sensor.exposure_at(k))),
+            assert!(
+                shown_us(u64::from(run.sensor.exposure_at(k))).contains(&(meta.exposure_us)),
                 "iteration {i}: metadata against the sensor on frame {k}"
             );
             assert_eq!(
@@ -128,9 +127,8 @@ fn exposure_and_gain_stepped_together_land_on_the_same_frame_1000_times() {
                 if k < step { 1_000 } else { 2_000 },
                 "iteration {i}: metadata gain on {k}"
             );
-            assert_eq!(
-                meta.exposure_us,
-                if k < step { 8_000 } else { 12_000 },
+            assert!(
+                shown_us(u64::from(run.sensor.exposure_at(k))).contains(&(meta.exposure_us)),
                 "iteration {i}: metadata exposure on {k}"
             );
             assert_eq!(
@@ -171,31 +169,37 @@ fn a_late_request_lands_late_and_says_so() {
             run.sensor.exposure_at(21 + u64::from(delay)),
             code_for_us(12_000) as u32
         );
-        assert_eq!(
-            run.controls
-                .metadata(21 + u64::from(delay) - 1, 0)
-                .exposure_us,
-            8_000
+        assert!(
+            shown_us(code_for_us(8_000)).contains(
+                &(run
+                    .controls
+                    .metadata(21 + u64::from(delay) - 1, 0)
+                    .exposure_us)
+            ),
         );
-        assert_eq!(
-            run.controls.metadata(21 + u64::from(delay), 0).exposure_us,
-            12_000
+        assert!(
+            shown_us(code_for_us(12_000))
+                .contains(&(run.controls.metadata(21 + u64::from(delay), 0).exposure_us)),
         );
     }
 }
 
 /// A frame rate lands on its frame length delay, and the metadata reports the rate the whole frame
-/// length gives (1832 lines is 59.984 fps, not 60 fps).
+/// length gives (the contract's rate for the whole-line frame, not the rate asked for).
 #[test]
 fn a_frame_rate_lands_on_the_frame_length_delay() {
     let mode = mode(2, 2, 2);
+    let (lines_60, rate_60) =
+        frame_length_for_fps_milli(LINE_TIME_PS, 0, 1, u32::MAX, 60_000).unwrap();
+    let (lines_30, _) = frame_length_for_fps_milli(LINE_TIME_PS, 0, 1, u32::MAX, 30_000).unwrap();
+    assert_eq!(rate_60, fps_milli_of(LINE_TIME_PS, 0, lines_60).unwrap());
     // Written in frame 8, shown from frame 10.
     let run = run(&mode, 8, &[update(Control::FrameRate, 30_000, 10)], 16).unwrap();
     assert_eq!(run.landings, [(Control::FrameRate, 10, 10)]);
-    assert_eq!(run.sensor.frame_length, vec![(0, 1832), (10, 3663)]);
+    assert_eq!(run.sensor.frame_length, vec![(0, lines_60), (10, lines_30)]);
     assert_eq!(
         run.controls.metadata(9, 0).control(Control::FrameRate),
-        ControlValue::Manual(59_984)
+        ControlValue::Manual(rate_60)
     );
     assert_eq!(
         run.controls.metadata(10, 0).control(Control::FrameRate),

@@ -10,26 +10,27 @@
 
 use std::num::NonZeroU32;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel};
 use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update, WIRE_BYTES};
 use styx_format::{FourCc, Interval};
+use styx_lemnos::Carried;
 use styx_lemnos::Client;
 use styx_libcamera::CaptureConfig;
-use styx_native::{Camera, discover};
+use styx_native::{Camera, Refusal, discover};
 use styx_native_run::{
     AutoOff, Clock, ExposureReport, Initial, Policy, Request, Selection, Session,
 };
 use styx_select::adapters::{LibcameraCapture, NativeCapture, V4l2Capture};
-use styx_select::{Capture, CaptureError, Selected, Status};
-use styx_socket::Producer;
+use styx_select::{Capture, CaptureError, Edge, Selected, Status};
+use styx_socket::{Accepted, HandshakePlan, Producer, StreamEnd};
 use styx_v4l2::StreamConfig;
 
 use crate::config::CameraConfig;
 use crate::outlet::Outlet;
 use crate::service::Shared;
-use crate::slot::{Command, Health, KeepWindow, Publish, Slot, State};
+use crate::slot::{Command, FAULT_DEVICE_FAILED, Health, KeepWindow, Publish, Slot, State};
 use lemnos_client::DeviceHealth;
 use lemnos_contract_camera_receiver::CameraReceiver;
 use lemnos_contract_camera_sensor::CameraSensor;
@@ -46,6 +47,52 @@ const IDLE_WAIT: Duration = Duration::from_millis(100);
 static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The ring's history, in entries, for each camera's socket.
 const HISTORY: u32 = 8;
+
+/// The camera's producer, held across attempts. While the camera retries it stays attached, so its
+/// readers stay linked and are told of the stall. The pool changes when the camera reopens (its
+/// buffers are made at open), so the held producer ends (`Closed`) at the first frame of the next
+/// attempt and a new one takes its place: readers reconnect then. Reusing it would need the same
+/// buffers, which a reopen never gives.
+struct Held {
+    producer: Producer<FrameMetadata>,
+    generation: u64,
+}
+
+type Publisher = Option<Held>;
+
+/// Ends the held producer, if any. Its readers see the end (`Closed` unless `end` says more: a
+/// device switched off for good says `DeviceFailed`), and the camera's publishing is reset.
+fn release(publisher: &mut Publisher, slot: &Slot, end: Option<StreamEnd>) {
+    if let Some(mut held) = publisher.take() {
+        if let Some(end) = end {
+            held.producer.end(end);
+        }
+        slot.set_readers(0);
+        slot.set_publish(Publish::Waiting);
+        slot.clear_stall();
+    }
+}
+
+/// Answers a reader's handshake request from the held producer. `None` when none is publishing.
+fn answer_handshake(publisher: &Publisher, reply: Sender<Option<(u64, HandshakePlan)>>) {
+    let answer = publisher.as_ref().and_then(|held| {
+        held.producer
+            .handshake_plan()
+            .ok()
+            .map(|plan| (held.generation, plan))
+    });
+    let _ = reply.send(answer);
+}
+
+/// Attaches an answered reader to the producer it was planned on. Any other generation is closed.
+fn attach_reader(publisher: &mut Publisher, planned: u64, accepted: Accepted, slot: &Slot) {
+    if let Some(held) = publisher.as_mut()
+        && planned == held.generation
+        && held.producer.attach(accepted).is_ok()
+    {
+        slot.set_readers(held.producer.stats().readers);
+    }
+}
 /// The sensor's exposure when the config does not give one (native cameras).
 const DEFAULT_EXPOSURE_US: u32 = 10_000;
 /// The sensor's analogue gain when the config does not give one (native cameras).
@@ -80,6 +127,7 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
     let mut outlet = shared.outlets.attach(&slot.id);
     let mut failures: u32 = 0;
     let mut paused: Option<State> = None;
+    let mut publisher: Publisher = None;
     while !shared.shutdown.load(Ordering::Acquire) {
         if let Some(state) = paused {
             match commands.recv_timeout(IDLE_WAIT) {
@@ -105,9 +153,10 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
 
         // Commands that came in while the camera was waiting.
         slot.wake.store(false, Ordering::Release);
-        match drain(commands, slot) {
+        match drain(commands, slot, &mut publisher) {
             Drained::Idle => {}
             Drained::Stop => {
+                release(&mut publisher, slot, None);
                 paused = Some(State::Stopped);
                 slot.set_state(State::Stopped);
                 continue;
@@ -138,9 +187,17 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
             continue;
         };
         slot.set_state(State::Backoff);
-        let ended = attempt(slot, commands, shared, outlet.as_mut(), &selection);
+        let ended = attempt(
+            slot,
+            commands,
+            shared,
+            outlet.as_mut(),
+            &selection,
+            &mut publisher,
+        );
         match ended {
             Ended::Stopped => {
+                release(&mut publisher, slot, None);
                 paused = Some(State::Stopped);
                 slot.set_state(State::Stopped);
             }
@@ -149,21 +206,40 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     failures = 0;
                 }
                 failures = failures.saturating_add(1);
-                slot.failed(text, failures);
                 if shared
                     .auto_off
                     .is_some_and(|limit: NonZeroU32| failures >= limit.get())
                 {
+                    // Switched off for good by its own policy: its readers learn the device failed.
+                    release(&mut publisher, slot, Some(StreamEnd::DeviceFailed));
+                    slot.failed(text, failures);
+                    slot.set_fault(FAULT_DEVICE_FAILED);
                     paused = Some(State::Off);
                     slot.set_state(State::Off);
                     continue;
                 }
+                // The camera retries: the producer stays attached through the backoff, and its
+                // readers are told of the stall.
+                // PRODUCER STALL: the hardware layer's own `Next::Stalled` will plug in here once its
+                // rev is pinned (the capture reports the device's state); until then the service
+                // stalls on the failure it sees.
+                let since = styx_socket::clock_ns();
+                if let Some(held) = publisher.as_mut() {
+                    held.producer.stall(since);
+                    slot.set_readers(held.producer.stats().readers);
+                }
+                slot.stalled(since);
+                slot.failed(
+                    format!("camera failed, retrying since {since}: {text}"),
+                    failures,
+                );
                 let delay = shared.backoff.delay(failures);
                 slot.backing_off(delay);
                 slot.wake.store(false, Ordering::Release);
-                match drain(commands, slot) {
+                match drain(commands, slot, &mut publisher) {
                     Drained::Idle => {}
                     Drained::Stop => {
+                        release(&mut publisher, slot, None);
                         paused = Some(State::Stopped);
                         slot.set_state(State::Stopped);
                         continue;
@@ -184,7 +260,7 @@ enum Drained {
 
 /// Reads the commands waiting now. A `Set` with no camera running is refused; `Start` has no
 /// effect on a running camera.
-fn drain(commands: &Receiver<Command>, slot: &Slot) -> Drained {
+fn drain(commands: &Receiver<Command>, slot: &Slot, publisher: &mut Publisher) -> Drained {
     loop {
         match commands.try_recv() {
             Ok(Command::Stop) => return Drained::Stop,
@@ -195,10 +271,11 @@ fn drain(commands: &Receiver<Command>, slot: &Slot) -> Drained {
                     slot.snapshot().state
                 )));
             }
-            Ok(Command::Handshake(reply)) => {
-                let _ = reply.send(None);
+            // A reader asking while the camera retries joins the producer that stays attached.
+            Ok(Command::Handshake(reply)) => answer_handshake(publisher, reply),
+            Ok(Command::Attach(planned, accepted)) => {
+                attach_reader(publisher, planned, accepted, slot)
             }
-            Ok(Command::Attach(..)) => {}
             Err(TryRecvError::Empty) => return Drained::Idle,
             Err(TryRecvError::Disconnected) => return Drained::Gone,
         }
@@ -212,9 +289,10 @@ fn attempt(
     shared: &Shared,
     outlet: &mut dyn Outlet,
     selection: &Selected,
+    publisher: &mut Publisher,
 ) -> Ended {
     let opened = open(selection, slot, shared, |capture, reports| {
-        pump(capture, slot, commands, shared, outlet, reports)
+        pump(capture, slot, commands, shared, outlet, reports, publisher)
     });
     match opened {
         Ok(ended) => ended,
@@ -246,6 +324,15 @@ fn open<R>(
             let client =
                 Client::connect(socket, CLIENT_NAME).map_err(|e| format!("lemnos: {e}"))?;
             let found = discover(&client).map_err(|e| format!("lemnos discovery: {e}"))?;
+            // A camera whose device contract is another build's is refused at discovery: its status
+            // names the contract and the sentence, and the worker backs off like any failure.
+            if let Some((_, Refusal::Contract { contract, text, .. })) =
+                found.refused.iter().find(|entry| entry.0 == selection.key)
+            {
+                slot.set_contract(Some(contract.clone()));
+                return Err(text.clone());
+            }
+            slot.set_contract(None);
             let camera = found
                 .cameras
                 .iter()
@@ -404,7 +491,6 @@ fn native_policy(shared: &Shared) -> Policy {
         // worker waits (through the service's clock) and opens the camera again.
         auto_off: AutoOff::AfterFailures(NonZeroU32::MIN),
         frame_timeout: FRAME_WAIT,
-        stall_waits: 4,
     }
 }
 
@@ -464,11 +550,13 @@ fn pump(
     shared: &Shared,
     outlet: &mut dyn Outlet,
     reports: Option<&Reports>,
+    publisher: &mut Publisher,
 ) -> Ended {
     slot.started();
     let mut delivered = false;
-    let mut publisher: Option<Producer<FrameMetadata>> = None;
-    let mut generation = 0_u64;
+    // A producer held over from an earlier attempt belongs to the buffers that attempt had; the
+    // first frame of this one ends it and publishes from a new pool.
+    let mut replacing = publisher.is_some();
     let mut unpublishable = false;
     let mut window = KeepWindow::default();
     let ended = loop {
@@ -485,27 +573,42 @@ fn pump(
                 slot.set_exposure(exposure);
             }
         }
-        match capture.next_frame(FRAME_WAIT) {
+        let next = capture.next_frame(FRAME_WAIT);
+        slot.set_lemnos_skipped(capture.lemnos_skipped());
+        match next {
             Ok(Some(lease)) => {
                 delivered = true;
+                if replacing {
+                    replacing = false;
+                    release(publisher, slot, None);
+                    slot.camera_back();
+                }
                 if publisher.is_none() && !unpublishable {
                     let buffers = lease.pool().buffers();
                     match Producer::with_pool(lease.pool(), HISTORY) {
                         Ok(mut producer) => {
-                            let reserve = slot
+                            // The reserve first: the keep window is clamped to what it leaves.
+                            let asked = slot
                                 .settings
                                 .hardware_reserve
                                 .map_or(default_reserve(buffers), |r| (r as usize).min(buffers));
+                            let reserve = producer.set_reserve(asked);
                             let keep = producer.set_keep(keep_for(buffers, reserve));
                             window = KeepWindow {
                                 keep,
                                 buffers,
                                 hardware_reserve: reserve,
                                 reclaimed: 0,
+                                reserve_cuts: 0,
+                                kept: keep,
+                                bound_unmet: 0,
                             };
                             slot.set_keep(window);
-                            generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
-                            publisher = Some(producer);
+                            let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+                            *publisher = Some(Held {
+                                producer,
+                                generation,
+                            });
                             slot.set_publish(Publish::Publishing);
                         }
                         Err(error) => {
@@ -516,7 +619,8 @@ fn pump(
                 }
                 slot.frame(&lease);
                 outlet.frame(&slot.id, &lease);
-                if let Some(producer) = publisher.as_mut() {
+                if let Some(held) = publisher.as_mut() {
+                    let producer = &mut held.producer;
                     let mut blob = [0_u8; WIRE_BYTES];
                     let len = lease.meta().to_bytes(&mut blob);
                     let dropped = producer.publish_with(lease, &blob[..len]).is_err();
@@ -524,8 +628,15 @@ fn pump(
                     producer.reclaim();
                     let stats = producer.stats();
                     slot.set_readers(stats.readers);
-                    if window.reclaimed != stats.reclaimed {
+                    if window.reclaimed != stats.reclaimed
+                        || window.reserve_cuts != stats.cut_off_for_reserve
+                        || window.kept != stats.kept
+                        || window.bound_unmet != stats.bound_unmet
+                    {
                         window.reclaimed = stats.reclaimed;
+                        window.reserve_cuts = stats.cut_off_for_reserve;
+                        window.kept = stats.kept;
+                        window.bound_unmet = stats.bound_unmet;
                         slot.set_keep(window);
                     }
                 }
@@ -539,16 +650,26 @@ fn pump(
                 };
             }
         }
+        if let Some(edge) = capture.take_edge() {
+            apply_edge(publisher, slot, edge);
+        }
         match capture.status() {
-            Status::Streaming => slot.resumed(),
-            Status::Retrying { reason } => slot.retrying(reason),
+            Status::Streaming => {
+                slot.layout_refused(None);
+                slot.resumed();
+            }
+            Status::Retrying { reason, layout } => {
+                slot.layout_refused(layout);
+                slot.retrying(reason);
+            }
             Status::Stopped => {
                 break Ended::Fault {
                     text: "the backend reports the camera stopped".to_string(),
                     delivered,
                 };
             }
-            Status::Failed { reason } => {
+            Status::Failed { reason, layout } => {
+                slot.layout_refused(layout);
                 break Ended::Fault {
                     text: reason,
                     delivered,
@@ -570,21 +691,11 @@ fn pump(
                     }
                     let _ = reply.send(result);
                 }
-                Ok(Command::Handshake(reply)) => {
-                    // The plan is made here, on the producer's thread; it is run elsewhere.
-                    let plan = publisher
-                        .as_ref()
-                        .and_then(|producer| producer.handshake_plan().ok());
-                    let _ = reply.send(plan.map(|plan| (generation, plan)));
-                }
+                // The plan is made here, on the producer's thread; it is run elsewhere.
+                Ok(Command::Handshake(reply)) => answer_handshake(publisher, reply),
+                // Attached between frames: a table entry and a doorbell, nothing more.
                 Ok(Command::Attach(planned, accepted)) => {
-                    // Attached between frames: a table entry and a doorbell, nothing more.
-                    if let Some(producer) = publisher.as_mut()
-                        && planned == generation
-                        && producer.attach(accepted).is_ok()
-                    {
-                        slot.set_readers(producer.stats().readers);
-                    }
+                    attach_reader(publisher, planned, accepted, slot);
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -597,13 +708,57 @@ fn pump(
             break ended;
         }
     };
-    // The producer goes first: its readers see their connection end, and the buffers it held go
-    // back before the capture is stopped.
-    if publisher.take().is_some() {
-        slot.set_readers(0);
-        slot.set_publish(Publish::Waiting);
+    // A stopped camera's producer goes first: its readers see their connection end, and the
+    // buffers it held go back before the capture is stopped. A failed one is kept by the caller,
+    // stalled, through the backoff.
+    if matches!(ended, Ended::Stopped) {
+        release(publisher, slot, None);
     }
     ended
+}
+
+/// Applies a camera's stall or return to the producer its readers are on. A stall is health: the
+/// producer stays attached and its readers are told `Retrying` since the failure, with the camera's
+/// own reason. A return ends it: the readers are told the camera runs. A return that lost what it
+/// was given restarts the frame sequence: the slot starts counting from its first frame again, so
+/// no gap is counted for it.
+fn apply_edge(publisher: &mut Publisher, slot: &Slot, edge: Edge) {
+    match edge {
+        Edge::Stalled { since_ns, text } => {
+            // A silence the session names has no time of its own (0): it starts now.
+            let since_ns = if since_ns == 0 {
+                styx_socket::clock_ns()
+            } else {
+                since_ns
+            };
+            if let Some(held) = publisher.as_mut() {
+                held.producer.stall(since_ns);
+                slot.set_readers(held.producer.stats().readers);
+            }
+            slot.stalled(since_ns);
+            slot.stall_health(&text);
+            slot.retrying(text);
+        }
+        Edge::Resumed { carried } => {
+            let kept = carried == Carried::Kept;
+            if let Some(held) = publisher.as_mut() {
+                let carried = if kept {
+                    styx_socket::Carried::Kept
+                } else {
+                    styx_socket::Carried::Lost
+                };
+                held.producer.resume(carried);
+                slot.set_readers(held.producer.stats().readers);
+            }
+            slot.clear_stall();
+            slot.return_health();
+            slot.camera_back();
+            slot.resumed();
+            if !kept {
+                slot.discontinuity();
+            }
+        }
+    }
 }
 
 fn set(capture: &mut dyn Capture, updates: &[Update]) -> Result<(), String> {

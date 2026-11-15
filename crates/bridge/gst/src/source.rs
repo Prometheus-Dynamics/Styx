@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use shm_fdpass as fdpass;
 use styx_format::FourCc;
 use styx_frame::{Layouts, PlaneLayout};
-use styx_socket::{Frame, Reader};
+use styx_socket::{Frame, ReadError, Reader, StreamEnd};
 
 use crate::link::{Backoff, LinkState, LinkStatus};
 
@@ -217,6 +217,16 @@ impl Source {
                 let _ = reader.wait(Some(wait));
                 None
             }
+            // The producer closed its ring: the end of its stream, which is normal, not a failure.
+            Err(ReadError::Ended(StreamEnd::Closed)) => {
+                self.ended(now);
+                None
+            }
+            // The producer cut this reader off for holding frames too long: not a camera failure.
+            Err(err @ ReadError::Ended(StreamEnd::ConsumerFault)) => {
+                self.cut(now, err.to_string());
+                None
+            }
             Err(err) => {
                 self.fail(now, err.to_string());
                 None
@@ -248,6 +258,29 @@ impl Source {
                 false
             }
         }
+    }
+
+    /// The producer closed its ring cleanly: its stream ended, with every frame delivered. Not a
+    /// failure: the reader is let go, no error is kept, and the next attempt comes after the first
+    /// backoff step.
+    /// The producer cut this reader off because it held frames past the keep window while the camera
+    /// needed their buffers. The reader is let go (with the marks of its frames), the cut is counted
+    /// apart from failures, and the next attempt comes after the first backoff step.
+    fn cut(&mut self, now: Instant, why: String) {
+        self.reader = None;
+        self.backoff.reset();
+        self.status.cut_offs += 1;
+        self.status.last_cut = Some(why);
+        self.status.state = LinkState::Waiting;
+        self.status.next_delay = Some(self.backoff.failed(now));
+    }
+
+    fn ended(&mut self, now: Instant) {
+        self.reader = None;
+        self.backoff.reset();
+        self.status.state = LinkState::Waiting;
+        self.status.next_delay = Some(self.backoff.failed(now));
+        self.status.last_error = None;
     }
 
     fn fail(&mut self, now: Instant, why: String) {

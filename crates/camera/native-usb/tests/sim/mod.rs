@@ -62,7 +62,7 @@ struct Run {
 
 #[driver("sim-uvc", provides = [CameraFrames])]
 pub struct SimUvc {
-    #[needs]
+    #[needs(free)]
     frames: StreamHandle,
     selected: Option<u16>,
     run: Option<Run>,

@@ -18,15 +18,33 @@ use lemnos_contract_camera_isp::{
     CameraIsp, ConfigLayout, Counters as IspCounters, IspInfo, IspInput, IspOutput, OutputLayout,
 };
 use lemnos_contract_camera_receiver::{
-    BayerOrder, CameraReceiver, Counters, FrameLayout, Limits, LinkConfig, MAX_STREAM_NAME, Packing,
+    BayerOrder, CameraReceiver, Counters, FrameLayout, FrameStarts, Limits, LinkConfig,
+    MAX_STREAM_NAME, Packing,
 };
 use lemnos_contract_camera_sensor::{
-    CameraSensor, Controls, EmbeddedData, FrameValues, GainLaw, GainRange, Mode, Rect, SensorInfo,
+    AppliedLanding, CLAMP_ANALOGUE_GAIN, CLAMP_EXPOSURE, CLAMP_FRAME_LENGTH, CameraSensor,
+    Controls, EmbeddedData, FrameValues, GainLaw, GainRange, InForce, Landing, Mode, Rect,
+    SensorInfo, fps_milli_of,
 };
-use lemnos_core::{Config, Lifecycle, Result, Status, StreamHandle, driver};
+use lemnos_core::{
+    Config, ConfigError, Health, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
+};
+
+/// The settings the simulated sensor and receivers read: the camera whose silicon they share.
+const CAMERA_KEYS: &[Key] = &[Key::required("camera", Kind::Str)];
+/// A new instance of a sensor binds to a device that is alive once the injected fault is gone.
+fn alive(clock: Arc<Silicon>) -> Arc<Silicon> {
+    if clock.fault().is_none() {
+        clock.revive();
+    }
+    clock
+}
+
+/// How often the sensor is ticked, so its health is read (nanoseconds).
+const SENSOR_TICK_NS: u64 = 1_000_000;
 use lemnos_hal::blocks::StreamFrame;
 
-use crate::silicon::{self, SensorTiming, Silicon};
+use crate::silicon::{self, Fault, SensorTiming, Silicon};
 
 /// Calls in the order they arrived, across every simulated device in this process.
 static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -50,6 +68,8 @@ pub(crate) const MODES: [(u32, u32); 2] = [(320, 40), (640, 40)];
 const PIXEL_RATE_HZ: u64 = 1_536_000;
 /// How often the receiver looks for a granted frame while it waits (nanoseconds).
 const POLL_NS: u64 = 200_000;
+/// Frames the receiver latches in one tick, at most.
+const LATCH_PER_TICK: u32 = 64;
 
 pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
     let (width, height) = *MODES.get(index)?;
@@ -66,17 +86,20 @@ pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
     };
     // The shortest frame the mode runs: the frame time the link implies, in whole lines (rounded
     // down, so the frame never runs slower than the link carries it).
+    // The frame's offset beyond its lines is one line time (see `frame_offset_ps` below), so the
+    // lines of the shortest frame are the link's frame time less that offset, in whole lines.
     let line_time_ps = u64::from(silicon::LINE_TIME_PS as u32);
-    let frame_length_min = frame_interval_ns(&link) * 1_000 / line_time_ps;
+    let offset_ps = line_time_ps;
+    let frame_length_min =
+        (frame_interval_ns(&link) * 1_000).saturating_sub(offset_ps) / line_time_ps;
     let frame_length_min = u32::try_from(frame_length_min).ok()?;
-    let max_fps_milli =
-        u32::try_from(1_000_000_000_000_000u64 / (u64::from(frame_length_min) * line_time_ps))
-            .ok()?;
+    let line_time_ps = u32::try_from(line_time_ps).ok()?;
+    let max_fps_milli = fps_milli_of(line_time_ps, offset_ps, frame_length_min)?;
     Some(Mode {
         link,
         bayer: BayerOrder::Rggb,
         max_fps_milli,
-        line_time_ps: line_time_ps as u32,
+        line_time_ps,
         line_length: 1456,
         frame_length_min,
         frame_length_max: 52_000,
@@ -100,6 +123,9 @@ pub(crate) fn mode(index: usize, timing: SensorTiming) -> Option<Mode> {
         exposure_delay: timing.exposure_delay,
         gain_delay: timing.gain_delay,
         frame_length_delay: timing.frame_length_delay,
+        // One line time beyond the lines: a frame is `lines + 1` line times long, so the simulated
+        // sensor's rates exercise the contract's offset (a reader that drops it runs 1 line in N short).
+        frame_offset_ps: offset_ps,
         ..Mode::default()
     })
 }
@@ -115,18 +141,57 @@ pub struct SimSensor {
     selected: Option<u16>,
     streaming: bool,
     applied: Option<FrameValues>,
+    /// The `CLAMP_*` bits of the last request: the values the sensor could not take as asked.
+    clamped: u8,
     clock: Option<Arc<Silicon>>,
+    /// The reason this instance is dead, once an injected `Gone` fault reached it: the host binds
+    /// the sensor again (a new instance, healthy).
+    gone: Option<&'static str>,
 }
 
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
+    // The sensor ticks so the host reads its health on a steady clock: a stall the test injects
+    // is seen within a millisecond, not at the next contract call.
+    const TICKS: bool = true;
+
+    fn tick(&mut self, now_ns: u64) -> Option<u64> {
+        Some(now_ns + SENSOR_TICK_NS)
+    }
+
+    fn health(&self) -> Health {
+        if let Some(reason) = self.gone {
+            return Health::Gone(reason);
+        }
+        let fault = self.clock.as_deref().and_then(Silicon::fault);
+        if let Some(silicon) = self.clock.as_deref() {
+            silicon.note_health(fault.is_none());
+        }
+        match fault {
+            Some(Fault::Failed(reason)) => Health::Failed(reason),
+            // A device that stays dead: every bind reads it, until the fault is cleared.
+            Some(Fault::Gone(reason)) => {
+                if let Some(silicon) = self.clock.as_deref() {
+                    silicon.mark_dead();
+                }
+                Health::Gone(reason)
+            }
+            None => Health::Ok,
+        }
+    }
+
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(CAMERA_KEYS)
+    }
 
     fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
         Ok(Self {
             selected: None,
             streaming: false,
             applied: None,
-            clock: Some(clock(cfg)?),
+            clamped: 0,
+            clock: Some(alive(clock(cfg)?)),
+            gone: None,
         })
     }
 }
@@ -135,9 +200,100 @@ impl SimSensor {
     fn silicon(&self) -> Result<&Silicon> {
         self.clock.as_deref().ok_or(Status::INVALID_ARGUMENT)
     }
+
+    /// The request as the sensor takes it: each value moved to the nearest one the selected mode
+    /// allows, and the `CLAMP_*` bits of what was moved (kept as the last request's report). The
+    /// exposure ceiling is the frame length less the mode's margin, where the frame length is the
+    /// one asked for or, when none is, the one last written; a shorter frame also clamps an exposure
+    /// that was written before, so the report names it.
+    fn fit(&mut self, controls: Controls) -> Result<Controls> {
+        let index = self.selected.ok_or(Status::INVALID_ARGUMENT)?;
+        let timing = self.silicon()?.timing();
+        let mode = mode(usize::from(index), timing).ok_or(Status::NOT_FOUND)?;
+        let silicon = self.silicon()?;
+        let mut clamped = 0;
+
+        let frame_length = controls.frame_length.map(|lines| {
+            let fit = lines.clamp(mode.frame_length_min, mode.frame_length_max);
+            if fit != lines {
+                clamped |= CLAMP_FRAME_LENGTH;
+            }
+            fit
+        });
+        let frame_length_now = frame_length
+            .or_else(|| silicon.last_written(silicon::FRAME_LENGTH))
+            .unwrap_or(mode.frame_length_min);
+        let exposure_max = frame_length_now
+            .saturating_sub(mode.exposure_margin)
+            .checked_shl(u32::from(silicon::EXPOSURE_FRACTION_BITS))
+            .unwrap_or(u32::MAX)
+            .max(mode.exposure_min);
+        let exposure_asked = match controls.exposure {
+            Some(code) => Some(code),
+            None if frame_length.is_some() => silicon.last_written(silicon::EXPOSURE),
+            None => None,
+        };
+        let exposure = exposure_asked.map(|code| {
+            let fit = code.clamp(mode.exposure_min, exposure_max);
+            if fit != code {
+                clamped |= CLAMP_EXPOSURE;
+            }
+            fit
+        });
+        let analogue_gain = controls.analogue_gain.map(|code| {
+            let fit = code.clamp(mode.analogue_gain.min, mode.analogue_gain.max);
+            if fit != code {
+                clamped |= CLAMP_ANALOGUE_GAIN;
+            }
+            fit
+        });
+        self.clamped = clamped;
+        Ok(Controls {
+            exposure,
+            analogue_gain,
+            frame_length,
+            digital_gain: controls.digital_gain,
+        })
+    }
 }
 
 impl CameraSensor for SimSensor {
+    // The simulated sensor has no frame-start counts, so it refuses landings and the
+    // landing reads (NOT_SUPPORTED, as a driver without them answers).
+    fn post_values_at(&mut self, _values: FrameValues) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn applied_landing(&mut self) -> Result<Option<AppliedLanding>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    /// The codes in force on the newest latched frame, in the contract's units (exposure in whole
+    /// lines), with the clamp bits of the last request.
+    fn in_force(&mut self) -> Result<InForce> {
+        let held = self.silicon()?.latest_in_force().unwrap_or_default();
+        Ok(InForce {
+            exposure_lines: held
+                .exposure
+                .map(|code| code >> silicon::EXPOSURE_FRACTION_BITS),
+            analogue_gain: held.gain,
+            frame_length: held.frame_length,
+            clamped: self.clamped,
+        })
+    }
+
+    fn set_exposure(&mut self, _lines: u32) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn set_analogue_gain(&mut self, _code: u32) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn set_frame_length(&mut self, _lines: u32) -> Result<Landing> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
     fn info(&mut self) -> Result<SensorInfo> {
         Ok(SensorInfo {
             modes: MODES.len() as u16,
@@ -195,6 +351,7 @@ impl CameraSensor for SimSensor {
             return Err(Status::INVALID_ARGUMENT);
         }
         log("sensor.set_controls");
+        let controls = self.fit(controls)?;
         let silicon = self.silicon()?;
         if let Some(code) = controls.exposure {
             silicon.set_now(silicon::EXPOSURE, Some(code));
@@ -214,8 +371,8 @@ impl CameraSensor for SimSensor {
         if self.selected.is_none() {
             return Err(Status::INVALID_ARGUMENT);
         }
+        let controls = self.fit(values.controls)?;
         let silicon = self.silicon()?;
-        let controls = values.controls;
         if let Some(code) = controls.exposure {
             silicon.post(silicon::EXPOSURE, Some(code));
         }
@@ -225,7 +382,10 @@ impl CameraSensor for SimSensor {
         if let Some(code) = controls.frame_length {
             silicon.post(silicon::FRAME_LENGTH, Some(code));
         }
-        self.applied = Some(values);
+        self.applied = Some(FrameValues {
+            identity: values.identity,
+            controls,
+        });
         Ok(())
     }
 
@@ -248,7 +408,7 @@ impl CameraSensor for SimSensor {
 
 #[driver("sim-receiver", provides = [CameraReceiver])]
 pub struct SimReceiver {
-    #[needs]
+    #[needs(free)]
     frames: StreamHandle,
     configured: Option<LinkConfig>,
     layout: Option<FrameLayout>,
@@ -266,6 +426,9 @@ struct Running {
 
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
+    fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
+        cfg.check_keys(CAMERA_KEYS)
+    }
     const TICKS: bool = true;
 
     fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {
@@ -286,7 +449,10 @@ impl Lifecycle for SimReceiver {
         let silicon = self.clock.clone()?;
         let size = self.layout.map_or(0, |layout| layout.size);
         let mut next = running.next_ns.unwrap_or(now_ns);
-        while let Some(id) = silicon.latch() {
+        // At most this many frames per tick: a free-running camera would otherwise hold the tick for
+        // ever; the next tick takes up the rest.
+        for _ in 0..LATCH_PER_TICK {
+            let Some(id) = silicon.latch() else { break };
             match self.frames.next_buffer() {
                 Ok(Some(buffer)) => {
                     let frame = StreamFrame {
@@ -314,6 +480,19 @@ impl Lifecycle for SimReceiver {
 }
 
 impl CameraReceiver for SimReceiver {
+    // Added at Lemnos 41736042 (U2d): this simulated receiver has no inputs, so NOT_SUPPORTED.
+    fn inputs(&mut self, _into: &mut [u8]) -> core::result::Result<usize, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn input(&mut self) -> core::result::Result<u32, lemnos_core::Status> {
+        Err(lemnos_core::Status::NOT_SUPPORTED)
+    }
+
+    fn frame_starts(&mut self) -> Result<Option<FrameStarts>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
     fn limits(&mut self) -> Result<Limits> {
         Ok(Limits {
             max_lanes: 2,
@@ -439,6 +618,14 @@ impl Lifecycle for SimIsp {
 }
 
 impl CameraIsp for SimIsp {
+    fn input_layout(&mut self) -> Result<Option<OutputLayout>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
+    fn output_layout(&mut self, _output: u8) -> Result<Option<OutputLayout>> {
+        Err(Status::NOT_SUPPORTED)
+    }
+
     fn info(&mut self) -> Result<IspInfo> {
         Ok(IspInfo {
             max_outputs: 0,

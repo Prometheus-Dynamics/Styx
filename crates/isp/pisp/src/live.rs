@@ -83,6 +83,13 @@ pub struct LiveIsp {
     output_busy: [Vec<bool>; 2],
     timeout: Duration,
     input_copies: usize,
+    /// Frames this session did not post because a buffer Styx picks was not free (the config, the
+    /// input or an output). Nothing was sent, so the ISP never saw them (see [`LiveIsp::post`]).
+    starved: u64,
+    /// Frames Styx posted that the job stream refused: its job ring was full, so the post returned
+    /// `false` and nothing was queued. Not a Lemnos counter: the Lemnos `refused` stat counts only
+    /// jobs that starved for a buffer the driver picks, and this path picks its own.
+    posts_refused: u64,
 }
 
 impl std::fmt::Debug for LiveIsp {
@@ -208,12 +215,35 @@ impl LiveIsp {
             output_busy: [vec![false; out_buffers[0]], vec![false; out_buffers[1]]],
             timeout,
             input_copies: 0,
+            starved: 0,
+            posts_refused: 0,
         })
     }
 
     /// Input frames copied into the ISP's input buffers, since the setup.
     pub fn input_copies(&self) -> usize {
         self.input_copies
+    }
+
+    /// Frames not posted since the setup because a buffer this session picks (config, input or
+    /// output) was not free. Nothing was sent and nothing was dropped from the ISP's output: a job
+    /// that is posted always gets its buffers.
+    pub fn starved(&self) -> u64 {
+        self.starved
+    }
+
+    /// Frames Styx posted that the job ring refused (full): the post returned `false`, nothing was
+    /// queued. A job the ISP ran is never counted here.
+    pub fn posts_refused(&self) -> u64 {
+        self.posts_refused
+    }
+
+    /// Completions the ISP's job streams were too late for, summed over the config, input and output
+    /// streams. A job-driven stream never replaces an unread result, so this stays 0.
+    pub fn skipped(&self) -> u64 {
+        self.config.skipped()
+            + self.input.skipped()
+            + self.outputs.iter().map(JobStream::skipped).sum::<u64>()
     }
 
     /// Jobs posted and not yet complete.
@@ -233,20 +263,31 @@ impl LiveIsp {
         exposure: f64,
         raw: &FrameLease<M>,
     ) -> Result<(), PispError> {
-        let config = (0..CONFIG_BUFFERS)
-            .find(|c| !self.flights.iter().any(|f| f.config == *c))
-            .ok_or(PispError::Busy("both config buffers are in flight"))?;
-        let input = (0..self.input_busy.len())
+        let starve = |this: &mut Self, why: &'static str| {
+            this.starved += 1;
+            PispError::Busy(why)
+        };
+        let Some(config) =
+            (0..CONFIG_BUFFERS).find(|c| !self.flights.iter().any(|f| f.config == *c))
+        else {
+            return Err(starve(self, "both config buffers are in flight"));
+        };
+        let Some(input) = (0..self.input_busy.len())
             .find(|&i| !self.input_busy[i] && self.input.pool().is_free(i))
-            .ok_or(PispError::Busy("no free input buffer"))?;
+        else {
+            return Err(starve(self, "no free input buffer"));
+        };
         let mut outputs = [0usize; 2];
         for (k, slot) in outputs.iter_mut().enumerate() {
-            *slot = (0..self.output_busy[k].len())
-                .find(|&j| !self.output_busy[k][j] && self.outputs[k].pool().is_free(j))
-                .ok_or(PispError::Busy("no free output buffer"))?;
+            let free = (0..self.output_busy[k].len())
+                .find(|&j| !self.output_busy[k][j] && self.outputs[k].pool().is_free(j));
+            let Some(free) = free else {
+                return Err(starve(self, "no free output buffer"));
+            };
+            *slot = free;
         }
         if self.flights.len() >= CONFIG_BUFFERS {
-            return Err(PispError::Busy("both config buffers are in flight"));
+            return Err(starve(self, "both config buffers are in flight"));
         }
         // The configuration, encoded straight into the config buffer.
         self.builder.update(settings, exposure)?;
@@ -269,6 +310,7 @@ impl LiveIsp {
         if !posted {
             // Nothing was sent: the temporal average starts over with the next frame.
             self.builder.reset_tdn();
+            self.posts_refused += 1;
             return Err(PispError::Busy("the job ring is full"));
         }
         self.input_busy[input] = true;

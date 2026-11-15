@@ -18,7 +18,7 @@ usage:
   styx-measure read --socket <camera frame socket> (--frames N | --seconds S)
                     [--control <service control socket>] [--service-pid PID]
                     [--asked-fps FPS] [--soft-isp <FOURCC>[:WxH]] [--isp-variant <name>]
-                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N] [--start newest|next-new]
+                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N] [--start newest|next-new] [--hold N]
   styx-measure status --control <service control socket>
 
 read attaches to a camera's frame socket as a reader in this process and measures what it takes
@@ -34,6 +34,9 @@ RGB3, GREY) at full size, or at WxH (full or half of the raw size).
 --isp-variant: which equivalent row paths the software ISP takes: `current` (the default), `legacy`
 (the paths they replace), or a list such as `current,-direct-u8` (see styx_soft::params::Paths).
 The paths in effect are printed to stderr at the first frame.
+--hold N: keep the first N frames read and never release them. The frame being read is in hand
+too, so N + 1 count against the camera's hold bound (buffers - hardware_reserve - 1, shared by
+all readers): N = bound - 1 is never cut; N = bound is cut whenever this reader lags one frame.
 ";
 
 /// What `read` was asked to do.
@@ -47,6 +50,8 @@ pub struct ReadArgs {
     pub isp_variant: Option<Paths>,
     /// Where the reader starts: the newest kept frame at once (the default), or the next new one.
     pub start: Start,
+    /// Frames to keep and never release (the first N read). 0: release every frame at once.
+    pub hold: usize,
     pub report: Option<PathBuf>,
     /// Where to write the first frames one by one (`id,capture_ns,reader_ns`), if asked.
     pub trace: Option<PathBuf>,
@@ -107,6 +112,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
     let mut soft_isp = None;
     let mut isp_variant = None;
     let mut start = Start::default();
+    let mut hold = 0usize;
     let mut report = None;
     let mut trace = None;
     let mut trace_frames = 20_000usize;
@@ -136,6 +142,11 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
                 seconds = Some(s);
             }
             "--soft-isp" => soft_isp = Some(text(&mut it, flag)?.parse::<SoftIspArg>()?),
+            "--hold" => {
+                hold = text(&mut it, flag)?.parse().map_err(|_| {
+                    "--hold: a count of frames to keep and never release".to_string()
+                })?;
+            }
             "--start" => {
                 start = match text(&mut it, flag)?.as_str() {
                     "newest" => Start::Newest,
@@ -177,6 +188,7 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
         soft_isp,
         isp_variant,
         start,
+        hold,
         report,
         trace,
         trace_frames,
@@ -328,6 +340,7 @@ fn service_camera(cam: &CameraLine) -> ServiceCamera {
         state: cam.get("state").unwrap_or("-").to_string(),
         frames: cam.number("frames"),
         skipped: cam.number("skipped"),
+        lemnos_skipped: cam.number("lemnos_skipped"),
         last_id: cam.number("last_id"),
         publish: cam.get("publish").unwrap_or("-").to_string(),
         readers: cam.number("readers"),
@@ -378,13 +391,22 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
     if args.trace.is_some() {
         session.stats.keep_trace(args.trace_frames);
     }
+    if args.hold > 0 {
+        session.hold_first(args.hold);
+    }
     let reader0 = session.reader_start();
 
     let started = monotonic_ns();
     let time = args.seconds.map(Duration::from_secs_f64);
-    let stop = session
-        .run(time, wanted(args.frames))
-        .map_err(|e| e.to_string())?;
+    let stop = session.run(time, wanted(args.frames)).map_err(|e| {
+        // A reader cut off for holding frames: say how far it got and how many frames it held
+        // (`--hold`'s frames; the frame in hand is released before the end is read).
+        format!(
+            "{e} (after {} frames delivered; frames held at the cut: {})",
+            session.stats.delivered,
+            session.held()
+        )
+    })?;
     let wall_s = monotonic_ns().saturating_sub(started) as f64 / 1e9;
 
     let own_cpu1 = own_cpu_ns();
@@ -435,6 +457,10 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
         service_copies,
         frames: session.stats.clone(),
         skipped: reader1.skipped.saturating_sub(reader0.skipped),
+        stalls: session.stalls,
+        resumes: session.resumes,
+        lost_resumes: session.lost_resumes,
+        stall_ns_total: session.stall_ns_total,
         superseded: reader1.superseded.saturating_sub(reader0.superseded),
         limited: reader1.limited.saturating_sub(reader0.limited),
         malformed: reader1.malformed.saturating_sub(reader0.malformed),

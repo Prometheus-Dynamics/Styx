@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
+use styx_lemnos::LayoutRefusal;
 use styx_native_run::{ExposureReport, Selection};
 use styx_select::{Backend, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
@@ -154,6 +155,14 @@ pub struct KeepWindow {
     pub hardware_reserve: usize,
     /// Frames given back to the pool after leaving the window.
     pub reclaimed: u64,
+    /// Readers cut off because they held frames past the window while the camera needed its
+    /// buffers (the reserve; see `styx_socket::Producer::reclaim`).
+    pub reserve_cuts: u64,
+    /// The keep window in force now: at most `keep`, smaller while readers hold older frames.
+    pub kept: usize,
+    /// Publishes on which the reserve could not be kept, for a mark the producer cannot see (an
+    /// adopter's). Zero otherwise.
+    pub bound_unmet: u64,
 }
 
 /// The last frame a camera delivered: its identity and the metadata in force on it.
@@ -165,6 +174,15 @@ pub struct FrameSummary {
     pub gain_milli: u32,
     pub controls: [ControlValue; Control::COUNT],
 }
+
+/// The fault code of a frame stream whose shared layout is another build's: the Daedalus fault
+/// table's `LayoutRefused` (crates/out/daedalus/src/fault.rs), the same number for the same cause.
+pub const FAULT_LAYOUT_REFUSED: u32 = 1;
+/// The fault code of a device switched off for good: the Daedalus fault table's `DeviceFailed`.
+pub const FAULT_DEVICE_FAILED: u32 = 6;
+/// The fault code of a camera whose device contract is another build's than this Styx's: the Daedalus
+/// fault table's `ContractMismatch` (crates/out/daedalus/src/fault.rs), the same number for the same cause.
+pub const FAULT_CONTRACT_MISMATCH: u32 = 12;
 
 /// What the service knows about one camera. Cloned out for the control socket.
 #[derive(Debug, Clone, PartialEq)]
@@ -198,6 +216,19 @@ pub struct CameraStatus {
     pub next_delay: Option<Duration>,
     /// The last failure's message, or the backend's last retry message.
     pub last_error: Option<String>,
+    /// The frame stream's shared-layout refusal, while it is the cause of the camera's retry, as
+    /// its values. `None` while the camera runs.
+    pub layout_refused: Option<LayoutRefusal>,
+    /// The device contract another build's that the board's Lemnos refuses, by name, while the camera
+    /// cannot be opened for it (`contract_mismatch=<name>`; `None` when there is none). The status
+    /// sentence is the camera's `last_error`.
+    pub contract_mismatch: Option<String>,
+    /// The fault code of the camera's last failure, the Daedalus fault table's number (see
+    /// [`FAULT_LAYOUT_REFUSED`] and [`FAULT_DEVICE_FAILED`]); `None` when it has none.
+    pub fault: Option<u32>,
+    /// While the camera is retrying after a failure: when the retry began (CLOCK_MONOTONIC
+    /// nanoseconds). Readers on its socket are told the same; `None` while the camera runs.
+    pub producer_since_ns: Option<u64>,
     /// Times the service stopped a sensor and receiver a previous owner left started, since the
     /// service started (see `worker`).
     pub recoveries: u64,
@@ -207,6 +238,12 @@ pub struct CameraStatus {
     pub frames: u64,
     /// Frame identities skipped (a gap in the stream), since the service started.
     pub skipped: u64,
+    /// Sequence restarts (a device bound again on the same frame stream), since the service
+    /// started. A restart is a discontinuity, not a gap: `skipped` does not count it.
+    pub discontinuities: u64,
+    /// Frames the camera's own Lemnos stream reader was too late for, since the service started
+    /// (`FrameStream::skipped`: overwritten or taken back before a read). Set from the capture.
+    pub lemnos_skipped: u64,
     /// The last frame delivered.
     pub last_frame: Option<FrameSummary>,
     /// The frame rate asked for, in milli-fps: the config's `fps_milli`, or the last frame-rate
@@ -312,10 +349,16 @@ impl Slot {
             total_failures: 0,
             next_delay: None,
             last_error: None,
+            producer_since_ns: None,
+            layout_refused: None,
+            contract_mismatch: None,
+            fault: None,
             recoveries: 0,
             last_recovery: None,
             frames: 0,
             skipped: 0,
+            discontinuities: 0,
+            lemnos_skipped: 0,
             last_frame: None,
             requested_milli: settings.fps_milli,
             achieved_milli: None,
@@ -394,11 +437,64 @@ impl Slot {
         }
     }
 
+    /// The camera failed and retries from `since_ns`: its readers stay attached, told `Retrying`.
+    pub(crate) fn stalled(&self, since_ns: u64) {
+        lock(&self.status).producer_since_ns = Some(since_ns);
+    }
+
+    /// The layout refusal in force (`None` clears it). A layout refusal is fault code
+    /// [`FAULT_LAYOUT_REFUSED`]; a refusal that ends makes the fault `None` again.
+    pub(crate) fn layout_refused(&self, layout: Option<LayoutRefusal>) {
+        let mut status = lock(&self.status);
+        status.layout_refused = layout;
+        status.fault = match (layout, status.fault) {
+            (Some(_), _) => Some(FAULT_LAYOUT_REFUSED),
+            (None, Some(FAULT_LAYOUT_REFUSED)) => None,
+            (None, other) => other,
+        };
+    }
+
+    /// The contract another build's that the board's Lemnos refuses, in force (`None` clears it). It
+    /// sets the fault code [`FAULT_CONTRACT_MISMATCH`]; clearing it removes that code again.
+    pub(crate) fn set_contract(&self, contract: Option<String>) {
+        let mut status = lock(&self.status);
+        match contract {
+            Some(_) => status.fault = Some(FAULT_CONTRACT_MISMATCH),
+            None if status.fault == Some(FAULT_CONTRACT_MISMATCH) => status.fault = None,
+            None => {}
+        }
+        status.contract_mismatch = contract;
+    }
+
+    /// Sets the fault code of the camera's last failure.
+    pub(crate) fn set_fault(&self, code: u32) {
+        lock(&self.status).fault = Some(code);
+    }
+
+    /// No stall in force: the camera's producer was ended (stopped, or turned off for good).
+    pub(crate) fn clear_stall(&self) {
+        lock(&self.status).producer_since_ns = None;
+    }
+
+    /// The camera runs again after a stall (a new attempt delivered a frame).
+    pub(crate) fn camera_back(&self) {
+        let mut status = lock(&self.status);
+        status.producer_since_ns = None;
+        status.last_error = Some("camera back".to_string());
+    }
+
     pub(crate) fn failed(&self, reason: String, failures: u32) {
         let mut status = lock(&self.status);
         status.failures = failures;
         status.total_failures += 1;
         status.last_error = Some(reason);
+    }
+
+    /// The frame sequence restarted: the next frame starts a new count, with no gap counted.
+    pub(crate) fn discontinuity(&self) {
+        let mut status = lock(&self.status);
+        status.discontinuities += 1;
+        status.last_frame = None;
     }
 
     pub(crate) fn backing_off(&self, delay: Duration) {
@@ -434,6 +530,21 @@ impl Slot {
         status.publish = publish;
     }
 
+    /// The camera is failed in its own recovery: its health says so, with the stall's text. A stall
+    /// is health, not a refusal: the camera stays served.
+    pub(crate) fn stall_health(&self, text: &str) {
+        lock(&self.status).health = Health::Failed(text.to_string());
+    }
+
+    /// The camera came back from a stall: a health that said failed is healthy again. A degraded
+    /// health (a reason the camera works with) is left as it was.
+    pub(crate) fn return_health(&self) {
+        let mut status = lock(&self.status);
+        if matches!(status.health, Health::Failed(_)) {
+            status.health = Health::Healthy;
+        }
+    }
+
     pub(crate) fn set_health(&self, health: Health) {
         lock(&self.status).health = health;
     }
@@ -451,6 +562,11 @@ impl Slot {
         let mut status = lock(&self.status);
         status.achieved_milli = rate.achieved_milli;
         status.rate_clamped = rate.clamped;
+    }
+
+    /// The Lemnos reader's skipped-frame count, as the capture reports it.
+    pub(crate) fn set_lemnos_skipped(&self, skipped: u64) {
+        lock(&self.status).lemnos_skipped = skipped;
     }
 
     /// The mode choice a native camera started with.

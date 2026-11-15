@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use styx_controls::FrameMetadata;
-use styx_socket::{Frame, ReadError, Reader, ReaderStats, Start};
+use styx_socket::{
+    Carried, Frame, Next, ProducerState, ReadError, Reader, ReaderStats, SocketError, Start,
+};
 
 use crate::clock::monotonic_ns;
 use crate::isp::{IspError, IspRunner};
@@ -22,8 +24,9 @@ const POLL: Duration = Duration::from_millis(50);
 pub enum SessionError {
     /// The frame socket could not be reached.
     Connect { socket: PathBuf, error: io::Error },
-    /// The handshake or the buffer table failed.
-    Handshake(String),
+    /// The handshake or the buffer table failed; the socket's own error, typed (a layout or a
+    /// version refusal names its values).
+    Handshake(SocketError),
     /// The producer cut this reader off, or replaced its pool.
     Read(ReadError),
     /// The wait for frames failed.
@@ -38,7 +41,7 @@ impl fmt::Display for SessionError {
             SessionError::Connect { socket, error } => {
                 write!(f, "connect {}: {error}", socket.display())
             }
-            SessionError::Handshake(why) => write!(f, "handshake: {why}"),
+            SessionError::Handshake(e) => write!(f, "handshake: {e}"),
             SessionError::Read(e) => write!(f, "{e}"),
             SessionError::Wait(e) => write!(f, "waiting for frames: {e}"),
             SessionError::Isp(e) => write!(f, "{e}"),
@@ -66,9 +69,23 @@ pub struct Session {
     reader: Reader,
     pub stats: FrameStats,
     pub metadata: Option<FrameMetadata>,
+    /// Frames this reader keeps and never gives back (`--hold N`): the first N it reads. The room is
+    /// taken once by [`Session::hold_first`]. For checking the producer's reserve rule from outside.
+    held: Vec<Frame>,
     isp: Option<IspRunner>,
     /// The ring's frame counts when the session started, so the report can show this run only.
     reader_start: ReaderStats,
+    /// Producer stall edges seen: the camera retried, and came back. Each is printed when seen.
+    pub stalls: u64,
+    /// Producer resume edges seen (the camera running again after a stall this reader was told of).
+    pub resumes: u64,
+    /// Resumes that were a device rebind (the same stall may end `Lost`), each a discontinuity of
+    /// the sequence.
+    pub lost_resumes: u64,
+    /// When the stall in force began (the monotonic time its edge was seen), while one is.
+    stall_started: Option<u64>,
+    /// The time the camera spent stalled, summed over the stalls seen, in ns.
+    pub stall_ns_total: u64,
 }
 
 impl Session {
@@ -91,17 +108,32 @@ impl Session {
             socket: socket.to_path_buf(),
             error,
         })?;
-        let reader = Reader::connect_with(stream, start)
-            .map_err(|e| SessionError::Handshake(e.to_string()))?;
+        let reader = Reader::connect_with(stream, start).map_err(SessionError::Handshake)?;
         let reader_start = reader.stats();
         Ok(Self {
             socket: socket.to_path_buf(),
             reader,
             stats: FrameStats::new(),
+            held: Vec::new(),
             metadata: None,
             isp,
             reader_start,
+            stalls: 0,
+            resumes: 0,
+            lost_resumes: 0,
+            stall_started: None,
+            stall_ns_total: 0,
         })
+    }
+
+    /// Keeps the first `frames` frames read and never releases them while the session lives.
+    pub fn hold_first(&mut self, frames: usize) {
+        self.held = Vec::with_capacity(frames);
+    }
+
+    /// Frames held by [`Session::hold_first`] so far.
+    pub fn held(&self) -> usize {
+        self.held.len()
     }
 
     pub fn socket(&self) -> &Path {
@@ -133,15 +165,20 @@ impl Session {
         let started = monotonic_ns();
         let mut last_frame = started;
         loop {
-            match self.reader.next_frame().map_err(SessionError::Read)? {
-                Some(frame) => {
+            match self.reader.next_event().map_err(SessionError::Read)? {
+                Next::Frame(frame) => {
                     last_frame = monotonic_ns();
                     self.handle(&frame)?;
+                    if self.held.len() < self.held.capacity() {
+                        self.held.push(frame);
+                    }
                     if done(&self.stats) {
                         return Ok(Stop::Frames);
                     }
                 }
-                None => {
+                Next::Stalled(state) => self.stall_edge(state),
+                Next::Resumed { state } => self.resume_edge(state),
+                Next::Idle => {
                     let now = monotonic_ns();
                     if let Some(limit) = time
                         && now.saturating_sub(started) >= limit.as_nanos() as u64
@@ -155,6 +192,49 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// A stall edge: the camera retries. Printed with the time it was seen and the time it began.
+    fn stall_edge(&mut self, state: ProducerState) {
+        self.stalls += 1;
+        self.stall_started.get_or_insert_with(monotonic_ns);
+        let since = match state {
+            ProducerState::Retrying { since_ns } => since_ns,
+            _ => 0,
+        };
+        eprintln!(
+            "producer stalled: seen at {} ns, retrying since {since} ns (edge {})",
+            monotonic_ns(),
+            self.stalls
+        );
+    }
+
+    /// A resume edge: the camera runs again. Printed with the time it was seen and its kind.
+    fn resume_edge(&mut self, state: Carried) {
+        self.resumes += 1;
+        let now = monotonic_ns();
+        let stalled_ns = self
+            .stall_started
+            .take()
+            .map_or(0, |start| now.saturating_sub(start));
+        self.stall_ns_total += stalled_ns;
+        let lost = matches!(state, Carried::Lost);
+        if lost {
+            self.lost_resumes += 1;
+        }
+        // The frames after the stall are a new run of ids, or go on from the last one: either way the
+        // stall is not a gap in them (see `FrameStats::across_stall`).
+        self.stats.across_stall();
+        eprintln!(
+            "producer resumed: seen at {now} ns, {} (edge {}), stalled {} ms",
+            if lost {
+                "lost: rebound, a new sequence"
+            } else {
+                "kept: same driver instance"
+            },
+            self.resumes,
+            stalled_ns as f64 / 1e6
+        );
     }
 
     /// One frame in hand: its times and metadata are read, then the ISP runs on it. The frame

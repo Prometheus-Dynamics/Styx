@@ -26,7 +26,7 @@ use std::cmp::Reverse;
 use std::fmt;
 
 use lemnos_contract_camera_receiver::BayerOrder;
-use lemnos_contract_camera_sensor::Mode;
+use lemnos_contract_camera_sensor::{Mode, fps_milli_of, frame_length_for_fps_milli};
 use styx_format::FourCc;
 
 /// What a caller needs from a sensor mode.
@@ -90,6 +90,9 @@ pub struct Selection {
     pub requested_fps_milli: u32,
     /// The rate the mode gives, in milli-fps: its frame length in whole lines over its line time.
     pub achieved_fps_milli: u32,
+    /// The chosen mode's readout span of one frame, in picoseconds (the sensor's `readout_ps`; 0
+    /// when the sensor reports none). A frame ends at its start stamp plus this: [`frame_end_ns`].
+    pub readout_ps: u64,
     /// Why this mode and rate.
     pub reason: Reason,
     /// The reason in a sentence, with the numbers (for example `asked 240.000 fps, the mode's
@@ -160,43 +163,23 @@ fn list(items: impl Iterator<Item = String>) -> String {
 
 impl std::error::Error for ModeError {}
 
-/// Thousandths of a frame per second times picoseconds per line times lines: `1e15`.
-const FPS_MILLI_PS: u64 = 1_000_000_000_000_000;
-
-/// The rate of a frame of `lines` lines at `line_time_ps` per line, in milli-fps, rounded. `0` for
-/// no lines or no line time.
-fn rate_of_lines(lines: u64, line_time_ps: u64) -> u32 {
-    let period = lines * line_time_ps;
-    if period == 0 {
-        return 0;
-    }
-    u32::try_from((FPS_MILLI_PS + period / 2) / period).unwrap_or(u32::MAX)
-}
-
-/// The frame length in whole lines that gives `fps_milli`, rounded. `0` for no rate or no line time.
-fn lines_for(fps_milli: u32, line_time_ps: u64) -> u64 {
-    let period = u64::from(fps_milli) * line_time_ps;
-    if period == 0 {
-        return 0;
-    }
-    (FPS_MILLI_PS + period / 2) / period
-}
-
 /// The fastest rate a mode runs at, in thousandths of a frame per second: its shortest frame
-/// (`frame_length_min` lines) over its line time. `0` for a mode with no line time or no frame.
+/// (`frame_length_min` lines) over its line time, by the contract's `fps_milli_of`. `0` for a mode
+/// with no line time or no frame.
 pub fn fastest_fps_milli(mode: &Mode) -> u32 {
-    rate_of_lines(
-        u64::from(mode.frame_length_min),
-        u64::from(mode.line_time_ps),
+    fps_milli_of(
+        mode.line_time_ps,
+        mode.frame_offset_ps,
+        mode.frame_length_min,
     )
+    .unwrap_or(0)
 }
 
 /// The rate a mode gives for `asked` (milli-fps), and the reason it differs from the ask, if it
 /// does. Asking for 0 gives the fastest rate with no reason. A rate above the ceiling gives the
 /// ceiling; below the floor (the longest frame) gives the floor. Otherwise the frame length is the
-/// rate's own whole-line length.
+/// contract's `frame_length_for_fps_milli` within the mode's limits, and the rate is that frame's.
 fn rate_for(mode: &Mode, asked: u32) -> (u32, Option<Reason>) {
-    let line_time = u64::from(mode.line_time_ps);
     let ceiling = fastest_fps_milli(mode);
     if asked == 0 {
         return (ceiling, None);
@@ -204,21 +187,31 @@ fn rate_for(mode: &Mode, asked: u32) -> (u32, Option<Reason>) {
     if asked > ceiling {
         return (ceiling, Some(Reason::RateClampedToCeiling));
     }
-    let min = u64::from(mode.frame_length_min);
+    let min = mode.frame_length_min;
     // A mode that gives no longest frame has no floor.
     let max = if mode.frame_length_max == 0 {
         None
     } else {
-        Some(u64::from(mode.frame_length_max).max(min))
+        Some(mode.frame_length_max.max(min))
     };
     if let Some(max) = max {
-        let floor = rate_of_lines(max, line_time);
+        let floor = fps_milli_of(mode.line_time_ps, mode.frame_offset_ps, max).unwrap_or(0);
         if asked < floor {
             return (floor, Some(Reason::RateClampedToFloor));
         }
     }
-    let lines = lines_for(asked, line_time).clamp(min, max.unwrap_or(u64::MAX));
-    (rate_of_lines(lines, line_time), None)
+    match frame_length_for_fps_milli(
+        mode.line_time_ps,
+        mode.frame_offset_ps,
+        min,
+        max.unwrap_or(u32::MAX),
+        asked,
+    ) {
+        Some((_lines, rate)) => (rate, None),
+        // Unreachable for an asked rate under the ceiling (the ceiling needs a line time and a
+        // frame), kept total rather than panicking.
+        None => (ceiling, None),
+    }
 }
 
 fn area(mode: &Mode) -> u64 {
@@ -371,9 +364,17 @@ pub fn select_mode(modes: &[Mode], request: &Request) -> Result<Selection, ModeE
         bit_depth: mode.link.bit_depth,
         requested_fps_milli: request.fps_milli,
         achieved_fps_milli: achieved,
+        readout_ps: mode.readout_ps,
         reason,
         text,
     })
+}
+
+/// A frame's end time on `CLOCK_MONOTONIC`, from its start stamp and the readout span of its mode
+/// (`readout_ps`, picoseconds): the start plus the span, rounded up to a whole nanosecond. Zero
+/// readout ends the frame at its start. The rate arithmetic does not use this.
+pub fn frame_end_ns(start_ns: u64, readout_ps: u64) -> u64 {
+    start_ns.saturating_add(readout_ps.div_ceil(1_000))
 }
 
 struct Described<'a> {
@@ -468,13 +469,12 @@ mod tests {
         ]
     }
 
-    /// A mode whose shortest frame gives `fps` frames a second at 9.1 us a line, to the nearest
-    /// whole line.
+    /// A mode whose shortest frame gives `fps` frames a second at 9.1 us a line, to the whole line
+    /// the contract's `frame_length_for_fps_milli` picks.
     fn mode(width: u32, height: u32, fps: u32, bayer: BayerOrder, bits: u8) -> Mode {
-        let line_time_ps = 9_100_000u64;
-        let frame_length_min = (1_000_000_000_000_000u64
-            + u64::from(fps) * 1_000 * line_time_ps / 2)
-            / (u64::from(fps) * 1_000 * line_time_ps);
+        let line_time_ps = 9_100_000u32;
+        let (frame_length_min, _) =
+            frame_length_for_fps_milli(line_time_ps, 0, 1, u32::MAX, fps * 1_000).unwrap();
         Mode {
             link: LinkConfig {
                 width,
@@ -483,8 +483,8 @@ mod tests {
                 ..LinkConfig::default()
             },
             bayer,
-            line_time_ps: line_time_ps as u32,
-            frame_length_min: frame_length_min as u32,
+            line_time_ps,
+            frame_length_min,
             frame_length_max: 52_000,
             ..Mode::default()
         }
@@ -500,14 +500,25 @@ mod tests {
     }
 
     #[test]
+    fn a_frame_ends_its_readout_after_its_start_rounded_up_to_a_nanosecond() {
+        // 1 ns is 1000 ps; 1500 ps rounds up to 2 ns; no readout ends at the start.
+        assert_eq!(frame_end_ns(10_000, 0), 10_000);
+        assert_eq!(frame_end_ns(10_000, 1_000), 10_001);
+        assert_eq!(frame_end_ns(10_000, 1_500), 10_002);
+    }
+
+    #[test]
     fn the_fastest_rate_is_the_shortest_frame_over_the_line_time() {
-        // 1832 lines of 9.1 us is 59.984 fps: the mode's own numbers, not a nominal rate.
+        // 1832 lines of 9.1 us: the contract's rate for that frame, not a nominal rate.
         let m = Mode {
             line_time_ps: 9_100_000,
             frame_length_min: 1832,
             ..Mode::default()
         };
-        assert_eq!(fastest_fps_milli(&m), 59_984);
+        assert_eq!(
+            fastest_fps_milli(&m),
+            fps_milli_of(9_100_000, 0, 1832).unwrap()
+        );
         assert_eq!(fastest_fps_milli(&Mode::default()), 0);
     }
 

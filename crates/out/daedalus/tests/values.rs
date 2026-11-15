@@ -74,9 +74,9 @@ fn a_host_frame_and_a_mapped_dma_buf_frame_have_their_bytes() {
 }
 
 #[test]
-fn a_frame_whose_buffer_is_not_at_the_start_of_its_dmabuf_is_not_expressible() {
-    // Several buffers in one dma-buf: the offset is not part of Daedalus's dma-buf value, so the
-    // value reports no dma-buf rather than one that starts in the wrong place.
+fn a_frame_at_an_offset_in_its_dmabuf_names_the_dmabuf_and_the_offset() {
+    // Several buffers in one dma-buf: the value names the whole dma-buf and says where it starts
+    // in it, so Daedalus imports it there rather than from the dma-buf's start.
     let Some(heap) = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -97,7 +97,9 @@ fn a_frame_whose_buffer_is_not_at_the_start_of_its_dmabuf_is_not_expressible() {
     let lease = pool.acquire(support::entry(1)).unwrap();
     let frame = StyxFrame::from_lease(lease, pool.buffer_size()).unwrap();
     assert_eq!(frame.memory_kind(), MemoryKind::Dmabuf);
-    assert!(frame.dmabuf().is_none());
+    assert_eq!(frame.offset(), len as u64, "the frame starts one buffer in");
+    let (_fd, import) = frame.dmabuf().expect("the whole dma-buf");
+    assert_eq!(import, len as u64, "the import is the pool's allocation");
 }
 
 /// Daedalus hands a value on by sharing it: each reference is another hold of the same frame, and

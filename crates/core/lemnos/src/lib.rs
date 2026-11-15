@@ -13,18 +13,16 @@
 
 use std::fmt;
 use std::io;
-use std::os::fd::{BorrowedFd, OwnedFd};
-use std::ptr::NonNull;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub use lemnos_client::{Client, DeviceEntry, FrameStream, HeldFrame, StreamPlatform, follow};
+use lemnos_client::{Next, ProducerState};
 use lemnos_linux_stream::LinuxStreams;
-use lemnos_wire::ring::{BUFFER_ALIGN, ByteMemory, WordMemory};
 use styx_format::{FourCc, MediaFormat};
 use styx_frame::{
-    AcquireError, BufferMemory, BufferSize, CpuAccess, FdMemory, FrameEntry, FrameLease, FramePool,
-    Layouts, MemoryKind, PlaneLayout, PoolError, PoolStats,
+    AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, Layouts,
+    PlaneLayout, PoolError, PoolStats,
 };
 
 /// ISP600 layouts through the vendor vin driver (feature `isp600`).
@@ -54,7 +52,7 @@ pub const FRAMES_TAG: &str = "camera.frames/1";
 
 /// Connects to the Lemnos service at `path` as `name`.
 pub fn connect(path: impl AsRef<std::path::Path>, name: &str) -> Result<Client, Error> {
-    Client::connect(path, name).map_err(Error::Client)
+    Client::connect(path, name).map_err(Error::from_client)
 }
 
 /// A camera's devices, found by tag and link.
@@ -198,15 +196,155 @@ pub fn find_chains(devices: &[DeviceEntry]) -> Vec<Result<Chain, ChainError>> {
         .collect()
 }
 
+/// A shared structure of a frame stream whose layout value is not the one this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedLayout {
+    /// The frame ring's header.
+    Ring,
+    /// A reader's marks page.
+    Marks,
+}
+
+impl SharedLayout {
+    /// The structure as a person reads it: the start of the refusal's message.
+    #[must_use]
+    pub const fn what(self) -> &'static str {
+        match self {
+            Self::Ring => "this ring",
+            Self::Marks => "this marks page",
+        }
+    }
+}
+
+/// A layout refusal: the structure, the value in the memory, and the value this build reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayoutRefusal {
+    /// The structure whose layout is refused.
+    pub which: SharedLayout,
+    /// The value in the memory.
+    pub found: u64,
+    /// The value this build reads.
+    pub expected: u64,
+}
+
+impl fmt::Display for LayoutRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} is layout {}; this build reads layout {}",
+            self.which.what(),
+            self.found,
+            self.expected
+        )
+    }
+}
+
+/// Why a frame stream ended, as the host wrote its end word. Three kinds are read as three outcomes
+/// and an unknown code as a fourth: a stream is never read as running after any end word.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamEnd {
+    /// The host ended the stream: a stop, a close, or the host going away.
+    Closed,
+    /// The stream ended because this reader broke the rules. That is a bug in Styx, never a camera
+    /// fault: the reader is told so, and its status says so.
+    ConsumerFault,
+    /// The stream ended because the device producing it failed for good (its auto-off policy).
+    DeviceFailed,
+    /// An end code this build does not know: the stream ended, its kind unknown.
+    Unknown(u32),
+}
+
+impl From<lemnos_client::StreamEnd> for StreamEnd {
+    fn from(end: lemnos_client::StreamEnd) -> Self {
+        match end {
+            lemnos_client::StreamEnd::Closed => Self::Closed,
+            lemnos_client::StreamEnd::ConsumerFault => Self::ConsumerFault,
+            lemnos_client::StreamEnd::DeviceFailed => Self::DeviceFailed,
+            lemnos_client::StreamEnd::Unknown(code) => Self::Unknown(code),
+        }
+    }
+}
+
+impl fmt::Display for StreamEnd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Closed => f.write_str("the host ended the frame stream"),
+            Self::ConsumerFault => f.write_str(
+                "the frame stream ended because this reader broke the rules: a bug in Styx",
+            ),
+            Self::DeviceFailed => {
+                f.write_str("the frame stream ended: the device producing it failed")
+            }
+            Self::Unknown(code) => {
+                write!(f, "the frame stream ended, kind unknown (end code {code})")
+            }
+        }
+    }
+}
+
+/// Whether the camera kept what it was given through a stall. `Kept`: the same device instance
+/// recovered and the frames continue (a gap in time, not a restart). `Lost`: the host bound the
+/// device again as a new instance, so its mode and controls must be set again, and the frame
+/// sequence restarts: a discontinuity, not a gap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Carried {
+    Kept,
+    Lost,
+}
+
+impl From<lemnos_client::Carried> for Carried {
+    fn from(carried: lemnos_client::Carried) -> Self {
+        match carried {
+            lemnos_client::Carried::Kept => Self::Kept,
+            lemnos_client::Carried::Lost => Self::Lost,
+        }
+    }
+}
+
+/// What a wait for the next event on a frame stream found.
+#[derive(Debug)]
+pub enum Event<M = ()> {
+    /// A frame, as a lease over its buffer.
+    Frame(FrameLease<M>),
+    /// The time passed with the stream running and no frame.
+    TimedOut,
+    /// The camera failed and is being retried since `since_ns` (CLOCK_MONOTONIC nanoseconds; 0
+    /// when the host did not say). Once for each failure the reader sees, before the frames after
+    /// it. The stream stays attached: this is health, not an end.
+    Stalled { since_ns: u64 },
+    /// The camera is back, once after a `Stalled` and before the first frame after it.
+    Resumed(Carried),
+    /// The stream ended and every frame it had is read.
+    Ended(StreamEnd),
+}
+
 /// Errors from opening and reading frame streams.
 #[derive(Debug)]
 pub enum Error {
     Client(lemnos_client::Error),
+    /// A shared ring or marks page of the stream is another layout than this build reads. Only
+    /// that stream is affected; nothing was mapped.
+    SharedLayout(LayoutRefusal),
+    /// This Styx and the board's Lemnos are different builds: a base method of contract `contract`
+    /// is laid out differently on the device than this client was built with (a base hash
+    /// differs). Refused at bind; nothing was called. `source` is the client's error in full, so
+    /// its words (both hashes) survive.
+    ContractMismatch {
+        contract: String,
+        ours: u64,
+        theirs: u64,
+        source: lemnos_client::Error,
+    },
+    /// The stream ended and no frame is left to read: why, as the host wrote it. No more frames
+    /// come from this stream; a session reopens it.
+    StreamEnded(StreamEnd),
     Chain(ChainError),
     /// The stream's buffers could not be mapped.
     Map(io::Error),
     /// The stream has no buffers this crate can map (neither one memfd nor one dma-buf each).
     NoBuffers,
+    /// The stream has this many planes per buffer; this crate maps one plane per buffer.
+    Planes(u32),
     /// A frame names a buffer outside the stream.
     BadBuffer(u32),
     /// A frame named a buffer whose lease is still out; the frame was given back to Lemnos.
@@ -234,13 +372,73 @@ pub enum Error {
     NotSinglePlane(FourCc),
 }
 
+impl Error {
+    /// The Lemnos client's error as Styx's. A shared-layout refusal keeps its structure and both
+    /// values as [`Error::SharedLayout`]; every other client error is [`Error::Client`] unchanged.
+    pub fn from_client(error: lemnos_client::Error) -> Self {
+        if let lemnos_client::Error::ContractMismatch {
+            contract,
+            ours,
+            theirs,
+        } = &error
+        {
+            return Self::ContractMismatch {
+                contract: contract.clone(),
+                ours: *ours,
+                theirs: *theirs,
+                source: error.clone(),
+            };
+        }
+        match error {
+            lemnos_client::Error::Stream(lemnos_wire::ring::RingError::Layout {
+                which,
+                found,
+                expected,
+            }) => Self::SharedLayout(LayoutRefusal {
+                which: match which {
+                    lemnos_wire::ring::SharedLayout::Ring => SharedLayout::Ring,
+                    lemnos_wire::ring::SharedLayout::Marks => SharedLayout::Marks,
+                },
+                found,
+                expected,
+            }),
+            other => Self::Client(other),
+        }
+    }
+
+    /// The layout refusal this error is, if it is one.
+    #[must_use]
+    pub fn layout_refusal(&self) -> Option<LayoutRefusal> {
+        match self {
+            Self::SharedLayout(refusal) => Some(*refusal),
+            _ => None,
+        }
+    }
+
+    /// The contract whose base method differs from this build's, if this is a contract mismatch.
+    #[must_use]
+    pub fn contract_mismatch(&self) -> Option<&str> {
+        match self {
+            Self::ContractMismatch { contract, .. } => Some(contract),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Client(e) => write!(f, "lemnos client: {e}"),
+            Self::SharedLayout(refusal) => write!(f, "frame stream: {refusal}"),
+            Self::ContractMismatch { source, .. } => write!(
+                f,
+                "this Styx and the board's Lemnos are different builds: {source}"
+            ),
+            Self::StreamEnded(end) => write!(f, "{end}"),
             Self::Chain(e) => write!(f, "{e}"),
             Self::Map(e) => write!(f, "mapping stream buffers: {e}"),
             Self::NoBuffers => write!(f, "stream has no mappable buffers"),
+            Self::Planes(n) => write!(f, "stream has {n} planes per buffer; one is mapped here"),
             Self::BadBuffer(b) => write!(f, "frame names buffer {b}, which is out of range"),
             Self::Held(b) => write!(f, "buffer {b} still held; frame dropped"),
             Self::Oversize { len, payload } => {
@@ -261,143 +459,6 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
-
-/// The stream's buffer memory as mapped from its descriptors.
-#[derive(Debug, Default)]
-struct Mapped {
-    /// One memfd for every buffer, at a stride of `buffer_bytes` rounded to `BUFFER_ALIGN`.
-    whole: Option<Arc<FdMemory>>,
-    /// One dma-buf per buffer.
-    each: Vec<Arc<FdMemory>>,
-}
-
-/// Wraps [`LinuxStreams`] so the buffer descriptors the client maps are also mapped here, as
-/// [`FdMemory`]. Both maps view the same memory; nothing is copied.
-#[derive(Debug)]
-struct MappingPlatform {
-    inner: LinuxStreams,
-    mapped: Mutex<Mapped>,
-}
-
-impl StreamPlatform for MappingPlatform {
-    fn recv_with_descriptors(
-        &self,
-        socket: BorrowedFd<'_>,
-        buf: &mut [u8],
-        fds: &mut Vec<OwnedFd>,
-    ) -> io::Result<usize> {
-        self.inner.recv_with_descriptors(socket, buf, fds)
-    }
-
-    fn map_ring(&self, fd: BorrowedFd<'_>, bytes: usize) -> io::Result<Arc<dyn WordMemory>> {
-        Ok(Arc::new(self.inner.map_ring(fd, bytes)?))
-    }
-
-    fn map_buffers(
-        &self,
-        fd: BorrowedFd<'_>,
-        bytes: usize,
-        writable: bool,
-    ) -> io::Result<Box<dyn ByteMemory>> {
-        let mine = FdMemory::memfd(fd.try_clone_to_owned()?, bytes, writable)?;
-        self.lock().whole = Some(Arc::new(mine));
-        Ok(Box::new(self.inner.map_buffers(fd, bytes, writable)?))
-    }
-
-    fn map_buffer(
-        &self,
-        fd: BorrowedFd<'_>,
-        bytes: usize,
-        writable: bool,
-    ) -> io::Result<Box<dyn ByteMemory>> {
-        let mine = FdMemory::dmabuf(fd.try_clone_to_owned()?, bytes, writable)?;
-        self.lock().each.push(Arc::new(mine));
-        Ok(Box::new(self.inner.map_buffer(fd, bytes, writable)?))
-    }
-
-    fn wait_doorbell(&self, fd: BorrowedFd<'_>, timeout: Duration) -> io::Result<bool> {
-        self.inner.wait_doorbell(fd, timeout)
-    }
-}
-
-impl MappingPlatform {
-    fn lock(&self) -> std::sync::MutexGuard<'_, Mapped> {
-        self.mapped
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-}
-
-/// One buffer's bytes inside a mapping: the pool's view of it. Holds the mapping alive.
-struct Slice {
-    base: Arc<FdMemory>,
-    offset: usize,
-    len: usize,
-}
-
-impl fmt::Debug for Slice {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Slice")
-            .field("offset", &self.offset)
-            .field("len", &self.len)
-            .finish()
-    }
-}
-
-// SAFETY: `cpu_ptr` is `base`'s start plus `offset`, with `offset + len` inside `base.len()`
-// (checked when the slice is made). `base` is held for the slice's life, so the mapping does not
-// go away, and the slice reads and writes only the bytes of the one buffer it names.
-unsafe impl BufferMemory for Slice {
-    fn kind(&self) -> MemoryKind {
-        self.base.kind()
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn cpu_ptr(&self) -> Option<NonNull<u8>> {
-        let base = self.base.cpu_ptr()?;
-        // SAFETY: `offset` is inside the mapping (checked in `slice`), so the offset pointer stays
-        // in the same allocation.
-        let ptr = unsafe { base.as_ptr().add(self.offset) };
-        NonNull::new(ptr)
-    }
-
-    fn cpu_writable(&self) -> bool {
-        self.base.cpu_writable()
-    }
-
-    fn begin_cpu(&self, access: CpuAccess) {
-        self.base.begin_cpu(access);
-    }
-
-    fn end_cpu(&self, access: CpuAccess) {
-        self.base.end_cpu(access);
-    }
-
-    fn fd(&self) -> Option<BorrowedFd<'_>> {
-        self.base.fd()
-    }
-
-    /// Where this buffer starts in its descriptor: the base's offset plus this slice's offset.
-    /// One memfd holds every buffer at its own offset; a dma-buf is one buffer from its first byte.
-    fn fd_offset(&self) -> usize {
-        self.base.fd_offset() + self.offset
-    }
-}
-
-fn slice(base: &Arc<FdMemory>, offset: usize, len: usize) -> Result<Slice, Error> {
-    let end = offset.checked_add(len).ok_or(Error::NoBuffers)?;
-    if end > base.len() {
-        return Err(Error::NoBuffers);
-    }
-    Ok(Slice {
-        base: Arc::clone(base),
-        offset,
-        len,
-    })
-}
 
 /// A stream taken from the daemon. It is given back when this drops, or at [`Taken::close`] with
 /// the daemon's answer. A stream left open holds its name on the daemon until the connection ends,
@@ -423,7 +484,7 @@ impl Taken {
     /// Gives the stream back to the daemon and returns its answer.
     fn close(mut self) -> Result<(), Error> {
         match self.stream.take() {
-            Some(stream) => self.client.close_stream(stream).map_err(Error::Client),
+            Some(stream) => self.client.close_stream(stream).map_err(Error::from_client),
             None => Ok(()),
         }
     }
@@ -454,42 +515,31 @@ impl fmt::Debug for Taken {
     }
 }
 
-/// Opens `stream` on `device` and maps its buffers into one pool. The stream is taken as its
-/// writable or read-only form; on any error after it is taken it is given back.
+/// Opens `stream` on `device` and maps each of its buffers into one pool. The stream is taken as
+/// its writable or read-only form; on any error after it is taken it is given back.
 fn open_mapped<M: Default + Send + Sync>(
     client: &Client,
     device: u32,
     stream: &str,
     writable: bool,
 ) -> Result<(Taken, FramePool<M>), Error> {
-    let platform = Arc::new(MappingPlatform {
-        inner: LinuxStreams,
-        mapped: Mutex::new(Mapped::default()),
-    });
+    let platform: Arc<dyn StreamPlatform> = Arc::new(LinuxStreams);
     let opened = if writable {
-        client.open_stream_writable(device, stream, platform.clone())
+        client.open_stream_writable(device, stream, platform)
     } else {
-        client.open_stream(device, stream, platform.clone())
+        client.open_stream(device, stream, platform)
     }
-    .map_err(Error::Client)?;
+    .map_err(Error::from_client)?;
     // From here the stream is given back on every error path: `Taken` does it on drop.
     let taken = Taken {
         client: client.clone(),
         stream: Some(opened),
     };
-    let mapped = std::mem::take(&mut *platform.lock());
-    let (buffers, buffer_bytes) = {
-        let layout = taken.stream().layout();
-        (layout.buffers as usize, layout.buffer_bytes as usize)
-    };
-    let memories = match &mapped.whole {
-        Some(whole) => whole_memories(whole, buffers, buffer_bytes)?,
-        None => each_memories(&mapped.each, buffer_bytes)?,
-    };
+    let memories = buffer_memories(taken.stream(), writable)?;
     if memories.is_empty() {
         return Err(Error::NoBuffers);
     }
-    let pool = pool_over(memories, buffer_bytes)?;
+    let pool = pool_over(memories, taken.stream().buffer_len())?;
     Ok((taken, pool))
 }
 
@@ -661,28 +711,39 @@ pub fn open_job_stream<M: Default + Send + Sync>(
     Ok(JobStream { taken, pool })
 }
 
-/// One memory per buffer, cut from a memfd holding every buffer at the ring's stride.
-pub fn whole_memories(
-    whole: &Arc<FdMemory>,
-    buffers: usize,
-    buffer_bytes: usize,
+/// One memory per buffer, each mapped from the region the stream gives for it: a shared pool's
+/// memfd at the buffer's offset, or the buffer's own dma-buf. Nothing is copied: the frame pool
+/// and the stream's own mapping are two views of the same memory.
+///
+/// A stream of several planes per buffer is refused: this crate's pool holds one memory per
+/// buffer. `writable` maps the buffers read-write; a read-only stream maps them read-only.
+pub fn buffer_memories(
+    stream: &FrameStream,
+    writable: bool,
 ) -> Result<Vec<Box<dyn BufferMemory>>, Error> {
-    let stride = buffer_bytes.next_multiple_of(BUFFER_ALIGN as usize);
-    (0..buffers)
-        .map(|i| {
-            let offset = i.checked_mul(stride).ok_or(Error::NoBuffers)?;
-            slice(whole, offset, buffer_bytes).map(|s| Box::new(s) as Box<dyn BufferMemory>)
+    let planes = stream.planes().count();
+    if planes != 1 {
+        return Err(Error::Planes(planes));
+    }
+    let buffer_bytes = stream.buffer_len();
+    (0..stream.buffer_count())
+        .map(|buffer| {
+            let region = stream.region(buffer, 0).ok_or(Error::NoBuffers)?;
+            let len = usize::try_from(region.payload_bytes).map_err(|_| Error::NoBuffers)?;
+            if len != buffer_bytes {
+                return Err(Error::NoBuffers);
+            }
+            let offset = usize::try_from(region.offset).map_err(|_| Error::NoBuffers)?;
+            let fd = region.fd.try_clone_to_owned().map_err(Error::Map)?;
+            let mapped = match region.kind {
+                lemnos_client::MemoryKind::SharedMemory => {
+                    FdMemory::memfd_at(fd, offset, len, writable)
+                }
+                lemnos_client::MemoryKind::DmaBuf => FdMemory::dmabuf_at(fd, offset, len, writable),
+            }
+            .map_err(Error::Map)?;
+            Ok(Box::new(mapped) as Box<dyn BufferMemory>)
         })
-        .collect()
-}
-
-/// One memory per buffer, each a dma-buf from its first byte.
-pub fn each_memories(
-    each: &[Arc<FdMemory>],
-    buffer_bytes: usize,
-) -> Result<Vec<Box<dyn BufferMemory>>, Error> {
-    each.iter()
-        .map(|one| slice(one, 0, buffer_bytes).map(|s| Box::new(s) as Box<dyn BufferMemory>))
         .collect()
 }
 
@@ -697,6 +758,28 @@ pub fn pool_over<M: Default + Send + Sync>(
         gpu_slack: 0,
     };
     FramePool::new(size, memories).map_err(Error::Pool)
+}
+
+/// A frame's time on `CLOCK_MONOTONIC`. Lemnos's 0 means the producer had no time for the frame,
+/// so it is no time at all, and not time zero: the frame is stamped on arrival, as `styx-frame`
+/// stamps every source that has no clock of its own.
+fn frame_time(frame: &HeldFrame) -> u64 {
+    match frame.timestamp_ns() {
+        0 => monotonic_ns(),
+        time => time,
+    }
+}
+
+fn monotonic_ns() -> u64 {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid out-pointer for the call.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    (ts.tv_sec as u64)
+        .saturating_mul(1_000_000_000)
+        .saturating_add(ts.tv_nsec as u64)
 }
 
 /// A frame stream's buffers as one frame pool, and the stream it came from.
@@ -757,6 +840,19 @@ impl<M> Frames<M> {
         &self.pool
     }
 
+    /// Frames the reader was too late for, in total: overwritten or taken back by the producer before
+    /// [`Frames::next`] or [`Frames::try_next`] read them. Lemnos counts them as `skipped`; they are
+    /// not frames of this crate's pool and never reach a lease.
+    pub fn skipped(&self) -> u64 {
+        self.taken.stream().skipped()
+    }
+
+    /// The pool generation of the Lemnos stream this was mapped from. A new generation means the
+    /// daemon made a new pool: this `Frames` is then on a pool that is gone and must be reopened.
+    pub fn generation(&self) -> u32 {
+        self.taken.stream().generation()
+    }
+
     /// Frames dropped because their buffer's previous lease was still out.
     pub fn held_drops(&self) -> u64 {
         self.held_drops
@@ -783,33 +879,86 @@ impl<M> Frames<M> {
                 self.taken
                     .stream_mut()
                     .release(frame)
-                    .map_err(Error::Client)?;
+                    .map_err(Error::from_client)?;
             }
         }
         Ok(())
     }
 
-    /// Waits up to `timeout` for a frame and returns it as a lease over its buffer.
+    /// Waits up to `timeout` for the next event: a frame, the time running out, the producer's
+    /// stall or its return (each once), or the end once every frame is read. See [`Event`].
+    ///
+    /// # Errors
+    ///
+    /// The frame's own errors ([`Error::Held`], [`Error::Oversize`], ...) and a stream's refused
+    /// reads; an end is an event, not an error.
+    pub fn next_event(&mut self, timeout: Duration) -> Result<Event<M>, Error> {
+        self.sweep()?;
+        let next = self
+            .taken
+            .stream_mut()
+            .next_or_end(timeout)
+            .map_err(Error::from_client)?;
+        match next {
+            Next::Frame(frame) => self.lease_for(frame).map(Event::Frame),
+            Next::TimedOut => Ok(Event::TimedOut),
+            Next::Stalled(state) => Ok(Event::Stalled {
+                since_ns: match state {
+                    ProducerState::Retrying { since_ns } => since_ns,
+                    ProducerState::Running | ProducerState::Unknown(_) => 0,
+                },
+            }),
+            Next::Resumed { state } => Ok(Event::Resumed(state.into())),
+            Next::Ended(end) => Ok(Event::Ended(end.into())),
+        }
+    }
+
+    /// Waits up to `timeout` for a frame and returns it as a lease over its buffer. A stall and its
+    /// return are not frames: the wait goes on past them, so a caller that wants them uses
+    /// [`Frames::next_event`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] with the host's reason once the stream has ended and no frame is left:
+    /// the loop that calls this ends there, rather than waiting on a stream that will not produce.
     pub fn next(&mut self, timeout: Duration) -> Result<Option<FrameLease<M>>, Error> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next_event(left)? {
+                Event::Frame(lease) => return Ok(Some(lease)),
+                Event::TimedOut => return Ok(None),
+                Event::Stalled { .. } | Event::Resumed(_) => {}
+                Event::Ended(end) => return Err(Error::StreamEnded(end)),
+            }
+        }
+    }
+
+    /// Takes a frame if one is ready, without waiting.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] as [`Frames::next`] gives it.
+    pub fn try_next(&mut self) -> Result<Option<FrameLease<M>>, Error> {
         self.sweep()?;
         let Some(frame) = self
             .taken
             .stream_mut()
-            .next_frame(timeout)
-            .map_err(Error::Client)?
+            .try_next()
+            .map_err(Error::from_client)?
         else {
-            return Ok(None);
+            return self.ended_or_none();
         };
         self.lease_for(frame).map(Some)
     }
 
-    /// Takes a frame if one is ready, without waiting.
-    pub fn try_next(&mut self) -> Result<Option<FrameLease<M>>, Error> {
-        self.sweep()?;
-        let Some(frame) = self.taken.stream_mut().try_next().map_err(Error::Client)? else {
-            return Ok(None);
-        };
-        self.lease_for(frame).map(Some)
+    /// No frame was pending: `None` while the stream runs, [`Error::StreamEnded`] with the host's
+    /// reason once it has ended.
+    fn ended_or_none<T>(&self) -> Result<Option<T>, Error> {
+        match self.taken.stream().end() {
+            None => Ok(None),
+            Some(end) => Err(Error::StreamEnded(end.into())),
+        }
     }
 
     fn lease_for(&mut self, frame: HeldFrame) -> Result<FrameLease<M>, Error> {
@@ -817,16 +966,18 @@ impl<M> Frames<M> {
         let layouts = match self.layouts {
             Some(layouts) => layouts,
             None => {
-                let len = frame.len();
                 let payload = self.pool.buffer_size().payload;
-                if len > payload {
+                if frame.len() > payload {
+                    let len = frame.len();
                     self.oversize_drops += 1;
                     self.taken
                         .stream_mut()
                         .release(frame)
-                        .map_err(Error::Client)?;
+                        .map_err(Error::from_client)?;
                     return Err(Error::Oversize { len, payload });
                 }
+                // The frame's one plane: the bytes it holds, as the stream's own arithmetic counts them.
+                let len = self.taken.stream().plane_len(&frame, 0);
                 Layouts::new(&[PlaneLayout::new(0, 0, len)])
                     .ok_or(Error::Layout(styx_format::LayoutError::Overflow))?
             }
@@ -839,7 +990,7 @@ impl<M> Frames<M> {
         } else {
             frame.sequence()
         };
-        let entry = FrameEntry::new(id, frame.timestamp_ns(), self.format, layouts);
+        let entry = FrameEntry::new(id, frame_time(&frame), self.format, layouts);
         match self.pool.acquire_at(index, entry) {
             Ok(lease) => {
                 self.pending[index] = Some(frame);
@@ -850,14 +1001,14 @@ impl<M> Frames<M> {
                 self.taken
                     .stream_mut()
                     .release(frame)
-                    .map_err(Error::Client)?;
+                    .map_err(Error::from_client)?;
                 Err(Error::Held(index as u32))
             }
             Err(e) => {
                 self.taken
                     .stream_mut()
                     .release(frame)
-                    .map_err(Error::Client)?;
+                    .map_err(Error::from_client)?;
                 Err(Error::Acquire(e))
             }
         }
@@ -915,6 +1066,12 @@ impl<M> JobStream<M> {
         self.pool.buffers()
     }
 
+    /// Completions the reader was too late for, in total (`FrameStream::skipped`). On a job stream
+    /// every completion is read, so this stays 0 unless the reader falls behind.
+    pub fn skipped(&self) -> u64 {
+        self.taken.stream().skipped()
+    }
+
     /// Bytes in each buffer, as the stream's open reply gives them.
     pub fn buffer_bytes(&self) -> usize {
         self.taken.stream().layout().buffer_bytes as usize
@@ -932,15 +1089,30 @@ impl<M> JobStream<M> {
 
     /// Posts one job. `Ok(false)` means the job queue is full and nothing was posted.
     pub fn post(&mut self, job: &[u8]) -> Result<bool, Error> {
-        self.taken.stream_mut().post_job(job).map_err(Error::Client)
+        self.taken
+            .stream_mut()
+            .post_job(job)
+            .map_err(Error::from_client)
     }
 
     /// Waits up to `timeout` for the next completion frame; `None` after the timeout.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] once the host has ended the stream and no completion is left.
     pub fn wait(&mut self, timeout: Duration) -> Result<Option<HeldFrame>, Error> {
-        self.taken
+        let frame = self
+            .taken
             .stream_mut()
             .next_frame(timeout)
-            .map_err(Error::Client)
+            .map_err(Error::from_client)?;
+        match frame {
+            Some(frame) => Ok(Some(frame)),
+            None => match self.taken.stream().end() {
+                None => Ok(None),
+                Some(end) => Err(Error::StreamEnded(end.into())),
+            },
+        }
     }
 
     /// The bytes of a frame this stream handed out by [`JobStream::wait`].
@@ -953,11 +1125,68 @@ impl<M> JobStream<M> {
         self.taken
             .stream_mut()
             .release(frame)
-            .map_err(Error::Client)
+            .map_err(Error::from_client)
     }
 
     /// Closes the stream on the daemon and returns the daemon's answer.
     pub fn close(self) -> Result<(), Error> {
         self.taken.close()
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use lemnos_wire::ring::{RingError, SharedLayout as WireLayout};
+
+    #[test]
+    fn a_shared_layout_refusal_keeps_its_structure_and_both_values() {
+        for (wire, want) in [
+            (WireLayout::Ring, SharedLayout::Ring),
+            (WireLayout::Marks, SharedLayout::Marks),
+        ] {
+            let refused = lemnos_client::Error::Stream(RingError::Layout {
+                which: wire,
+                found: 1,
+                expected: 2,
+            });
+            let error = Error::from_client(refused);
+            let expected = LayoutRefusal {
+                which: want,
+                found: 1,
+                expected: 2,
+            };
+            assert_eq!(error.layout_refusal(), Some(expected));
+            let text = error.to_string();
+            assert!(
+                text.contains("layout 1") && text.contains("layout 2"),
+                "{text}"
+            );
+            assert!(text.contains(want.what()), "{text}");
+        }
+    }
+
+    #[test]
+    fn a_contract_mismatch_at_bind_is_its_own_error_and_its_sentence_keeps_both_hashes() {
+        let client = lemnos_client::Error::ContractMismatch {
+            contract: "camera.sensor/1".to_string(),
+            ours: 0x33b8_60b0_2987_233d,
+            theirs: 0x4d6f_4b4b_ddf7_8636,
+        };
+        let error = Error::from_client(client);
+        assert!(matches!(error, Error::ContractMismatch { .. }), "{error:?}");
+        assert_eq!(error.contract_mismatch(), Some("camera.sensor/1"));
+        assert_eq!(error.layout_refusal(), None);
+        assert_eq!(
+            error.to_string(),
+            "this Styx and the board's Lemnos are different builds: contract camera.sensor/1: a base method is laid out differently (the device's base hash 0x4d6f4b4bddf78636, this client's 0x33b860b02987233d)"
+        );
+    }
+
+    #[test]
+    fn other_stream_errors_stay_client_errors() {
+        let error = Error::from_client(lemnos_client::Error::Stream(RingError::BadBuffer));
+        assert!(matches!(error, Error::Client(_)));
+        assert_eq!(error.layout_refusal(), None);
     }
 }

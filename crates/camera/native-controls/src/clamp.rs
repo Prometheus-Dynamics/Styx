@@ -78,14 +78,16 @@ impl Clamp {
     }
 }
 
-/// Exposure as the native controls hold it now: the last value asked for, the value applied, and
-/// the clamp of the last decision on exposure (`None` when that decision was not clamped).
+/// Exposure as the native controls hold it now: the last value asked for, the value the driver
+/// reports in force, and the clamp the driver reported for the last request (`None` when it did not
+/// clamp it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExposureReport {
     /// The exposure asked for last, in microseconds (the initial value before any request).
     pub requested_us: u32,
-    /// The exposure the sensor is given, in microseconds, from the last decision.
-    pub applied_us: u32,
-    /// The clamp of the last decision, if it was clamped.
+    /// The exposure the driver reports in force, in microseconds. `None` until a report says, and
+    /// when the driver does not report exposure (`NOT_SUPPORTED`).
+    pub applied_us: Option<u32>,
+    /// The clamp the driver reported for the last request, if it clamped it.
     pub clamp: Option<Clamp>,
 }
