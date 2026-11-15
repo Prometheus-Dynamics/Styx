@@ -1,7 +1,7 @@
 //! The service on the simulated backend: `lemnosd` in this process on `lemnos-sim`, with two
 //! simulated cameras on one daemon, served through the control socket.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};

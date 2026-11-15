@@ -5,7 +5,7 @@
 //! receiver writes: its layout pads each row to 128 bytes. Packed rows would start at 125.
 
 #[allow(dead_code)]
-mod sim;
+use styx_sim::paced as sim;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -31,7 +31,12 @@ fn start(name: &str) -> (Service, PathBuf) {
     let config = Config {
         socket: socket.clone(),
         name: "styx-lemnos-test".to_string(),
-        board: parse(&sim::board(Some("csi0"))).expect("board"),
+        board: parse(&sim::board_from(sim::Board {
+            sensor_link: Some("csi0"),
+            vary_bytes: true,
+            ..sim::Board::default()
+        }))
+        .expect("board"),
         drivers: vec![
             entry::<sim::SimSensor>(),
             entry::<sim::SimReceiver>(),

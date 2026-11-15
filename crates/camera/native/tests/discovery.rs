@@ -4,7 +4,7 @@
 //! `sim/mod.rs`) on `lemnos-sim`. [`styx_native::discover`] lists the board's devices through
 //! `lemnos-client` and resolves every sensor to its camera.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::path::PathBuf;
 use std::time::Duration;

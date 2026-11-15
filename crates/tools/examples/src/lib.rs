@@ -7,10 +7,10 @@
 //! chooser picks the owner ([`styx_select::select`]), and the owner's capture is started
 //! ([`with_first_camera`]).
 //!
-//! The simulated drivers are a copy of the service's test simulator (see [`sim`]); the examples
-//! use it through the Lemnos daemon, as the service does on a board.
+//! The simulated drivers are `styx-sim`'s paced ones (`styx_sim::paced`, the same the crates'
+//! tests use); the examples use them through the Lemnos daemon, as the service does on a board.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::fs;
 use std::os::unix::net::UnixStream;

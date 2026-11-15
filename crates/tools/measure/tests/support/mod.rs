@@ -3,8 +3,7 @@
 
 #![allow(dead_code)]
 
-#[path = "sim.rs"]
-pub mod sim;
+pub use styx_sim::paced as sim;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;

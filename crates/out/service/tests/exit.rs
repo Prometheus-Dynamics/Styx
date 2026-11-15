@@ -4,7 +4,7 @@
 //! the process leaves, that the next start streams at once, and that a sensor a previous owner
 //! left started is stopped at start.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::fs::File;
 use std::path::{Path, PathBuf};
