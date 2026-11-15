@@ -94,7 +94,7 @@ Real hardware, then the lock and the docs.
 - [ ] [H3](docs/prs/H3.md) K230D (wave 7; needs D4, F1; board run)
 - [ ] [H4](docs/prs/H4.md) Cubie A7 (wave 7; needs E5, F1, D5; board run)
 - [ ] [H5](docs/prs/H5.md) USB camera (wave 6; needs B4, B6, E4, F1; board run)
-- [ ] ~~[H6](docs/prs/H6.md) libcamera camera on a Pi (wave 6; needs B5, F1; board run)~~ dropped 2026-11-14: next does not use libcamera; its own drivers are the path
+- [ ] [H6](docs/prs/H6.md) libcamera camera on a Pi (wave 6; needs B5, F1; board run)
 - [ ] [H7](docs/prs/H7.md) Docs, lock, hand-over (wave 8; needs H1, H5, G5, F6, F7, G4)
 
 ## S. The simulated camera: Styx's copies go as Lemnos's lands
