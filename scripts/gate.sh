@@ -63,6 +63,10 @@ fi
 # One lock per outside repository: crates name git dependencies through the workspace only.
 step "git dependencies are named in the workspace only" bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
 
+# One simulated camera: the sensor, receiver and ISP drivers are defined in styx-sim only (S0/X15);
+# a test needs one from `styx_sim::paced` (free-running) or `styx_sim::SimCamera` (lock-step).
+step "one definition of the simulated camera drivers" bash -c '! grep -rn -E "#\[driver\(\"sim-(sensor|receiver|isp)\"" crates --include=*.rs | grep -v "^crates/camera/sim/src/"'
+
 # One copy of the shared ring: every shm-* crate from one version and one source.
 step "one source for every shm crate" python3 scripts/one-shm.py
 

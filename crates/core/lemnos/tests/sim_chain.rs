@@ -5,7 +5,7 @@
 //! `lemnos-client`, starts it with contract calls in the order the Lemnos contracts set, and
 //! reads frames from the receiver's stream as `FrameLease`s.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -61,7 +61,14 @@ fn two_sensors_on_the_simulated_board_are_refused_by_tag() {
 
 #[test]
 fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
-    let (service, socket) = start("chain", &sim::board(Some("csi0")));
+    let (service, socket) = start(
+        "chain",
+        &sim::board_from(sim::Board {
+            sensor_link: Some("csi0"),
+            vary_bytes: true,
+            ..sim::Board::default()
+        }),
+    );
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
 
     let devices = client.list().expect("list");
@@ -153,7 +160,14 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
 
 #[test]
 fn compressed_stream_leases_are_one_plane_of_each_frames_bytes() {
-    let (service, socket) = start("compressed", &sim::board(Some("csi0")));
+    let (service, socket) = start(
+        "compressed",
+        &sim::board_from(sim::Board {
+            sensor_link: Some("csi0"),
+            vary_bytes: true,
+            ..sim::Board::default()
+        }),
+    );
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
 
     let devices = client.list().expect("list");

@@ -4,8 +4,7 @@
 //! Each test starts a service with the counting outlets, a counters ring, and reads the snapshots
 //! the way another process would.
 
-#[path = "../../../out/service/tests/sim/mod.rs"]
-mod sim;
+use styx_sim::paced as sim;
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Write};

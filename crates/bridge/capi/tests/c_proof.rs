@@ -5,7 +5,7 @@
 //!
 //! Skips with a printed reason when there is no C compiler.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

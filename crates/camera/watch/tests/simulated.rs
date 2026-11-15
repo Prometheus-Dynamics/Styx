@@ -2,7 +2,7 @@
 //! simulated cameras. Adding a camera is starting the daemon; removing one is stopping it. A
 //! device going off and coming back is `set_power` on its sensor through a second client.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::fs;
 use std::path::{Path, PathBuf};

@@ -4,7 +4,7 @@
 //! delays the session chose without waiting for them. Every fault switch is in this one test,
 //! because the switches are process-wide and the test binary runs its tests in parallel.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;

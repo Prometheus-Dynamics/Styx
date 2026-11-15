@@ -5,7 +5,7 @@
 //! own thread, once per frame, and records how many allocations that thread made since the frame
 //! before: the stream's next frame, the status update and the outlet call all sit in that window.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

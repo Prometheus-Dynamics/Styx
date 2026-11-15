@@ -4,7 +4,7 @@
 //! Runs on the simulated backend (`sim/mod.rs`): `lemnosd` in this process on `lemnos-sim`, through
 //! the real socket. The sensor's delays are the mode's: exposure two frames, gain one.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::path::PathBuf;
 use std::time::Duration;

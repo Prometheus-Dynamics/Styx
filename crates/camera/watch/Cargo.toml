@@ -16,6 +16,7 @@ styx-native = { path = "../native" }
 styx-select = { path = "../select" }
 
 [dev-dependencies]
+styx-sim = { path = "../sim" }
 # The simulated backend: lemnosd in this process, its drivers and board (test only, as in styx-service).
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }

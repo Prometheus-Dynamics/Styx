@@ -5,7 +5,7 @@
 //! receiver with the mode's link, starts receiver then sensor, drops the mode's first frames,
 //! streams, and stops sensor then receiver.
 
-mod sim;
+use styx_sim::paced as sim;
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

@@ -1,10 +1,24 @@
-//! Copy of styx-native-run's test simulator (test code only), on the current contract shape.
-//! Simulated camera drivers, copied from styx-native's test simulator (test code, not a library): a
-//! sensor, a receiver and an ISP, each speaking its contract. Two additions for B2: the mode drops
-//! two frames, and the receiver has fault switches (`FAIL_STARTS`, `STALL_NOW`) that the tests set.
+//! Free-running simulated camera drivers on Lemnos's simulated backend: a sensor, a receiver and an
+//! ISP, each speaking its contract, registered by a test's own `lemnosd` (`entry::<SimSensor>()`).
+//! The receiver makes frames on the host's ticks at the rate its link implies (paced, not lock-step:
+//! for the lock-step camera see [`crate::SimCamera`]). Frames carry sequence, identity, timestamp and
+//! size, and no pixel content. This is the one definition the crates' tests share (it replaces the
+//! copies each test tree kept); it goes when Lemnos's simulated camera chain lands (TODO S1).
 //!
-//! Simulated frames carry sequence, identity, timestamp and size, and no pixel content.
-#![allow(dead_code)] // each test binary uses part of this shared simulator.
+//! What a board's `config` turns on, per device:
+//! - `camera = "<name>"` (sensor and receiver): the two share a frame clock, so a posted value
+//!   lands on the frame its delay names, `in_force` and the landings answer, and requests are fitted
+//!   to the mode with `CLAMP_*` bits. Without it the sensor has no landings (`NOT_SUPPORTED`) and
+//!   keeps a posted value as given.
+//! - `identity = "<name>"` (sensor): the name the kernel gives it; absent, `identity` is
+//!   `NOT_SUPPORTED`.
+//! - `source = "<name>"` (receiver): the sensor wired to its input; absent, `NOT_SUPPORTED`; empty,
+//!   nothing is wired.
+//! - `vary_bytes = true` (receiver): frame `n` is [`frame_bytes`] long, so a reader can check each
+//!   frame's own length.
+//!
+//! Each mode drops two frames, and the receiver has fault switches ([`FAIL_STARTS`],
+//! [`STALL_NOW`]) a test sets. Every call that changes something is logged ([`take_log`]).
 
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -23,8 +37,32 @@ use lemnos_core::{
     Config, ConfigError, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
 };
 
-/// The setting the simulated sensor and receivers read: the camera whose silicon they share.
-const CAMERA_KEYS: &[Key] = &[Key::required("camera", Kind::Str)];
+/// The settings the simulated sensor reads (see the module's list).
+const SENSOR_KEYS: &[Key] = &[
+    Key::optional("camera", Kind::Str),
+    Key::optional("identity", Kind::Str),
+];
+/// The settings the simulated receiver reads.
+const RECEIVER_KEYS: &[Key] = &[
+    Key::optional("camera", Kind::Str),
+    Key::optional("source", Kind::Str),
+    Key::optional("vary_bytes", Kind::Bool),
+];
+
+/// Bytes in frame `sequence` of a stream whose frames are at most `size` bytes, on a receiver set
+/// to `vary_bytes`: frames vary by sequence (as a compressed stream's do).
+#[must_use]
+pub fn frame_bytes(size: u32, sequence: u64) -> u32 {
+    size.saturating_sub((sequence % 4) as u32 * 64)
+}
+
+/// Writes `name` into `into`, returning its length; `BUFFER_TOO_SMALL` when it does not fit.
+fn write_name(name: &str, into: &mut [u8]) -> Result<usize> {
+    into.get_mut(..name.len())
+        .ok_or(Status::BUFFER_TOO_SMALL)?
+        .copy_from_slice(name.as_bytes());
+    Ok(name.len())
+}
 use lemnos_hal::blocks::StreamFrame;
 
 /// Lanes of the frame clock: exposure, analogue gain, frame length.
@@ -127,6 +165,7 @@ pub static FAIL_STARTS: AtomicU32 = AtomicU32::new(0);
 pub static STALL_NOW: AtomicBool = AtomicBool::new(false);
 
 /// Takes the calls logged since the last call, in arrival order.
+#[must_use]
 pub fn take_log() -> Vec<String> {
     std::mem::take(&mut *LOG.lock().unwrap_or_else(PoisonError::into_inner))
 }
@@ -157,6 +196,7 @@ fn mode(index: usize) -> Option<Mode> {
             link_rate_mbps: 1000,
         },
         bayer: BayerOrder::Rggb,
+        max_fps_milli: fps * 1000,
         crop: Rect {
             x: 0,
             y: 0,
@@ -206,8 +246,12 @@ pub struct SimSensor {
     applied: Option<FrameValues>,
     /// The frame clock the receiver of this camera makes frames on.
     clock: Arc<Clock>,
+    /// Whether the board named the camera (`camera`): only then does the clock land posts.
+    framed: bool,
     /// The `CLAMP_*` bits of the last request.
     clamped: u8,
+    /// The name the kernel gives this sensor (`identity`), if the board says.
+    identity: Option<String>,
 }
 
 impl SimSensor {
@@ -293,7 +337,7 @@ impl SimSensor {
 impl Lifecycle for SimSensor {
     type Needs = SimSensorNeeds;
     fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
-        cfg.check_keys(CAMERA_KEYS)
+        cfg.check_keys(SENSOR_KEYS)
     }
 
     fn start(_needs: SimSensorNeeds, cfg: &Config<'_>) -> Result<Self> {
@@ -304,7 +348,9 @@ impl Lifecycle for SimSensor {
             streaming: false,
             applied: None,
             clock,
+            framed: cfg.str("camera").is_some(),
             clamped: 0,
+            identity: cfg.str("identity").map(str::to_string),
         })
     }
 }
@@ -317,6 +363,9 @@ impl CameraSensor for SimSensor {
         &mut self,
         values: lemnos_contract_camera_sensor::FrameValues,
     ) -> core::result::Result<lemnos_contract_camera_sensor::Landing, lemnos_core::Status> {
+        if !self.framed {
+            return Err(Status::NOT_SUPPORTED);
+        }
         let launch = self.clock.frame_in_progress().ok_or(Status::BUSY)?;
         let m = self
             .selected
@@ -343,6 +392,9 @@ impl CameraSensor for SimSensor {
     fn in_force(
         &mut self,
     ) -> core::result::Result<lemnos_contract_camera_sensor::InForce, lemnos_core::Status> {
+        if !self.framed {
+            return Err(Status::NOT_SUPPORTED);
+        }
         let [exposure, gain, frame_length] = self.clock.in_force();
         Ok(lemnos_contract_camera_sensor::InForce {
             exposure_lines: exposure.map(|code| code >> 4),
@@ -373,8 +425,9 @@ impl CameraSensor for SimSensor {
         Err(lemnos_core::Status::NOT_SUPPORTED)
     }
 
-    fn identity(&mut self, _into: &mut [u8]) -> Result<usize> {
-        Err(Status::NOT_SUPPORTED)
+    fn identity(&mut self, into: &mut [u8]) -> Result<usize> {
+        let name = self.identity.as_deref().ok_or(Status::NOT_SUPPORTED)?;
+        write_name(name, into)
     }
     fn info(&mut self) -> Result<SensorInfo> {
         Ok(SensorInfo {
@@ -426,6 +479,9 @@ impl CameraSensor for SimSensor {
             return Err(Status::INVALID_ARGUMENT);
         }
         log("sensor.set_controls");
+        if !self.framed {
+            return Ok(());
+        }
         let fit = self.fit(controls);
         // A control set before the stream runs is in force at once.
         for (lane, code) in [fit.exposure, fit.analogue_gain, fit.frame_length]
@@ -442,7 +498,11 @@ impl CameraSensor for SimSensor {
     /// A posted value is written during frame `identity` and shows from `identity` plus the mode's
     /// delay for each control (the frame clock puts it in force then).
     fn post_values(&mut self, values: FrameValues) -> Result<()> {
-        self.post_written(values, values.identity);
+        if self.framed {
+            self.post_written(values, values.identity);
+        } else {
+            self.applied = Some(values);
+        }
         Ok(())
     }
 
@@ -481,12 +541,18 @@ pub struct SimReceiver {
     counters: Counters,
     /// The frame clock of this camera: the frames this receiver makes put the writes in force.
     clock: Arc<Clock>,
+    /// Whether the board named the camera (`camera`): only then are frame starts answered.
+    framed: bool,
+    /// The name of the sensor wired to this receiver's input (`source`), if the board says.
+    source: Option<String>,
+    /// Frames vary in length by sequence ([`frame_bytes`]).
+    vary_bytes: bool,
 }
 
 impl Lifecycle for SimReceiver {
     type Needs = SimReceiverNeeds;
     fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
-        cfg.check_keys(CAMERA_KEYS)
+        cfg.check_keys(RECEIVER_KEYS)
     }
     const TICKS: bool = true;
 
@@ -498,6 +564,9 @@ impl Lifecycle for SimReceiver {
             run: None,
             counters: Counters::default(),
             clock: clock_named(cfg)?,
+            framed: cfg.str("camera").is_some(),
+            source: cfg.str("source").map(str::to_string),
+            vary_bytes: cfg.bool("vary_bytes").unwrap_or(false),
         })
     }
 
@@ -526,7 +595,11 @@ impl Lifecycle for SimReceiver {
                 Ok(Some(buffer)) => {
                     let frame = StreamFrame {
                         buffer,
-                        bytes: size,
+                        bytes: if self.vary_bytes {
+                            frame_bytes(size, run.sequence)
+                        } else {
+                            size
+                        },
                         sequence: run.sequence,
                         identity: run.sequence,
                         timestamp_ns: next,
@@ -556,6 +629,9 @@ impl CameraReceiver for SimReceiver {
         Option<lemnos_contract_camera_receiver::FrameStarts>,
         lemnos_core::Status,
     > {
+        if !self.framed {
+            return Err(Status::NOT_SUPPORTED);
+        }
         Ok(self.clock.frame_in_progress().map(|frame| {
             lemnos_contract_camera_receiver::FrameStarts {
                 count: frame + 1,
@@ -577,12 +653,13 @@ impl CameraReceiver for SimReceiver {
         Err(Status::NOT_SUPPORTED)
     }
 
-    fn source(&mut self, _into: &mut [u8]) -> Result<usize> {
-        Err(Status::NOT_SUPPORTED)
+    fn source(&mut self, into: &mut [u8]) -> Result<usize> {
+        let name = self.source.as_deref().ok_or(Status::NOT_SUPPORTED)?;
+        write_name(name, into)
     }
 
     fn layout(&mut self) -> Result<Option<lemnos_contract_camera_receiver::FrameLayout>> {
-        Ok(None)
+        Ok(self.layout)
     }
     fn limits(&mut self) -> Result<Limits> {
         Ok(Limits {
@@ -779,13 +856,56 @@ impl CameraIsp for SimIsp {
     }
 }
 
-/// A board with one sensor, one receiver it links to, and the ISP that receiver links to. A decoy
-/// receiver with no link is listed before the real one, so a tool that takes the first receiver
-/// fails. `sensor_link` replaces the sensor's link when given.
-pub fn board(sensor_link: Option<&str>) -> String {
-    let link = match sensor_link {
-        Some(target) => format!("link = \"{target}\""),
-        None => String::new(),
+/// A driver's state is the daemon's to read through its contract; `Debug` names the driver only.
+macro_rules! debug_by_name {
+    ($($ty:ident),*) => {$(
+        impl std::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($ty)).finish_non_exhaustive()
+            }
+        }
+    )*};
+}
+debug_by_name!(SimSensor, SimReceiver, SimIsp);
+
+/// What a board text from [`board_from`] has: the sensor's link, and the `config` entries the module
+/// lists.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Board<'a> {
+    /// The device the sensor links to (`link`), if any.
+    pub sensor_link: Option<&'a str>,
+    /// The sensor's `identity`.
+    pub identity: Option<&'a str>,
+    /// `csi0`'s `source`.
+    pub source: Option<&'a str>,
+    /// `csi0`'s `vary_bytes`.
+    pub vary_bytes: bool,
+}
+
+/// A board text for `lemnosd`: an ISP `isp0`, a decoy receiver `csi-spare` with no link (listed
+/// first, so a tool that takes the first receiver fails), a receiver `csi0` linked to `isp0`, and a
+/// sensor `cam0-sensor`, as `spec` says.
+#[must_use]
+pub fn board_from(spec: Board<'_>) -> String {
+    let link = spec
+        .sensor_link
+        .map(|target| format!("link = \"{target}\"\n"))
+        .unwrap_or_default();
+    let identity = spec
+        .identity
+        .map(|name| format!("config = {{ identity = \"{name}\" }}\n"))
+        .unwrap_or_default();
+    let mut receiver = Vec::new();
+    if let Some(name) = spec.source {
+        receiver.push(format!("source = \"{name}\""));
+    }
+    if spec.vary_bytes {
+        receiver.push("vary_bytes = true".to_string());
+    }
+    let receiver = if receiver.is_empty() {
+        String::new()
+    } else {
+        format!("config = {{ {} }}\n", receiver.join(", "))
     };
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-camera\"\n\
@@ -793,12 +913,38 @@ pub fn board(sensor_link: Option<&str>) -> String {
          [[devices]]\nid = \"csi-spare\"\ndriver = \"sim-receiver\"\n\
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
          [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
+         {receiver}\
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
-         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}\n"
+         [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}{identity}"
     )
 }
 
-/// A board with two sensors, both linked to the receiver.
+/// [`board_from`] with the sensor linked to `sensor_link` and nothing else set.
+#[must_use]
+pub fn board(sensor_link: Option<&str>) -> String {
+    board_from(Board {
+        sensor_link,
+        ..Board::default()
+    })
+}
+
+/// [`board_from`] with the sensor's `identity` and `csi0`'s `source`.
+#[must_use]
+pub fn board_with(
+    sensor_link: Option<&str>,
+    identity: Option<&str>,
+    source: Option<&str>,
+) -> String {
+    board_from(Board {
+        sensor_link,
+        identity,
+        source,
+        vary_bytes: false,
+    })
+}
+
+/// [`board`] linked to `csi0`, with a second sensor `cam1-sensor` linked to `csi0` as well.
+#[must_use]
 pub fn board_with_two_sensors() -> String {
     format!(
         "{}[[devices]]\nid = \"cam1-sensor\"\ndriver = \"sim-sensor\"\nlink = \"csi0\"\n",

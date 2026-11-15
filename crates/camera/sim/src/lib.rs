@@ -17,6 +17,7 @@
 
 mod camera;
 mod drivers;
+pub mod paced;
 mod rig;
 mod scene;
 mod silicon;
