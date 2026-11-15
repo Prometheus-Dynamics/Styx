@@ -14,6 +14,7 @@ use lemnos_core::{Config, Decode, Lifecycle, Reader, Result, Status, StreamHandl
 use lemnos_hal::blocks::StreamFrame;
 use styx_format::{FourCc, plane_geometry};
 use styx_scale::{Filter, Path, layout, resample};
+use styx_sim::memory::Memory;
 
 /// The formats the simulated scaler takes. R8 is left out, so a test can see a refused format.
 pub const FORMATS: [FourCc; 7] = [
@@ -273,10 +274,12 @@ impl SimScaler {
     }
 }
 
-/// A board with one simulated image scaler, its job stream of four buffers.
-pub fn board() -> String {
-    "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-scaler\"\n\
-     [[devices]]\nid = \"scaler0\"\ndriver = \"sim-scaler\"\n\
-     [devices.streams.scale]\nbuffers = 4\nbuffer_bytes = 16384\n"
-        .to_string()
+/// A board with one simulated image scaler, its job stream of four buffers made of `memory`.
+pub fn board(memory: Memory) -> String {
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-scaler\"\n\
+         [[devices]]\nid = \"scaler0\"\ndriver = \"sim-scaler\"\n\
+         [devices.streams.scale]\nbuffers = 4\nbuffer_bytes = 16384\n{}",
+        memory.line()
+    )
 }

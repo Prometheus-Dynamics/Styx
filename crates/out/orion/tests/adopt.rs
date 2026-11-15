@@ -128,7 +128,7 @@ fn an_orion_subscriber_and_a_direct_reader_get_the_same_frames_from_one_ring() {
 }
 
 /// The same proof over a dma-buf pool: the pool is a dma-heap buffer, handed to the producer with
-/// `Producer::with_pool`. Skipped, with the reason printed, where there is no dma-heap.
+/// `Producer::with_pool`. Without a dma-heap, `styx_frame::dma_case` judges it.
 #[test]
 fn an_orion_subscriber_and_a_direct_reader_get_the_same_frames_from_a_dmabuf_pool() {
     let Some(heap) = dma_heap() else {
@@ -136,7 +136,8 @@ fn an_orion_subscriber_and_a_direct_reader_get_the_same_frames_from_a_dmabuf_poo
     };
     let len = BUFFERS * BUFFER;
     let Ok(dmabuf) = dma_heap::allocate(heap.as_fd(), len as u64) else {
-        println!("skipped: the dma-heap would not allocate {len} bytes");
+        let why = format!("the dma-heap would not allocate {len} bytes");
+        styx_frame::dma_case::unavailable("orion dma-buf pool", &why);
         return;
     };
     let memories: Vec<Box<dyn BufferMemory>> = (0..BUFFERS)
@@ -160,7 +161,8 @@ fn dma_heap() -> Option<std::fs::File> {
     {
         Ok(heap) => Some(heap),
         Err(err) => {
-            println!("skipped: no dma-heap here ({err})");
+            let why = format!("no dma-heap here ({err})");
+            styx_frame::dma_case::unavailable("orion dma-buf pool", &why);
             None
         }
     }

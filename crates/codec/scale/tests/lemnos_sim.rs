@@ -17,6 +17,7 @@ use lemnosd::{Config, Service};
 use styx_codec_api::{CodecKind, Converter, Implementation, Registry, Request, Verdict};
 use styx_format::FourCc;
 use styx_scale::{Lemnos, Path, Software, reason, register_lemnos, register_software};
+use styx_sim::memory::{Memory, dma_buf_case};
 
 const CLIENT: &str = "styx-scale-test";
 
@@ -28,13 +29,18 @@ fn socket_dir() -> PathBuf {
 
 /// Starts a simulated scaler service named `name`, and returns it with its socket.
 fn start(name: &str) -> (Service, PathBuf) {
+    start_on(name, Memory::Shared)
+}
+
+/// [`start`], with the scaler's job stream made of `memory`.
+fn start_on(name: &str, memory: Memory) -> (Service, PathBuf) {
     let dir = socket_dir().join(name);
     std::fs::create_dir_all(&dir).unwrap();
     let socket = dir.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: CLIENT.to_string(),
-        board: parse(&sim::board()).expect("board"),
+        board: parse(&sim::board(memory)).expect("board"),
         drivers: vec![entry::<sim::SimScaler>()],
         backend: Box::new(SimBoard::new()),
         options: Options {
@@ -57,7 +63,21 @@ fn reference(input: &styx_frame::FrameLease<()>, code: FourCc, w: u32, h: u32) -
 
 #[test]
 fn hardware_output_equals_the_scalar_reference_for_every_format_and_size() {
-    let (service, socket) = start("every");
+    every_format_and_size(Memory::Shared);
+}
+
+/// The same jobs on a job stream of dma-bufs (`memory = "dma-buf"`), which the session maps
+/// writable and writes each input into. Needs a dma-heap this user may allocate from (see
+/// `styx_frame::dma_case` for a host without one).
+#[test]
+fn on_a_dma_buf_job_stream_hardware_output_equals_the_scalar_reference() {
+    if dma_buf_case("scaler jobs") {
+        every_format_and_size(Memory::DmaBuf);
+    }
+}
+
+fn every_format_and_size(memory: Memory) {
+    let (service, socket) = start_on(&format!("every-{memory:?}"), memory);
     let pool = support::pool(4);
     let cases = [
         ((64u32, 48u32), (32u32, 24u32)),
@@ -83,7 +103,9 @@ fn hardware_output_equals_the_scalar_reference_for_every_format_and_size() {
         assert_eq!(stats.jobs, cases.len() as u64, "{code}");
     }
     assert_eq!(total, (sim::FORMATS.len() * cases.len()) as u64);
-    println!("hardware equals the scalar reference in {total} jobs on the simulated scaler");
+    println!(
+        "hardware equals the scalar reference in {total} jobs on the simulated scaler ({memory:?})"
+    );
     service.stop();
 }
 

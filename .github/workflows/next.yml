@@ -25,4 +25,8 @@ jobs:
       # rust-toolchain.toml selects the toolchain and its components.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The hosted runner may have no dma-heap: its dma-buf cases are then skipped, counted, and
+      # reported in the job summary (scripts/gate.sh), not failed and not green as tested.
       - run: ./scripts/gate.sh
+        env:
+          STYX_REQUIRE_DMA_HEAP: "0"

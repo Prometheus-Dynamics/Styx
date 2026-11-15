@@ -19,7 +19,8 @@
 //! The memfd case has no dma-buf, so its frames reach the device through their bytes, from the
 //! frame's own start: copied, never imported. Each frame is written with its own pattern and the
 //! shader must read each frame's pattern, so a read from the descriptor's start would fail. The
-//! dma-heap cases skip, with the reason printed, when the heap or a GPU device can't open.
+//! dma-heap cases skip, with the reason printed, when a GPU device can't open; a missing heap is
+//! `styx_frame::dma_case`'s (fails under `STYX_REQUIRE_DMA_HEAP=1`, else recorded as skipped).
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
 use std::os::fd::{AsFd, OwnedFd};
@@ -287,7 +288,8 @@ fn heap_buffer(len: usize) -> Option<OwnedFd> {
     {
         Ok(heap) => heap,
         Err(err) => {
-            println!("skipped: /dev/dma_heap/system is not openable here: {err}");
+            let why = format!("/dev/dma_heap/system is not openable here: {err}");
+            styx_frame::dma_case::unavailable("daedalus dma-heap offsets", &why);
             return None;
         }
     };

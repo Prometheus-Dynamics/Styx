@@ -1,5 +1,5 @@
 //! A dma-buf frame pool for the tests: buffers from the system dma-heap, as the producer of a
-//! camera would hand them. Tests skip (printing why) when the heap can't be opened.
+//! camera would hand them. A heap that can't be opened is `styx_frame::dma_case`'s to judge.
 #![allow(dead_code)]
 
 use std::fs::OpenOptions;
@@ -28,7 +28,8 @@ pub fn dma_pool(buffers: usize) -> Option<FramePool<()>> {
     {
         Ok(heap) => heap,
         Err(err) => {
-            println!("skipped: /dev/dma_heap/system is not openable here: {err}");
+            let why = format!("/dev/dma_heap/system is not openable here: {err}");
+            styx_frame::dma_case::unavailable("daedalus dma-heap pool", &why);
             return None;
         }
     };

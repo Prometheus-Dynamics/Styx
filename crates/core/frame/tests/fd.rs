@@ -1,8 +1,9 @@
 //! memfd and dma-buf memory on Linux.
 #![cfg(all(feature = "linux", target_os = "linux"))]
 
-use std::fs::OpenOptions;
-use std::os::fd::AsFd;
+use std::fs::{File, OpenOptions};
+use std::io;
+use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd, RawFd};
 
 use lemnos_linux_sys::{dma_buf, udmabuf};
 use styx_format::{FourCc, MediaFormat, Resolution};
@@ -44,7 +45,10 @@ fn dmabuf_frames_sync_around_cpu_access() {
         .write(true)
         .open("/dev/udmabuf")
     else {
-        println!("skipped: /dev/udmabuf is not openable here");
+        styx_frame::dma_case::unavailable(
+            "styx-frame udmabuf sync",
+            "/dev/udmabuf is not openable here",
+        );
         return;
     };
     let memfd = udmabuf::memfd_create(c"styx-frame-udmabuf").unwrap();
@@ -101,4 +105,69 @@ fn several_buffers_share_one_memfd_at_offsets() {
         let part = &view.as_slice()[i * LEN..(i + 1) * LEN];
         assert!(part.iter().all(|&b| b == i as u8 + 1), "buffer {i}");
     }
+}
+
+/// A dma-buf of `len` bytes whose descriptor is read-only (`O_RDONLY`), from the system heap: what
+/// a producer that lends its buffers for reading only would hand over. The error says why there is
+/// none, for the test to print.
+fn read_only_dmabuf(len: u64) -> Result<OwnedFd, String> {
+    /// `struct dma_heap_allocation_data`.
+    #[repr(C)]
+    struct AllocationData {
+        len: u64,
+        fd: u32,
+        fd_flags: u32,
+        heap_flags: u64,
+    }
+    /// `DMA_HEAP_IOCTL_ALLOC`: `_IOWR('H', 0, struct dma_heap_allocation_data)`.
+    const ALLOC: u32 = (3 << 30) | ((size_of::<AllocationData>() as u32) << 16) | (0x48 << 8);
+    let path = "/dev/dma_heap/system";
+    let heap = File::open(path).map_err(|e| format!("{path} is not openable here: {e}"))?;
+    let mut data = AllocationData {
+        len,
+        fd: 0,
+        fd_flags: (libc::O_RDONLY | libc::O_CLOEXEC) as u32,
+        heap_flags: 0,
+    };
+    // SAFETY: FFI. `ALLOC` takes a `dma_heap_allocation_data`, which `data` is (`repr(C)`, the
+    // kernel's field order and sizes); the kernel writes only its `fd` field.
+    let rc = unsafe { libc::ioctl(heap.as_raw_fd(), ALLOC as _, &raw mut data) };
+    if rc < 0 {
+        return Err(format!(
+            "{path} gives no buffer: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: a successful allocation returns a new dma-buf descriptor no other owner has.
+    Ok(unsafe { OwnedFd::from_raw_fd(data.fd as RawFd) })
+}
+
+#[test]
+fn a_read_only_dmabuf_is_refused_for_writing_and_maps_for_reading() {
+    let fd = match read_only_dmabuf(LEN as u64) {
+        Ok(fd) => fd,
+        Err(why) => {
+            styx_frame::dma_case::unavailable("styx-frame read-only dma-buf", &why);
+            return;
+        }
+    };
+    // Mapped for writing: refused with its own kind, which `styx-lemnos` hands on as
+    // `Error::Map`, so a session that writes its buffers fails to open, typed, not later on a
+    // write.
+    let err = FdMemory::dmabuf_at(fd.try_clone().unwrap(), 0, LEN, true)
+        .expect_err("a read-only descriptor mapped for writing");
+    assert_eq!(err.kind(), io::ErrorKind::PermissionDenied, "{err}");
+
+    // Mapped for reading it is a buffer like any other, and gives no write view.
+    let memory = FdMemory::dmabuf_at(fd, 0, LEN, false).expect("mapped for reading");
+    let pool: FramePool =
+        FramePool::new(SIZE, [Box::new(memory) as Box<dyn BufferMemory>]).unwrap();
+    let mut frame = pool.acquire(entry(1)).unwrap();
+    assert_eq!(frame.memory_kind(), MemoryKind::Dmabuf);
+    assert!(
+        frame.write().is_none(),
+        "a read-only buffer gave a write view"
+    );
+    assert!(frame.read().unwrap().bytes().iter().all(|&b| b == 0));
+    println!("read-only dma-buf: writable mapping refused ({err}); read-only mapping reads");
 }

@@ -22,6 +22,7 @@ use styx_controls::Control;
 
 use crate::camera::Error;
 use crate::drivers::{self, SimIsp, SimReceiver, SimSensor};
+use crate::memory::Memory;
 use crate::silicon::{self, Fault, SensorTiming, Silicon};
 
 /// The daemon's name for its clients.
@@ -72,7 +73,7 @@ impl SimRig {
 
     fn start_in(dir: &Path, token: &str) -> Result<Service, Error> {
         let socket = dir.join("sock");
-        let board = parse(&drivers::board(token, Some("csi0")))
+        let board = parse(&drivers::board(token, Some("csi0"), Memory::Shared))
             .map_err(|e| Error::Daemon(format!("board: {e:?}")))?;
         let config = Config {
             socket,

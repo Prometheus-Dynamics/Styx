@@ -3,11 +3,15 @@
 //! real client and streams.
 //!
 //! One test runs every case in order: the streams' copies are counted process-wide, and the
-//! simulated ISP's log and gate are shared, so the cases share one service.
+//! simulated ISP's log and gate are shared, so the cases share one service. The test runs them
+//! twice: on streams of shared memory, then on streams of dma-bufs (`memory = "dma-buf"`), where
+//! the session maps the configuration and input buffers writable. The second run needs a dma-heap
+//! this user may allocate from (see `styx_frame::dma_case` for a host without one).
 
 mod sim;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use lemnos_contract_camera_isp::NO_BUFFER;
@@ -17,11 +21,14 @@ use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
 use lemnosd::{Config, Service};
 use styx_format::{ColorRange, ColorSpace, FourCc, MediaFormat, Resolution};
-use styx_frame::{BufferSize, FrameEntry, FrameLease, FramePool, copy_counters, packed_layouts};
+use styx_frame::{
+    BufferSize, FrameEntry, FrameLease, FramePool, MemoryKind, copy_counters, packed_layouts,
+};
 use styx_lemnos::{Client, DeviceEntry};
 use styx_pisp::pisp::format::{compute_stride_align, formats};
 use styx_pisp::pisp::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, Wire};
 use styx_pisp::{BackEndBuilder, Geometry, IspSettings, LiveIsp, LiveJob, Output, PispError};
+use styx_sim::memory::{Memory, dma_buf_case};
 
 /// Frames the first case posts, and the frames the busy case adds.
 const FRAMES: u64 = 12;
@@ -30,14 +37,17 @@ const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 const COPY_SITE: &str = "styx-frame: FrameLease::copy_into";
 
+/// The run is on dma-buf streams: each output lease must be a dma-buf.
+static DMA_BUF: AtomicBool = AtomicBool::new(false);
+
 fn socket_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("styx-pisp-sim-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     dir
 }
 
-fn start(text: &str) -> (Service, PathBuf) {
-    let socket = socket_dir().join("sock");
+fn start(text: &str, name: &str) -> (Service, PathBuf) {
+    let socket = socket_dir().join(name);
     let config = Config {
         socket: socket.clone(),
         name: "styx-pisp-test".to_string(),
@@ -196,6 +206,19 @@ fn post_frame(
 /// The identity of a completed job whose two outputs carry their own fill; the job's outputs are
 /// given back by dropping it.
 fn check(job: LiveJob, expect: &BackEndBuilder) -> u64 {
+    let kind = if DMA_BUF.load(Ordering::SeqCst) {
+        MemoryKind::Dmabuf
+    } else {
+        MemoryKind::Memfd
+    };
+    for lease in &job.outputs {
+        assert_eq!(
+            lease.memory_kind(),
+            kind,
+            "job {}: outputs are the board's memory",
+            job.identity
+        );
+    }
     assert!(
         outputs_carry_their_job(&job, expect),
         "job {} outputs",
@@ -213,7 +236,17 @@ fn copies() -> (usize, usize) {
 
 #[test]
 fn live_path_on_the_simulated_pisp() {
-    let (service, socket) = start(&sim::board());
+    live_path(Memory::Shared);
+    if dma_buf_case("PiSP live path") {
+        live_path(Memory::DmaBuf);
+    }
+}
+
+fn live_path(memory: Memory) {
+    sim::clear_ran();
+    DMA_BUF.store(memory == Memory::DmaBuf, Ordering::SeqCst);
+    let name = format!("{memory:?}");
+    let (service, socket) = start(&sim::board(memory), &name);
     let client = Client::connect(&socket, "styx-pisp-test").expect("connect");
     let devices: Vec<DeviceEntry> = client.list().expect("list");
     let device = devices
@@ -368,7 +401,7 @@ fn live_path_on_the_simulated_pisp() {
     assert_eq!(live.input_copies(), total as usize);
 
     eprintln!(
-        "live path proof: jobs run {}; refused while both config buffers were in flight: {} (case 1), \
+        "live path proof ({name}): jobs run {}; refused while both config buffers were in flight: {} (case 1), \
          {} (case 2); input copies {} = {} bytes; output copies 0 (styx-frame copy counter: {} copies, {} bytes); \
          config bytes written in place {} per job",
         ran.len(),
