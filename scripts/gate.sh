@@ -33,6 +33,31 @@ step() {
   echo "    $label: $((SECONDS - start)) s"
 }
 
+# dma-buf cases (styx_frame::dma_case): a case that cannot run here fails the gate unless the host
+# is declared heap-less with STYX_REQUIRE_DMA_HEAP=0, and then every skipped case is counted and
+# reported, never green as tested. This machine's gate has a heap: the default requires it.
+export STYX_REQUIRE_DMA_HEAP="${STYX_REQUIRE_DMA_HEAP:-1}"
+STYX_DMA_SKIP_LOG="$(mktemp "${TMPDIR:-/tmp}/styx-dma-skips.XXXXXX")"
+export STYX_DMA_SKIP_LOG
+dma_skips() {
+  local n
+  n=$(sort -u "$STYX_DMA_SKIP_LOG" | grep -c . || true)
+  if [ "$n" != 0 ]; then
+    echo "dma-buf cases SKIPPED: $n (STYX_REQUIRE_DMA_HEAP=$STYX_REQUIRE_DMA_HEAP)"
+    sort -u "$STYX_DMA_SKIP_LOG" | sed 's/^/    /'
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+      { echo "### dma-buf cases SKIPPED: $n"; echo; echo "This runner has no dma-heap: these cases did not run."; echo; sort -u "$STYX_DMA_SKIP_LOG" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+    fi
+    if [ -n "${GITHUB_ACTIONS:-}" ]; then
+      echo "::warning title=dma-buf cases SKIPPED::$n dma-buf cases did not run: this runner has no dma-heap"
+    fi
+  else
+    echo "dma-buf cases SKIPPED: 0"
+  fi
+  rm -f "$STYX_DMA_SKIP_LOG"
+}
+trap dma_skips EXIT
+
 # The workspace glob matches nothing until the first crate lands.
 if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   step format cargo fmt --all --check

@@ -20,6 +20,11 @@ lemnos-contract-camera-isp = { workspace = true }
 
 [dev-dependencies]
 serde_json = { version = "1", features = ["float_roundtrip"] }
+# The simulated backend: lemnosd in this process with a simulated job ISP (test only).
+lemnosd = { workspace = true }
+lemnos-host = { workspace = true }
+lemnos-sim = { workspace = true }
+styx-sim = { path = "../../camera/sim" }
 
 [lints]
 workspace = true

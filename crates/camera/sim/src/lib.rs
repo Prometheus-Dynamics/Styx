@@ -17,6 +17,8 @@
 
 mod camera;
 mod drivers;
+pub mod job_isp;
+pub mod memory;
 pub mod paced;
 mod rig;
 mod scene;

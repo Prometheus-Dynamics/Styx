@@ -25,5 +25,9 @@ styx-format = { path = "../format", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 lemnos-linux-sys = { workspace = true, optional = true }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The dma-heap allocation of a read-only dma-buf in `tests/fd.rs` (the heap ioctl with O_RDONLY).
+libc = "0.2"
+
 [lints]
 workspace = true

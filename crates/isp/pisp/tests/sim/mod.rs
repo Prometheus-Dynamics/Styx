@@ -36,6 +36,7 @@ use styx_lemnos::pisp::format::compute_stride_align;
 use styx_lemnos::pisp::uapi::{BeTilesConfig, ImageFormatConfig, Wire};
 use styx_pisp::back_end::image_layouts;
 use styx_pisp::format::pisp_format;
+use styx_sim::memory::Memory;
 
 /// What the test expects of one job, by its identity.
 #[derive(Clone, Debug)]
@@ -223,6 +224,9 @@ impl SimPisp {
             config_ok,
             input_ok,
         };
+        // The log is held while the outputs go out and the job is logged before it is let go: a
+        // test that has a job's outputs finds the job in the log.
+        let mut log = RAN.lock().unwrap_or_else(PoisonError::into_inner);
         for k in 0..2 {
             let buffer = job.outputs[k];
             if buffer == NO_BUFFER {
@@ -256,7 +260,8 @@ impl SimPisp {
             self.slots[2 + k].held &= !(1 << buffer);
             ran.outputs[k] = buffer;
         }
-        RAN.lock().unwrap_or_else(PoisonError::into_inner).push(ran);
+        log.push(ran);
+        drop(log);
         self.counters.jobs += 1;
         // The job's config and input buffers stay the producer's (taken), as the stream has them.
         Ok(())
@@ -474,13 +479,20 @@ fn name(stream: &[u8], into: &mut [u8]) -> Result<usize> {
     Ok(stream.len())
 }
 
-/// The board: one PiSP back end with its four streams.
-pub fn board() -> String {
-    "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-pisp\"\n\
-     [[devices]]\nid = \"isp0\"\ndriver = \"sim-pisp\"\n\
-     [devices.streams.config]\nbuffers = 4\nbuffer_bytes = 32768\njob_slots = 4\njob_bytes = 128\n\
-     [devices.streams.input]\nbuffers = 3\nbuffer_bytes = 2048000\n\
-     [devices.streams.output0]\nbuffers = 3\nbuffer_bytes = 1600000\n\
-     [devices.streams.output1]\nbuffers = 3\nbuffer_bytes = 800000\n"
-        .to_string()
+/// The board: one PiSP back end with its four streams, made of `memory`.
+pub fn board(memory: Memory) -> String {
+    let m = memory.line();
+    format!(
+        "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-pisp\"\n\
+         [[devices]]\nid = \"isp0\"\ndriver = \"sim-pisp\"\n\
+         [devices.streams.config]\nbuffers = 4\nbuffer_bytes = 32768\njob_slots = 4\njob_bytes = 128\n{m}\
+         [devices.streams.input]\nbuffers = 3\nbuffer_bytes = 2048000\n{m}\
+         [devices.streams.output0]\nbuffers = 3\nbuffer_bytes = 1600000\n{m}\
+         [devices.streams.output1]\nbuffers = 3\nbuffer_bytes = 800000\n{m}"
+    )
+}
+
+/// Forgets every job run so far, for a test that starts again on a new board.
+pub fn clear_ran() {
+    RAN.lock().unwrap_or_else(PoisonError::into_inner).clear();
 }

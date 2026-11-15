@@ -30,6 +30,8 @@ extern crate alloc;
 extern crate std;
 
 mod copies;
+#[cfg(feature = "std")]
+pub mod dma_case;
 mod entry;
 #[cfg(all(feature = "linux", target_os = "linux"))]
 mod fd;

@@ -44,6 +44,7 @@ fn alive(clock: Arc<Silicon>) -> Arc<Silicon> {
 const SENSOR_TICK_NS: u64 = 1_000_000;
 use lemnos_hal::blocks::StreamFrame;
 
+use crate::memory::Memory;
 use crate::silicon::{self, Fault, SensorTiming, Silicon};
 
 /// Calls in the order they arrived, across every simulated device in this process.
@@ -697,21 +698,23 @@ impl CameraIsp for SimIsp {
 /// A board with one sensor, one receiver it links to, and the ISP that receiver links to. A decoy
 /// receiver with no link is listed before the real one, so a tool that takes the first receiver
 /// fails. `sensor_link` replaces the sensor's link when given. Every simulated device names the
-/// camera `camera`, whose clock and timing they share.
-pub(crate) fn board(camera: &str, sensor_link: Option<&str>) -> String {
+/// camera `camera`, whose clock and timing they share. The receivers' streams are made of
+/// `memory`.
+pub(crate) fn board(camera: &str, sensor_link: Option<&str>, memory: Memory) -> String {
     let link = match sensor_link {
         Some(target) => format!("link = \"{target}\""),
         None => String::new(),
     };
+    let memory = memory.line();
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-camera\"\n\
          [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
          [[devices]]\nid = \"csi-spare\"\ndriver = \"sim-receiver\"\n\
          config = {{ camera = \"{camera}\" }}\n\
-         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n{memory}\
          [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
          config = {{ camera = \"{camera}\" }}\n\
-         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n{memory}\
          [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}\n\
          config = {{ camera = \"{camera}\" }}\n"
     )

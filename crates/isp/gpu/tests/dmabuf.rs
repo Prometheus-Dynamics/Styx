@@ -36,14 +36,19 @@ fn dmabuf_raw_is_read_in_place_and_equals_soft() {
         eprintln!("skipped: the Vulkan device did not open");
         return;
     };
-    let Ok(heap) = File::open("/dev/dma_heap/system") else {
-        eprintln!("skipped: no /dev/dma_heap/system on this host");
-        return;
+    let heap = match File::open("/dev/dma_heap/system") {
+        Ok(heap) => heap,
+        Err(e) => {
+            let why = format!("/dev/dma_heap/system is not openable here: {e}");
+            styx_frame::dma_case::unavailable("styx-gpu dma-buf raw", &why);
+            return;
+        }
     };
     let fd = match lemnos_linux_sys::dma_heap::allocate(heap.as_fd(), LEN as u64) {
         Ok(fd) => fd,
         Err(e) => {
-            eprintln!("skipped: dma-heap allocation failed: {e}");
+            let why = format!("dma-heap allocation failed: {e}");
+            styx_frame::dma_case::unavailable("styx-gpu dma-buf raw", &why);
             return;
         }
     };

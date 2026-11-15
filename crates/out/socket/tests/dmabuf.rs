@@ -64,7 +64,7 @@ fn entry(id: u64) -> FrameEntry {
 }
 
 /// A dma-buf of `len` bytes: from the system dma-heap, else a udmabuf over a sealed memfd.
-/// `None`, with the reasons printed, when neither works here.
+/// `None` when neither works here, after `styx_frame::dma_case` has judged the case.
 fn dmabuf(len: usize) -> Option<OwnedFd> {
     let mut reasons = Vec::new();
     match OpenOptions::new()
@@ -82,7 +82,8 @@ fn dmabuf(len: usize) -> Option<OwnedFd> {
         Ok(fd) => return Some(fd),
         Err(err) => reasons.push(format!("udmabuf: {err}")),
     }
-    println!("skipped: no dma-buf here ({})", reasons.join("; "));
+    let why = format!("no dma-buf here ({})", reasons.join("; "));
+    styx_frame::dma_case::unavailable("socket dma-buf ring", &why);
     None
 }
 

@@ -31,6 +31,7 @@ use lemnos_host::{Options, entry};
 use lemnos_sim::SimBoard;
 use lemnosd::{Config as ServiceConfig, Service};
 use styx_block::hevc;
+use styx_sim::memory::Memory;
 
 use lemnos_contract_codec_block::work::Work;
 use lemnos_contract_codec_block::{
@@ -80,12 +81,14 @@ pub static REFUSE_JOBS: AtomicU32 = AtomicU32::new(0);
 pub const STREAM: &[u8] = include_bytes!("../../src/hevc/fixtures/idr320.h265");
 
 /// The board the tests run on: one `codec.block/1` device with eight job-stream buffers. Its jobs
-/// are the contract's `JOB_BYTES`, so the board follows the pinned contract's record size.
-pub fn board() -> String {
+/// are the contract's `JOB_BYTES`, so the board follows the pinned contract's record size. The
+/// stream is made of `memory`.
+pub fn board(memory: Memory) -> String {
+    let m = memory.line();
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-codec\"\n\
          [[devices]]\nid = \"codec\"\ndriver = \"sim-codec\"\n\
-         [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = {JOB_BYTES}\n"
+         [devices.streams.jobs]\nbuffers = 8\nbuffer_bytes = 131072\njob_slots = 8\njob_bytes = {JOB_BYTES}\n{m}"
     )
 }
 
@@ -97,14 +100,14 @@ pub fn socket_dir(name: &str) -> PathBuf {
 }
 
 /// Starts `lemnosd` in this process with the simulated block on its board. The socket is in a
-/// directory named after `name`.
-pub fn start(name: &str) -> (Service, PathBuf) {
+/// directory named after `name`, and the job stream is made of `memory`.
+pub fn start(name: &str, memory: Memory) -> (Service, PathBuf) {
     let dir = socket_dir(name);
     let socket = dir.join("sock");
     let config = ServiceConfig {
         socket: socket.clone(),
         name: "styx-block-test".to_string(),
-        board: parse(&board()).expect("board"),
+        board: parse(&board(memory)).expect("board"),
         drivers: vec![entry::<SimCodec>()],
         backend: Box::new(SimBoard::new()),
         options: Options {

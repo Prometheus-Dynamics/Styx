@@ -39,6 +39,7 @@ use styx_lemnos::{
 use crate::silicon::Fault;
 
 use crate::drivers::{self, SimIsp, SimReceiver, SimSensor};
+use crate::memory::Memory;
 use crate::scene::{self, Scene};
 use crate::silicon::{self, InForce, SensorTiming, Silicon};
 
@@ -228,6 +229,17 @@ impl SimCamera {
 
     /// Starts the simulated camera with the sensor's delays in `timing`.
     pub fn start_with(scene: Scene, mode: u16, timing: SensorTiming) -> Result<Self, Error> {
+        Self::start_on(scene, mode, timing, Memory::Shared)
+    }
+
+    /// Starts the simulated camera with its frames stream made of `memory`: with
+    /// [`Memory::DmaBuf`] each frame is rendered into a dma-buf the session maps writable.
+    pub fn start_on(
+        scene: Scene,
+        mode: u16,
+        timing: SensorTiming,
+        memory: Memory,
+    ) -> Result<Self, Error> {
         if !timing.is_honourable() {
             return Err(Error::Timing);
         }
@@ -240,7 +252,7 @@ impl SimCamera {
         silicon::register(&token, Arc::clone(&silicon));
         // The registration lives as long as the camera: a device the host binds again after a fault
         // finds its silicon by this token. A camera that fails to start gives it up here.
-        let result = Self::start_in(&dir, scene, mode, &token, silicon);
+        let result = Self::start_in(&dir, scene, mode, &token, silicon, memory);
         if result.is_err() {
             silicon::unregister(&token);
             let _ = fs::remove_dir_all(&dir);
@@ -254,9 +266,10 @@ impl SimCamera {
         mode: u16,
         token: &str,
         silicon: Arc<Silicon>,
+        memory: Memory,
     ) -> Result<Self, Error> {
         let socket = dir.join("sock");
-        let board = parse(&drivers::board(token, Some("csi0")))
+        let board = parse(&drivers::board(token, Some("csi0"), memory))
             .map_err(|e| Error::Daemon(format!("board: {e:?}")))?;
         let config = Config {
             socket: socket.clone(),

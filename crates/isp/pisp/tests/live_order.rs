@@ -33,7 +33,7 @@ fn start() -> (Service, PathBuf) {
     let config = Config {
         socket: socket.clone(),
         name: "styx-pisp-order".to_string(),
-        board: parse(&sim::board()).expect("board"),
+        board: parse(&sim::board(styx_sim::memory::Memory::Shared)).expect("board"),
         drivers: vec![entry::<sim::SimPisp>()],
         backend: Box::new(SimBoard::new()),
         options: Options {

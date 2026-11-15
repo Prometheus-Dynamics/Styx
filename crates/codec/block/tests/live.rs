@@ -4,6 +4,10 @@
 //! `lemnos-sim`. The session finds the device by tag, opens its job stream writable, and the
 //! HEVC decoder runs two IDR frames through it. Each picture comes back as a `FrameLease` over
 //! the job stream's memory, with no copy.
+//!
+//! The test runs twice: on a job stream of shared memory, then of dma-bufs (`memory = "dma-buf"`),
+//! which the session maps writable and writes each bitstream into. The second run needs a
+//! dma-heap this user may allocate from (see `styx_frame::dma_case` for a host without one).
 
 mod sim;
 
@@ -14,12 +18,21 @@ use styx_block::live::CODEC_TAG;
 use styx_block::{HevcDecoder, LiveSession, Session};
 use styx_codec_api::{CodecError, Decoder, FourCc};
 use styx_format::{MediaFormat, Resolution};
-use styx_frame::{FrameEntry, Layouts, PlaneLayout, copy_counters, packed_layouts};
+use styx_frame::{FrameEntry, Layouts, MemoryKind, PlaneLayout, copy_counters, packed_layouts};
 use styx_lemnos::Client;
+use styx_sim::memory::{Memory, dma_buf_case};
 
 #[test]
 fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_copies() {
-    let (service, socket) = sim::start("decode");
+    decode(Memory::Shared, MemoryKind::Memfd);
+    if dma_buf_case("codec block decode") {
+        decode(Memory::DmaBuf, MemoryKind::Dmabuf);
+    }
+}
+
+fn decode(memory: Memory, kind: MemoryKind) {
+    sim::JOBS.lock().unwrap().clear();
+    let (service, socket) = sim::start(&format!("decode-{memory:?}"), memory);
     let client = Client::connect(&socket, "styx-block-test").expect("connect");
     let device = client
         .find(CODEC_TAG)
@@ -52,6 +65,11 @@ fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_cop
         let mut input = pool
             .acquire(FrameEntry::new(frame, stamp, bitstream, layouts))
             .expect("bitstream buffer");
+        assert_eq!(
+            input.memory_kind(),
+            kind,
+            "the job stream is the board's memory"
+        );
         input.write().expect("writable").bytes()[..au.len()].copy_from_slice(&au);
 
         let layouts = packed_layouts(FourCc::NV12, 320, 240, None, None).unwrap();
