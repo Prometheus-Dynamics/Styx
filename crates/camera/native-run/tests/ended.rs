@@ -1,7 +1,6 @@
-//! What a session says for each kind of stream end. The simulator cannot provoke a device-failed
-//! or consumer-fault end (a device turned off for good needs a driver that fails its bind again and
-//! again, which the simulator does not do), so the four kinds are checked here as values: the
-//! session returns `Error::StreamEnded` with the kind and the words for it.
+//! What a session says for each kind of stream end, as values: the session returns
+//! `Error::StreamEnded` with the kind and the words for it. The device-failed and consumer-fault
+//! ends are also provoked on the simulated backend (`ends_sim.rs`).
 
 use styx_lemnos::StreamEnd;
 use styx_native_run::Error;

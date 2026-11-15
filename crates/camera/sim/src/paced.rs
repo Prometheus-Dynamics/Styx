@@ -34,7 +34,7 @@ use lemnos_contract_camera_sensor::{
     CameraSensor, Controls, FrameValues, GainRange, Mode, Rect, SensorInfo,
 };
 use lemnos_core::{
-    Config, ConfigError, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
+    Config, ConfigError, Health, Key, Kind, Lifecycle, Result, Status, StreamHandle, driver,
 };
 
 /// The settings the simulated sensor reads (see the module's list).
@@ -163,6 +163,13 @@ static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 pub static FAIL_STARTS: AtomicU32 = AtomicU32::new(0);
 /// While set, a running receiver makes no frames. Cleared when the receiver is stopped. Set by a test.
 pub static STALL_NOW: AtomicBool = AtomicBool::new(false);
+/// While set, every receiver reads as gone (`Health::Gone`: what it was bound with is dead): the
+/// host drops it and binds it again under the failure rule, and with the board's `auto_off_after`
+/// turns it off for good and ends its stream as device-failed. Set by a test.
+pub static GONE_RECEIVER: AtomicBool = AtomicBool::new(false);
+/// When set, the next receiver tick ends its frame stream's consumer for breaking the rules
+/// (`fault_consumer`), and clears it. Set by a test.
+pub static FAULT_CONSUMER: AtomicBool = AtomicBool::new(false);
 
 /// Takes the calls logged since the last call, in arrival order.
 #[must_use]
@@ -554,6 +561,14 @@ impl Lifecycle for SimReceiver {
     fn check_config<'a>(cfg: &Config<'a>) -> core::result::Result<(), ConfigError<'a>> {
         cfg.check_keys(RECEIVER_KEYS)
     }
+
+    fn health(&self) -> Health {
+        if GONE_RECEIVER.load(Ordering::Acquire) {
+            Health::Gone("the simulated receiver is set to be gone")
+        } else {
+            Health::Ok
+        }
+    }
     const TICKS: bool = true;
 
     fn start(needs: SimReceiverNeeds, cfg: &Config<'_>) -> Result<Self> {
@@ -572,6 +587,9 @@ impl Lifecycle for SimReceiver {
 
     /// Makes every frame due by `now_ns`, and returns when the next one is due.
     fn tick(&mut self, now_ns: u64) -> Option<u64> {
+        if self.run.is_some() && FAULT_CONSUMER.swap(false, Ordering::AcqRel) {
+            let _ = self.frames.fault_consumer();
+        }
         let run = self.run.as_mut()?;
         let mut next = match run.next_ns {
             Some(next) => next,
@@ -880,6 +898,8 @@ pub struct Board<'a> {
     pub source: Option<&'a str>,
     /// `csi0`'s `vary_bytes`.
     pub vary_bytes: bool,
+    /// `csi0`'s `auto_off_after`: failed attempts in a row before the host turns it off for good.
+    pub receiver_auto_off_after: Option<u32>,
 }
 
 /// A board text for `lemnosd`: an ISP `isp0`, a decoy receiver `csi-spare` with no link (listed
@@ -902,11 +922,14 @@ pub fn board_from(spec: Board<'_>) -> String {
     if spec.vary_bytes {
         receiver.push("vary_bytes = true".to_string());
     }
-    let receiver = if receiver.is_empty() {
+    let mut receiver = if receiver.is_empty() {
         String::new()
     } else {
         format!("config = {{ {} }}\n", receiver.join(", "))
     };
+    if let Some(after) = spec.receiver_auto_off_after {
+        receiver.push_str(&format!("auto_off_after = {after}\n"));
+    }
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-camera\"\n\
          [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
@@ -939,7 +962,7 @@ pub fn board_with(
         sensor_link,
         identity,
         source,
-        vary_bytes: false,
+        ..Board::default()
     })
 }
 
