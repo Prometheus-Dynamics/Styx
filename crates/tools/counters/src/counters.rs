@@ -1,7 +1,9 @@
 //! One camera's frame-path counters. Every update is an atomic operation: no lock, no allocation.
 //!
-//! One thread (the camera's) records frames; the publisher reads and resets the window at its own
-//! low rate. A read that races a frame may count that frame in the next window, never twice.
+//! One thread (the camera's) records frames; the publisher takes the window at its own low rate.
+//! A take that races a frame puts that frame in this window or the next, never in both and never
+//! in part: a window is always a whole run of frames (see [`Cell`] and
+//! [`CameraCounters::take_window`]).
 
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
 
@@ -70,13 +72,123 @@ pub struct CameraCounters {
     /// explain identity gaps: a gap the caller has already counted is not counted again.
     explained: AtomicU64,
     drops: [AtomicU64; DROP_REASONS],
-    age_min: AtomicU64,
-    age_max: AtomicU64,
-    age_hist: [AtomicU32; AGE_BUCKETS],
-    window_frames: AtomicU64,
-    window_first: Pair,
-    window_last: Pair,
+    /// How many times the publisher has asked for the window: the epoch a window is filled in.
+    cut: AtomicU64,
+    /// The window being filled, and the last one the camera's thread finished.
+    open: Cell,
+    done: Cell,
 }
+
+/// One window's numbers, written by the camera's thread alone and read whole by the publisher: a
+/// single-writer seqlock, as [`Pair`], over all of them. So the count, the first and last frame
+/// and the ages a reader gets are of the same frames.
+#[derive(Debug)]
+struct Cell {
+    seq: AtomicU64,
+    /// The epoch this window was started in (the value of `cut` then).
+    epoch: AtomicU64,
+    frames: AtomicU64,
+    min_age_ns: AtomicU64,
+    max_age_ns: AtomicU64,
+    hist: [AtomicU32; AGE_BUCKETS],
+    first_id: AtomicU64,
+    first_ns: AtomicU64,
+    last_id: AtomicU64,
+    last_ns: AtomicU64,
+}
+
+impl Cell {
+    fn new() -> Self {
+        Self {
+            seq: AtomicU64::new(0),
+            epoch: AtomicU64::new(0),
+            frames: AtomicU64::new(0),
+            min_age_ns: AtomicU64::new(u64::MAX),
+            max_age_ns: AtomicU64::new(0),
+            hist: std::array::from_fn(|_| AtomicU32::new(0)),
+            first_id: AtomicU64::new(0),
+            first_ns: AtomicU64::new(0),
+            last_id: AtomicU64::new(0),
+            last_ns: AtomicU64::new(0),
+        }
+    }
+
+    /// Opens a write: readers retry until [`Cell::end`]. Only the camera's thread writes.
+    ///
+    /// The mark is stored with a full barrier. The camera's thread reads the publisher's cut
+    /// next, and the publisher reads this mark after moving the cut: one of the two must see the
+    /// other's store, or a frame would go into a window the publisher has just taken without it.
+    fn begin(&self) -> u64 {
+        let s = self.seq.load(Ordering::Relaxed);
+        self.seq.store(s.wrapping_add(1), Ordering::SeqCst);
+        s
+    }
+
+    fn end(&self, s: u64) {
+        self.seq.store(s.wrapping_add(2), Ordering::Release);
+    }
+
+    /// The window as it is now, with no write open. Called inside a write of the cell it is
+    /// copied into, or by `read`.
+    fn load(&self) -> (u64, Window) {
+        (
+            self.epoch.load(Ordering::Relaxed),
+            Window {
+                frames: self.frames.load(Ordering::Relaxed),
+                min_age_ns: self.min_age_ns.load(Ordering::Relaxed),
+                max_age_ns: self.max_age_ns.load(Ordering::Relaxed),
+                hist: std::array::from_fn(|i| self.hist[i].load(Ordering::Relaxed)),
+                first_id: self.first_id.load(Ordering::Relaxed),
+                first_ns: self.first_ns.load(Ordering::Relaxed),
+                last_id: self.last_id.load(Ordering::Relaxed),
+                last_ns: self.last_ns.load(Ordering::Relaxed),
+            },
+        )
+    }
+
+    /// Stores `window` as the window of `epoch`. Called with a write open.
+    fn store(&self, epoch: u64, window: &Window) {
+        self.epoch.store(epoch, Ordering::Relaxed);
+        self.frames.store(window.frames, Ordering::Relaxed);
+        self.min_age_ns.store(window.min_age_ns, Ordering::Relaxed);
+        self.max_age_ns.store(window.max_age_ns, Ordering::Relaxed);
+        for (slot, n) in self.hist.iter().zip(window.hist) {
+            slot.store(n, Ordering::Relaxed);
+        }
+        self.first_id.store(window.first_id, Ordering::Relaxed);
+        self.first_ns.store(window.first_ns, Ordering::Relaxed);
+        self.last_id.store(window.last_id, Ordering::Relaxed);
+        self.last_ns.store(window.last_ns, Ordering::Relaxed);
+    }
+
+    /// The window and its epoch, never torn: a read that overlapped a write is made again.
+    fn read(&self) -> (u64, Window) {
+        loop {
+            let before = self.seq.load(Ordering::SeqCst);
+            if before & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let read = self.load();
+            fence(Ordering::Acquire);
+            if self.seq.load(Ordering::Relaxed) == before {
+                return read;
+            }
+        }
+    }
+}
+
+/// A window with no frame in it.
+const EMPTY: Window = Window {
+    frames: 0,
+    min_age_ns: u64::MAX,
+    max_age_ns: 0,
+    hist: [0; AGE_BUCKETS],
+    first_id: 0,
+    first_ns: 0,
+    last_id: 0,
+    last_ns: 0,
+};
 
 impl Default for CameraCounters {
     fn default() -> Self {
@@ -92,12 +204,9 @@ impl CameraCounters {
             last: Pair::default(),
             explained: AtomicU64::new(0),
             drops: std::array::from_fn(|_| AtomicU64::new(0)),
-            age_min: AtomicU64::new(u64::MAX),
-            age_max: AtomicU64::new(0),
-            age_hist: std::array::from_fn(|_| AtomicU32::new(0)),
-            window_frames: AtomicU64::new(0),
-            window_first: Pair::default(),
-            window_last: Pair::default(),
+            cut: AtomicU64::new(0),
+            open: Cell::new(),
+            done: Cell::new(),
         }
     }
 
@@ -120,15 +229,35 @@ impl CameraCounters {
         }
         self.last.set(id, timestamp_ns);
 
-        if self.window_frames.fetch_add(1, Ordering::Relaxed) == 0 {
-            self.window_first.set(id, timestamp_ns);
-        }
-        self.window_last.set(id, timestamp_ns);
-
+        // The frame goes into the open window, in one write of it. The publisher's cut is read
+        // inside that write: a take that has begun either sees this whole frame in the window it
+        // takes (the write ended before its read), or its read is made again after this write,
+        // which by then has seen the cut and put the frame in the next window.
         let age = now_ns.saturating_sub(timestamp_ns);
-        self.age_min.fetch_min(age, Ordering::Relaxed);
-        self.age_max.fetch_max(age, Ordering::Relaxed);
-        self.age_hist[bucket(age)].fetch_add(1, Ordering::Relaxed);
+        let write = self.open.begin();
+        let cut = self.cut.load(Ordering::SeqCst);
+        let (epoch, mut window) = self.open.load();
+        if epoch != cut {
+            // The publisher asked for the window: the one being filled is finished. It is kept
+            // whole for the publisher, and the next begins with this frame.
+            let kept = self.done.begin();
+            self.done.store(epoch, &window);
+            self.done.end(kept);
+            window = EMPTY;
+        }
+        if window.frames == 0 {
+            window.first_id = id;
+            window.first_ns = timestamp_ns;
+        }
+        window.frames += 1;
+        window.last_id = id;
+        window.last_ns = timestamp_ns;
+        window.min_age_ns = window.min_age_ns.min(age);
+        window.max_age_ns = window.max_age_ns.max(age);
+        let slot = &mut window.hist[bucket(age)];
+        *slot = slot.saturating_add(1);
+        self.open.store(cut, &window);
+        self.open.end(write);
     }
 
     /// Counts one frame the camera did not deliver, for `reason`. A frame the stream never
@@ -155,23 +284,34 @@ impl CameraCounters {
         self.last.get()
     }
 
-    /// Takes the window and starts the next one. Called by the publisher, not the frame path.
+    /// Takes the window and starts the next one. Called by the publisher, not the frame path, and
+    /// by one thread at a time.
+    ///
+    /// The publisher asks for the window by moving `cut` on, then reads what the camera's thread
+    /// was filling. If that is still the window of the epoch just ended, it is the finished
+    /// window (the next frame will start a new one). If the camera's thread has already started
+    /// the next, the finished one is the window it kept. A window of an older epoch was taken
+    /// before: no frame has come since, and this window is empty.
     pub fn take_window(&self) -> Window {
-        let frames = self.window_frames.swap(0, Ordering::Relaxed);
-        let min = self.age_min.swap(u64::MAX, Ordering::Relaxed);
-        let max = self.age_max.swap(0, Ordering::Relaxed);
-        let hist = std::array::from_fn(|i| self.age_hist[i].swap(0, Ordering::Relaxed));
-        let (first_id, first_ns) = self.window_first.get();
-        let (last_id, last_ns) = self.window_last.get();
+        let ended = self.cut.fetch_add(1, Ordering::SeqCst);
+        let (epoch, window) = self.open.read();
+        let window = if epoch == ended {
+            window
+        } else if epoch > ended {
+            match self.done.read() {
+                (kept, window) if kept == ended => window,
+                _ => EMPTY,
+            }
+        } else {
+            EMPTY
+        };
         Window {
-            frames,
-            min_age_ns: if frames == 0 { 0 } else { min },
-            max_age_ns: max,
-            hist,
-            first_id,
-            first_ns,
-            last_id,
-            last_ns,
+            min_age_ns: if window.frames == 0 {
+                0
+            } else {
+                window.min_age_ns
+            },
+            ..window
         }
     }
 }
@@ -277,5 +417,64 @@ mod tests {
         assert_eq!(bucket(2), 1);
         assert_eq!(bucket(1 << 20), 20);
         assert_eq!(bucket(u64::MAX), AGE_BUCKETS - 1);
+    }
+
+    /// The camera's thread records frames as fast as it can while the publisher takes windows as
+    /// fast as it can: every window is a whole run of frames (its count is its last identity
+    /// minus its first plus one, its times are those frames'), the windows follow one another
+    /// with no frame between them, and together they hold every frame once.
+    #[test]
+    fn a_window_taken_while_frames_arrive_is_a_whole_run_of_frames() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicBool;
+
+        const FRAMES: u64 = 2_000_000;
+        let counters = Arc::new(CameraCounters::new());
+        let done = Arc::new(AtomicBool::new(false));
+        let camera = {
+            let (counters, done) = (counters.clone(), done.clone());
+            std::thread::spawn(move || {
+                for id in 1..=FRAMES {
+                    counters.record_frame(id, id * 1_000, id * 1_000 + 7);
+                }
+                done.store(true, Ordering::Release);
+            })
+        };
+        let (mut total, mut windows, mut last) = (0_u64, 0_u64, 0_u64);
+        loop {
+            let finished = done.load(Ordering::Acquire);
+            let window = counters.take_window();
+            if window.frames > 0 {
+                windows += 1;
+                assert_eq!(
+                    window.first_id,
+                    last + 1,
+                    "window {windows} starts where the one before ended: {window:?}"
+                );
+                assert_eq!(
+                    window.frames,
+                    window.last_id - window.first_id + 1,
+                    "window {windows}: its count is its run of identities: {window:?}"
+                );
+                assert_eq!(window.first_ns, window.first_id * 1_000, "{window:?}");
+                assert_eq!(window.last_ns, window.last_id * 1_000, "{window:?}");
+                assert_eq!((window.min_age_ns, window.max_age_ns), (7, 7), "{window:?}");
+                assert_eq!(
+                    window.hist.iter().map(|&n| u64::from(n)).sum::<u64>(),
+                    window.frames,
+                    "{window:?}"
+                );
+                total += window.frames;
+                last = window.last_id;
+            }
+            if finished && window.frames == 0 {
+                break;
+            }
+        }
+        camera.join().expect("camera thread");
+        assert_eq!(total, FRAMES, "every frame is in one window");
+        println!(
+            "proof: {FRAMES} frames in {windows} windows taken while they arrived, each whole"
+        );
     }
 }
