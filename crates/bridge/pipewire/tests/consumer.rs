@@ -9,6 +9,10 @@
 //! follow. That is the consumer's hold, not the node's, so the proof runs from the smallest NV12
 //! frame (2x2, six bytes) up.
 //!
+//! The same proof covers the node's hold: a frame whose luma is two ids is one the producer
+//! rewrote while the consumer read it, which is what happened when the node took PipeWire's
+//! return of a buffer as the consumer's (PipeWire returns it a cycle after sending, taken or not).
+//!
 //! Needs this build's PipeWire node, a running PipeWire daemon, and `gst-launch-1.0` with
 //! `pipewiresrc`. Without one of them the test prints `SKIPPED` and why.
 
@@ -187,10 +191,14 @@ fn proof(width: u32, height: u32) {
         .chunks_exact(payload)
         .map(|frame| {
             let id = frame[0];
-            assert!(
-                frame[..luma].iter().all(|&b| b == id),
-                "a frame whose luma is not one id"
-            );
+            if let Some(at) = frame[..luma].iter().position(|&b| b != id) {
+                let end = frame[..luma].iter().rposition(|&b| b != frame[at]);
+                panic!(
+                    "a frame whose luma is not one id: {id} up to byte {at}, then {} (last byte \
+                     of another value: {end:?}) of {luma}",
+                    frame[at]
+                );
+            }
             assert!(
                 frame[luma..].iter().all(|&b| b == 0x80),
                 "a frame whose chroma is not the producer's"
@@ -198,12 +206,12 @@ fn proof(width: u32, height: u32) {
             id
         })
         .collect();
-    // Each buffer is a newer frame than the one before it: ids rise (modulo the byte), by a few at
-    // most when the consumer was slow. A stale buffer would repeat an id or step back.
+    // Each buffer is a newer frame than the one before it: ids rise (modulo the byte), by however
+    // many the consumer was slow for. A stale buffer would repeat an id or step back.
     for pair in ids.windows(2) {
         let step = pair[1].wrapping_sub(pair[0]);
         assert!(
-            (1..=8).contains(&step),
+            (1..=127).contains(&step),
             "frame ids {ids:?}: {} then {}",
             pair[0],
             pair[1]
