@@ -1,5 +1,5 @@
-//! MJPEG through FFmpeg: an encode and a decode with the libraries present. Skips, printing why,
-//! when FFmpeg is not installed.
+//! MJPEG through FFmpeg: an encode and a decode with the libraries present. Does not run, with the
+//! reason recorded, when FFmpeg is not installed.
 #![cfg(all(feature = "ffmpeg", target_os = "linux"))]
 
 use styx_codec_api::{CodecKind, Implementation, Registry, Request};
@@ -48,7 +48,7 @@ fn pool(payload: usize) -> FramePool {
 #[test]
 fn mjpeg_round_trip_through_ffmpeg() {
     if let Err(why) = styx_ffmpeg::available() {
-        eprintln!("skipped mjpeg_round_trip_through_ffmpeg: {why}");
+        styx_frame::not_run::not_run("ffmpeg", "MJPEG round trip through FFmpeg", &why);
         return;
     }
     let mut registry: Registry = Registry::new();

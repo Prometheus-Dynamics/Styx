@@ -197,8 +197,8 @@ fn a_processed_still_is_a_full_size_picture() {
 }
 
 /// Runs the standard readers that are installed on the DNG: `exiv2` must list its tags, and
-/// ImageMagick (through LibRaw) must decode it at the frame's size. Prints which ran; skips with
-/// a reason when neither is installed.
+/// ImageMagick (through LibRaw) must decode it at the frame's size. Prints which ran; does not run,
+/// with the reason recorded, when neither is installed.
 #[test]
 fn a_still_opens_in_a_standard_reader() {
     let mut camera = SimCamera::start(Scene::Pattern, MODE).expect("simulated camera");
@@ -229,7 +229,11 @@ fn a_still_opens_in_a_standard_reader() {
     let exiv2 = have("exiv2", "--version");
     let magick = have("magick", "-version");
     if !exiv2 && !magick {
-        eprintln!("SKIPPED: no standard DNG reader installed (exiv2, magick)");
+        styx_frame::not_run::not_run(
+            "dng-reader",
+            "DNG read by a standard reader",
+            "no standard DNG reader installed (exiv2, magick)",
+        );
         return;
     }
     let mut ran = Vec::new();

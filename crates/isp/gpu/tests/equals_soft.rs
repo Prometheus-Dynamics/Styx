@@ -1,6 +1,6 @@
 //! The GPU ISP (`styx-gpu`) equals the software ISP (`styx-soft`) bit for bit on the recorded raw
-//! frame: the picture planes and the statistics, and the goldens too. Each test skips with a
-//! printed reason when the host has no Vulkan device (the device is probed at run time).
+//! frame: the picture planes and the statistics, and the goldens too. Each test does not run, with
+//! the reason recorded, when the host has no Vulkan device (the device is probed at run time).
 #![cfg(feature = "vulkan")]
 
 #[path = "common/mod.rs"]
@@ -16,7 +16,11 @@ use styx_soft::params::{Demosaic, YuvMatrix};
 
 fn device() -> Option<GpuContext> {
     if styx_gpu::devices().is_empty() {
-        eprintln!("skipped: no suitable Vulkan device on this host");
+        styx_frame::not_run::not_run(
+            "gpu",
+            "GPU ISP equals soft ISP",
+            "no suitable Vulkan device on this host",
+        );
         return None;
     }
     match GpuContext::open(DeviceSelect::Auto) {
@@ -25,7 +29,7 @@ fn device() -> Option<GpuContext> {
             Some(ctx)
         }
         Err(e) => {
-            eprintln!("skipped: {e}");
+            styx_frame::not_run::not_run("gpu", "GPU ISP equals soft ISP", &format!("{e}"));
             None
         }
     }

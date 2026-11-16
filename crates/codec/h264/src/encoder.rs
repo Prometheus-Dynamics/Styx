@@ -275,7 +275,11 @@ mod tests {
         let mut child = match spawned {
             Ok(child) => child,
             Err(error) => {
-                eprintln!("skipped the FFmpeg decode check: no ffmpeg binary ({error})");
+                styx_frame::not_run::not_run(
+                    "ffmpeg",
+                    "FFmpeg decode check",
+                    &format!("no ffmpeg binary ({error})"),
+                );
                 return None;
             }
         };

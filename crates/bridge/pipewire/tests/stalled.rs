@@ -23,7 +23,8 @@
 //! stall seen from the node: no cycle passes, so the node frees nothing.
 //!
 //! Needs this build's PipeWire node and a running PipeWire daemon with a session manager.
-//! Without them the test prints `SKIPPED` and why.
+//! Without a daemon the proof is recorded as not run (`styx_frame::not_run`), or fails where
+//! PipeWire is required.
 
 #![cfg(all(target_os = "linux", feature = "pipewire"))]
 
@@ -36,7 +37,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Rig, no_node_or_daemon, one_at_a_time};
+use common::{Rig, daemon_for, one_at_a_time};
 use pipewire::spa::buffer::meta::MetaHeader;
 use pipewire::spa::param::ParamType;
 use pipewire::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
@@ -341,8 +342,7 @@ fn consume(node: &str, shared: &Arc<Shared>) -> Result<(), String> {
 }
 
 fn proof(name: &str, stall: u64, buffers: u32, until_resent: bool) {
-    if let Some(reason) = no_node_or_daemon() {
-        println!("SKIPPED: {reason}");
+    if !daemon_for(name) {
         return;
     }
     let _turn = one_at_a_time();
@@ -486,10 +486,6 @@ fn a_full_ring_sends_its_oldest_frame_again_and_the_consumer_sees_whole_frames()
 /// it, since the node learns the ring before it makes its stream.
 #[test]
 fn a_ring_below_the_minimum_is_refused_with_the_reason() {
-    if !styx_pipewire::node_built() {
-        println!("SKIPPED: this build has no PipeWire node (the `pipewire` feature is off)");
-        return;
-    }
     let rig = Rig::spawn(
         "styx-ring-of-two",
         WIDTH,

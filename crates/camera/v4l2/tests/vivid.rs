@@ -1,5 +1,5 @@
 //! The `vivid` test driver's capture node, on a machine that has one (a node whose card is
-//! `vivid`). Without one, each test prints why it skipped and passes.
+//! `vivid`). Without one, each test records why it did not run and passes.
 //!
 //! The nodes are chosen from sysfs and probed one by one; a virtual node (OBS's loopback camera on
 //! the dev PC) is never opened. The tests share one lock: they use the same device, and the copy
@@ -61,7 +61,7 @@ fn yuyv_config(device: &Device) -> Option<StreamConfig> {
 }
 
 fn skip(test: &str, why: &str) {
-    println!("SKIP {test}: {why}");
+    styx_frame::not_run::not_run("vivid", &format!("styx-v4l2 vivid {test}"), why);
 }
 
 #[test]

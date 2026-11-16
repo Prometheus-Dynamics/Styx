@@ -6,8 +6,8 @@
 //! side of that: the device opens with `Options::no_heap_access`, the frames are dma-heap buffers
 //! the test allocates as the producer would, and the shader must read their bytes correctly
 //! whichever way they arrived. It reports whether the first frame was imported or copied on this
-//! machine; it does not assert which, since that depends on the device. It skips, with the reason
-//! printed, when the dma-heap can't be opened or no usable device opens.
+//! machine; it does not assert which, since that depends on the device. It does not run, with the
+//! reason recorded, when the dma-heap can't be opened or no usable device opens.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
 mod support;
@@ -174,7 +174,11 @@ fn a_device_with_no_heap_access_reads_a_dma_buf_frame_whether_it_imports_or_copi
     let gpu = match open_gpu() {
         Ok(gpu) => gpu,
         Err(why) => {
-            println!("skipped: {why}");
+            styx_frame::not_run::not_run(
+                "gpu",
+                "a device with no heap access reads a dma-buf frame",
+                &why,
+            );
             return;
         }
     };
@@ -218,7 +222,11 @@ fn a_host_frame_on_a_device_with_no_heap_access_is_copied_from_its_bytes() {
     let gpu = match open_gpu() {
         Ok(gpu) => gpu,
         Err(why) => {
-            println!("skipped: {why}");
+            styx_frame::not_run::not_run(
+                "gpu",
+                "a host frame on a device with no heap access",
+                &why,
+            );
             return;
         }
     };

@@ -1,6 +1,6 @@
 //! A raw frame in a dma-buf from the system heap is imported (once per buffer) and read in place
-//! by the GPU ISP, and the picture equals the software ISP's on the same frame. Skips with a
-//! printed reason without a Vulkan device or a system dma-heap.
+//! by the GPU ISP, and the picture equals the software ISP's on the same frame. Does not run,
+//! with the reason recorded, without a Vulkan device or a system dma-heap.
 #![cfg(feature = "vulkan")]
 
 #[path = "common/mod.rs"]
@@ -29,11 +29,19 @@ fn rgb_bytes(lease: &styx_frame::FrameLease<()>) -> Vec<u8> {
 #[test]
 fn dmabuf_raw_is_read_in_place_and_equals_soft() {
     if styx_gpu::devices().is_empty() {
-        eprintln!("skipped: no suitable Vulkan device on this host");
+        styx_frame::not_run::not_run(
+            "gpu",
+            "dma-buf read in place equals soft",
+            "no suitable Vulkan device on this host",
+        );
         return;
     }
     let Ok(ctx) = GpuContext::open(DeviceSelect::Auto) else {
-        eprintln!("skipped: the Vulkan device did not open");
+        styx_frame::not_run::not_run(
+            "gpu",
+            "dma-buf read in place equals soft",
+            "the Vulkan device did not open",
+        );
         return;
     };
     let heap = match File::open("/dev/dma_heap/system") {

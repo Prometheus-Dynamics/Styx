@@ -107,11 +107,12 @@ fn zune_mjpeg_allocations_per_frame_are_reported() {
 }
 
 #[test]
+#[cfg(feature = "turbojpeg")]
 fn turbojpeg_allocations_per_frame_are_reported() {
     let mut dec = match MjpegDecoder::turbojpeg(FourCc::MJPG) {
         Ok(d) => d,
         Err(styx_codec_api::CodecError::Unavailable(why)) => {
-            eprintln!("SKIPPED turbojpeg allocation count: {why}");
+            styx_frame::not_run::not_run("turbojpeg", "turbojpeg allocations per frame", &why);
             return;
         }
         Err(e) => panic!("{e}"),

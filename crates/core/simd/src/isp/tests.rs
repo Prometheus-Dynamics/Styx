@@ -734,30 +734,27 @@ fn lut_cases() -> (Vec<u16>, [[u8; 257]; 5]) {
 }
 
 /// The AVX-512 VBMI tone table where the CPU has it, saying which happened: CI's log line
-/// ("ran on AVX-512 VBMI" or "skipped: no AVX-512 here") records whether a run exercised it.
+/// ("ran on AVX-512 VBMI", or the `NOT RUN [avx512]` line) records whether a run exercised it.
+/// Built only on x86 with the `x86` feature.
 #[test]
+#[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
 fn avx512vbmi_tone_leaf() {
-    #[cfg(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64")))]
-    {
-        let f = X86FeatureSet::detect();
-        if !f.avx512vbmi {
-            eprintln!("skipped: no AVX-512 here");
-            return;
-        }
-        let (src, shapes) = lut_cases();
-        for nodes in shapes {
-            let lut = ToneLut::from_nodes(nodes);
-            let mut want = vec![0u8; src.len()];
-            scalar::lut_row(&src, &mut want, lut.full(), src.len());
-            let mut got = vec![0u8; src.len()];
-            let (backend, done) = x86::lut_row(f, &src, &mut got, &lut, src.len()).unwrap();
-            assert_eq!(backend, SimdBackend::X86Avx512Vbmi);
-            assert_eq!(got[..done], want[..done]);
-        }
-        eprintln!("ran on AVX-512 VBMI");
+    let f = X86FeatureSet::detect();
+    if !f.avx512vbmi {
+        styx_frame::not_run::not_run("avx512", "AVX-512 VBMI tone table", "no AVX-512 here");
+        return;
     }
-    #[cfg(not(all(feature = "x86", any(target_arch = "x86", target_arch = "x86_64"))))]
-    eprintln!("skipped: no AVX-512 here");
+    let (src, shapes) = lut_cases();
+    for nodes in shapes {
+        let lut = ToneLut::from_nodes(nodes);
+        let mut want = vec![0u8; src.len()];
+        scalar::lut_row(&src, &mut want, lut.full(), src.len());
+        let mut got = vec![0u8; src.len()];
+        let (backend, done) = x86::lut_row(f, &src, &mut got, &lut, src.len()).unwrap();
+        assert_eq!(backend, SimdBackend::X86Avx512Vbmi);
+        assert_eq!(got[..done], want[..done]);
+    }
+    eprintln!("ran on AVX-512 VBMI");
 }
 
 /// The quadratic tone curve's leaves against its scalar evaluation, bit for bit: a fitted

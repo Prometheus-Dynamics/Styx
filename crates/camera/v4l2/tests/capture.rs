@@ -1,6 +1,6 @@
 //! Runs on a V4L2 capture node when the machine has one: a webcam, a loopback device with a
-//! producer, or a vivid device. Without one, each test prints why it skipped and passes. CI
-//! cannot load kernel modules, so there these tests skip.
+//! producer, or a vivid device. Without one, each test records why it did not run and passes. CI
+//! cannot load kernel modules, so there these tests do not run.
 
 #![cfg(target_os = "linux")]
 
@@ -31,7 +31,11 @@ fn first_stream_target() -> Option<(PathBuf, FourCc, u32, u32)> {
 fn probe_lists_capture_nodes_formats_and_controls() {
     let found = physical_devices();
     if found.is_empty() {
-        println!("SKIP probe: no V4L2 capture node on this machine");
+        styx_frame::not_run::not_run(
+            "camera",
+            "styx-v4l2 capture probe",
+            "no V4L2 capture node on this machine",
+        );
         return;
     }
     for device in &found {
@@ -71,14 +75,22 @@ fn probe_lists_capture_nodes_formats_and_controls() {
 #[test]
 fn a_stream_delivers_frames_from_the_first_capture_node() {
     let Some((path, code, width, height)) = first_stream_target() else {
-        println!("SKIP stream: no V4L2 capture node with a discrete size on this machine");
+        styx_frame::not_run::not_run(
+            "camera",
+            "styx-v4l2 capture stream",
+            "no V4L2 capture node with a discrete size on this machine",
+        );
         return;
     };
     let config = StreamConfig::new(code, width, height);
     let stream = match Stream::start(&path, config) {
         Ok(stream) => stream,
         Err(e) => {
-            println!("SKIP stream: {} did not start: {e}", path.display());
+            styx_frame::not_run::not_run(
+                "camera",
+                "styx-v4l2 capture stream",
+                &format!("{} did not start: {e}", path.display()),
+            );
             return;
         }
     };
@@ -119,9 +131,13 @@ fn a_stream_delivers_frames_from_the_first_capture_node() {
     );
     println!("state={:?}", status.state);
     if frames == 0 {
-        println!(
-            "SKIP stream: {} started but delivered no frames in 3 s (no producer feeding it?)",
-            path.display()
+        styx_frame::not_run::not_run(
+            "camera",
+            "styx-v4l2 capture stream",
+            &format!(
+                "{} started but delivered no frames in 3 s (no producer feeding it?)",
+                path.display()
+            ),
         );
         return;
     }

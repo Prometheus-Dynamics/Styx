@@ -38,6 +38,8 @@ mod fd;
 mod layout;
 mod lease;
 mod memory;
+#[cfg(feature = "std")]
+pub mod not_run;
 mod pool;
 
 pub use copies::{COPY_INTO, CopyCounter, copy_counters};

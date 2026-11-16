@@ -46,7 +46,9 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/libcamera-prefix/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$HOME/libcamera-prefix/lib" >> "$GITHUB_ENV"
       # The proofs with a real PipeWire consumer need a daemon and a session manager. The gate
-      # then refuses to skip them (STYX_REQUIRE_PIPEWIRE).
+      # then refuses to pass them over (STYX_REQUIRE_PIPEWIRE), as it does the C caller's proof
+      # (STYX_REQUIRE_CC: the runner has a C compiler). Every other case that cannot run here (no
+      # camera, no GPU, no dma-heap, no test driver) is listed in the job summary as not run.
       - name: PipeWire daemon
         run: ./scripts/ci-pipewire.sh
       # The hosted runner may have no dma-heap: its dma-buf cases are then skipped, counted, and
@@ -55,3 +57,4 @@ jobs:
         env:
           STYX_REQUIRE_DMA_HEAP: "0"
           STYX_REQUIRE_PIPEWIRE: "1"
+          STYX_REQUIRE_CC: "1"

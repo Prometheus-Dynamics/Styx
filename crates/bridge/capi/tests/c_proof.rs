@@ -8,7 +8,8 @@
 //! same entry points from Rust for everything else: a control landing on its frame, planes,
 //! descriptors, the metadata record, the counters decoder and the copy counters.
 //!
-//! The C half skips with a printed reason when there is no C compiler; the Rust half always runs.
+//! The C half does not run, with the reason recorded, when there is no C compiler; the Rust half
+//! always runs.
 
 use styx_sim::paced as sim;
 
@@ -249,7 +250,7 @@ fn check_proof(out: &str, mode: &str) -> String {
 /// Builds and runs the C caller on `socket`, when there is a C compiler.
 fn c_caller(dir: &Path, mode: &str, socket: &Path) {
     let Some(cc) = cc() else {
-        println!("C caller skipped: no C compiler (cc) on this machine");
+        styx_frame::not_run::not_run("cc", "C caller", "no C compiler (cc) on this machine");
         return;
     };
     let exe = build_proof(dir, cc, &staticlib());
