@@ -36,16 +36,21 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Rig, no_node_or_daemon};
+use common::{Rig, no_node_or_daemon, one_at_a_time};
+use pipewire::spa::buffer::meta::MetaHeader;
 use pipewire::spa::param::ParamType;
 use pipewire::spa::param::format::{FormatProperties, MediaSubtype, MediaType};
 use pipewire::spa::param::video::VideoFormat;
 use pipewire::spa::pod::serialize::PodSerializer;
-use pipewire::spa::pod::{Pod, Value, object, property};
-use pipewire::spa::sys::{SPA_IO_Position, spa_io_position};
-use pipewire::spa::utils::{Direction, Fraction, Rectangle, SpaTypes};
+use pipewire::spa::pod::{Object, Pod, Property, Value, object, property};
+use pipewire::spa::sys::{
+    SPA_IO_Position, SPA_META_Header, SPA_PARAM_META_size, SPA_PARAM_META_type, spa_io_position,
+    spa_meta_header,
+};
+use pipewire::spa::utils::{Direction, Fraction, Id, Rectangle, SpaTypes};
 use pipewire::stream::{StreamBox, StreamFlags};
 use pipewire::{context::ContextRc, keys, main_loop::MainLoopRc, properties::properties};
+use styx_pipewire::Control;
 
 const WIDTH: u32 = 160;
 const HEIGHT: u32 = 120;
@@ -58,7 +63,8 @@ const EVERY: usize = 5;
 /// One buffer as the consumer saw it.
 #[derive(Debug, Clone, Copy)]
 struct Taken {
-    id: u8,
+    /// The frame's id from the buffer's header (its low byte is the frame's luma, checked).
+    seq: u64,
     /// The producer's frames tried while this buffer was held, 0 when it was not held.
     stalled: u64,
     /// The graph cycles that passed meanwhile, by the graph clock.
@@ -70,6 +76,9 @@ struct Shared {
     attempts: Arc<AtomicU64>,
     /// How many of the producer's frames a stall lasts.
     stall: u64,
+    /// Set when a stall is made with no buffer held and lasts until the node has sent a frame
+    /// again: the node's status, to read that count.
+    until_resent: Option<Arc<Control>>,
     taken: Mutex<Vec<Taken>>,
     /// The first thing that was wrong with a buffer, if anything was.
     fault: Mutex<Option<String>>,
@@ -133,6 +142,9 @@ fn on_process(stream: &pipewire::stream::Stream, shared: &Arc<Shared>) {
     let Some(mut buffer) = stream.dequeue_buffer() else {
         return;
     };
+    let Some(seq) = buffer.find_meta::<MetaHeader>().map(MetaHeader::seq) else {
+        return shared.fail("a buffer with no header: no frame id to order by".into());
+    };
     let datas = buffer.datas_mut();
     let Some(data) = datas.first_mut() else {
         return;
@@ -154,11 +166,15 @@ fn on_process(stream: &pipewire::stream::Stream, shared: &Arc<Shared>) {
         Ok(id) => id,
         Err(how) => return shared.fail(format!("a torn frame when taken: {how}")),
     };
+    if seq as u8 != id {
+        return shared.fail(format!("the header says frame {seq}, the frame is {id}"));
+    }
     let count = shared.taken.lock().expect("taken").len();
     // Every buffer is held until the producer has tried one more frame, and every `EVERY`th
     // through a stall of `stall` frames: this thread is the consumer's side of the link, and it
     // does nothing meanwhile. The sleep is only how often it looks at the producer's count.
-    let stall = shared.stall > 0 && count % EVERY == EVERY - 1;
+    let stall_now = shared.stall > 0 && count % EVERY == EVERY - 1;
+    let stall = stall_now && shared.until_resent.is_none();
     let wait = if stall { shared.stall } else { 1 };
     let from = shared.attempts.load(Ordering::Acquire);
     let clock = shared.clock();
@@ -192,9 +208,25 @@ fn on_process(stream: &pipewire::stream::Stream, shared: &Arc<Shared>) {
             }
         }
     }
+    // The other stall: the buffer is given back first, so the consumer holds nothing, and then
+    // this thread does nothing until the node has sent a frame again. With nothing held and
+    // nothing taken, every buffer of a small ring ends up holding a frame still on the link.
+    drop(buffer);
+    if let (true, Some(control)) = (stall_now, &shared.until_resent) {
+        let from = shared.attempts.load(Ordering::Acquire);
+        let clock = shared.clock();
+        let resent = control.status().stats.resent;
+        while control.status().stats.resent == resent && !shared.give_up.load(Ordering::Acquire) {
+            thread::sleep(Duration::from_millis(1));
+        }
+        stalled = (shared.attempts.load(Ordering::Acquire) - from).max(1);
+        if let (Some((before, _)), Some((after, duration))) = (clock, shared.clock()) {
+            cycles = after.wrapping_sub(before) / duration.max(1);
+        }
+    }
     let mut taken = shared.taken.lock().expect("taken");
     taken.push(Taken {
-        id,
+        seq,
         stalled,
         cycles,
     });
@@ -266,7 +298,26 @@ fn consume(node: &str, shared: &Arc<Shared>) -> Result<(), String> {
         .map_err(|e| format!("format: {e:?}"))?
         .0
         .into_inner();
-    let mut params = [Pod::from_bytes(&bytes).ok_or("format pod")?];
+    // The header is how a consumer learns a frame's id: ask for it.
+    let header = Value::Object(Object {
+        type_: SpaTypes::ObjectParamMeta.as_raw(),
+        id: ParamType::Meta.as_raw(),
+        properties: vec![
+            Property::new(SPA_PARAM_META_type, Value::Id(Id(SPA_META_Header))),
+            Property::new(
+                SPA_PARAM_META_size,
+                Value::Int(size_of::<spa_meta_header>() as i32),
+            ),
+        ],
+    });
+    let header = PodSerializer::serialize(Cursor::new(Vec::new()), &header)
+        .map_err(|e| format!("header: {e:?}"))?
+        .0
+        .into_inner();
+    let mut params = [
+        Pod::from_bytes(&bytes).ok_or("format pod")?,
+        Pod::from_bytes(&header).ok_or("header pod")?,
+    ];
     stream
         .connect(
             Direction::Input,
@@ -289,15 +340,17 @@ fn consume(node: &str, shared: &Arc<Shared>) -> Result<(), String> {
     Ok(())
 }
 
-fn proof(name: &str, stall: u64) {
+fn proof(name: &str, stall: u64, buffers: u32, until_resent: bool) {
     if let Some(reason) = no_node_or_daemon() {
         println!("SKIPPED: {reason}");
         return;
     }
-    let rig = Rig::start(name, WIDTH, HEIGHT, Duration::from_millis(10));
+    let _turn = one_at_a_time();
+    let rig = Rig::start(name, WIDTH, HEIGHT, Duration::from_millis(10), buffers);
     let shared = Arc::new(Shared {
         attempts: rig.attempts.clone(),
         stall,
+        until_resent: until_resent.then(|| rig.control.clone()),
         taken: Mutex::new(Vec::new()),
         fault: Mutex::new(None),
         done: AtomicBool::new(false),
@@ -333,42 +386,68 @@ fn proof(name: &str, stall: u64) {
         "the consumer took {} of {BUFFERS} buffers: {status:?}\n{taken:?}",
         taken.len()
     );
-    // No frame is seen twice: a repeat is a stale buffer handed over again.
-    let mut ids: Vec<u8> = taken.iter().map(|t| t.id).collect();
-    ids.sort_unstable();
-    ids.dedup();
-    assert_eq!(ids.len(), taken.len(), "a frame seen twice: {taken:?}");
     // A step forward of more than one is skipped frames; a step back is an older frame handed
-    // over after a newer one (whole, as checked when it was taken and again before it was let go).
-    let (mut skipped, mut back) = (0_u64, Vec::new());
+    // over after a newer one, and a step of none a frame handed over again. Each was whole, as
+    // checked when it was taken and again before it was let go.
+    let (mut skipped, mut back, mut again) = (0_u64, Vec::new(), 0_u64);
     for pair in taken.windows(2) {
-        let step = pair[1].id.wrapping_sub(pair[0].id);
-        if (1..=127).contains(&step) {
-            skipped += u64::from(step) - 1;
-        } else {
-            back.push((pair[0].id, pair[1].id));
+        match pair[1].seq.cmp(&pair[0].seq) {
+            std::cmp::Ordering::Greater => skipped += pair[1].seq - pair[0].seq - 1,
+            std::cmp::Ordering::Less => back.push((pair[0].seq, pair[1].seq)),
+            std::cmp::Ordering::Equal => again += 1,
         }
     }
+    let mut seen: Vec<u64> = taken.iter().map(|t| t.seq).collect();
+    seen.sort_unstable();
+    seen.dedup();
+    let twice = taken.len() - seen.len();
+    // The header's frame id is what lets a consumer put this right: keeping only frames whose id
+    // is above the last one kept gives each frame once, in order.
+    let mut kept: Vec<u64> = Vec::new();
+    for frame in &taken {
+        if kept.last().is_none_or(|&last| frame.seq > last) {
+            kept.push(frame.seq);
+        }
+    }
+    assert!(kept.is_sorted_by(|a, b| a < b), "{kept:?}");
     let stalls: Vec<&Taken> = taken.iter().filter(|t| t.stalled > 0).collect();
     let expected = if stall == 0 { 0 } else { BUFFERS / EVERY };
     assert_eq!(stalls.len(), expected, "{taken:?}");
-    assert!(stalls.iter().all(|t| t.stalled >= stall), "{taken:?}");
-    // The ring is four buffers and the consumer holds one, so of the frames the producer tried
-    // during a stall at most three can still be waiting when it ends: the rest are skipped.
-    let least = stalls.len() as u64 * stall.saturating_sub(4);
+    // A frame is handed over twice only when the node sent it again.
     assert!(
-        skipped >= least,
-        "{skipped} frames skipped over {} stalls of {stall}, at least {least} expected: {taken:?}",
-        stalls.len()
+        twice as u64 <= stats.resent,
+        "{twice} frames seen twice, {} sent again: {taken:?}",
+        stats.resent
     );
+    if until_resent {
+        // Every stall ended because the node sent a frame again.
+        assert!(
+            stats.resent >= stalls.len() as u64,
+            "{} frames sent again over {} stalls: {taken:?}",
+            stats.resent,
+            stalls.len()
+        );
+    } else {
+        assert!(stalls.iter().all(|t| t.stalled >= stall), "{taken:?}");
+        // The consumer holds one buffer, so of the frames the producer tried during a stall at
+        // most the rest of the ring can still be waiting when it ends: the others are skipped.
+        let least = stalls.len() as u64 * stall.saturating_sub(u64::from(buffers));
+        assert!(
+            skipped >= least,
+            "{skipped} frames skipped over {} stalls of {stall}, at least {least} expected: \
+             {taken:?}",
+            stalls.len()
+        );
+    }
     let cycles: Vec<u64> = stalls.iter().map(|t| t.cycles).collect();
     println!(
-        "proof: a consumer stalled {} times for {stall} frames each took {} whole frames, \
-         {skipped} skipped, none torn or seen twice, older-after-newer {back:?}; graph cycles per stall \
-         {cycles:?}; the producer \
+        "proof: a consumer of a {buffers}-buffer ring stalled {} times took {} whole frames, none \
+         torn: {skipped} skipped, older-after-newer {back:?}, the same again {again}, seen twice \
+         {twice}, {} kept by the header's order; graph cycles per stall {cycles:?}; the producer \
          tried {attempts} frames and found no buffer free for {no_buffer}; node {stats:?}",
         stalls.len(),
-        taken.len()
+        taken.len(),
+        kept.len()
     );
 }
 
@@ -377,17 +456,28 @@ fn proof(name: &str, stall: u64) {
 /// `pipewiresrc` does not check: this is the consumer that shows it.
 #[test]
 fn a_consumer_that_maps_the_buffers_itself_reads_whole_frames() {
-    proof("styx-map-buffers", 0);
+    proof("styx-map-buffers", 0, 4, false);
 }
 
 /// A consumer that overruns its cycle: stopped for two of the producer's frames.
 #[test]
 fn a_consumer_that_overruns_its_cycle_sees_whole_frames() {
-    proof("styx-stall-short", 2);
+    proof("styx-stall-short", 2, 4, false);
 }
 
 /// A consumer stopped for three times the ring: twelve of the producer's frames.
 #[test]
 fn a_consumer_stalled_past_the_whole_ring_sees_whole_frames() {
-    proof("styx-stall-long", 12);
+    proof("styx-stall-long", 12, 4, false);
+}
+
+/// A ring of two, and a consumer that holds nothing and takes nothing until the node has sent a
+/// frame again. One buffer holds a frame still on the link and the producer keeps the other for
+/// its newest, so no frame can follow, and the node sends the held one again instead of
+/// stopping. (With three or more buffers and every send's area known, later frames replace
+/// earlier ones on the link and nothing needs sending again.) The consumer sees whole frames,
+/// most of them again, and the node counts each one it sent again.
+#[test]
+fn a_full_ring_sends_its_oldest_frame_again_and_the_consumer_sees_whole_frames() {
+    proof("styx-stall-resend", 1, 2, true);
 }

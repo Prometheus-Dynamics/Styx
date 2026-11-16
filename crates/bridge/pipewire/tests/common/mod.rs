@@ -1,4 +1,4 @@
-//! What the consumer proofs share: a producer whose four buffers are one memfd cut at offsets,
+//! What the consumer proofs share: a producer whose buffers are one memfd cut at offsets,
 //! writing frames whose luma is the frame's id, and the node that offers them to PipeWire.
 
 #![allow(dead_code)]
@@ -39,6 +39,14 @@ pub fn has_pipewiresrc() -> bool {
         .is_ok_and(|s| s.success())
 }
 
+/// The proofs in one test binary share the machine's PipeWire daemon, and one of them stops a
+/// consumer on PipeWire's data thread: they take turns, so that one proof's stall is not another's.
+pub fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    TURN.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// A running producer and node.
 pub struct Rig {
     pub name: String,
@@ -75,9 +83,10 @@ fn publish(producer: &mut Producer, id: u64, width: u32, height: u32) -> bool {
 }
 
 impl Rig {
-    /// Starts a producer of `width`x`height` NV12 frames every `period`, and the node named
+    /// Starts a producer of `width`x`height` NV12 frames every `period` in a ring of `buffers`,
+    /// and the node named
     /// `name` on it, and waits until the node streams from the producer.
-    pub fn start(name: &str, width: u32, height: u32, period: Duration) -> Self {
+    pub fn start(name: &str, width: u32, height: u32, period: Duration, buffers: u32) -> Self {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
         let socket = dir.join(format!("{name}.sock"));
         let stop = Arc::new(AtomicBool::new(false));
@@ -92,7 +101,7 @@ impl Rig {
                 listener.set_nonblocking(true).expect("nonblocking");
                 let mut producer = Producer::new(ProducerConfig {
                     payload: (width * height) as usize * 3 / 2,
-                    buffers: 4,
+                    buffers: buffers as usize,
                     history: 8,
                 })
                 .expect("producer");

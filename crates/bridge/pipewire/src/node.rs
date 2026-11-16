@@ -3,6 +3,23 @@
 //! off (250 ms doubling to 5 s), and when a producer returns the node learns its buffers and
 //! connects the stream again with them. The stream is pipewire-rs; its loop ticks every 2 ms.
 //!
+//! # What a consumer sees
+//!
+//! Every frame a consumer takes is whole, and stays whole while the consumer holds it: the node
+//! gives a buffer back to the producer only when no consumer has it or can still take it (the
+//! rule and what it rests on are in `hold.rs`).
+//!
+//! Frames are not promised in order. A consumer that keeps up gets them in order. One that
+//! stalls skips frames, and when it runs again it can be handed an older frame after a newer one
+//! (a PipeWire link holds up to two sent buffers, read in turn), or a frame it was handed before
+//! (when every buffer held a frame it could still take, the node sent the oldest again rather
+//! than stop; [`NodeStats::resent`] counts those).
+//!
+//! Each buffer carries PipeWire's header metadata for a consumer that asks for it
+//! (`SPA_META_Header`): `seq` is the frame's id and `pts` its capture time in nanoseconds. That
+//! is the only ordering signal there is. A consumer that needs order drops any frame whose `seq`
+//! is not above the last one it kept.
+//!
 //! The caller holds a [`Control`]: it starts the run on one thread, and from any thread reads
 //! [`Control::status`] and calls [`Control::stop`].
 
@@ -79,8 +96,9 @@ pub struct NodeStats {
     pub released: u64,
     /// Frames in an index the node did not learn (the producer's ring has more buffers).
     pub unknown: u64,
-    /// Frames sent to PipeWire a second time: every buffer held a frame a consumer could still
-    /// take, so the node sent the oldest again instead of stopping.
+    /// Frames sent to PipeWire again: the frames the node held, each still takeable by a
+    /// consumer, left the producer no buffer to write to, so the node sent the oldest again
+    /// instead of stopping.
     pub resent: u64,
 }
 
@@ -204,6 +222,11 @@ pub const fn node_built() -> bool {
 #[cfg(feature = "pipewire")]
 const CLOCK_CYCLE_AT: usize = 148;
 
+/// How many of the node's graph cycles with no send pass before a starved node sends a held frame
+/// again: long enough for a replacement to settle and its buffer to be freed first.
+#[cfg(feature = "pipewire")]
+const RESEND_CYCLES: u64 = 2 * crate::hold::SETTLE_CYCLES + 1;
+
 /// The most buffers a PipeWire stream holds.
 #[cfg(feature = "pipewire")]
 const MAX_BUFFERS: usize = 64;
@@ -309,6 +332,9 @@ struct Pump {
 /// A frame taken from the producer, held in `slot` until it is queued or dropped.
 #[cfg(feature = "pipewire")]
 struct Pulled {
+    /// The frame's id and capture time, for the buffer's header.
+    id: u64,
+    timestamp_ns: u64,
     index: usize,
     len: u32,
     stride: u32,
@@ -349,9 +375,12 @@ impl Pump {
             .first()
             .map_or(0, |plane| plane.stride as u32);
         let len = lease.layouts().span().unwrap_or(0) as u32;
+        let (id, timestamp_ns) = (lease.id(), lease.timestamp_ns());
         self.stats.frames += 1;
         self.slots[slot] = Some(frame);
         Some(Pulled {
+            id,
+            timestamp_ns,
             index,
             len,
             stride,
@@ -410,8 +439,13 @@ struct Ring {
     holds: Holds,
     /// The buffer on its way out: one is sent at a time, so each send's cycle can be read.
     in_flight: Option<InFlight>,
+    /// The node's cycle count at its last send.
+    last_send: u64,
     /// Each buffer's busy count, null when the buffers carry none.
     busy: Vec<*const pipewire::spa::sys::spa_meta_busy>,
+    /// Each buffer's header, where the frame's id and time go, null when the consumer did not
+    /// ask for one.
+    header: Vec<*mut pipewire::spa::sys::spa_meta_header>,
 }
 
 #[cfg(feature = "pipewire")]
@@ -438,7 +472,9 @@ impl Ring {
             cycles: 0,
             holds: Holds::new(0),
             in_flight: None,
+            last_send: 0,
             busy: Vec::new(),
+            header: Vec::new(),
         }
     }
 
@@ -476,6 +512,7 @@ impl Ring {
         self.holds.clear(count);
         self.in_flight = None;
         self.busy = vec![ptr::null(); count];
+        self.header = vec![ptr::null_mut(); count];
         self.n_avail = 0;
         self.added = 0;
         // The frames of the old buffers are dropped here, not released: their consumers are gone
@@ -539,9 +576,10 @@ impl Ring {
         }
     }
 
-    /// Whether a consumer is counted on buffer `index` now.
-    fn consumer_on(&self, index: usize) -> bool {
-        self.busy_count(index) > u32::from(self.holds.is_back(index))
+    /// How many consumers are counted on buffer `index` now.
+    fn consumers_on(&self, index: usize) -> u32 {
+        self.busy_count(index)
+            .saturating_sub(u32::from(self.holds.is_back(index)))
     }
 
     /// One look at the graph: counts the cycle, sees whether the buffer in flight has gone out
@@ -572,9 +610,9 @@ impl Ring {
                 self.in_flight = None;
             }
         }
-        let mut on = [false; MAX_BUFFERS];
+        let mut on = [0_u32; MAX_BUFFERS];
         for (index, on) in on.iter_mut().enumerate().take(self.token.len()) {
-            *on = self.consumer_on(index);
+            *on = self.consumers_on(index);
         }
         let Self {
             holds,
@@ -689,6 +727,15 @@ fn on_add_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
     r.busy[index] = busy
         .cast::<pipewire::spa::sys::spa_meta_busy>()
         .cast_const();
+    // SAFETY: as for the busy count; null when the buffers carry no header.
+    let header = unsafe {
+        pipewire::spa::sys::spa_buffer_find_meta_data(
+            spa,
+            pipewire::spa::sys::SPA_META_Header,
+            size_of::<pipewire::spa::sys::spa_meta_header>(),
+        )
+    };
+    r.header[index] = header.cast::<pipewire::spa::sys::spa_meta_header>();
     r.pw[index] = buffer;
 }
 
@@ -724,6 +771,7 @@ fn on_remove_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
         r.in_flight = None;
     }
     r.busy[index] = ptr::null();
+    r.header[index] = ptr::null_mut();
     r.pw[index] = ptr::null_mut();
 }
 
@@ -805,9 +853,28 @@ fn connect_stream(stream: &Stream, format: Format) -> Result<(), i32> {
             ),
         ],
     }))?;
+    // Each buffer carries a header for a consumer that asks for one: the frame's id as `seq` and
+    // its capture time as `pts`. A consumer needs them: see the module's note on order.
+    let header_pod = serialize(&Value::Object(Object {
+        type_: SpaTypes::ObjectParamMeta.as_raw(),
+        id: ParamType::Meta.as_raw(),
+        properties: vec![
+            Property::new(
+                pipewire::spa::sys::SPA_PARAM_META_type,
+                Value::Id(pipewire::spa::utils::Id(
+                    pipewire::spa::sys::SPA_META_Header,
+                )),
+            ),
+            Property::new(
+                pipewire::spa::sys::SPA_PARAM_META_size,
+                Value::Int(size_of::<pipewire::spa::sys::spa_meta_header>() as i32),
+            ),
+        ],
+    }))?;
     let format_pod = Pod::from_bytes(&format_pod).ok_or(-1)?;
     let buffers_pod = Pod::from_bytes(&buffers_pod).ok_or(-1)?;
-    let mut params = [format_pod, buffers_pod];
+    let header_pod = Pod::from_bytes(&header_pod).ok_or(-1)?;
+    let mut params = [format_pod, buffers_pod, header_pod];
     stream
         .connect(
             Direction::Output,
@@ -889,37 +956,6 @@ fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Cont
     }
     let seen = snapshot(stream);
     ring.borrow_mut().settle(seen);
-    // Every buffer holds a frame a consumer could still take, and nothing but a take will change
-    // that: the oldest goes out again, to replace what is on the link.
-    let again = {
-        let r = ring.borrow();
-        if r.io && r.n_avail == 0 && r.in_flight.is_none() {
-            r.holds
-                .stuck(|index| r.consumer_on(index))
-                .map(|index| (index, r.pw[index]))
-        } else {
-            None
-        }
-    };
-    if let Some((index, raw)) = again
-        && !raw.is_null()
-    {
-        {
-            let mut r = ring.borrow_mut();
-            r.holds.send(index);
-            r.in_flight = Some(InFlight {
-                index,
-                before: seen,
-            });
-            r.pump.stats.resent += 1;
-        }
-        // SAFETY: `raw` is a buffer the node has back from PipeWire (`stuck` gives only those)
-        // with its frame and chunk as they were sent. It is queued once, here.
-        unsafe {
-            (*raw).size = 1;
-            stream.queue_raw_buffer(raw);
-        }
-    }
     // Pull a frame only when a consumer is linked, a buffer is free for it, and the last send
     // has gone out: one buffer is in flight at a time.
     loop {
@@ -962,6 +998,23 @@ fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Cont
             (*chunk).stride = pulled.stride as i32;
             (*chunk).flags = 0;
         }
+        let header = ring
+            .borrow()
+            .header
+            .get(index)
+            .copied()
+            .unwrap_or(ptr::null_mut());
+        if !header.is_null() {
+            // SAFETY: `header` points into the metadata of this buffer, which the node holds
+            // (checked above) and so may write until it is queued.
+            unsafe {
+                (*header).flags = 0;
+                (*header).offset = 0;
+                (*header).pts = pulled.timestamp_ns as i64;
+                (*header).dts_offset = 0;
+                (*header).seq = pulled.id;
+            }
+        }
         {
             let mut r = ring.borrow_mut();
             r.token[index] = Some(pulled.slot);
@@ -972,10 +1025,46 @@ fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Cont
                 index,
                 before: snapshot(stream),
             });
+            r.last_send = r.cycles;
         }
         // SAFETY: `raw` was dequeued from this stream and is filled now. It is queued once, here,
         // which is the return path PipeWire expects for it. Its size is one, so that PipeWire's
         // count of what is queued says when it has gone out.
+        unsafe {
+            (*raw).size = 1;
+            stream.queue_raw_buffer(raw);
+        }
+    }
+    // The frames the node holds leave the producer nothing to write to: all its buffers but one
+    // (which it keeps for its newest frame) hold a frame a consumer could still take, and no
+    // frame has come for a while. Waiting changes nothing, so the oldest held frame goes out
+    // again: it replaces what is on the link, and a consumer that is running takes it.
+    let again = {
+        let r = ring.borrow();
+        let starved = r.holds.held() + 1 >= r.pw.len() && r.cycles >= r.last_send + RESEND_CYCLES;
+        if r.io && r.in_flight.is_none() && starved {
+            r.holds
+                .oldest_held(|index| r.consumers_on(index) > 0)
+                .map(|index| (index, r.pw[index]))
+        } else {
+            None
+        }
+    };
+    if let Some((index, raw)) = again
+        && !raw.is_null()
+    {
+        {
+            let mut r = ring.borrow_mut();
+            r.holds.send(index);
+            r.in_flight = Some(InFlight {
+                index,
+                before: seen,
+            });
+            r.last_send = r.cycles;
+            r.pump.stats.resent += 1;
+        }
+        // SAFETY: `raw` is a buffer the node has back from PipeWire (`oldest_held` gives only
+        // those) with its frame, chunk and header as they were sent. It is queued once, here.
         unsafe {
             (*raw).size = 1;
             stream.queue_raw_buffer(raw);

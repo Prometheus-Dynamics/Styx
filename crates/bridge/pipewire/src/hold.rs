@@ -17,15 +17,17 @@
 //!   v4l2 source recycles on the same return.
 //!
 //! So a buffer is free when PipeWire has given it back, no consumer is counted on it, and either
-//! a consumer was seen counted on it since the send (it took it, and cannot again), or a later
-//! send has replaced it in its area and [`SETTLE_CYCLES`] have passed since (a consumer that read
-//! the area just before the replacement has counted itself by then).
+//! a consumer was seen to take it as many times as it was sent (each send can be taken once), or
+//! later sends have replaced every send of it in its area and [`SETTLE_CYCLES`] have passed since
+//! (a consumer that read the area just before the replacement has counted itself by then).
 //!
 //! The node does not always know which area a send went to (it learns the cycle of a send from
 //! PipeWire's time snapshot, and its thread can be late). Such a send replaces nothing, and is
 //! itself replaced only when both areas have been written by later sends whose areas are known.
-//! If that leaves nothing free and nothing that waiting will free, the node sends again a frame
-//! it still holds ([`Holds::stuck`]): an older whole frame for the consumer, never a torn one.
+//! When the frames the node holds leave the producer nothing to write to, the node sends again
+//! the oldest frame it still holds ([`Holds::oldest_held`]): the send replaces what was in its
+//! area, and a consumer that is running takes it. That is an older whole frame for the consumer,
+//! or one it has had before; never a torn one.
 //!
 //! This module is the rule alone, with no PipeWire in it, so that its model test can try every
 //! short history.
@@ -43,22 +45,35 @@ pub(crate) enum Area {
 }
 
 /// How many unresolved sends of one buffer the node keeps track of. A buffer is sent again only
-/// by [`Holds::stuck`], and not once it has this many.
+/// by [`Holds::oldest_held`], and not once it has this many.
 const MAX_SENDS: usize = 4;
+
+/// One send of a buffer that may still be in an area.
+#[derive(Debug, Clone, Copy)]
+struct Sent {
+    /// Its order among all sends.
+    seq: u64,
+    /// `None` until it is seen to have gone out.
+    area: Option<Area>,
+    /// The node's cycle count when it first knew a later send had replaced this one in its area.
+    replaced: Option<u64>,
+}
 
 #[derive(Debug, Clone, Copy)]
 struct Out {
-    /// Each send of this buffer that may still be in an area: its order among all sends, and
-    /// the area, `None` for the newest until it is seen to have gone out.
-    sends: [(u64, Option<Area>); MAX_SENDS],
+    /// The sends of this buffer that may still be in an area, oldest first. One that was replaced
+    /// [`SETTLE_CYCLES`] ago is dropped from the list.
+    sends: [Sent; MAX_SENDS],
     count: usize,
     /// PipeWire has given the buffer back since the newest send.
     back: bool,
-    /// A consumer was seen counted on the buffer, and the buffer has been sent once only: the
-    /// consumer took that send. With more than one send it is not known which was taken.
-    taken: bool,
-    /// The node's cycle count when it first knew every send was replaced in its area.
-    replaced: Option<u64>,
+    /// How many times a consumer was seen to become counted on the buffer: each is one send
+    /// taken, though not which. A take and return between two looks is not seen, which only
+    /// keeps the buffer longer. When a replaced send is dropped, one take is dropped with it: it
+    /// may have been the take of that send.
+    takes: usize,
+    /// How many consumers were counted on the buffer at the last look.
+    was_on: u32,
 }
 
 /// What the node holds in each ring buffer.
@@ -83,19 +98,26 @@ impl Holds {
     /// holds its frame) sent again.
     pub(crate) fn send(&mut self, index: usize) {
         self.sends += 1;
+        let empty = Sent {
+            seq: 0,
+            area: None,
+            replaced: None,
+        };
         let mut out = self.slots[index].unwrap_or(Out {
-            sends: [(0, None); MAX_SENDS],
+            sends: [empty; MAX_SENDS],
             count: 0,
             back: false,
-            taken: false,
-            replaced: None,
+            takes: 0,
+            was_on: 0,
         });
         debug_assert!(out.count < MAX_SENDS);
-        out.sends[out.count] = (self.sends, None);
+        out.sends[out.count] = Sent {
+            seq: self.sends,
+            ..empty
+        };
         out.count += 1;
         out.back = false;
-        out.taken = false;
-        out.replaced = None;
+        out.was_on = 0;
         self.slots[index] = Some(out);
     }
 
@@ -104,11 +126,11 @@ impl Holds {
         let Some(out) = self.slots[index].as_mut() else {
             return;
         };
-        let (seq, at) = &mut out.sends[out.count - 1];
-        *at = Some(area);
+        let sent = &mut out.sends[out.count - 1];
+        sent.area = Some(area);
         if let Area::Known(area) = area {
             let latest = &mut self.latest[usize::from(area & 1)];
-            *latest = (*latest).max(*seq);
+            *latest = (*latest).max(sent.seq);
         }
     }
 
@@ -138,27 +160,25 @@ impl Holds {
         }
     }
 
-    /// Whether every send of `out` has gone out and been replaced in its area.
-    fn replaced(&self, out: &Out) -> bool {
-        out.sends[..out.count]
-            .iter()
-            .all(|&(seq, area)| match area {
-                None => false,
-                Some(Area::Known(area)) => self.latest[usize::from(area & 1)] > seq,
-                Some(Area::Unknown) => self.latest[0] > seq && self.latest[1] > seq,
-            })
+    /// Whether a later send has been written to the area `sent` is in.
+    fn replaced(&self, sent: &Sent) -> bool {
+        match sent.area {
+            None => false,
+            Some(Area::Known(area)) => self.latest[usize::from(area & 1)] > sent.seq,
+            Some(Area::Unknown) => self.latest[0] > sent.seq && self.latest[1] > sent.seq,
+        }
     }
 
     fn flying(out: &Out) -> bool {
-        out.sends[out.count - 1].1.is_none()
+        out.sends[out.count - 1].area.is_none()
     }
 
-    /// Frees what can be freed at the node's cycle count `cycle`, given which buffers a consumer
-    /// is counted on now, and calls `freed` with each.
+    /// Frees what can be freed at the node's cycle count `cycle`, given how many consumers are
+    /// counted on each buffer now, and calls `freed` with each.
     pub(crate) fn settle(
         &mut self,
         cycle: u64,
-        consumer_on: impl Fn(usize) -> bool,
+        consumers_on: impl Fn(usize) -> u32,
         mut freed: impl FnMut(usize),
     ) {
         for index in 0..self.slots.len() {
@@ -168,43 +188,79 @@ impl Holds {
             if Self::flying(&out) {
                 continue;
             }
-            let on = consumer_on(index);
-            out.taken |= on && out.count == 1;
-            if out.replaced.is_none() && self.replaced(&out) {
-                out.replaced = Some(cycle);
+            let on = consumers_on(index);
+            out.takes += on.saturating_sub(out.was_on) as usize;
+            out.was_on = on;
+            // Drop each send that was replaced long enough ago: it can no longer be taken.
+            let mut kept = 0;
+            for at in 0..out.count {
+                let mut sent = out.sends[at];
+                if sent.replaced.is_none() && self.replaced(&sent) {
+                    sent.replaced = Some(cycle);
+                }
+                if sent
+                    .replaced
+                    .is_some_and(|since| cycle >= since + SETTLE_CYCLES)
+                {
+                    out.takes = out.takes.saturating_sub(1);
+                } else {
+                    out.sends[kept] = sent;
+                    kept += 1;
+                }
             }
-            let gone = out.taken || out.replaced.is_some_and(|at| cycle >= at + SETTLE_CYCLES);
-            if out.back && !on && gone {
+            out.count = kept;
+            if out.back && on == 0 && out.takes >= out.count {
                 self.slots[index] = None;
                 freed(index);
+            } else if out.count == 0 {
+                // Nothing of it is on the link, and it is not back or a consumer still has it:
+                // keep the buffer with a send that is already resolved.
+                out.sends[0] = Sent {
+                    seq: 0,
+                    area: Some(Area::Known(0)),
+                    replaced: Some(cycle),
+                };
+                out.count = 1;
+                out.takes = 1;
+                self.slots[index] = Some(out);
             } else {
                 self.slots[index] = Some(out);
             }
         }
     }
 
-    /// The buffer to send again, when every buffer holds a frame and nothing but a consumer's
-    /// take can free one: all have gone out and come back, and none is counted on, taken or
-    /// replaced. It is the buffer whose newest send is oldest, so the frames come round in order.
-    pub(crate) fn stuck(&self, consumer_on: impl Fn(usize) -> bool) -> Option<usize> {
+    /// The buffer to send again: the one whose newest send is oldest, among those that have gone
+    /// out and come back, that no consumer is counted on, and that waiting will not free (not
+    /// every send of it taken, and not every one replaced). `None` when there is none, or it has been sent too
+    /// many times to keep track of.
+    pub(crate) fn oldest_held(&self, consumer_on: impl Fn(usize) -> bool) -> Option<usize> {
         let mut oldest: Option<(u64, usize)> = None;
         for (index, slot) in self.slots.iter().enumerate() {
-            let out = slot.as_ref()?;
+            let Some(out) = slot else {
+                continue;
+            };
             if Self::flying(out)
                 || !out.back
-                || out.taken
-                || out.replaced.is_some()
-                || self.replaced(out)
+                || out.takes >= out.count
+                || out.sends[..out.count]
+                    .iter()
+                    .all(|sent| self.replaced(sent))
+                || out.count >= MAX_SENDS
                 || consumer_on(index)
             {
-                return None;
+                continue;
             }
-            let seq = out.sends[out.count - 1].0;
-            if out.count < MAX_SENDS && oldest.is_none_or(|(least, _)| seq < least) {
+            let seq = out.sends[out.count - 1].seq;
+            if oldest.is_none_or(|(least, _)| seq < least) {
                 oldest = Some((seq, index));
             }
         }
         oldest.map(|(_, index)| index)
+    }
+
+    /// How many buffers hold a frame.
+    pub(crate) fn held(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.is_some()).count()
     }
 
     /// Forgets every frame, for a new stream connection.
@@ -223,7 +279,11 @@ mod model {
 
     fn settled(holds: &mut Holds, cycle: u64, on: impl Fn(usize) -> bool) -> Vec<usize> {
         let mut freed = Vec::new();
-        holds.settle(cycle, on, |index| freed.push(index));
+        holds.settle(
+            cycle,
+            |index| u32::from(on(index)),
+            |index| freed.push(index),
+        );
         freed
     }
 
@@ -259,9 +319,11 @@ mod model {
         Give(u8),
         /// A graph cycle passes with no send.
         Idle,
+        /// The node sends its oldest held frame again; `true` when it learns the area.
+        Again(bool),
     }
 
-    const STEPS: [Step; 9] = [
+    const STEPS: [Step; 10] = [
         Step::Send(true),
         Step::Send(false),
         Step::Take(0),
@@ -270,7 +332,8 @@ mod model {
         Step::Give(1),
         Step::Give(2),
         Step::Idle,
-        Step::Idle,
+        Step::Again(true),
+        Step::Again(false),
     ];
 
     fn explore(
@@ -300,11 +363,11 @@ mod model {
             seen[2] += u64::from(world.resent > 0);
             return;
         }
-        for &step in STEPS.iter().take(8) {
+        for &step in &STEPS {
             let mut holds = holds.clone();
             let mut world = world.clone();
             match step {
-                Step::Send(known) => {
+                Step::Send(known) | Step::Again(known) => {
                     // A cycle in which the node sends: what was sent last cycle comes back.
                     world.cycle += 1;
                     world.counted.clone_from(&world.held);
@@ -313,16 +376,19 @@ mod model {
                             holds.came_back(index);
                         }
                     }
-                    let free = world.free.iter().position(|&f| f);
-                    let index = match free {
-                        Some(index) => index,
-                        None => match holds.stuck(|i| world.counted[i]) {
+                    let index = if matches!(step, Step::Send(_)) {
+                        match world.free.iter().position(|&f| f) {
+                            Some(index) => index,
+                            None => continue,
+                        }
+                    } else {
+                        match holds.oldest_held(|i| world.counted[i]) {
                             Some(index) => {
                                 world.resent += 1;
                                 index
                             }
                             None => continue,
-                        },
+                        }
                     };
                     world.free[index] = false;
                     holds.send(index);
@@ -371,7 +437,7 @@ mod model {
             let counted = world.counted.clone();
             holds.settle(
                 world.cycle,
-                |i| counted[i],
+                |i| u32::from(counted[i]),
                 |index| {
                     world.free[index] = true;
                     world.freed += 1;
@@ -409,7 +475,7 @@ mod model {
     #[test]
     fn no_history_frees_a_buffer_a_consumer_holds_or_can_take() {
         let mut total = [0_u64; 3];
-        for (buffers, depth) in [(2, 10), (3, 9)] {
+        for (buffers, depth) in [(2, 9), (3, 8)] {
             for areas in [1, 2] {
                 let seen = run(buffers, areas, depth);
                 // The rule is not safe by never freeing: buffers are freed, and frames sent again,
@@ -487,7 +553,7 @@ mod model {
     }
 
     #[test]
-    fn a_full_ring_nothing_can_free_sends_its_oldest_frame_again() {
+    fn the_oldest_held_frame_is_the_one_to_send_again() {
         let mut holds = Holds::new(2);
         for index in 0..2 {
             holds.send(index);
@@ -495,10 +561,39 @@ mod model {
             holds.came_back(index);
         }
         assert!(settled(&mut holds, 5, |_| false).is_empty());
-        assert_eq!(holds.stuck(|_| false), Some(0));
-        // Not while a consumer is on one: that will free it.
-        assert_eq!(holds.stuck(|i| i == 1), None);
+        assert_eq!(holds.oldest_held(|_| false), Some(0));
+        // Not one a consumer is on: that will free it.
+        assert_eq!(holds.oldest_held(|i| i == 0), Some(1));
         holds.send(0);
-        assert_eq!(holds.stuck(|_| false), None, "a send is in flight");
+        assert_eq!(
+            holds.oldest_held(|_| false),
+            Some(1),
+            "buffer 0 is in flight"
+        );
+    }
+
+    /// A frame sent twice is free once it was taken twice: each send can be taken once.
+    #[test]
+    fn a_frame_sent_twice_is_free_when_it_was_taken_twice() {
+        let mut holds = Holds::new(1);
+        holds.send(0);
+        holds.went_out(0, Area::Known(0));
+        holds.came_back(0);
+        holds.send(0);
+        holds.went_out(0, Area::Known(1));
+        holds.came_back(0);
+        assert!(
+            settled(&mut holds, 1, |_| true).is_empty(),
+            "taken once, held"
+        );
+        assert!(
+            settled(&mut holds, 2, |_| false).is_empty(),
+            "one send still on the link"
+        );
+        assert!(
+            settled(&mut holds, 3, |_| true).is_empty(),
+            "taken again, held"
+        );
+        assert_eq!(settled(&mut holds, 4, |_| false), [0]);
     }
 }

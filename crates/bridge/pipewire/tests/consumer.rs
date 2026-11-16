@@ -26,7 +26,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Rig, has_pipewiresrc, no_node_or_daemon};
+use common::{Rig, has_pipewiresrc, no_node_or_daemon, one_at_a_time};
 
 const FRAMES: usize = 40;
 
@@ -65,7 +65,8 @@ fn proof(width: u32, height: u32) {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
     let out = dir.join(format!("pw-{width}x{height}.raw"));
     let _ = fs::remove_file(&out);
-    let rig = Rig::start(&name, width, height, Duration::from_millis(33));
+    let _turn = one_at_a_time();
+    let rig = Rig::start(&name, width, height, Duration::from_millis(33), 4);
     let control = rig.control.clone();
 
     // The consumer: `FRAMES` buffers from the node, by its name, written as they are.
