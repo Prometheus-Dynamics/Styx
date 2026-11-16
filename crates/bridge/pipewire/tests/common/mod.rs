@@ -21,15 +21,37 @@ use styx_pipewire::{
 };
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
-/// Why no proof with a PipeWire consumer can run here, if none can.
+/// Why no proof with a PipeWire consumer can run here, if none can. Under
+/// `STYX_REQUIRE_PIPEWIRE=1` (CI, which starts a daemon for these proofs) that is a failure, not
+/// a skip: a skipped proof must not read as a passed one.
 pub fn no_node_or_daemon() -> Option<String> {
-    if !node_built() {
-        return Some("this build has no PipeWire node (the `pipewire` feature is off)".into());
+    let reason = if !node_built() {
+        Some("this build has no PipeWire node (the `pipewire` feature is off)".to_string())
+    } else {
+        let remote = std::env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
+        match std::env::var_os("XDG_RUNTIME_DIR") {
+            None => {
+                Some("XDG_RUNTIME_DIR is not set, so there is no PipeWire daemon socket".into())
+            }
+            Some(runtime) if !Path::new(&runtime).join(&remote).exists() => {
+                Some("no PipeWire daemon socket under XDG_RUNTIME_DIR".into())
+            }
+            Some(_) => None,
+        }
+    };
+    refuse_a_required_skip(reason)
+}
+
+/// Passes `reason` on, unless these proofs are required here and the build has the node.
+pub fn refuse_a_required_skip(reason: Option<String>) -> Option<String> {
+    let required = std::env::var_os("STYX_REQUIRE_PIPEWIRE").is_some_and(|v| v == "1");
+    if let Some(reason) = &reason
+        && required
+        && node_built()
+    {
+        panic!("STYX_REQUIRE_PIPEWIRE=1 and the PipeWire consumer proof cannot run: {reason}");
     }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
-    let remote = std::env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
-    (!Path::new(&runtime).join(&remote).exists())
-        .then(|| "no PipeWire daemon socket under XDG_RUNTIME_DIR".into())
+    reason
 }
 
 /// Whether GStreamer's `pipewiresrc` is installed.

@@ -26,14 +26,16 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Rig, has_pipewiresrc, no_node_or_daemon, one_at_a_time};
+use common::{Rig, has_pipewiresrc, no_node_or_daemon, one_at_a_time, refuse_a_required_skip};
 
 const FRAMES: usize = 40;
 
 /// Why this test cannot run here, if it cannot.
 fn missing() -> Option<String> {
     no_node_or_daemon().or_else(|| {
-        (!has_pipewiresrc()).then(|| "no gst-inspect-1.0 with a pipewiresrc element".into())
+        refuse_a_required_skip(
+            (!has_pipewiresrc()).then(|| "no gst-inspect-1.0 with a pipewiresrc element".into()),
+        )
     })
 }
 
