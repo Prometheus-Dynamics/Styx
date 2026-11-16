@@ -25,6 +25,25 @@ jobs:
       # rust-toolchain.toml selects the toolchain and its components.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # Every feature is built and tested: a feature left out would not be covered. GStreamer and
+      # PipeWire come from the runner's packages; libcamera is built from source (the packaged
+      # one is older than the versions styx-libcamera is checked against) and cached.
+      - name: GStreamer, PipeWire and libcamera's build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools \
+            libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
+            meson ninja-build pkg-config python3-yaml python3-ply python3-jinja2 libyaml-dev
+      - uses: actions/cache@v4
+        with:
+          path: ~/libcamera-prefix
+          key: libcamera-v0.6.0-${{ runner.os }}-${{ hashFiles('scripts/ci-libcamera.sh') }}
+      - name: libcamera from source
+        run: |
+          ./scripts/ci-libcamera.sh "$HOME/libcamera-prefix"
+          echo "PKG_CONFIG_PATH=$HOME/libcamera-prefix/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "LD_LIBRARY_PATH=$HOME/libcamera-prefix/lib" >> "$GITHUB_ENV"
       # The hosted runner may have no dma-heap: its dma-buf cases are then skipped, counted, and
       # reported in the job summary (scripts/gate.sh), not failed and not green as tested.
       - run: ./scripts/gate.sh

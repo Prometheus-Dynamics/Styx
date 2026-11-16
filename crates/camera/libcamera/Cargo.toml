@@ -10,19 +10,18 @@ homepage.workspace = true
 
 [features]
 default = []
-# The libcamera binding. Built only when pkg-config finds libcamera; otherwise a stub reports it
-# unavailable, so the feature is safe to enable on machines without the library.
-libcamera = ["dep:libc"]
+# The libcamera binding: lit-robotics libcamera-rs (libcamera-sys for the C API, libcamera for the
+# control ids of the installed libcamera). Needs libcamera found by pkg-config. Without the
+# feature, a stub reports libcamera unavailable.
+libcamera = ["dep:libc", "dep:libcamera-sys", "dep:libcamera"]
 
 [dependencies]
 styx-controls = { path = "../../core/controls" }
 styx-format = { path = "../../core/format", default-features = false }
 styx-frame = { path = "../../core/frame", features = ["std", "linux"] }
 libc = { version = "0.2", optional = true }
-
-[build-dependencies]
-cc = "1"
-pkg-config = "0.3"
+libcamera-sys = { version = "=0.7.0", optional = true }
+libcamera = { version = "=0.7.0", optional = true }
 
 [lints]
 workspace = true

@@ -1,4 +1,4 @@
-//! The libcamera binding: cameras, configuration, dma-buf frames and requests, over the C shim.
+//! The libcamera binding: cameras, configuration, dma-buf frames and requests, over libcamera-sys (the C API of lit-robotics libcamera-rs).
 //!
 //! Frames are meant to be zero-copy, and are not yet run on a camera (proof: PR H6): each libcamera
 //! buffer's dma-buf is mapped once (read-only) as a [`FdMemory`] in one [`FramePool`] per stream,
@@ -27,15 +27,14 @@ use crate::sys;
 use crate::{CameraInfo, CaptureConfig, CaptureStats, DeviceEntry, Error, FrameSink, StreamFormat};
 use styx_controls::{DeviceControl, DeviceKind, Rect};
 
-/// The shim's control ids (`styx_control_id`).
+/// Styx's control names, as [`sys::styx_control_id`] numbers them.
 const CTRL_EXPOSURE_TIME: c_int = 0;
 const CTRL_ANALOGUE_GAIN: c_int = 1;
 const CTRL_DIGITAL_GAIN: c_int = 2;
 const CTRL_SENSOR_TIMESTAMP: c_int = 3;
 
 fn control_id(which: c_int) -> u32 {
-    // SAFETY: a pure accessor over libcamera's static control ids; no state is touched.
-    unsafe { sys::styx_control_id(which as u32) }
+    sys::styx_control_id(which as u32)
 }
 
 /// The process-wide camera manager. libcamera allows one CameraManager per process (a second is
@@ -88,7 +87,7 @@ impl Manager {
                 out.push(Camera(cam));
             }
         }
-        // SAFETY: the list was created by the shim and is not used after this.
+        // SAFETY: the list was created by the C API and is not used after this.
         unsafe { sys::libcamera_camera_list_destroy(list) };
         out
     }
@@ -117,7 +116,7 @@ impl Camera {
     }
 
     /// Generated configuration for `role`; the caller frees it through [`Configuration`].
-    fn configuration(&self, role: c_int) -> Option<Configuration> {
+    fn configuration(&self, role: sys::Role) -> Option<Configuration> {
         // SAFETY: the camera is live and the role array lives for the call.
         let raw =
             unsafe { sys::libcamera_camera_generate_configuration(self.0.as_ptr(), &role, 1) };
@@ -397,7 +396,8 @@ fn request_sensor_timestamp(request: *mut sys::Request) -> Option<u64> {
         if list.is_null() {
             return None;
         }
-        let value = sys::libcamera_control_list_get(list, control_id(CTRL_SENSOR_TIMESTAMP));
+        let value =
+            sys::libcamera_control_list_get(list.cast_mut(), control_id(CTRL_SENSOR_TIMESTAMP));
         if value.is_null() || sys::libcamera_control_value_num_elements(value) == 0 {
             return None;
         }
@@ -419,7 +419,7 @@ fn request_value<T: Copy>(request: *mut sys::Request, which: c_int) -> Option<T>
         if list.is_null() {
             return None;
         }
-        let value = sys::libcamera_control_list_get(list, control_id(which));
+        let value = sys::libcamera_control_list_get(list.cast_mut(), control_id(which));
         if value.is_null() || sys::libcamera_control_value_num_elements(value) == 0 {
             return None;
         }
@@ -533,7 +533,9 @@ fn list_controls(camera: &Camera) -> Vec<Listed> {
             let id = sys::libcamera_control_info_map_iter_key(iter);
             let info = sys::libcamera_control_info_map_iter_value(iter) as *mut sys::ControlInfo;
             sys::libcamera_control_info_map_iter_next(iter);
-            let control = sys::libcamera_control_from_id(id);
+            // The C API's id lookups and getters read only; its bindings differ on `const`, so
+            // the pointer is cast where a getter is declared `*mut`.
+            let control = sys::libcamera_control_from_id(id).cast_mut();
             if control.is_null() || info.is_null() {
                 continue;
             }
@@ -592,13 +594,14 @@ fn number(value: *const sys::ControlValue, ty: u32) -> f64 {
 /// The camera's `ScalerCropMaximum`, when it reports one.
 fn crop_maximum(camera: &Camera) -> Option<Rect> {
     // SAFETY: the camera is live; its property list is read while it lives, and the id is the
-    // one the shim names for `ScalerCropMaximum`.
+    // one libcamera names for `ScalerCropMaximum`.
     unsafe {
         let properties = sys::libcamera_camera_properties(camera.0.as_ptr());
         if properties.is_null() {
             return None;
         }
-        let value = sys::libcamera_control_list_get(properties, sys::styx_property_id(0));
+        let value =
+            sys::libcamera_control_list_get(properties.cast_mut(), sys::styx_property_id(0));
         if value.is_null() || sys::libcamera_control_value_num_elements(value) == 0 {
             return None;
         }
@@ -831,7 +834,7 @@ impl Capture {
         let callback = unsafe {
             sys::libcamera_camera_request_completed_connect(
                 camera.0.as_ptr(),
-                on_request_completed,
+                Some(on_request_completed),
                 (&mut *inner) as *mut Inner as *mut c_void,
             )
         };

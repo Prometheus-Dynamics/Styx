@@ -7,7 +7,7 @@
 
 use styx_controls::{Control, DeviceKind, Rect};
 
-/// libcamera's control types, as the shim numbers them (`libcamera_control_type`).
+/// libcamera's control types, as the C API numbers them (`libcamera_control_type`).
 pub(crate) const TYPE_BOOL: u32 = 1;
 pub(crate) const TYPE_INT32: u32 = 5;
 pub(crate) const TYPE_INT64: u32 = 6;
