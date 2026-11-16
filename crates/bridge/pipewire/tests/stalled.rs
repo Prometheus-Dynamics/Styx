@@ -481,3 +481,41 @@ fn a_consumer_stalled_past_the_whole_ring_sees_whole_frames() {
 fn a_full_ring_sends_its_oldest_frame_again_and_the_consumer_sees_whole_frames() {
     proof("styx-stall-resend", 1, 2, true);
 }
+
+/// The node refuses a ring of two, saying why, and waits: no PipeWire consumer is needed to see
+/// it, since the node learns the ring before it makes its stream.
+#[test]
+fn a_ring_below_the_minimum_is_refused_with_the_reason() {
+    if !styx_pipewire::node_built() {
+        println!("SKIPPED: this build has no PipeWire node (the `pipewire` feature is off)");
+        return;
+    }
+    let rig = Rig::spawn(
+        "styx-ring-of-two",
+        WIDTH,
+        HEIGHT,
+        Duration::from_millis(10),
+        2,
+        false,
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let refusal = loop {
+        let link = rig.control.status().link;
+        match link.last_error {
+            Some(why) if why.contains("buffers") => break why,
+            _ => {}
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the node never refused the ring: {link:?}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    };
+    let stats = rig.finish();
+    assert!(
+        refusal.contains("has 2 buffers") && refusal.contains("at least 3"),
+        "{refusal}"
+    );
+    assert_eq!(stats.frames, 0, "{stats:?}");
+    println!("proof: a ring of two is refused: {refusal}");
+}

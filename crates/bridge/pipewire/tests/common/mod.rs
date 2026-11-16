@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
-use styx_pipewire::{Control, LinkState, NodeConfig, NodeError, NodeStats, node_built, run};
+use styx_pipewire::{
+    Control, LinkState, MIN_BUFFERS, NodeConfig, NodeError, NodeStats, node_built, run,
+    run_with_a_small_ring,
+};
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
 /// Why no proof with a PipeWire consumer can run here, if none can.
@@ -39,8 +42,11 @@ pub fn has_pipewiresrc() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// The proofs in one test binary share the machine's PipeWire daemon, and one of them stops a
-/// consumer on PipeWire's data thread: they take turns, so that one proof's stall is not another's.
+/// Every proof with a PipeWire consumer holds this for as long as it runs. Do not run them side
+/// by side: they share the machine's one PipeWire daemon, and the stall proofs stop a consumer on
+/// PipeWire's data thread on purpose. Run together, one proof's stopped consumer held up
+/// another's graph about once in forty rounds, and that proof then waited for a send that could
+/// not come.
 pub fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
     static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
     TURN.lock()
@@ -87,6 +93,32 @@ impl Rig {
     /// and the node named
     /// `name` on it, and waits until the node streams from the producer.
     pub fn start(name: &str, width: u32, height: u32, period: Duration, buffers: u32) -> Self {
+        let rig = Self::spawn(
+            name,
+            width,
+            height,
+            period,
+            buffers,
+            buffers < MIN_BUFFERS as u32,
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while rig.control.status().link.state != LinkState::Streaming {
+            assert!(Instant::now() < deadline, "the node never streamed");
+            thread::sleep(Duration::from_millis(20));
+        }
+        rig
+    }
+
+    /// Starts the producer and the node and does not wait for the node. `small_ring` runs the
+    /// node through its test-only entry, which takes a ring below the node's minimum.
+    pub fn spawn(
+        name: &str,
+        width: u32,
+        height: u32,
+        period: Duration,
+        buffers: u32,
+        small_ring: bool,
+    ) -> Self {
         let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
         let socket = dir.join(format!("{name}.sock"));
         let stop = Arc::new(AtomicBool::new(false));
@@ -129,13 +161,14 @@ impl Rig {
                 socket,
                 fps: (30, 1),
             };
-            thread::spawn(move || run(&config, &control))
+            thread::spawn(move || {
+                if small_ring {
+                    run_with_a_small_ring(&config, &control)
+                } else {
+                    run(&config, &control)
+                }
+            })
         };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while control.status().link.state != LinkState::Streaming {
-            assert!(Instant::now() < deadline, "the node never streamed");
-            thread::sleep(Duration::from_millis(20));
-        }
         Self {
             name: name.into(),
             control,

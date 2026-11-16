@@ -201,7 +201,38 @@ impl Control {
 pub fn run(config: &NodeConfig, control: &Control) -> Result<NodeStats, NodeError> {
     #[cfg(feature = "pipewire")]
     {
-        run_built(config, control)
+        run_built(config, control, MIN_BUFFERS)
+    }
+    #[cfg(not(feature = "pipewire"))]
+    {
+        let _ = (config, control);
+        Err(NodeError::NotBuilt)
+    }
+}
+
+/// The fewest buffers a producer's ring may have. The node holds up to two frames a consumer can
+/// still take (a PipeWire link keeps up to two sent buffers) and the producer keeps one buffer for
+/// its newest frame, so a smaller ring leaves nothing to write the next frame to: the node then
+/// stays alive only by sending held frames again. Measured with a ring of two and a consumer that
+/// stalled six times: the producer found no free buffer for 133 of 172 frames, and 22 of the 30
+/// frames the consumer took were repeats.
+///
+/// Three is the least that works, not what to choose. With four, a consumer that never stalls
+/// cost the producer 3 of 64 frames, and one that overran its cycle by two frames six times cost
+/// it 6 of 48. A consumer stopped for twelve frames six times cost it 47 of 110, which no ring
+/// short of twelve more buffers avoids: while a consumer is stopped, each buffer beyond the three
+/// is one more frame the producer can write before it has to drop one.
+pub const MIN_BUFFERS: usize = 3;
+
+/// [`run`] for a ring smaller than [`MIN_BUFFERS`]: for the test that shows what such a ring does.
+#[doc(hidden)]
+pub fn run_with_a_small_ring(
+    config: &NodeConfig,
+    control: &Control,
+) -> Result<NodeStats, NodeError> {
+    #[cfg(feature = "pipewire")]
+    {
+        run_built(config, control, 1)
     }
     #[cfg(not(feature = "pipewire"))]
     {
@@ -327,6 +358,8 @@ struct Pump {
     /// frame is dropped.
     slots: Vec<Option<Frame>>,
     stats: NodeStats,
+    /// The fewest buffers a producer's ring may have.
+    min_buffers: usize,
 }
 
 /// A frame taken from the producer, held in `slot` until it is queued or dropped.
@@ -344,11 +377,23 @@ struct Pulled {
 #[cfg(feature = "pipewire")]
 impl Pump {
     /// Drives the link at `now`. Buffers come back only when the producer's format has a PipeWire
-    /// name; any other format is refused and the link waits, as for a lost producer.
+    /// name and its ring is large enough; any other producer is refused, with the reason in the
+    /// link's status, and the link waits, as for a lost producer.
     fn take(&mut self, now: Instant) -> Option<Buffers> {
         let buffers = self.link.drive(now)?;
         if video_format(buffers.fourcc.to_u32()).is_none() {
             let why = format!("format {:?} has no PipeWire video name", buffers.fourcc);
+            self.link.reject(now, why);
+            return None;
+        }
+        if buffers.fds.len() < self.min_buffers {
+            let why = format!(
+                "the producer's ring has {} buffers and the node needs at least {}: it holds up \
+                 to two frames a PipeWire consumer can still take and the producer keeps one for \
+                 its newest, so a smaller ring leaves no buffer for the next frame",
+                buffers.fds.len(),
+                self.min_buffers
+            );
             self.link.reject(now, why);
             return None;
         }
@@ -1146,7 +1191,11 @@ fn stream_loop(ring: &Rc<RefCell<Ring>>, control: &Control, name: &str, first: B
 }
 
 #[cfg(feature = "pipewire")]
-fn run_built(config: &NodeConfig, control: &Control) -> Result<NodeStats, NodeError> {
+fn run_built(
+    config: &NodeConfig,
+    control: &Control,
+    min_buffers: usize,
+) -> Result<NodeStats, NodeError> {
     if config.name.contains('\0') {
         return Err(NodeError::BadConfig("the node name has a NUL byte"));
     }
@@ -1156,6 +1205,7 @@ fn run_built(config: &NodeConfig, control: &Control) -> Result<NodeStats, NodeEr
         link: Link::new(&config.socket),
         slots: Vec::new(),
         stats: NodeStats::default(),
+        min_buffers,
     };
     // The node starts once a producer has taught it its buffers. Until then it only waits.
     let first = loop {
