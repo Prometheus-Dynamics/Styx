@@ -1,9 +1,12 @@
 //! libcamera capture backend for Styx.
 //!
-//! Enabled by the `libcamera` feature. With it on and libcamera found by pkg-config, cameras are
-//! opened through libcamera's own pipeline and 3A (Styx runs no 3A here). Each frame is a
-//! libcamera dma-buf handed out as a [`FrameLease`] with no copy. Without the library, or
-//! without the feature, every call reports [`Error::Unavailable`] and the build still passes.
+//! Enabled by the `libcamera` feature. With it on, cameras are opened through libcamera's own
+//! pipeline and 3A (Styx runs no 3A here). Each frame is a libcamera dma-buf handed out as a
+//! [`FrameLease`] with no copy. Without the feature every call reports [`Error::Unavailable`].
+//!
+//! The binding is lit-robotics libcamera-rs: `libcamera-sys` for libcamera's API as C calls, and
+//! `libcamera` for the control ids of the installed libcamera. Styx carries no C or C++ for it.
+//! The feature needs libcamera's development files found by pkg-config, or the build fails.
 //!
 //! Multi-plane formats (NV12, I420 and the like) are handed out when a buffer's planes sit in one
 //! dma-buf, which is libcamera's usual layout; the plane placement is in `planes`. Planes in
@@ -26,27 +29,27 @@ use styx_frame::FrameLease;
 
 // Plane placement and the control mapping are plain arithmetic and tables: they build and are
 // tested with or without libcamera.
-#[cfg_attr(not(has_libcamera), allow(dead_code))]
+#[cfg_attr(not(feature = "libcamera"), allow(dead_code))]
 mod controls;
-#[cfg_attr(not(has_libcamera), allow(dead_code))]
+#[cfg_attr(not(feature = "libcamera"), allow(dead_code))]
 mod planes;
 
-#[cfg(has_libcamera)]
+#[cfg(feature = "libcamera")]
 mod backend;
-#[cfg(has_libcamera)]
+#[cfg(feature = "libcamera")]
 mod sys;
-#[cfg(has_libcamera)]
+#[cfg(feature = "libcamera")]
 pub use backend::Capture;
 
-#[cfg(not(has_libcamera))]
+#[cfg(not(feature = "libcamera"))]
 mod stub;
-#[cfg(not(has_libcamera))]
+#[cfg(not(feature = "libcamera"))]
 pub use stub::Capture;
 
 /// Why the backend could not do what was asked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    /// The backend is not compiled in: the feature is off, or libcamera was not found.
+    /// The backend is not compiled in: the `libcamera` feature is off.
     Unavailable(&'static str),
     /// libcamera or the camera refused the request.
     Camera(String),
@@ -132,11 +135,11 @@ pub struct CaptureStats {
 
 /// Whether the libcamera backend is compiled in and usable on this machine.
 pub fn availability() -> Result<(), Error> {
-    #[cfg(has_libcamera)]
+    #[cfg(feature = "libcamera")]
     {
         Ok(())
     }
-    #[cfg(not(has_libcamera))]
+    #[cfg(not(feature = "libcamera"))]
     {
         Err(Error::Unavailable(stub::REASON))
     }
@@ -144,17 +147,17 @@ pub fn availability() -> Result<(), Error> {
 
 /// Every camera libcamera lists, with its viewfinder formats.
 pub fn list_cameras() -> Result<Vec<CameraInfo>, Error> {
-    #[cfg(has_libcamera)]
+    #[cfg(feature = "libcamera")]
     {
         backend::list_cameras()
     }
-    #[cfg(not(has_libcamera))]
+    #[cfg(not(feature = "libcamera"))]
     {
         Err(Error::Unavailable(stub::REASON))
     }
 }
 
-#[cfg(not(has_libcamera))]
+#[cfg(not(feature = "libcamera"))]
 impl Capture {
     /// The stub's open: always [`Error::Unavailable`].
     pub fn open(_id: &str, _config: CaptureConfig, _sink: FrameSink) -> Result<Self, Error> {
@@ -168,9 +171,9 @@ mod tests {
 
     #[test]
     fn availability_matches_the_build() {
-        #[cfg(has_libcamera)]
+        #[cfg(feature = "libcamera")]
         assert!(availability().is_ok());
-        #[cfg(not(has_libcamera))]
+        #[cfg(not(feature = "libcamera"))]
         match availability() {
             Err(Error::Unavailable(reason)) => assert!(!reason.is_empty()),
             other => panic!("expected unavailable, got {other:?}"),
