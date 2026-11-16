@@ -1,25 +1,55 @@
 //! The node: a PipeWire `Video/Source` stream whose buffers are a producer's memfds. The node
 //! outlives its producer. When the producer goes away the stream stays up and idle, the link backs
 //! off (250 ms doubling to 5 s), and when a producer returns the node learns its buffers and
-//! connects the stream again with them. The PipeWire loop calls back into [`Pump`] every 2 ms.
+//! connects the stream again with them. The stream is pipewire-rs; its loop ticks every 2 ms.
 //!
 //! The caller holds a [`Control`]: it starts the run on one thread, and from any thread reads
 //! [`Control::status`] and calls [`Control::stop`].
 
-#[cfg(has_pipewire)]
-use std::ffi::{CString, c_char, c_int, c_void};
+#[cfg(feature = "pipewire")]
+use std::cell::RefCell;
+#[cfg(feature = "pipewire")]
+use std::ffi::c_void;
+#[cfg(feature = "pipewire")]
+use std::io::Cursor;
+#[cfg(feature = "pipewire")]
+use std::os::fd::{IntoRawFd, OwnedFd};
 use std::path::PathBuf;
-use std::sync::Mutex;
+#[cfg(feature = "pipewire")]
+use std::ptr;
+#[cfg(feature = "pipewire")]
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-#[cfg(has_pipewire)]
+use std::sync::{Arc, Mutex};
+#[cfg(feature = "pipewire")]
 use std::time::{Duration, Instant};
 
-#[cfg(has_pipewire)]
+#[cfg(feature = "pipewire")]
+use pipewire::{
+    context::ContextRc,
+    keys,
+    main_loop::MainLoopRc,
+    properties::properties,
+    spa::{
+        buffer::DataType,
+        param::{
+            ParamType,
+            format::{FormatProperties, MediaSubtype, MediaType},
+            video::VideoFormat,
+        },
+        pod::{Object, Pod, Property, Value, serialize::PodSerializer},
+        utils::{Direction, Fraction, Id, Rectangle, SpaTypes},
+    },
+    stream::{Stream, StreamFlags, StreamRc},
+    sys as pw_sys,
+};
+
+#[cfg(feature = "pipewire")]
 use styx_socket::Frame;
 
-#[cfg(has_pipewire)]
+#[cfg(feature = "pipewire")]
 use crate::learn::Buffers;
-#[cfg(has_pipewire)]
+#[cfg(feature = "pipewire")]
 use crate::link::Link;
 use crate::link::LinkStatus;
 
@@ -59,13 +89,13 @@ pub struct NodeStatus {
 /// Why a run failed. A producer that goes away is not a failure: the node waits for it.
 #[derive(Debug)]
 pub enum NodeError {
-    /// This build has no PipeWire node: the `pipewire` feature was off, or libpipewire-0.3 was
-    /// not found when the crate was built.
+    /// This build has no PipeWire node: the `pipewire` feature was off.
     NotBuilt,
     /// The node name has a NUL byte.
     BadConfig(&'static str),
-    /// The PipeWire shim could not start, or could not take a producer's new buffers (code from
-    /// the shim: -1 memory or loop, -2 format, -3 connect, -4 a buffer could not be used).
+    /// The node could not start, or could not take a producer's new buffers. The code says which
+    /// step failed: -1 memory, the PipeWire loop, context or stream, -2 a format with no PipeWire
+    /// video name, -3 the stream connect, -4 a buffer PipeWire could not use.
     Start(i32),
 }
 
@@ -85,6 +115,12 @@ impl std::error::Error for NodeError {}
 /// runs the node and the caller's.
 #[derive(Debug, Default)]
 pub struct Control {
+    /// Shared with the handles the PipeWire callbacks keep, which outlive the borrow of `run`.
+    state: Arc<ControlState>,
+}
+
+#[derive(Debug, Default)]
+struct ControlState {
     stop: AtomicBool,
     status: Mutex<NodeStatus>,
 }
@@ -97,12 +133,12 @@ impl Control {
 
     /// Asks the run to end. The node returns from [`run`] on its next tick.
     pub fn stop(&self) {
-        self.stop.store(true, Ordering::Release);
+        self.state.stop.store(true, Ordering::Release);
     }
 
     /// Whether [`Control::stop`] was called.
     pub fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Acquire)
+        self.state.stop.load(Ordering::Acquire)
     }
 
     /// The node's status as of its last tick.
@@ -111,12 +147,21 @@ impl Control {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, NodeStatus> {
-        self.status
+        self.state
+            .status
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    #[cfg(has_pipewire)]
+    /// Another handle on the same run.
+    #[cfg(feature = "pipewire")]
+    fn share(&self) -> Control {
+        Control {
+            state: Arc::clone(&self.state),
+        }
+    }
+
+    #[cfg(feature = "pipewire")]
     fn publish(&self, link: &LinkStatus, stats: NodeStats) {
         let mut status = self.lock();
         status.link.clone_from(link);
@@ -131,91 +176,91 @@ impl Control {
 ///
 /// [`NodeError`]. A stop before the first producer is learned returns `Ok` with no frames.
 pub fn run(config: &NodeConfig, control: &Control) -> Result<NodeStats, NodeError> {
-    #[cfg(has_pipewire)]
+    #[cfg(feature = "pipewire")]
     {
         run_built(config, control)
     }
-    #[cfg(not(has_pipewire))]
+    #[cfg(not(feature = "pipewire"))]
     {
         let _ = (config, control);
         Err(NodeError::NotBuilt)
     }
 }
 
-/// Whether this build has the PipeWire node (the feature is on and the library was found).
+/// Whether this build has the PipeWire node (the `pipewire` feature is on).
 pub const fn node_built() -> bool {
-    cfg!(has_pipewire)
-}
-
-/// The shim's configuration. Mirrors `styx_pw_config` in `c_api/styx_pipewire.c`.
-#[cfg(has_pipewire)]
-#[repr(C)]
-struct Config {
-    name: *const c_char,
-    fourcc: u32,
-    width: u32,
-    height: u32,
-    fps_num: u32,
-    fps_den: u32,
-    buffers: u32,
-    stride: u32,
-    fds: *const c_int,
-    lens: *const u32,
-}
-
-/// One frame the shim is handed. Mirrors `styx_pw_frame`.
-#[cfg(has_pipewire)]
-#[repr(C)]
-struct PwFrame {
-    index: u32,
-    len: u32,
-    stride: u32,
-    token: *mut c_void,
-}
-
-/// The shim's functions. Mirrors `styx_pw_ops`.
-#[cfg(has_pipewire)]
-#[repr(C)]
-struct Ops {
-    poll: unsafe extern "C" fn(*mut c_void, *mut Config) -> c_int,
-    next: unsafe extern "C" fn(*mut c_void, *mut PwFrame) -> c_int,
-    release: unsafe extern "C" fn(*mut c_void, *mut c_void, c_int),
-    running: unsafe extern "C" fn(*mut c_void) -> c_int,
-}
-
-#[cfg(has_pipewire)]
-unsafe extern "C" {
-    fn styx_pw_run(config: *const Config, ops: *const Ops, ctx: *mut c_void) -> c_int;
-    fn styx_pw_format_known(fourcc: u32) -> c_int;
+    cfg!(feature = "pipewire")
 }
 
 /// How often the PipeWire loop's timer ticks, and so how often the link is driven.
-#[cfg(has_pipewire)]
+#[cfg(feature = "pipewire")]
 const TICK: Duration = Duration::from_millis(2);
 
-/// The Rust side of one run: the link, the frames the shim holds (one slot per frame), and the
-/// counts.
-#[cfg(has_pipewire)]
-struct Pump<'a> {
-    control: &'a Control,
-    name: CString,
-    fps: (u32, u32),
-    link: Link,
-    slots: Vec<Option<Frame>>,
-    stats: NodeStats,
-    /// The buffers handed to the shim in the call in progress. The shim copies what it keeps, so
-    /// they are dropped at the next call.
-    handover: Option<Buffers>,
+/// The SPA video format for a Styx FourCc, by its little-endian code. `None` when PipeWire has no
+/// raw video name for it, and the node refuses such a producer.
+#[cfg(feature = "pipewire")]
+fn video_format(fourcc: u32) -> Option<VideoFormat> {
+    Some(match fourcc {
+        0x5659_5559 => VideoFormat::YUY2,  // YUYV
+        0x5956_5955 => VideoFormat::UYVY,  // UYVY
+        0x3231_564e => VideoFormat::NV12,  // NV12
+        0x3132_564e => VideoFormat::NV21,  // NV21
+        0x3032_3449 => VideoFormat::I420,  // I420
+        0x3231_5559 => VideoFormat::I420,  // YU12
+        0x3231_5659 => VideoFormat::YV12,  // YV12
+        0x5945_5247 => VideoFormat::GRAY8, // GREY
+        0x3332_4752 => VideoFormat::RGB,   // RG24
+        0x3332_4742 => VideoFormat::BGR,   // BG24
+        0x4142_4752 => VideoFormat::RGBA,  // RGBA
+        0x4152_4742 => VideoFormat::BGRA,  // BGRA
+        _ => return None,
+    })
 }
 
-#[cfg(has_pipewire)]
-impl Pump<'_> {
+/// What the stream offers PipeWire consumers: the format, the ring's shape and the rate.
+#[cfg(feature = "pipewire")]
+#[derive(Debug, Default, Clone, Copy)]
+struct Format {
+    fourcc: u32,
+    width: u32,
+    height: u32,
+    fps: (u32, u32),
+    /// Row stride of plane 0.
+    stride: u32,
+    /// The ring's buffer count.
+    buffers: u32,
+    /// The length of the first buffer in bytes (every buffer of a ring is alike).
+    size: u32,
+}
+
+/// The producer side of the node: the link, the frames the node holds (one slot per ring buffer)
+/// and the counts.
+#[cfg(feature = "pipewire")]
+struct Pump {
+    control: Control,
+    link: Link,
+    /// The frame held in each slot. A slot is taken until PipeWire gives its buffer back, or the
+    /// frame is dropped.
+    slots: Vec<Option<Frame>>,
+    stats: NodeStats,
+}
+
+/// A frame taken from the producer, held in `slot` until it is queued or dropped.
+#[cfg(feature = "pipewire")]
+struct Pulled {
+    index: usize,
+    len: u32,
+    stride: u32,
+    slot: usize,
+}
+
+#[cfg(feature = "pipewire")]
+impl Pump {
     /// Drives the link at `now`. Buffers come back only when the producer's format has a PipeWire
     /// name; any other format is refused and the link waits, as for a lost producer.
     fn take(&mut self, now: Instant) -> Option<Buffers> {
         let buffers = self.link.drive(now)?;
-        // SAFETY: a plain function of an integer with no pointers.
-        if unsafe { styx_pw_format_known(buffers.fourcc.to_u32()) } == 0 {
+        if video_format(buffers.fourcc.to_u32()).is_none() {
             let why = format!("format {:?} has no PipeWire video name", buffers.fourcc);
             self.link.reject(now, why);
             return None;
@@ -227,44 +272,9 @@ impl Pump<'_> {
         self.control.publish(self.link.status(), self.stats);
     }
 
-    /// Writes the buffers into `out` for the shim, which copies them. Dropping the old frames
-    /// first: the consumers' buffers of the old producer are gone with the stream.
-    fn poll(&mut self, out: *mut Config) -> bool {
-        self.handover = None;
-        let Some(buffers) = self.take(Instant::now()) else {
-            self.publish();
-            return false;
-        };
-        self.slots = (0..buffers.fds.len()).map(|_| None).collect();
-        self.stats.streams += 1;
-        let config = self.config_of(&buffers);
-        self.handover = Some(buffers);
-        // SAFETY: `out` is the shim's config slot, valid for a write; the shim calls `poll` on
-        // the thread that runs the loop, and copies the config before this call returns.
-        unsafe { out.write(config) };
-        self.publish();
-        true
-    }
-
-    /// The shim's config for `buffers`. The pointers stay valid while `buffers` is held.
-    fn config_of(&self, buffers: &Buffers) -> Config {
-        Config {
-            name: self.name.as_ptr(),
-            fourcc: buffers.fourcc.to_u32(),
-            width: buffers.resolution.width.get(),
-            height: buffers.resolution.height.get(),
-            fps_num: self.fps.0,
-            fps_den: self.fps.1,
-            buffers: buffers.fds.len() as u32,
-            stride: buffers.stride,
-            fds: buffers.raw_fds().as_ptr(),
-            lens: buffers.lens.as_ptr(),
-        }
-    }
-
     /// The next frame, held in a free slot, or `None` (nothing new, no slot free, or the producer
     /// is not streaming).
-    fn next(&mut self) -> Option<PwFrame> {
+    fn next(&mut self) -> Option<Pulled> {
         let slot = self.slots.iter().position(Option::is_none)?;
         let frame = self.link.next_frame(Instant::now())?;
         let index = frame.buffer();
@@ -280,17 +290,17 @@ impl Pump<'_> {
         let len = lease.layouts().span().unwrap_or(0) as u32;
         self.stats.frames += 1;
         self.slots[slot] = Some(frame);
-        Some(PwFrame {
-            index: index as u32,
+        Some(Pulled {
+            index,
             len,
             stride,
-            token: (slot + 1) as *mut c_void,
+            slot,
         })
     }
 
-    /// Gives back a frame the shim held: PipeWire returned its buffer, or the shim dropped it.
-    fn release(&mut self, token: *mut c_void, busy: bool) {
-        let slot = (token as usize).wrapping_sub(1);
+    /// Gives back the frame in `slot`: PipeWire returned its buffer (`busy` false), or the node
+    /// dropped it because the consumer still held the buffer (`busy` true).
+    fn release(&mut self, slot: usize, busy: bool) {
         if let Some(entry) = self.slots.get_mut(slot) {
             *entry = None;
         }
@@ -302,19 +312,464 @@ impl Pump<'_> {
     }
 }
 
-#[cfg(has_pipewire)]
+/// The node's state, shared by the stream's callbacks and the loop's timer. Single-threaded: the
+/// PipeWire loop calls every callback on the thread that runs it, and no callback is entered while
+/// another holds the borrow (the borrow is released around every PipeWire call).
+#[cfg(feature = "pipewire")]
+struct Ring {
+    pump: Pump,
+    /// The producer's memfds, the node's own duplicates: ring buffer `i` is `fds[i]`.
+    fds: Vec<OwnedFd>,
+    lens: Vec<u32>,
+    format: Format,
+    /// PipeWire's buffer for each ring index, null until PipeWire adds it.
+    pw: Vec<*mut pw_sys::pw_buffer>,
+    /// The slot of the frame queued in each buffer, `None` when none.
+    token: Vec<Option<usize>>,
+    /// True when PipeWire has the buffer back and the node may fill and queue it.
+    avail: Vec<bool>,
+    n_avail: usize,
+    /// How many buffers PipeWire has added to this stream connection.
+    added: usize,
+    /// Set when a buffer could not be used; the run returns -4 when it ends.
+    failed: bool,
+}
+
+#[cfg(feature = "pipewire")]
+impl Ring {
+    fn new(pump: Pump, fps: (u32, u32)) -> Self {
+        Self {
+            pump,
+            fds: Vec::new(),
+            lens: Vec::new(),
+            format: Format {
+                fps,
+                ..Format::default()
+            },
+            pw: Vec::new(),
+            token: Vec::new(),
+            avail: Vec::new(),
+            n_avail: 0,
+            added: 0,
+            failed: false,
+        }
+    }
+
+    /// Takes the producer's buffers as the ring's own, and sizes the per-buffer state to them.
+    /// Fails (-1) for a producer with no buffers, or whose lengths do not match its descriptors.
+    fn adopt(&mut self, buffers: Buffers) -> Result<(), i32> {
+        let Buffers {
+            fds,
+            lens,
+            fourcc,
+            resolution,
+            stride,
+            ..
+        } = buffers;
+        let count = fds.len();
+        if count == 0 || lens.len() != count {
+            return Err(-1);
+        }
+        self.format = Format {
+            fourcc: fourcc.to_u32(),
+            width: resolution.width.get(),
+            height: resolution.height.get(),
+            fps: self.format.fps,
+            stride,
+            buffers: count as u32,
+            size: lens[0],
+        };
+        self.fds = fds;
+        self.lens = lens;
+        self.pw = vec![ptr::null_mut(); count];
+        self.token = vec![None; count];
+        self.avail = vec![false; count];
+        self.n_avail = 0;
+        self.added = 0;
+        // The frames of the old buffers are dropped here, not released: their consumers are gone
+        // with the stream.
+        self.pump.slots = (0..count).map(|_| None).collect();
+        Ok(())
+    }
+
+    /// Clears what the node holds in the stream's buffers without giving the frames back. Used
+    /// before the stream is disconnected: the frames were dropped with the old producer.
+    fn forget_held(&mut self) {
+        self.avail.fill(false);
+        self.token.fill(None);
+        self.n_avail = 0;
+    }
+
+    /// Gives back every frame the node still holds. Used once the stream is gone.
+    fn release_held(&mut self) {
+        for index in 0..self.token.len() {
+            if let Some(slot) = self.token[index].take() {
+                self.pump.release(slot, false);
+            }
+        }
+    }
+}
+
+/// PipeWire added `buffer`: it is ring buffer `n` (the count so far), and its memory is that
+/// buffer's memfd. The buffer is the node's to fill until it is queued.
+#[cfg(feature = "pipewire")]
+fn on_add_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
+    let mut r = ring.borrow_mut();
+    let index = r.added;
+    r.added += 1;
+    if index >= r.pw.len() || buffer.is_null() {
+        r.failed = true;
+        return;
+    }
+    // SAFETY: PipeWire passes a live buffer of this stream to `add_buffer`. It stays valid until
+    // `remove_buffer`, and this reads only its spa_buffer pointer and count.
+    let (spa, n_datas) = unsafe {
+        let spa = (*buffer).buffer;
+        (spa, if spa.is_null() { 0 } else { (*spa).n_datas })
+    };
+    if n_datas < 1 {
+        r.failed = true;
+        return;
+    }
+    // SAFETY: `spa` is non-null with at least one data, so `datas` points at the first entry.
+    let data = unsafe { (*spa).datas };
+    // SAFETY: `data` is that first entry, valid while the buffer is.
+    let data_type = unsafe { (*data).type_ };
+    // The check the C shim made, kept as it was: the consumer's memfd bit is in the data type.
+    if data_type & (1u32 << DataType::MemFd.as_raw()) == 0 {
+        eprintln!("styx-pipewire: a consumer does not take memfd buffers");
+        r.failed = true;
+        return;
+    }
+    let fd = match r.fds[index].try_clone() {
+        Ok(fd) => fd,
+        Err(_) => {
+            r.failed = true;
+            return;
+        }
+    };
+    let maxsize = r.lens[index];
+    // SAFETY: `data` is the buffer's first data (checked above), and the buffer is the node's until
+    // it is queued, so its descriptor fields are the node's to set. The memfd is a duplicate
+    // handed to PipeWire, which owns it from here, as the C shim left it.
+    unsafe {
+        (*data).type_ = DataType::MemFd.as_raw();
+        (*data).flags = spa_sys_flag_readable();
+        (*data).fd = i64::from(fd.into_raw_fd());
+        (*data).mapoffset = 0;
+        (*data).maxsize = maxsize;
+        (*data).data = ptr::null_mut();
+        // SAFETY (same buffer): `user_data` records the ring index for the callbacks and the loop.
+        (*buffer).user_data = index as *mut c_void;
+    }
+    r.pw[index] = buffer;
+}
+
+#[cfg(feature = "pipewire")]
+fn spa_sys_flag_readable() -> u32 {
+    pipewire::spa::sys::SPA_DATA_FLAG_READABLE
+}
+
+/// PipeWire removed `buffer`. The frame in it, if any, is released; the buffer is no longer the
+/// node's.
+#[cfg(feature = "pipewire")]
+fn on_remove_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
+    if buffer.is_null() {
+        return;
+    }
+    let mut r = ring.borrow_mut();
+    // SAFETY: PipeWire passes a live buffer to `remove_buffer`; its `user_data` is the ring index
+    // that `add_buffer` set (or the value PipeWire kept, for a buffer the node never used).
+    let index = unsafe { (*buffer).user_data } as usize;
+    if index >= r.pw.len() {
+        return;
+    }
+    if let Some(slot) = r.token[index].take() {
+        r.pump.release(slot, false);
+    }
+    if r.avail[index] {
+        r.avail[index] = false;
+        r.n_avail -= 1;
+    }
+    r.pw[index] = ptr::null_mut();
+}
+
+/// The chunk of a PipeWire buffer's first data, or null when it has none.
+///
+/// # Safety
+///
+/// `raw` must be a buffer of a stream that is live and has not removed it.
+#[cfg(feature = "pipewire")]
+unsafe fn chunk_of(raw: *mut pw_sys::pw_buffer) -> *mut pipewire::spa::sys::spa_chunk {
+    // SAFETY: the caller guarantees `raw` is a live buffer, so its spa_buffer and datas are valid
+    // while it is; a null or empty spa_buffer is checked before its datas are read.
+    unsafe {
+        let spa = (*raw).buffer;
+        if spa.is_null() || (*spa).n_datas == 0 {
+            return ptr::null_mut();
+        }
+        (*(*spa).datas).chunk
+    }
+}
+
+/// Connects the stream with the current buffers. Errors: -2 for a format with no PipeWire name,
+/// -1 when the pod cannot be built, -3 when the connect fails.
+#[cfg(feature = "pipewire")]
+fn connect_stream(stream: &Stream, format: Format) -> Result<(), i32> {
+    let video = video_format(format.fourcc).ok_or(-2)?;
+    let format_pod = serialize(&Value::Object(Object {
+        type_: SpaTypes::ObjectParamFormat.as_raw(),
+        id: ParamType::EnumFormat.as_raw(),
+        properties: vec![
+            Property::new(
+                FormatProperties::MediaType.0,
+                Value::Id(Id(MediaType::Video.as_raw())),
+            ),
+            Property::new(
+                FormatProperties::MediaSubtype.0,
+                Value::Id(Id(MediaSubtype::Raw.as_raw())),
+            ),
+            Property::new(
+                FormatProperties::VideoFormat.0,
+                Value::Id(Id(video.as_raw())),
+            ),
+            Property::new(
+                FormatProperties::VideoSize.0,
+                Value::Rectangle(Rectangle {
+                    width: format.width,
+                    height: format.height,
+                }),
+            ),
+            Property::new(
+                FormatProperties::VideoFramerate.0,
+                Value::Fraction(Fraction {
+                    num: format.fps.0,
+                    denom: format.fps.1,
+                }),
+            ),
+        ],
+    }))?;
+    let buffers_pod = serialize(&Value::Object(Object {
+        type_: SpaTypes::ObjectParamBuffers.as_raw(),
+        id: ParamType::Buffers.as_raw(),
+        properties: vec![
+            Property::new(
+                pipewire::spa::sys::SPA_PARAM_BUFFERS_buffers,
+                Value::Int(format.buffers as i32),
+            ),
+            Property::new(pipewire::spa::sys::SPA_PARAM_BUFFERS_blocks, Value::Int(1)),
+            Property::new(
+                pipewire::spa::sys::SPA_PARAM_BUFFERS_size,
+                Value::Int(format.size as i32),
+            ),
+            Property::new(
+                pipewire::spa::sys::SPA_PARAM_BUFFERS_stride,
+                Value::Int(format.stride as i32),
+            ),
+            Property::new(
+                pipewire::spa::sys::SPA_PARAM_BUFFERS_dataType,
+                Value::Int((1u32 << DataType::MemFd.as_raw()) as i32),
+            ),
+        ],
+    }))?;
+    let format_pod = Pod::from_bytes(&format_pod).ok_or(-1)?;
+    let buffers_pod = Pod::from_bytes(&buffers_pod).ok_or(-1)?;
+    let mut params = [format_pod, buffers_pod];
+    stream
+        .connect(
+            Direction::Output,
+            None,
+            StreamFlags::ALLOC_BUFFERS,
+            &mut params,
+        )
+        .map_err(|_| -3)
+}
+
+/// A pod's bytes for `value`. -1 when the pod cannot be serialized.
+#[cfg(feature = "pipewire")]
+fn serialize(value: &Value) -> Result<Vec<u8>, i32> {
+    let (cursor, _) = PodSerializer::serialize(Cursor::new(Vec::new()), value).map_err(|_| -1)?;
+    Ok(cursor.into_inner())
+}
+
+/// Connects the stream again with the new producer's buffers. Frames the node held were dropped
+/// with the old producer, so no token is released. Any failure ends the run (-4).
+#[cfg(feature = "pipewire")]
+fn reconfigure(ring: &RefCell<Ring>, stream: &Stream, buffers: Buffers) -> Result<(), i32> {
+    ring.borrow_mut().forget_held();
+    // The stream's buffers go with it, and their removal reaches the callbacks here.
+    let _ = stream.disconnect();
+    let format = {
+        let mut r = ring.borrow_mut();
+        r.adopt(buffers)?;
+        r.format
+    };
+    connect_stream(stream, format)
+}
+
+/// One tick of the loop: stop if asked, reconnect if the producer's buffers are new, take back the
+/// buffers PipeWire has returned, and queue frames into the free ones. Never blocks.
+#[cfg(feature = "pipewire")]
+fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Control) {
+    if control.stopped() {
+        quit.quit();
+        return;
+    }
+    let taken = ring.borrow_mut().pump.take(Instant::now());
+    if let Some(buffers) = taken {
+        ring.borrow_mut().pump.stats.streams += 1;
+        if reconfigure(ring, stream, buffers).is_err() {
+            ring.borrow_mut().failed = true;
+            quit.quit();
+            ring.borrow().pump.publish();
+            return;
+        }
+    }
+    // Buffers PipeWire gives back are free: the consumer is done with the frame in them.
+    loop {
+        // SAFETY: this runs on the loop's thread inside its timer, so no other call on `stream` is
+        // in progress. The buffer returned is the node's until it is queued below.
+        let raw = unsafe { stream.dequeue_raw_buffer() };
+        if raw.is_null() {
+            break;
+        }
+        // SAFETY: `raw` is a non-null buffer PipeWire has just returned, so its user_data is the
+        // ring index that `add_buffer` set.
+        let index = unsafe { (*raw).user_data } as usize;
+        let mut r = ring.borrow_mut();
+        if index >= r.token.len() {
+            continue;
+        }
+        if let Some(slot) = r.token[index].take() {
+            r.pump.release(slot, false);
+        }
+        if !r.avail[index] {
+            r.avail[index] = true;
+            r.n_avail += 1;
+        }
+    }
+    // Only pull a frame when a buffer is free for it.
+    loop {
+        let pulled = {
+            let mut r = ring.borrow_mut();
+            if r.n_avail == 0 {
+                break;
+            }
+            match r.pump.next() {
+                Some(pulled) => pulled,
+                None => break,
+            }
+        };
+        let index = pulled.index;
+        let raw = {
+            let r = ring.borrow();
+            match (r.avail.get(index), r.pw.get(index)) {
+                (Some(true), Some(&raw)) if !raw.is_null() => raw,
+                _ => ptr::null_mut(),
+            }
+        };
+        let chunk = if raw.is_null() {
+            ptr::null_mut()
+        } else {
+            // SAFETY: `raw` is a buffer the node holds (it is `avail`, and PipeWire has not removed
+            // it), so it is live.
+            unsafe { chunk_of(raw) }
+        };
+        if chunk.is_null() {
+            ring.borrow_mut().pump.release(pulled.slot, true);
+            continue;
+        }
+        // SAFETY: `chunk` is the chunk of a buffer the node holds (checked above), so it is the
+        // node's to write until the buffer is queued.
+        unsafe {
+            (*chunk).offset = 0;
+            (*chunk).size = pulled.len;
+            (*chunk).stride = pulled.stride as i32;
+            (*chunk).flags = 0;
+        }
+        {
+            let mut r = ring.borrow_mut();
+            r.token[index] = Some(pulled.slot);
+            r.avail[index] = false;
+            r.n_avail -= 1;
+        }
+        // SAFETY: `raw` was dequeued from this stream and is filled now. It is queued once, here,
+        // which is the return path PipeWire expects for it.
+        unsafe { stream.queue_raw_buffer(raw) };
+    }
+    ring.borrow().pump.publish();
+}
+
+/// Runs the PipeWire loop for the first producer's buffers, and reconnects on new ones, until
+/// stopped. Returns 0 when it ran, or the start or buffer failure code. The stream and loop are
+/// destroyed before it returns.
+#[cfg(feature = "pipewire")]
+fn stream_loop(ring: &Rc<RefCell<Ring>>, control: &Control, name: &str, first: Buffers) -> i32 {
+    if video_format(first.fourcc.to_u32()).is_none() {
+        return -2;
+    }
+    if ring.borrow_mut().adopt(first).is_err() {
+        return -1;
+    }
+    let format = ring.borrow().format;
+    pipewire::init();
+    let Ok(mainloop) = MainLoopRc::new(None) else {
+        return -1;
+    };
+    let Ok(context) = ContextRc::new(&mainloop, None) else {
+        return -1;
+    };
+    let Ok(core) = context.connect_rc(None) else {
+        return -1;
+    };
+    let props = properties! {
+        *keys::MEDIA_TYPE => "Video",
+        *keys::MEDIA_CATEGORY => "Source",
+        *keys::MEDIA_CLASS => "Video/Source",
+        *keys::MEDIA_ROLE => "Camera",
+        *keys::NODE_NAME => name,
+        *keys::NODE_DESCRIPTION => name,
+    };
+    let Ok(stream) = StreamRc::new(core, name, props) else {
+        return -1;
+    };
+    let Ok(_listener) = stream
+        .add_local_listener_with_user_data(Rc::clone(ring))
+        .add_buffer(|_, shared, buffer| on_add_buffer(shared, buffer))
+        .remove_buffer(|_, shared, buffer| on_remove_buffer(shared, buffer))
+        .register()
+    else {
+        return -1;
+    };
+    if let Err(code) = connect_stream(&stream, format) {
+        return code;
+    }
+    let timer = {
+        let shared = Rc::clone(ring);
+        let control = control.share();
+        let quit = mainloop.clone();
+        let stream = stream.clone();
+        mainloop
+            .loop_()
+            .add_timer(move |_expirations| tick(&shared, &stream, &quit, &control))
+    };
+    let _ = timer.update_timer(Some(TICK), Some(TICK));
+    mainloop.run();
+    let failed = ring.borrow().failed;
+    if failed { -4 } else { 0 }
+}
+
+#[cfg(feature = "pipewire")]
 fn run_built(config: &NodeConfig, control: &Control) -> Result<NodeStats, NodeError> {
-    let name = CString::new(config.name.as_str())
-        .map_err(|_| NodeError::BadConfig("the node name has a NUL byte"))?;
+    if config.name.contains('\0') {
+        return Err(NodeError::BadConfig("the node name has a NUL byte"));
+    }
     let fps = (config.fps.0, config.fps.1.max(1));
     let mut pump = Pump {
-        control,
-        name,
-        fps,
+        control: control.share(),
         link: Link::new(&config.socket),
         slots: Vec::new(),
         stats: NodeStats::default(),
-        handover: None,
     };
     // The node starts once a producer has taught it its buffers. Until then it only waits.
     let first = loop {
@@ -329,62 +784,19 @@ fn run_built(config: &NodeConfig, control: &Control) -> Result<NodeStats, NodeEr
         pump.publish();
         std::thread::sleep(TICK);
     };
-    pump.slots = (0..first.fds.len()).map(|_| None).collect();
     pump.stats.streams += 1;
-    let shim = pump.config_of(&first);
-    let ops = Ops {
-        poll: poll_link,
-        next: next_frame,
-        release: release_frame,
-        running,
-    };
-    // SAFETY: `shim` points into `first`, which lives until the call returns, and the shim copies
-    // the descriptors and lengths it keeps. `ops` is a static table of functions that take `ctx`,
-    // which is `pump` and lives for the call; the shim calls them only on the thread that runs it,
-    // inside the call.
-    let rc = unsafe { styx_pw_run(&raw const shim, &raw const ops, (&raw mut pump).cast()) };
-    pump.link.stop();
-    pump.publish();
+    let ring = Rc::new(RefCell::new(Ring::new(pump, fps)));
+    let rc = stream_loop(&ring, control, &config.name, first);
+    // The stream and loop are gone: the frames still held are PipeWire's no longer, so release them.
+    let mut r = ring.borrow_mut();
+    r.release_held();
+    r.pump.link.stop();
+    r.pump.publish();
+    let stats = r.pump.stats;
     if rc != 0 {
         return Err(NodeError::Start(rc));
     }
-    Ok(pump.stats)
-}
-
-#[cfg(has_pipewire)]
-unsafe extern "C" fn poll_link(ctx: *mut c_void, out: *mut Config) -> c_int {
-    // SAFETY: `ctx` is the `Pump` `run_built` passed to the shim for this call, and the shim only
-    // calls from the thread that runs the call, so this is the only reference.
-    let pump = unsafe { &mut *ctx.cast::<Pump<'_>>() };
-    i32::from(pump.poll(out))
-}
-
-#[cfg(has_pipewire)]
-unsafe extern "C" fn next_frame(ctx: *mut c_void, out: *mut PwFrame) -> c_int {
-    // SAFETY: as in `poll_link`.
-    let pump = unsafe { &mut *ctx.cast::<Pump<'_>>() };
-    match pump.next() {
-        Some(frame) => {
-            // SAFETY: `out` is the shim's frame slot, valid for a write.
-            unsafe { out.write(frame) };
-            1
-        }
-        None => 0,
-    }
-}
-
-#[cfg(has_pipewire)]
-unsafe extern "C" fn release_frame(ctx: *mut c_void, token: *mut c_void, busy: c_int) {
-    // SAFETY: as in `poll_link`.
-    let pump = unsafe { &mut *ctx.cast::<Pump<'_>>() };
-    pump.release(token, busy != 0);
-}
-
-#[cfg(has_pipewire)]
-unsafe extern "C" fn running(ctx: *mut c_void) -> c_int {
-    // SAFETY: as in `poll_link`.
-    let pump = unsafe { &*ctx.cast::<Pump<'_>>() };
-    i32::from(!pump.control.stopped())
+    Ok(stats)
 }
 
 #[cfg(test)]
@@ -424,5 +836,14 @@ mod tests {
         } else {
             assert!(matches!(result, Err(NodeError::NotBuilt)));
         }
+    }
+
+    #[cfg(feature = "pipewire")]
+    #[test]
+    fn the_formats_map_to_the_video_names_the_shim_used() {
+        assert_eq!(video_format(0x3231_564e), Some(VideoFormat::NV12));
+        assert_eq!(video_format(0x3231_5559), Some(VideoFormat::I420));
+        assert_eq!(video_format(0x5956_5955), Some(VideoFormat::UYVY));
+        assert_eq!(video_format(0x1234_5678), None);
     }
 }
