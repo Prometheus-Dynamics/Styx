@@ -6,10 +6,10 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use gststyx::Source;
 use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, copy_counters, packed_layouts};
-use styx_gst::Source;
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
 const WIDTH: u32 = 64;
@@ -129,6 +129,6 @@ fn frames_arrive_as_the_producers_bytes_with_their_planes_and_no_copy() {
 #[test]
 fn a_frame_in_a_format_gstreamer_cannot_name_is_dropped_not_handed_on() {
     // H.264 has no caps name here: the source drops it and counts it. MJPG is image/jpeg.
-    assert!(styx_gst::gst_format(FourCc::H264).is_none());
-    assert_eq!(styx_gst::gst_format(FourCc::MJPG), Some(c"image/jpeg"));
+    assert!(gststyx::gst_format(FourCc::H264).is_none());
+    assert_eq!(gststyx::gst_format(FourCc::MJPG), Some(c"image/jpeg"));
 }

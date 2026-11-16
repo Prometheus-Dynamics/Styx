@@ -6,10 +6,10 @@ use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use gststyx::Source;
 use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, Layouts, PlaneLayout};
-use styx_gst::Source;
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
 /// The JPEG-like frame's length: a start marker, filler, and an end marker, in a larger buffer.
