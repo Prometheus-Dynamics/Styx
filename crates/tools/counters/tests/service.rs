@@ -126,27 +126,58 @@ impl LibcameraLister for NoV4l2 {
     }
 }
 
+/// The frames one camera's outlets were given: how many, and the first and last identity. The
+/// identities are the simulator's frame clock's: the slots it made between the first and the last.
+#[derive(Default)]
+struct Seen {
+    count: AtomicU64,
+    first_id: AtomicU64,
+    last_id: AtomicU64,
+}
+
 /// Counts the frames each camera's outlets were given. Stands for the service's own way out.
 #[derive(Default)]
 struct Tally {
-    counts: Mutex<BTreeMap<String, Arc<AtomicU64>>>,
+    counts: Mutex<BTreeMap<String, Arc<Seen>>>,
 }
 
 impl Tally {
-    fn count(&self, camera: &str) -> u64 {
+    fn seen(&self, camera: &str) -> Option<Arc<Seen>> {
         self.counts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(camera)
-            .map_or(0, |c| c.load(Ordering::Relaxed))
+            .cloned()
+    }
+
+    fn count(&self, camera: &str) -> u64 {
+        self.seen(camera)
+            .map_or(0, |seen| seen.count.load(Ordering::Relaxed))
+    }
+
+    /// The frame slots the simulator made between the camera's first and last delivered frame and
+    /// did not deliver (the camera's thread had not returned a buffer in time).
+    fn skipped(&self, camera: &str) -> u64 {
+        self.seen(camera).map_or(0, |seen| {
+            let count = seen.count.load(Ordering::Relaxed);
+            if count == 0 {
+                return 0;
+            }
+            let slots =
+                seen.last_id.load(Ordering::Relaxed) - seen.first_id.load(Ordering::Relaxed) + 1;
+            slots - count
+        })
     }
 }
 
-struct TallyOutlet(Arc<AtomicU64>);
+struct TallyOutlet(Arc<Seen>);
 
 impl Outlet for TallyOutlet {
-    fn frame(&mut self, _camera: &str, _lease: &FrameLease<FrameMetadata>) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+    fn frame(&mut self, _camera: &str, lease: &FrameLease<FrameMetadata>) {
+        if self.0.count.fetch_add(1, Ordering::Relaxed) == 0 {
+            self.0.first_id.store(lease.id(), Ordering::Relaxed);
+        }
+        self.0.last_id.store(lease.id(), Ordering::Relaxed);
     }
 }
 
@@ -320,10 +351,14 @@ fn counters_move_as_a_streaming_camera_delivers_frames() {
         snap.frames, status_frames,
         "the counters and the status agree"
     );
+    // The simulator makes frames on the host's clock whether or not this process is given the
+    // time to take them, so how many slots it skipped is the simulator's to say (its identities),
+    // not this test's: the counters count exactly those, each once.
+    let skipped = run.tally.skipped(CAM0);
     assert_eq!(
         snap.drops[DropReason::Unattributed as usize],
-        0,
-        "no identity skipped on a camera that keeps up"
+        skipped,
+        "every identity the simulator skipped is counted once, and nothing else"
     );
     assert_eq!(snap.copies, 0, "frames were copied");
     assert_eq!(copies(), 0, "the process copied frames");
@@ -383,7 +418,7 @@ fn counters_move_as_a_streaming_camera_delivers_frames() {
         "fps_milli is the sensor mode's floor"
     );
     println!(
-        "camera 0: frames {}, windows checked {checked}, sensor {expected_ns} ns, last window {} milli-fps",
+        "camera 0: frames {}, skipped {skipped}, windows checked {checked}, sensor {expected_ns} ns, last window {} milli-fps",
         snap.frames,
         run.latest(CAM0).map_or(0, |s| s.achieved_fps_milli)
     );
