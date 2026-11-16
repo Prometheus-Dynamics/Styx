@@ -1,9 +1,14 @@
-//! The C proof: `tests/c/proof.c`, built with the system `cc` against `libstyx_capi.a`, runs over
-//! both paths against the simulated camera. In process: a Lemnos daemon on a socket, the C program
-//! opens the camera through `styx-select`. Over the socket: `styx-service` serves the same daemon,
-//! and the C program is its client (control socket and the camera's frame socket).
+//! The C surface over both paths against the simulated camera. In process: a Lemnos daemon on a
+//! socket, the camera opened through `styx-select`. Over the socket: `styx-service` serves the
+//! same daemon, and the caller is its client (control socket and the camera's frame socket).
 //!
-//! Skips with a printed reason when there is no C compiler.
+//! Each path is run twice. `tests/c/proof.c`, the minimal C caller, is built with the system `cc`
+//! against `libstyx_capi.a`: the header compiles, its structs are the library's sizes, and a C
+//! program opens, reads frames in order, sees an error status and closes. Then [`deep`] calls the
+//! same entry points from Rust for everything else: a control landing on its frame, planes,
+//! descriptors, the metadata record, the counters decoder and the copy counters.
+//!
+//! The C half skips with a printed reason when there is no C compiler; the Rust half always runs.
 
 use styx_sim::paced as sim;
 
@@ -236,56 +241,244 @@ fn check_proof(out: &str, mode: &str) -> String {
         .find(|l| l.starts_with("PROOF "))
         .unwrap_or_else(|| panic!("no PROOF line:\n{out}"));
     assert!(line.starts_with(&format!("PROOF {mode} ")), "{line}");
-    assert_eq!(field(line, "frames"), Some("200"), "{line}");
+    assert_eq!(field(line, "frames"), Some("30"), "{line}");
     assert_eq!(field(line, "ordered"), Some("1"), "{line}");
-    assert_eq!(field(line, "copies"), Some("0"), "{line}");
-    assert_eq!(field(line, "copy_bytes"), Some("0"), "{line}");
-    assert_eq!(field(line, "exposure_read_back"), Some("5000"), "{line}");
-    assert_eq!(field(line, "descriptor"), Some("1"), "{line}");
-    assert_eq!(field(line, "memory_kind"), Some("1"), "{line}");
-    assert_eq!(
-        field(line, "meta_bytes").map(|v| v != "0"),
-        Some(true),
-        "{line}"
-    );
     line.to_string()
 }
 
-/// Reads the stdout's `LISTED` line too, so a listing is part of the record.
-fn listed(out: &str) -> String {
-    out.lines()
-        .find(|l| l.starts_with("LISTED "))
-        .unwrap_or_default()
-        .to_string()
+/// Builds and runs the C caller on `socket`, when there is a C compiler.
+fn c_caller(dir: &Path, mode: &str, socket: &Path) {
+    let Some(cc) = cc() else {
+        println!("C caller skipped: no C compiler (cc) on this machine");
+        return;
+    };
+    let exe = build_proof(dir, cc, &staticlib());
+    println!("{}", check_proof(&run_proof(&exe, mode, socket), mode));
+}
+
+const FRAMES: usize = 200;
+const WAIT_MS: u32 = 5_000;
+
+fn ok(status: i32, what: &str) {
+    assert_eq!(status, styx_capi::OK, "{what}");
+}
+
+/// The next frame and its description; the caller releases it.
+fn next(camera: *mut styx_capi::Camera) -> (*mut styx_capi::Frame, styx_capi::FrameInfo) {
+    let mut frame = std::ptr::null_mut();
+    let mut info = std::mem::MaybeUninit::<styx_capi::FrameInfo>::zeroed();
+    // SAFETY: `camera` is the live handle the caller opened; the out-pointers are valid for the
+    // calls, and `info` is written whole by a call that returns OK.
+    unsafe {
+        ok(
+            styx_capi::styx_camera_next_frame(camera, WAIT_MS, &mut frame),
+            "a frame arrives within the wait",
+        );
+        ok(
+            styx_capi::styx_frame_describe(frame, info.as_mut_ptr()),
+            "styx_frame_describe",
+        );
+        (frame, info.assume_init())
+    }
+}
+
+/// The header's `STYX_METADATA_BYTES`.
+fn header_metadata_bytes() -> usize {
+    let header = Path::new(env!("CARGO_MANIFEST_DIR")).join("include/styx.h");
+    std::fs::read_to_string(header)
+        .expect("styx.h")
+        .lines()
+        .find_map(|l| l.strip_prefix("#define STYX_METADATA_BYTES "))
+        .and_then(|v| v.trim().parse().ok())
+        .expect("STYX_METADATA_BYTES in styx.h")
+}
+
+/// The deep checks, through the C entry points: the camera is listed and opened by name, an
+/// exposure set for a frame ahead shows from that frame and reads back, 200 frames come in order
+/// with their plane, descriptor and metadata record, the counters decoder refuses bad records, and
+/// nothing was copied.
+fn deep(mode: &str, socket: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    use styx_capi::*;
+    let path = socket.as_os_str().as_bytes();
+    // SAFETY: every pointer passed below is to a live local or a handle this function opened and
+    // has not closed; lengths are the buffers' own. Frames are released once, handles closed once.
+    unsafe {
+        let mut source = std::ptr::null_mut();
+        let opened = match mode {
+            "local" => styx_source_local(path.as_ptr(), path.len(), &mut source),
+            _ => styx_source_service(path.as_ptr(), path.len(), &mut source),
+        };
+        ok(opened, "open the source");
+
+        let mut count = 0;
+        ok(styx_source_camera_count(source, &mut count), "camera count");
+        let listed = (0..count).any(|i| {
+            let mut name = [0_u8; 256];
+            let mut len = 0;
+            ok(
+                styx_source_camera_name(source, i, name.as_mut_ptr(), name.len(), &mut len),
+                "camera name",
+            );
+            &name[..len] == CAMERA.as_bytes()
+        });
+        assert!(listed, "{mode}: the named camera is listed among {count}");
+
+        let options = StyxOpenOptions {
+            width: 0,
+            height: 0,
+            fps_milli: 60_000,
+            exposure_us: 10_000,
+            gain_milli: 1_000,
+        };
+        let mut camera = std::ptr::null_mut();
+        ok(
+            styx_camera_open(source, CAMERA.as_ptr(), CAMERA.len(), &options, &mut camera),
+            "open the camera",
+        );
+
+        let mut last = 0;
+        for i in 0..10 {
+            let (frame, info) = next(camera);
+            assert!(i == 0 || info.id > last, "warm-up ids rise");
+            last = info.id;
+            styx_frame_release(frame);
+        }
+
+        // Exposure: 5000 us from a frame a few ahead; it shows from there, within the sensor's
+        // delay, and reads back as set.
+        let target = last + 30;
+        let exposure = StyxControlValue {
+            kind: VALUE_MANUAL,
+            value: 5_000,
+        };
+        ok(
+            styx_camera_set_control(camera, b"exposure".as_ptr(), 8, exposure, target),
+            "set exposure",
+        );
+        let mut seen_from = None;
+        for _ in 0..400 {
+            let (frame, info) = next(camera);
+            assert!(info.id > last, "ids rise while waiting for the exposure");
+            last = info.id;
+            styx_frame_release(frame);
+            if info.exposure_us == 5_000 {
+                seen_from = Some(info.id);
+                break;
+            }
+        }
+        let seen_from = seen_from.expect("exposure 5000 shows on a frame");
+        assert!(
+            (target..=target + 12).contains(&seen_from),
+            "{mode}: exposure set for {target} shows from {seen_from}"
+        );
+        let mut read_back = StyxControlValue { kind: 0, value: 0 };
+        ok(
+            styx_camera_get_control(camera, b"exposure".as_ptr(), 8, &mut read_back),
+            "get exposure",
+        );
+        assert_eq!((read_back.kind, read_back.value), (VALUE_MANUAL, 5_000));
+
+        // The metadata record's size is the library's, and the header states the same.
+        let mut need = 0;
+        ok(styx_frame_metadata_size(&mut need), "metadata size");
+        assert_eq!(need, header_metadata_bytes());
+        let mut record = vec![0_u8; need];
+
+        let (mut first, mut gaps, mut size) = (0, 0, (0, 0));
+        for i in 0..FRAMES {
+            let (frame, info) = next(camera);
+            if i == 0 {
+                first = info.id;
+                size = (info.width, info.height);
+                // The buffer as a descriptor: the simulated camera's frames are a memfd.
+                let (mut fd, mut offset, mut len, mut kind) = (-1, 0, 0, 0);
+                ok(
+                    styx_frame_fd(frame, &mut fd, &mut offset, &mut len, &mut kind),
+                    "styx_frame_fd",
+                );
+                assert!(fd >= 0 && len > 0, "a descriptor names the buffer");
+                assert_eq!((kind, info.memory_kind), (MEMORY_MEMFD, MEMORY_MEMFD));
+            } else {
+                assert!(info.id > last, "frame ids are strictly in order");
+                gaps += info.id - last - 1;
+            }
+            last = info.id;
+            assert_eq!((info.width, info.height), size, "frame size is steady");
+            assert!(info.exposure_us >= 1, "frames carry an exposure");
+
+            let mut plane = PlaneOut {
+                data: std::ptr::null(),
+                len: 0,
+                stride: 0,
+            };
+            ok(styx_frame_plane(frame, 0, &mut plane), "plane 0");
+            assert!(!plane.data.is_null() && plane.len > 0 && plane.stride > 0);
+            assert_eq!(
+                styx_frame_plane(frame, info.planes, &mut plane),
+                E_NOT_FOUND,
+                "a plane past the last is not found"
+            );
+
+            // A buffer of the record's size holds it whole; one byte short is refused with the
+            // length still reported.
+            let mut len = 0;
+            ok(
+                styx_frame_metadata(frame, record.as_mut_ptr(), need, &mut len),
+                "metadata",
+            );
+            assert_eq!(len, need);
+            let mut short = 0;
+            assert_eq!(
+                styx_frame_metadata(frame, record.as_mut_ptr(), need - 1, &mut short),
+                E_INVALID
+            );
+            assert_eq!(short, need, "a short buffer reports the length");
+            styx_frame_release(frame);
+        }
+        assert!(last > first, "the ids moved on");
+
+        // The counters decoder refuses a short record and a record of another layout by status.
+        let mut counters = std::mem::MaybeUninit::<CounterSnapshot>::zeroed();
+        assert_eq!(
+            styx_counters_read(b"short".as_ptr(), 5, counters.as_mut_ptr()),
+            E_INVALID
+        );
+        let junk = [0xab_u8; 714];
+        assert_eq!(
+            styx_counters_read(junk.as_ptr(), junk.len(), counters.as_mut_ptr()),
+            E_PROTOCOL
+        );
+
+        let (mut copies, mut copy_bytes) = (1, 1);
+        ok(styx_copies(&mut copies, &mut copy_bytes), "styx_copies");
+        assert_eq!((copies, copy_bytes), (0, 0), "no frame bytes were copied");
+
+        println!(
+            "DEEP {mode} frames={FRAMES} first_id={first} last_id={last} ordered=1 gaps={gaps} \
+             exposure_set_from={target} exposure_seen_from={seen_from} exposure_read_back=5000 \
+             size={}x{} meta_bytes={need} memory_kind=1 descriptor=1 copies=0",
+            size.0, size.1
+        );
+        styx_camera_close(camera);
+        styx_source_close(source);
+    }
 }
 
 #[test]
-fn a_c_program_opens_the_simulated_camera_in_process_and_gets_ordered_frames() {
-    let Some(cc) = cc() else {
-        println!("skipped: no C compiler (cc) on this machine");
-        return;
-    };
+fn the_c_surface_opens_the_simulated_camera_in_process_and_gets_ordered_frames() {
     let dir = test_dir("local");
     let socket = dir.join("lemnos.sock");
     let _lemnos = daemon(&socket);
-    let lib = staticlib();
-    let exe = build_proof(&dir, cc, &lib);
-    let out = run_proof(&exe, "local", &socket);
-    println!("{}", listed(&out));
-    println!("{}", check_proof(&out, "local"));
+    c_caller(&dir, "local", &socket);
+    deep("local", &socket);
 }
 
 #[test]
-fn a_c_program_opens_the_same_camera_over_the_service_socket_and_gets_ordered_frames() {
-    let Some(cc) = cc() else {
-        println!("skipped: no C compiler (cc) on this machine");
-        return;
-    };
+fn the_c_surface_opens_the_same_camera_over_the_service_socket_and_gets_ordered_frames() {
     let dir = test_dir("service");
     let lemnos_socket = dir.join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket);
-    let lib = staticlib();
-    let exe = build_proof(&dir, cc, &lib);
 
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
@@ -307,9 +500,8 @@ fn a_c_program_opens_the_same_camera_over_the_service_socket_and_gets_ordered_fr
     let service = Service::start(Config::parse(&text).expect("config"), deps).expect("service");
     let control = service.control_socket().to_path_buf();
     wait_until_listed(&control, CAMERA);
-    let out = run_proof(&exe, "service", &control);
-    println!("{}", listed(&out));
-    println!("{}", check_proof(&out, "service"));
+    c_caller(&dir, "service", &control);
+    deep("service", &control);
     // The frames the service served were not copied either: its own counters stay at zero.
     let copies: u64 = styx_frame::copy_counters()
         .iter()
