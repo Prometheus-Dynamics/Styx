@@ -14,6 +14,8 @@ fn device(index: u32, name: &str, tags: &[&str], link: Option<&str>) -> DeviceEn
         health: DeviceHealth::Ok,
         reason: String::new(),
         link: link.map(str::to_string),
+        jobs: Vec::new(),
+        refusal: None,
     }
 }
 

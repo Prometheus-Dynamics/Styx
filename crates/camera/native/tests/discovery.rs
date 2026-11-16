@@ -169,14 +169,16 @@ fn an_empty_source_is_nothing_wired_and_refuses_the_camera() {
 }
 
 #[test]
-fn an_unknown_source_is_carried_as_unknown_and_never_a_mismatch() {
-    // The receiver cannot say what is wired (NOT_SUPPORTED): the camera stays, with the reason.
+fn a_receiver_that_cannot_say_leaves_the_boards_link_standing() {
+    // The receiver cannot say what is wired (NOT_SUPPORTED), so it cannot contradict the link the
+    // board states: the link stands.
     let found = discover_board("unknown", &sim::board(Some("csi0")));
     assert!(found.refused.is_empty(), "{:?}", found.refused);
-    assert!(
-        matches!(found.cameras[0].link(), LinkCheck::Unknown(why) if why.contains("cannot say"))
-    );
+    assert_eq!(*found.cameras[0].link(), LinkCheck::Confirmed);
+}
 
+#[test]
+fn a_sensor_with_no_identity_is_unknown_and_never_a_mismatch() {
     // The sensor has no identity (NOT_SUPPORTED) and the receiver names one: still unknown, never a
     // match and never a mismatch.
     let text = sim::board_with(Some("csi0"), None, Some("cam-b"));
