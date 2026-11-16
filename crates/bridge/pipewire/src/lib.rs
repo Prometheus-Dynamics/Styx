@@ -20,6 +20,9 @@
 
 #![cfg(target_os = "linux")]
 
+#[cfg(any(feature = "pipewire", test))]
+#[cfg_attr(not(feature = "pipewire"), allow(dead_code))]
+mod hold;
 pub mod learn;
 pub mod link;
 pub mod node;

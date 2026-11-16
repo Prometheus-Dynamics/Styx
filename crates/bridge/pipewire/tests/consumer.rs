@@ -18,61 +18,23 @@
 
 #![cfg(target_os = "linux")]
 
+mod common;
+
 use std::fs;
-use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use shm_ring::SampleTime;
-use styx_format::{FourCc, MediaFormat, Resolution};
-use styx_frame::{FrameEntry, packed_layouts};
-use styx_pipewire::{Control, LinkState, NodeConfig, node_built, run};
-use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
+use common::{Rig, has_pipewiresrc, no_node_or_daemon};
 
 const FRAMES: usize = 40;
 
 /// Why this test cannot run here, if it cannot.
 fn missing() -> Option<String> {
-    if !node_built() {
-        return Some("this build has no PipeWire node (the `pipewire` feature is off)".into());
-    }
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
-    let remote = std::env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
-    if !Path::new(&runtime).join(&remote).exists() {
-        return Some("no PipeWire daemon socket under XDG_RUNTIME_DIR".into());
-    }
-    let has_source = Command::new("gst-inspect-1.0")
-        .arg("pipewiresrc")
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success());
-    (!has_source).then(|| "no gst-inspect-1.0 with a pipewiresrc element".into())
-}
-
-fn publish(producer: &mut Producer, id: u64, width: u32, height: u32) {
-    let luma = (width * height) as usize;
-    let format = MediaFormat::with_defaults(
-        FourCc::NV12,
-        Resolution::new(width, height).expect("resolution"),
-    );
-    let layouts = packed_layouts(FourCc::NV12, width, height, None, None).expect("layouts");
-    let entry = FrameEntry::new(id, SampleTime::now().as_nanos(), format, layouts);
-    match producer.begin(entry) {
-        Ok(mut lease) => {
-            let mut planes = lease.write().expect("a new frame is the sole owner");
-            let bytes = planes.bytes();
-            bytes[..luma].fill(id as u8);
-            bytes[luma..].fill(0x80);
-            producer.publish(lease).expect("publish");
-        }
-        Err(BeginError::NoFreeBuffer) => {}
-        Err(err) => panic!("begin: {err}"),
-    }
+    no_node_or_daemon().or_else(|| {
+        (!has_pipewiresrc()).then(|| "no gst-inspect-1.0 with a pipewiresrc element".into())
+    })
 }
 
 #[test]
@@ -101,51 +63,10 @@ fn proof(width: u32, height: u32) {
     let payload = luma * 3 / 2;
     let name = format!("styx-consumer-proof-{width}x{height}");
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
-    let socket = dir.join(format!("pw-{width}x{height}.sock"));
     let out = dir.join(format!("pw-{width}x{height}.raw"));
     let _ = fs::remove_file(&out);
-
-    let stop = Arc::new(AtomicBool::new(false));
-    let producer = {
-        let (socket, stop) = (socket.clone(), stop.clone());
-        thread::spawn(move || {
-            let _ = fs::remove_file(&socket);
-            let listener = UnixListener::bind(&socket).expect("bind the producer socket");
-            listener.set_nonblocking(true).expect("nonblocking");
-            let mut producer = Producer::new(ProducerConfig {
-                payload,
-                buffers: 4,
-                history: 8,
-            })
-            .expect("producer");
-            let mut id = 1_u64;
-            while !stop.load(Ordering::Acquire) {
-                while let Ok((stream, _)) = listener.accept() {
-                    stream.set_nonblocking(false).expect("blocking");
-                    let _ = producer.accept(stream, Limits::default());
-                }
-                publish(&mut producer, id, width, height);
-                id += 1;
-                thread::sleep(Duration::from_millis(33));
-            }
-            let _ = fs::remove_file(&socket);
-        })
-    };
-    let control = Arc::new(Control::new());
-    let node = {
-        let control = control.clone();
-        let config = NodeConfig {
-            name: name.clone(),
-            socket: socket.clone(),
-            fps: (30, 1),
-        };
-        thread::spawn(move || run(&config, &control))
-    };
-    let deadline = Instant::now() + Duration::from_secs(15);
-    while control.status().link.state != LinkState::Streaming {
-        assert!(Instant::now() < deadline, "the node never streamed");
-        thread::sleep(Duration::from_millis(20));
-    }
+    let rig = Rig::start(&name, width, height, Duration::from_millis(33));
+    let control = rig.control.clone();
 
     // The consumer: `FRAMES` buffers from the node, by its name, written as they are.
     let caps = format!("video/x-raw,format=NV12,width={width},height={height}");
@@ -177,11 +98,7 @@ fn proof(width: u32, height: u32) {
         }
         thread::sleep(Duration::from_millis(50));
     };
-    let stats = control.status().stats;
-    control.stop();
-    stop.store(true, Ordering::Release);
-    producer.join().expect("producer thread");
-    let _ = node.join().expect("node thread");
+    let stats = rig.finish();
     assert!(status.success(), "the consumer failed: {status:?}");
 
     let bytes = fs::read(&out).expect("the consumer's frames");
