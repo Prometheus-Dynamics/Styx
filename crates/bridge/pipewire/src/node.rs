@@ -192,6 +192,14 @@ pub const fn node_built() -> bool {
     cfg!(feature = "pipewire")
 }
 
+/// How many graph cycles after a buffer went out the node waits before it reads the buffer's busy
+/// count. PipeWire copies a sent buffer's id to the link's io area, where the consumer can take it
+/// in the cycle it was sent or (a consumer that runs one cycle behind) the next; the cycle after
+/// that the area is written again. From the third cycle on, a consumer that took the buffer has
+/// counted itself on it, and one that did not can no longer take it.
+#[cfg(feature = "pipewire")]
+const TAKE_CYCLES: u64 = 3;
+
 /// How often the PipeWire loop's timer ticks, and so how often the link is driven.
 #[cfg(feature = "pipewire")]
 const TICK: Duration = Duration::from_millis(2);
@@ -335,6 +343,25 @@ struct Ring {
     added: usize,
     /// Set when a buffer could not be used; the run returns -4 when it ends.
     failed: bool,
+    /// True while the stream's port has its buffers io area (it is linked). PipeWire's dequeue
+    /// reads that area without checking it when the node runs with reliable transport (a
+    /// `node.reliable` set from outside), so the node asks for no buffer while it is unset.
+    io: bool,
+    /// The graph's position area while the stream has one, null otherwise. Read only.
+    position: *const pipewire::spa::sys::spa_io_position,
+    /// The clock position last read from it, and how many times it was seen to change: a count of
+    /// graph cycles that can only run behind the true one.
+    last_position: u64,
+    cycles: u64,
+    /// The cycle the last queued buffer goes out in (one buffer goes out per cycle).
+    out_cycle: u64,
+    /// For each buffer PipeWire gave back: the cycle from which its busy count says whether a
+    /// consumer holds it. `None` while the buffer is queued, or free.
+    back: Vec<Option<u64>>,
+    /// The cycle from which each queued buffer's busy count can be read.
+    settled: Vec<u64>,
+    /// Each buffer's busy count, null when the buffers carry none.
+    busy: Vec<*const pipewire::spa::sys::spa_meta_busy>,
 }
 
 #[cfg(feature = "pipewire")]
@@ -355,6 +382,14 @@ impl Ring {
             n_avail: 0,
             added: 0,
             failed: false,
+            io: false,
+            position: ptr::null(),
+            last_position: 0,
+            cycles: 0,
+            out_cycle: 0,
+            back: Vec::new(),
+            settled: Vec::new(),
+            busy: Vec::new(),
         }
     }
 
@@ -389,6 +424,9 @@ impl Ring {
         self.pw = vec![ptr::null_mut(); count];
         self.token = vec![None; count];
         self.avail = vec![false; count];
+        self.back = vec![None; count];
+        self.settled = vec![0; count];
+        self.busy = vec![ptr::null(); count];
         self.n_avail = 0;
         self.added = 0;
         // The frames of the old buffers are dropped here, not released: their consumers are gone
@@ -402,7 +440,39 @@ impl Ring {
     fn forget_held(&mut self) {
         self.avail.fill(false);
         self.token.fill(None);
+        self.back.fill(None);
         self.n_avail = 0;
+    }
+
+    /// Counts a graph cycle when the clock has moved since the last look.
+    fn watch_clock(&mut self) {
+        if self.position.is_null() {
+            return;
+        }
+        // SAFETY: `position` is the area PipeWire gave the stream and has not taken back (it is
+        // nulled in `io_changed` when it does). The graph's driver writes it from another thread,
+        // so this is a volatile read of one word, used only to see that it changed.
+        let now = unsafe { ptr::addr_of!((*self.position).clock.position).read_volatile() };
+        if now != self.last_position {
+            self.last_position = now;
+            self.cycles += 1;
+        }
+    }
+
+    /// Whether a consumer has counted itself on buffer `index`. The node's own dequeue counts one.
+    fn consumer_holds(&self, index: usize) -> bool {
+        let busy = self.busy.get(index).copied().unwrap_or(ptr::null());
+        if busy.is_null() {
+            return false;
+        }
+        // SAFETY: `busy` points into the metadata of a buffer PipeWire has added and not removed
+        // (it is nulled in `remove_buffer`). The consumer changes the count from its own process,
+        // so it is read as the atomic it is.
+        let count = unsafe {
+            (*ptr::addr_of!((*busy).count).cast::<std::sync::atomic::AtomicU32>())
+                .load(Ordering::Acquire)
+        };
+        count > 1
     }
 
     /// Gives back every frame the node still holds. Used once the stream is gone.
@@ -479,6 +549,18 @@ fn on_add_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
         // SAFETY (same buffer): `user_data` records the ring index for the callbacks and the loop.
         (*buffer).user_data = index as *mut c_void;
     }
+    // SAFETY: `spa` is this live buffer's spa_buffer (non-null, checked above). The lookup reads its
+    // metadata table and returns a pointer into it, or null when the buffers carry no busy count.
+    let busy = unsafe {
+        pipewire::spa::sys::spa_buffer_find_meta_data(
+            spa,
+            pipewire::spa::sys::SPA_META_Busy,
+            size_of::<pipewire::spa::sys::spa_meta_busy>(),
+        )
+    };
+    r.busy[index] = busy
+        .cast::<pipewire::spa::sys::spa_meta_busy>()
+        .cast_const();
     r.pw[index] = buffer;
 }
 
@@ -508,6 +590,8 @@ fn on_remove_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
         r.avail[index] = false;
         r.n_avail -= 1;
     }
+    r.back[index] = None;
+    r.busy[index] = ptr::null();
     r.pw[index] = ptr::null_mut();
 }
 
@@ -653,8 +737,11 @@ fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Cont
             return;
         }
     }
-    // Buffers PipeWire gives back are free: the consumer is done with the frame in them.
-    loop {
+    ring.borrow_mut().watch_clock();
+    // A buffer PipeWire gives back has left the link, which is not yet the consumer's word that it
+    // is done: PipeWire returns a buffer one cycle after sending it, whether or not the consumer
+    // has taken it. So the buffer waits here until its busy count can be read (`TAKE_CYCLES`).
+    while ring.borrow().io {
         // SAFETY: this runs on the loop's thread inside its timer, so no other call on `stream` is
         // in progress. The buffer returned is the node's until it is queued below.
         let raw = unsafe { stream.dequeue_raw_buffer() };
@@ -665,13 +752,25 @@ fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Cont
         // ring index that `add_buffer` set.
         let index = unsafe { (*raw).user_data } as usize;
         let mut r = ring.borrow_mut();
-        if index >= r.token.len() {
-            continue;
+        if index < r.back.len() && !r.avail[index] {
+            r.back[index] = Some(r.settled[index]);
         }
-        if let Some(slot) = r.token[index].take() {
-            r.pump.release(slot, false);
-        }
-        if !r.avail[index] {
+    }
+    // A buffer is free once that cycle has come and no consumer is counted on it: the consumer is
+    // done with the frame in it, or never took it.
+    {
+        let mut r = ring.borrow_mut();
+        for index in 0..r.back.len() {
+            let Some(settled) = r.back[index] else {
+                continue;
+            };
+            if r.cycles < settled || r.consumer_holds(index) {
+                continue;
+            }
+            r.back[index] = None;
+            if let Some(slot) = r.token[index].take() {
+                r.pump.release(slot, false);
+            }
             r.avail[index] = true;
             r.n_avail += 1;
         }
@@ -721,6 +820,9 @@ fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Cont
             r.token[index] = Some(pulled.slot);
             r.avail[index] = false;
             r.n_avail -= 1;
+            // One buffer goes out per cycle, the first in the cycle after this one.
+            r.out_cycle = r.out_cycle.max(r.cycles) + 1;
+            r.settled[index] = r.out_cycle + TAKE_CYCLES;
         }
         // SAFETY: `raw` was dequeued from this stream and is filled now. It is queued once, here,
         // which is the return path PipeWire expects for it.
@@ -766,6 +868,19 @@ fn stream_loop(ring: &Rc<RefCell<Ring>>, control: &Control, name: &str, first: B
         .add_local_listener_with_user_data(Rc::clone(ring))
         .add_buffer(|_, shared, buffer| on_add_buffer(shared, buffer))
         .remove_buffer(|_, shared, buffer| on_remove_buffer(shared, buffer))
+        .io_changed(|_, shared, id, area, size| {
+            if id == pipewire::spa::sys::SPA_IO_Buffers {
+                shared.borrow_mut().io = !area.is_null();
+            } else if id == pipewire::spa::sys::SPA_IO_Position {
+                let whole = size as usize >= size_of::<pipewire::spa::sys::spa_io_position>();
+                shared.borrow_mut().position = if whole {
+                    area.cast::<pipewire::spa::sys::spa_io_position>()
+                        .cast_const()
+                } else {
+                    ptr::null()
+                };
+            }
+        })
         .register()
     else {
         return -1;
