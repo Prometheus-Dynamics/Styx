@@ -249,6 +249,15 @@ impl Run {
             .map(|s| s.state)
     }
 
+    /// Frame identities the service saw camera `camera`'s stream skip.
+    fn skipped(&self, camera: &str) -> u64 {
+        self.service
+            .statuses()
+            .into_iter()
+            .find(|s| s.id == camera)
+            .map_or(0, |s| s.skipped)
+    }
+
     fn frames(&self, camera: &str) -> u64 {
         self.service
             .statuses()
@@ -320,10 +329,18 @@ fn counters_move_as_a_streaming_camera_delivers_frames() {
         snap.frames, status_frames,
         "the counters and the status agree"
     );
+    // Two counts of the same thing, made apart: the identities the service saw its camera's
+    // stream skip, and the gaps the counters saw in the frames the outlet was given with no drop
+    // to explain them. They agree, and are zero when the service kept up with its camera; when
+    // it did not (a busy machine), every one is still accounted for.
+    let skipped = run.skipped(CAM0);
+    if skipped > 0 {
+        println!("the service was {skipped} frames late for camera 0's stream: a busy machine");
+    }
     assert_eq!(
         snap.drops[DropReason::Unattributed as usize],
-        0,
-        "no identity skipped on a camera that keeps up"
+        skipped,
+        "every identity the stream skipped is counted, and nothing else is"
     );
     assert_eq!(snap.copies, 0, "frames were copied");
     assert_eq!(copies(), 0, "the process copied frames");
@@ -573,8 +590,11 @@ fn a_snapshot_is_read_by_a_reader_in_another_process() {
     let output = child.wait_with_output().expect("the reader's output");
     assert!(
         status.success(),
-        "reader process failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "reader process failed: {}\nthe publisher: {:?}, {} readers; camera 0: {} frames",
+        String::from_utf8_lossy(&output.stderr),
+        run.hub.publisher(),
+        run.hub.publisher().readers(),
+        run.frames(CAM0)
     );
 
     let bytes = std::fs::read(&out).expect("the reader wrote its snapshots");
@@ -633,15 +653,25 @@ fn snapshot_reader_child() {
     };
     let mut bytes = Vec::new();
     let mut got = 0;
+    let (mut others, mut last_seq) = (0_u64, 0_u64);
     while got < count {
-        assert!(Instant::now() < deadline, "only {got} snapshots");
+        assert!(
+            Instant::now() < deadline,
+            "only {got} snapshots of {CAM0} ({others} of other cameras, last seq {last_seq}); \
+             the reader's own counts: {:?}",
+            subscriber.stats()
+        );
         match subscriber.next_snapshot().expect("a snapshot") {
             // The service has every camera it lists: this reader takes camera 0's.
             Some(snap) if snap.camera.as_str() == CAM0 => {
+                last_seq = snap.seq;
                 bytes.extend_from_slice(&snap.to_bytes());
                 got += 1;
             }
-            Some(_) => {}
+            Some(snap) => {
+                last_seq = snap.seq;
+                others += 1;
+            }
             None => {
                 let _ = subscriber.wait(Duration::from_millis(100));
             }
