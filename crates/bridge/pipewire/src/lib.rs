@@ -20,10 +20,17 @@
 
 #![cfg(target_os = "linux")]
 
+#[cfg(any(feature = "pipewire", test))]
+#[cfg_attr(not(feature = "pipewire"), allow(dead_code))]
+mod hold;
 pub mod learn;
 pub mod link;
 pub mod node;
 
 pub use learn::{Buffers, LearnError, Learner};
 pub use link::{Backoff, Link, LinkState, LinkStatus};
-pub use node::{Control, NodeConfig, NodeError, NodeStats, NodeStatus, node_built, run};
+#[doc(hidden)]
+pub use node::run_with_a_small_ring;
+pub use node::{
+    Control, MIN_BUFFERS, NodeConfig, NodeError, NodeStats, NodeStatus, node_built, run,
+};
