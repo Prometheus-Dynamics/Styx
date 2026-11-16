@@ -47,6 +47,9 @@ pub struct Buffers {
     pub fds: Vec<OwnedFd>,
     /// Ring buffer `i`'s length in bytes.
     pub lens: Vec<u32>,
+    /// Where ring buffer `i` starts in its memfd, in bytes: a producer's buffers are usually one
+    /// memfd cut at offsets, so every descriptor is the same file and the offset tells them apart.
+    pub offsets: Vec<u64>,
     pub fourcc: FourCc,
     pub resolution: Resolution,
     /// Row stride of plane 0.
@@ -76,7 +79,7 @@ struct Shape {
 /// Learns the descriptors of `buffers` ring buffers, one frame at a time.
 #[derive(Debug)]
 pub struct Learner {
-    found: Vec<Option<(OwnedFd, u32)>>,
+    found: Vec<Option<(OwnedFd, u32, u64)>>,
     count: usize,
     shape: Option<Shape>,
 }
@@ -122,7 +125,7 @@ impl Learner {
             let memory = lease.memory();
             let fd = memory.fd().ok_or(LearnError::NoDescriptor(index))?;
             let owned = fd.try_clone_to_owned().map_err(LearnError::Io)?;
-            self.found[index] = Some((owned, memory.len() as u32));
+            self.found[index] = Some((owned, memory.len() as u32, memory.fd_offset() as u64));
             self.count += 1;
         }
         Ok(self.count == self.found.len())
@@ -138,7 +141,14 @@ impl Learner {
             (true, Some(shape)) => shape,
             _ => return Err(LearnError::Incomplete),
         };
-        let (fds, lens): (Vec<OwnedFd>, Vec<u32>) = self.found.into_iter().flatten().unzip();
+        let mut fds = Vec::with_capacity(self.count);
+        let mut lens = Vec::with_capacity(self.count);
+        let mut offsets = Vec::with_capacity(self.count);
+        for (fd, len, offset) in self.found.into_iter().flatten() {
+            fds.push(fd);
+            lens.push(len);
+            offsets.push(offset);
+        }
         let raw = fds
             .iter()
             .map(|fd| std::os::fd::AsRawFd::as_raw_fd(&fd.as_fd()))
@@ -146,6 +156,7 @@ impl Learner {
         Ok(Buffers {
             fds,
             lens,
+            offsets,
             fourcc: shape.fourcc,
             resolution: shape.resolution,
             stride: shape.stride,

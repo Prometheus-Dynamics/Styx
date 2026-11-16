@@ -321,6 +321,8 @@ struct Ring {
     /// The producer's memfds, the node's own duplicates: ring buffer `i` is `fds[i]`.
     fds: Vec<OwnedFd>,
     lens: Vec<u32>,
+    /// Where ring buffer `i` starts in `fds[i]`.
+    offsets: Vec<u64>,
     format: Format,
     /// PipeWire's buffer for each ring index, null until PipeWire adds it.
     pw: Vec<*mut pw_sys::pw_buffer>,
@@ -342,6 +344,7 @@ impl Ring {
             pump,
             fds: Vec::new(),
             lens: Vec::new(),
+            offsets: Vec::new(),
             format: Format {
                 fps,
                 ..Format::default()
@@ -361,13 +364,14 @@ impl Ring {
         let Buffers {
             fds,
             lens,
+            offsets,
             fourcc,
             resolution,
             stride,
             ..
         } = buffers;
         let count = fds.len();
-        if count == 0 || lens.len() != count {
+        if count == 0 || lens.len() != count || offsets.len() != count {
             return Err(-1);
         }
         self.format = Format {
@@ -381,6 +385,7 @@ impl Ring {
         };
         self.fds = fds;
         self.lens = lens;
+        self.offsets = offsets;
         self.pw = vec![ptr::null_mut(); count];
         self.token = vec![None; count];
         self.avail = vec![false; count];
@@ -448,7 +453,19 @@ fn on_add_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
             return;
         }
     };
-    let maxsize = r.lens[index];
+    // The buffer is `lens[index]` bytes at `offsets[index]` of its memfd. A consumer maps from
+    // `mapoffset`, which must sit on a page boundary, so the mapping starts at the boundary below
+    // the buffer and the frame's chunk starts `lead` bytes in (see `lead_of`).
+    let offset = r.offsets[index];
+    let lead = lead_of(offset);
+    let (Ok(mapoffset), Some(maxsize)) = (
+        u32::try_from(offset - u64::from(lead)),
+        r.lens[index].checked_add(lead),
+    ) else {
+        eprintln!("styx-pipewire: ring buffer {index} starts past what a PipeWire buffer can name");
+        r.failed = true;
+        return;
+    };
     // SAFETY: `data` is the buffer's first data (checked above), and the buffer is the node's until
     // it is queued, so its descriptor fields are the node's to set. The memfd is a duplicate
     // handed to PipeWire, which owns it from here, as the C shim left it.
@@ -456,7 +473,7 @@ fn on_add_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
         (*data).type_ = DataType::MemFd.as_raw();
         (*data).flags = spa_sys_flag_readable();
         (*data).fd = i64::from(fd.into_raw_fd());
-        (*data).mapoffset = 0;
+        (*data).mapoffset = mapoffset;
         (*data).maxsize = maxsize;
         (*data).data = ptr::null_mut();
         // SAFETY (same buffer): `user_data` records the ring index for the callbacks and the loop.
@@ -492,6 +509,17 @@ fn on_remove_buffer(ring: &RefCell<Ring>, buffer: *mut pw_sys::pw_buffer) {
         r.n_avail -= 1;
     }
     r.pw[index] = ptr::null_mut();
+}
+
+/// The boundary a consumer's mapping of a memfd starts on: a multiple of every page size in use
+/// (4, 16 and 64 KiB), as `styx-frame` maps its own buffers.
+#[cfg(feature = "pipewire")]
+const MAP_ALIGN: u64 = 64 * 1024;
+
+/// How far into its mapping a buffer at `offset` of its memfd starts.
+#[cfg(feature = "pipewire")]
+fn lead_of(offset: u64) -> u32 {
+    (offset % MAP_ALIGN) as u32
 }
 
 /// The chunk of a PipeWire buffer's first data, or null when it has none.
@@ -679,10 +707,11 @@ fn tick(ring: &RefCell<Ring>, stream: &Stream, quit: &MainLoopRc, control: &Cont
             ring.borrow_mut().pump.release(pulled.slot, true);
             continue;
         }
+        let lead = ring.borrow().offsets.get(index).map_or(0, |&o| lead_of(o));
         // SAFETY: `chunk` is the chunk of a buffer the node holds (checked above), so it is the
         // node's to write until the buffer is queued.
         unsafe {
-            (*chunk).offset = 0;
+            (*chunk).offset = lead;
             (*chunk).size = pulled.len;
             (*chunk).stride = pulled.stride as i32;
             (*chunk).flags = 0;
