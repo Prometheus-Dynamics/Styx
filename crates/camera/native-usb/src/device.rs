@@ -65,6 +65,8 @@ mod tests {
             health: DeviceHealth::Ok,
             reason: String::new(),
             link: None,
+            jobs: Vec::new(),
+            refusal: None,
         }
     }
 
