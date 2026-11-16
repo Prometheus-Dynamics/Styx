@@ -47,26 +47,58 @@ unsafe impl Send for Manager {}
 // SAFETY: as for `Send`.
 unsafe impl Sync for Manager {}
 
-static MANAGER: std::sync::OnceLock<Result<Manager, String>> = std::sync::OnceLock::new();
+static MANAGER: std::sync::OnceLock<Manager> = std::sync::OnceLock::new();
+static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn manager() -> Result<&'static Manager, Error> {
-    match MANAGER.get_or_init(|| Manager::start().map_err(|err| err.to_string())) {
-        Ok(manager) => Ok(manager),
-        Err(message) => Err(Error::Camera(message.clone())),
+/// Why there is no camera manager.
+enum NoManager {
+    /// libcamera found no media devices on this machine (`-ENODEV`): there are no cameras to list.
+    NoMedia,
+    Failed(Error),
+}
+
+impl From<NoManager> for Error {
+    fn from(why: NoManager) -> Self {
+        match why {
+            NoManager::NoMedia => Error::Camera("this machine has no media devices".into()),
+            NoManager::Failed(err) => err,
+        }
     }
 }
 
+/// The process's one camera manager. Only a started manager is kept: a start that failed is tried
+/// again on the next call, so a machine whose first media device appears later gets its cameras.
+fn manager() -> Result<&'static Manager, NoManager> {
+    if let Some(manager) = MANAGER.get() {
+        return Ok(manager);
+    }
+    let _one = STARTING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(manager) = MANAGER.get() {
+        return Ok(manager);
+    }
+    let started = Manager::start()?;
+    Ok(MANAGER.get_or_init(|| started))
+}
+
 impl Manager {
-    fn start() -> Result<Self, Error> {
+    fn start() -> Result<Self, NoManager> {
         // SAFETY: creating a manager takes no arguments and returns an owned pointer or null.
-        let raw = NonNull::new(unsafe { sys::libcamera_camera_manager_create() })
-            .ok_or_else(|| Error::Camera("camera manager could not be created".into()))?;
+        let raw =
+            NonNull::new(unsafe { sys::libcamera_camera_manager_create() }).ok_or_else(|| {
+                NoManager::Failed(Error::Camera("camera manager could not be created".into()))
+            })?;
         // SAFETY: `raw` is a live manager owned by this value.
         let rc = unsafe { sys::libcamera_camera_manager_start(raw.as_ptr()) };
         if rc != 0 {
             // SAFETY: `raw` is owned here and not used again.
             unsafe { sys::libcamera_camera_manager_destroy(raw.as_ptr()) };
-            return Err(Error::Camera(format!("camera manager start failed ({rc})")));
+            return Err(if rc == -libc::ENODEV {
+                NoManager::NoMedia
+            } else {
+                NoManager::Failed(Error::Camera(format!("camera manager start failed ({rc})")))
+            });
         }
         Ok(Self(raw))
     }
@@ -192,7 +224,11 @@ fn formats(camera: &Camera) -> Vec<StreamFormat> {
 
 /// Every camera libcamera lists, with the formats it offers.
 pub(crate) fn list_cameras() -> Result<Vec<CameraInfo>, Error> {
-    let manager = manager()?;
+    let manager = match manager() {
+        Ok(manager) => manager,
+        Err(NoManager::NoMedia) => return Ok(Vec::new()),
+        Err(NoManager::Failed(err)) => return Err(err),
+    };
     Ok(manager
         .cameras()
         .iter()
