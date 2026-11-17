@@ -2,8 +2,14 @@
 //! service in this process, with and without the soft ISP, and the allocations this thread makes
 //! while the loop runs are counted. Other threads (the service's) are not counted.
 //!
-//! A reader that keeps up sees every frame: no gap, with and without the soft ISP, as long as the
-//! ISP's time per frame is below (keep - 1) frame periods (the window the service keeps for it).
+//! A reader that keeps up sees every frame the service had for it, with and without the soft ISP,
+//! as long as the ISP's time per frame is below (keep - 1) frame periods (the window the service
+//! keeps for it). A frame the service itself never had (its own reader was late for the camera's
+//! stream, or its ring had no buffer for it: a busy machine) is a gap the reader sees and did not
+//! cause. The service counts those, and the reader counts the frames its own ring skipped when it
+//! was late, so the claim is checked against the counts: every gap the reader sees is a frame
+//! the service lost or the ring skipped, and a reader that kept up was skipped nothing. So with
+//! no loss upstream and a reader that kept up, there is no gap.
 
 #[path = "support/mod.rs"]
 mod support;
@@ -17,6 +23,21 @@ use styx_measure::isp::{IspRunner, SoftIspArg};
 use styx_measure::session::Session;
 use styx_service::Service;
 use support::{CAMERA, daemon, list, socket_of, start_service, test_dir, wait_publishing};
+
+/// Frames the service did not have for its readers, since it started: identities its camera's
+/// stream skipped, and frames its ring had no buffer for.
+fn lost_upstream(service: &Service) -> u64 {
+    let lines = list(service);
+    let line = lines
+        .iter()
+        .filter_map(|l| CameraLine::parse(l))
+        .find(|c| c.id == CAMERA)
+        .expect("the camera is listed");
+    line.number("skipped").expect("skipped in the status")
+        + line
+            .number("publish_dropped")
+            .expect("publish_dropped in the status")
+}
 
 /// The camera's keep window, from the service's status.
 fn keep_of(service: &Service) -> u64 {
@@ -98,6 +119,8 @@ fn the_read_loop_allocates_nothing_per_frame() {
 
     for isp in [None, Some("NV12")] {
         let arg = isp.map(|c| c.parse::<SoftIspArg>().expect("arg"));
+        // Read before the reader connects: every frame it will see is published after this.
+        let lost_before = lost_upstream(&service);
         let mut session =
             Session::connect(&socket, arg.clone().map(IspRunner::new)).expect("connect");
         // Warm-up: the first frames make the ISP's stage and pool, and fill the reader's tables.
@@ -119,8 +142,23 @@ fn the_read_loop_allocates_nothing_per_frame() {
             made, 0,
             "the read loop made {made} allocations for 1000 frames"
         );
-        // The claim: no gap and no skip for a reader that keeps up. With the ISP it applies while
-        // the ISP's time per frame is below (keep - 1) frame periods.
+        // Read after the last frame was taken: every loss that could show as a gap is in it.
+        let lost = lost_upstream(&service) - lost_before;
+        let skipped = session.reader_stats().skipped;
+        println!(
+            "isp {isp:?}: the reader saw {} gaps; the service lost {lost} frames upstream and the reader's ring skipped {skipped}",
+            session.stats.gaps
+        );
+        // Every gap is accounted for: a frame the service did not have, or one the ring skipped
+        // because this reader was late for it. One gap is at least one such frame.
+        assert!(
+            session.stats.gaps <= lost + skipped,
+            "the reader saw {} gaps; the service lost {lost} frames upstream and the reader's \
+             ring skipped {skipped}: a gap with no frame behind it",
+            session.stats.gaps
+        );
+        // The claim: the ring skips nothing for a reader that keeps up. With the ISP it applies
+        // while the ISP's time per frame is below (keep - 1) frame periods.
         let bound_ns = (keep as f64 - 1.0) * period_ns;
         let isp_max = session
             .isp_stats()
@@ -128,24 +166,23 @@ fn the_read_loop_allocates_nothing_per_frame() {
             .map(|ns| ns as f64);
         let within_bound = isp.is_none() || isp_max.is_some_and(|m| m < bound_ns);
         // "Keeps up" is checked, not assumed: the longest capture-to-reader time covers a stall
-        // of the reader, the service or the simulated camera (a busy machine).
+        // of the reader (a busy machine).
         let latency_max = session.stats.latency.max().map(|ns| ns as f64);
         if latency_max.is_some_and(|m| m >= bound_ns) {
             println!(
-                "isp {isp:?}: capture-to-reader max {latency_max:?} ns is not below {bound_ns} ns: a process was held up; zero gaps not asserted ({} gaps)",
-                session.stats.gaps
+                "isp {isp:?}: capture-to-reader max {latency_max:?} ns is not below {bound_ns} ns: the reader was held up; no skip by the ring not asserted ({} skipped)",
+                session.reader_stats().skipped
             );
         } else if within_bound {
-            assert_eq!(session.stats.gaps, 0, "a reader that keeps up has no gaps");
             assert_eq!(
                 session.reader_stats().skipped,
                 0,
-                "the ring skipped no frame"
+                "the ring skipped no frame for a reader that kept up"
             );
         } else {
             println!(
-                "isp {isp:?}: soft ISP max {isp_max:?} ns is not below {bound_ns} ns; zero gaps not asserted ({} gaps)",
-                session.stats.gaps
+                "isp {isp:?}: soft ISP max {isp_max:?} ns is not below {bound_ns} ns; no skip by the ring not asserted ({} skipped)",
+                session.reader_stats().skipped
             );
         }
         assert!(stop.is_some());
