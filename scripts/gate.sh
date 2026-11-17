@@ -36,9 +36,13 @@ step() {
 # Cases that cannot run here (styx_frame::not_run): no camera, no GPU, no dma-heap, no PipeWire
 # daemon, no test driver. A case whose need is required (STYX_REQUIRE_<NEED>=1) fails the gate.
 # Every other one is counted and reported here and in CI's job summary, by need: never green as
-# tested. This machine's gate has a dma-heap, so that need is required by default; a host
-# without one is declared with STYX_REQUIRE_DMA_HEAP=0.
+# tested. The local gate requires a dma-heap, a C compiler, a PipeWire daemon and a GPU (a software
+# adapter counts); a host without one declares it with STYX_REQUIRE_<NEED>=0. A camera and the
+# vivid test driver are not required: those cases are reported as not run, with the reason.
 export STYX_REQUIRE_DMA_HEAP="${STYX_REQUIRE_DMA_HEAP:-1}"
+export STYX_REQUIRE_CC="${STYX_REQUIRE_CC:-1}"
+export STYX_REQUIRE_PIPEWIRE="${STYX_REQUIRE_PIPEWIRE:-1}"
+export STYX_REQUIRE_GPU="${STYX_REQUIRE_GPU:-1}"
 STYX_NOT_RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/styx-not-run.XXXXXX")"
 export STYX_NOT_RUN_LOG
 not_run_report() {

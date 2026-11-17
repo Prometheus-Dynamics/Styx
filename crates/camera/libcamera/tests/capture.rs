@@ -3,6 +3,9 @@
 //!
 //! The zero-copy assertion below is not yet run on a camera: it passes only when a camera is
 //! present, and that proof runs on a board in PR H6.
+//!
+//! Compiled only with the `libcamera` feature: without it there is no libcamera to test.
+#![cfg(feature = "libcamera")]
 
 use std::sync::mpsc;
 use std::time::Duration;
