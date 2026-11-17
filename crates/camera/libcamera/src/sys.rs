@@ -1,247 +1,206 @@
-//! Raw declarations of the libcamera C shim (`c_api/`, vendored from libcamera-sys 0.7) and
-//! Styx's accessors (`c_api/styx_shim.h`). Only what the backend calls. Nothing here is safe:
+//! libcamera's C API as the backend uses it: lit-robotics libcamera-rs's `libcamera-sys` (its
+//! C wrapper over libcamera's C++ API, bindings generated against the installed libcamera), under
+//! the short names the backend calls, and the control ids of the installed libcamera from the
+//! `libcamera` crate. Styx carries no C or C++ of its own for libcamera. Nothing here is safe:
 //! [`crate::backend`] wraps each pointer in an owner that frees it exactly once.
 
 #![allow(non_camel_case_types, dead_code)]
 
-use std::ffi::{c_char, c_int, c_uint, c_void};
+use std::ffi::c_uint;
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct PixelFormat {
-    pub fourcc: u32,
-    pub modifier: u64,
+use libcamera::controls::ControlId as Id;
+use libcamera::properties::PropertyId;
+pub use libcamera_sys::{
+    libcamera_camera_acquire, libcamera_camera_configuration_at,
+    libcamera_camera_configuration_destroy, libcamera_camera_configuration_size,
+    libcamera_camera_configuration_validate, libcamera_camera_configure, libcamera_camera_controls,
+    libcamera_camera_create_request, libcamera_camera_destroy,
+    libcamera_camera_generate_configuration, libcamera_camera_id, libcamera_camera_list_destroy,
+    libcamera_camera_list_get, libcamera_camera_list_size, libcamera_camera_manager_cameras,
+    libcamera_camera_manager_create, libcamera_camera_manager_destroy,
+    libcamera_camera_manager_get_id, libcamera_camera_manager_start, libcamera_camera_properties,
+    libcamera_camera_queue_request, libcamera_camera_release,
+    libcamera_camera_request_completed_connect, libcamera_camera_request_completed_disconnect,
+    libcamera_camera_start, libcamera_camera_stop, libcamera_control_from_id,
+    libcamera_control_id_enumerators_iter_create, libcamera_control_id_enumerators_iter_destroy,
+    libcamera_control_id_enumerators_iter_has_next, libcamera_control_id_is_input,
+    libcamera_control_id_type, libcamera_control_info_def, libcamera_control_info_map_iter_create,
+    libcamera_control_info_map_iter_destroy, libcamera_control_info_map_iter_has_next,
+    libcamera_control_info_map_iter_key, libcamera_control_info_map_iter_next,
+    libcamera_control_info_map_iter_value, libcamera_control_info_max, libcamera_control_info_min,
+    libcamera_control_list_create, libcamera_control_list_destroy, libcamera_control_list_get,
+    libcamera_control_list_set, libcamera_control_name, libcamera_control_value_create,
+    libcamera_control_value_destroy, libcamera_control_value_get,
+    libcamera_control_value_num_elements, libcamera_control_value_set,
+    libcamera_framebuffer_allocator_allocate, libcamera_framebuffer_allocator_buffers,
+    libcamera_framebuffer_allocator_create, libcamera_framebuffer_allocator_destroy,
+    libcamera_framebuffer_allocator_free, libcamera_framebuffer_list_get,
+    libcamera_framebuffer_list_size, libcamera_framebuffer_plane_fd,
+    libcamera_framebuffer_plane_length, libcamera_framebuffer_plane_offset,
+    libcamera_framebuffer_plane_offset_valid, libcamera_framebuffer_planes,
+    libcamera_framebuffer_planes_at, libcamera_framebuffer_planes_destroy,
+    libcamera_framebuffer_planes_size, libcamera_pixel_formats_destroy,
+    libcamera_pixel_formats_get, libcamera_pixel_formats_size, libcamera_request_add_buffer,
+    libcamera_request_controls, libcamera_request_cookie, libcamera_request_destroy,
+    libcamera_request_metadata, libcamera_request_reuse, libcamera_request_sequence,
+    libcamera_request_status, libcamera_sizes_at, libcamera_sizes_destroy, libcamera_sizes_size,
+    libcamera_stream_configuration_formats, libcamera_stream_configuration_stream,
+    libcamera_stream_formats_pixel_formats, libcamera_stream_formats_sizes,
+};
+use libcamera_sys::{
+    libcamera_camera_configuration_status, libcamera_control_type, libcamera_request_reuse_flag,
+    libcamera_request_status as request_status, libcamera_stream_role,
+};
+
+pub type PixelFormat = libcamera_sys::libcamera_pixel_format_t;
+pub type Size = libcamera_sys::libcamera_size_t;
+
+pub type Manager = libcamera_sys::libcamera_camera_manager_t;
+pub type Camera = libcamera_sys::libcamera_camera_t;
+pub type CameraList = libcamera_sys::libcamera_camera_list_t;
+pub type CameraConfiguration = libcamera_sys::libcamera_camera_configuration_t;
+pub type StreamConfiguration = libcamera_sys::libcamera_stream_configuration_t;
+pub type StreamFormats = libcamera_sys::libcamera_stream_formats_t;
+pub type Stream = libcamera_sys::libcamera_stream_t;
+pub type PixelFormats = libcamera_sys::libcamera_pixel_formats_t;
+pub type Sizes = libcamera_sys::libcamera_sizes_t;
+pub type Allocator = libcamera_sys::libcamera_framebuffer_allocator_t;
+pub type FrameBuffer = libcamera_sys::libcamera_framebuffer_t;
+pub type FrameBufferList = libcamera_sys::libcamera_framebuffer_list_t;
+pub type FrameBufferPlanes = libcamera_sys::libcamera_framebuffer_planes_t;
+pub type FrameBufferPlane = libcamera_sys::libcamera_framebuffer_plane_t;
+pub type Request = libcamera_sys::libcamera_request_t;
+pub type ControlList = libcamera_sys::libcamera_control_list_t;
+pub type ControlValue = libcamera_sys::libcamera_control_value_t;
+pub type ControlInfo = libcamera_sys::libcamera_control_info_t;
+pub type ControlInfoMap = libcamera_sys::libcamera_control_info_map_t;
+pub type ControlInfoMapIter = libcamera_sys::libcamera_control_info_map_iter_t;
+pub type ControlId = libcamera_sys::libcamera_control_id_t;
+pub type ControlIdEnumeratorsIter = libcamera_sys::libcamera_control_id_enumerators_iter_t;
+pub type CallbackHandle = libcamera_sys::libcamera_callback_handle_t;
+
+pub type Role = libcamera_stream_role::Type;
+pub const ROLE_VIDEO_RECORDING: Role = libcamera_stream_role::LIBCAMERA_STREAM_ROLE_VIDEO_RECORDING;
+pub const ROLE_VIEW_FINDER: Role = libcamera_stream_role::LIBCAMERA_STREAM_ROLE_VIEW_FINDER;
+
+pub type ConfigStatus = libcamera_camera_configuration_status::Type;
+pub const CONFIG_VALID: ConfigStatus =
+    libcamera_camera_configuration_status::LIBCAMERA_CAMERA_CONFIGURATION_STATUS_VALID;
+pub const CONFIG_ADJUSTED: ConfigStatus =
+    libcamera_camera_configuration_status::LIBCAMERA_CAMERA_CONFIGURATION_STATUS_ADJUSTED;
+
+pub const REUSE_BUFFERS: libcamera_request_reuse_flag::Type =
+    libcamera_request_reuse_flag::LIBCAMERA_REQUEST_REUSE_FLAG_REUSE_BUFFERS;
+
+pub type ControlType = libcamera_control_type::Type;
+pub const CONTROL_TYPE_BOOL: ControlType = libcamera_control_type::LIBCAMERA_CONTROL_TYPE_BOOL;
+pub const CONTROL_TYPE_INT32: ControlType = libcamera_control_type::LIBCAMERA_CONTROL_TYPE_INT32;
+pub const CONTROL_TYPE_INT64: ControlType = libcamera_control_type::LIBCAMERA_CONTROL_TYPE_INT64;
+pub const CONTROL_TYPE_FLOAT: ControlType = libcamera_control_type::LIBCAMERA_CONTROL_TYPE_FLOAT;
+pub const CONTROL_TYPE_RECTANGLE: ControlType =
+    libcamera_control_type::LIBCAMERA_CONTROL_TYPE_RECTANGLE;
+
+pub type RequestStatus = request_status::Type;
+pub const REQUEST_STATUS_COMPLETE: RequestStatus =
+    request_status::LIBCAMERA_REQUEST_STATUS_COMPLETE;
+pub const REQUEST_STATUS_CANCELLED: RequestStatus =
+    request_status::LIBCAMERA_REQUEST_STATUS_CANCELLED;
+
+// The stream configuration is the C wrapper's `#[repr(C)]` view of libcamera's own struct (the
+// wrapper's header checks every field offset against libcamera's C++ type), so its fields are read
+// and written in place.
+
+/// # Safety
+/// `config` points at a live stream configuration.
+pub unsafe fn styx_stream_fourcc(config: *const StreamConfiguration) -> u32 {
+    // SAFETY: the caller's contract; a field read.
+    unsafe { (*config).pixel_format.fourcc }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct Size {
-    pub width: c_uint,
-    pub height: c_uint,
+/// # Safety
+/// `config` points at a live stream configuration.
+pub unsafe fn styx_stream_modifier(config: *const StreamConfiguration) -> u64 {
+    // SAFETY: the caller's contract; a field read.
+    unsafe { (*config).pixel_format.modifier }
 }
 
-pub const ROLE_VIDEO_RECORDING: c_int = 2;
-pub const ROLE_VIEW_FINDER: c_int = 3;
+/// # Safety
+/// `config` points at a live stream configuration.
+pub unsafe fn styx_stream_width(config: *const StreamConfiguration) -> c_uint {
+    // SAFETY: the caller's contract; a field read.
+    unsafe { (*config).size.width }
+}
 
-pub const CONFIG_VALID: c_int = 0;
-pub const CONFIG_ADJUSTED: c_int = 1;
+/// # Safety
+/// `config` points at a live stream configuration.
+pub unsafe fn styx_stream_height(config: *const StreamConfiguration) -> c_uint {
+    // SAFETY: the caller's contract; a field read.
+    unsafe { (*config).size.height }
+}
 
-pub const REUSE_BUFFERS: c_int = 1;
+/// # Safety
+/// `config` points at a live stream configuration.
+pub unsafe fn styx_stream_stride(config: *const StreamConfiguration) -> c_uint {
+    // SAFETY: the caller's contract; a field read.
+    unsafe { (*config).stride }
+}
 
-pub const CONTROL_TYPE_BOOL: c_uint = 1;
-pub const CONTROL_TYPE_INT32: c_uint = 5;
-pub const CONTROL_TYPE_INT64: c_uint = 6;
-pub const CONTROL_TYPE_FLOAT: c_uint = 7;
-pub const CONTROL_TYPE_RECTANGLE: c_uint = 9;
+/// # Safety
+/// `config` points at a live stream configuration.
+pub unsafe fn styx_stream_frame_size(config: *const StreamConfiguration) -> c_uint {
+    // SAFETY: the caller's contract; a field read.
+    unsafe { (*config).frame_size }
+}
 
-pub const REQUEST_STATUS_COMPLETE: c_int = 1;
-pub const REQUEST_STATUS_CANCELLED: c_int = 2;
+/// # Safety
+/// `config` points at a live stream configuration.
+pub unsafe fn styx_stream_buffer_count(config: *const StreamConfiguration) -> c_uint {
+    // SAFETY: the caller's contract; a field read.
+    unsafe { (*config).buffer_count }
+}
 
-pub enum Manager {}
-pub enum Camera {}
-pub enum CameraList {}
-pub enum CameraConfiguration {}
-pub enum StreamConfiguration {}
-pub enum StreamFormats {}
-pub enum Stream {}
-pub enum PixelFormats {}
-pub enum Sizes {}
-pub enum Allocator {}
-pub enum FrameBuffer {}
-pub enum FrameBufferList {}
-pub enum FrameBufferPlanes {}
-pub enum FrameBufferPlane {}
-pub enum Request {}
-pub enum ControlList {}
-pub enum ControlValue {}
-pub enum ControlInfo {}
-pub enum ControlInfoMap {}
-pub enum ControlInfoMapIter {}
-pub enum ControlId {}
-pub enum ControlIdEnumeratorsIter {}
-pub enum CallbackHandle {}
+/// # Safety
+/// `config` points at a live stream configuration no one else is reading.
+pub unsafe fn styx_stream_set_format(
+    config: *mut StreamConfiguration,
+    fourcc: u32,
+    modifier: u64,
+    width: c_uint,
+    height: c_uint,
+) {
+    // SAFETY: the caller's contract; field writes.
+    unsafe {
+        (*config).pixel_format = PixelFormat { fourcc, modifier };
+        (*config).size = Size { width, height };
+    }
+}
 
-pub type RequestCompleted = unsafe extern "C" fn(*mut c_void, *mut Request);
+/// # Safety
+/// `config` points at a live stream configuration no one else is reading.
+pub unsafe fn styx_stream_set_buffer_count(config: *mut StreamConfiguration, count: c_uint) {
+    // SAFETY: the caller's contract; a field write.
+    unsafe { (*config).buffer_count = count }
+}
 
-unsafe extern "C" {
-    // Camera manager.
-    pub fn libcamera_camera_manager_create() -> *mut Manager;
-    pub fn libcamera_camera_manager_destroy(mgr: *mut Manager);
-    pub fn libcamera_camera_manager_start(mgr: *mut Manager) -> c_int;
-    pub fn libcamera_camera_manager_stop(mgr: *mut Manager);
-    pub fn libcamera_camera_manager_cameras(mgr: *const Manager) -> *mut CameraList;
-    pub fn libcamera_camera_manager_get_id(mgr: *mut Manager, id: *const c_char) -> *mut Camera;
-    pub fn libcamera_camera_list_destroy(list: *mut CameraList);
-    pub fn libcamera_camera_list_size(list: *mut CameraList) -> usize;
-    pub fn libcamera_camera_list_get(list: *mut CameraList, index: usize) -> *mut Camera;
+/// Control ids by Styx's name: 0 ExposureTime, 1 AnalogueGain, 2 DigitalGain, 3 SensorTimestamp,
+/// 4 AeEnable, 5 FrameDuration. Any other value is 0 (no control).
+pub fn styx_control_id(which: c_uint) -> c_uint {
+    let id = match which {
+        0 => Id::ExposureTime,
+        1 => Id::AnalogueGain,
+        2 => Id::DigitalGain,
+        3 => Id::SensorTimestamp,
+        4 => Id::AeEnable,
+        5 => Id::FrameDuration,
+        _ => return 0,
+    };
+    id.into()
+}
 
-    // Camera.
-    pub fn libcamera_camera_destroy(cam: *mut Camera);
-    pub fn libcamera_camera_id(cam: *const Camera) -> *const c_char;
-    pub fn libcamera_camera_acquire(cam: *mut Camera) -> c_int;
-    pub fn libcamera_camera_release(cam: *mut Camera) -> c_int;
-    pub fn libcamera_camera_generate_configuration(
-        cam: *mut Camera,
-        roles: *const c_int,
-        role_count: usize,
-    ) -> *mut CameraConfiguration;
-    pub fn libcamera_camera_configuration_destroy(config: *mut CameraConfiguration);
-    pub fn libcamera_camera_configuration_size(config: *const CameraConfiguration) -> usize;
-    pub fn libcamera_camera_configuration_at(
-        config: *mut CameraConfiguration,
-        index: usize,
-    ) -> *mut StreamConfiguration;
-    pub fn libcamera_camera_configuration_validate(config: *mut CameraConfiguration) -> c_int;
-    pub fn libcamera_camera_configure(cam: *mut Camera, config: *mut CameraConfiguration) -> c_int;
-    pub fn libcamera_camera_create_request(cam: *mut Camera, cookie: u64) -> *mut Request;
-    pub fn libcamera_camera_queue_request(cam: *mut Camera, request: *mut Request) -> c_int;
-    pub fn libcamera_camera_start(cam: *mut Camera, controls: *const ControlList) -> c_int;
-    pub fn libcamera_camera_stop(cam: *mut Camera) -> c_int;
-    pub fn libcamera_camera_request_completed_connect(
-        cam: *mut Camera,
-        callback: RequestCompleted,
-        data: *mut c_void,
-    ) -> *mut CallbackHandle;
-    pub fn libcamera_camera_request_completed_disconnect(
-        cam: *mut Camera,
-        handle: *mut CallbackHandle,
-    );
-
-    // Stream configuration and formats.
-    pub fn libcamera_stream_configuration_formats(
-        config: *const StreamConfiguration,
-    ) -> *const StreamFormats;
-    pub fn libcamera_stream_configuration_stream(config: *const StreamConfiguration)
-    -> *mut Stream;
-    pub fn libcamera_stream_formats_pixel_formats(
-        formats: *const StreamFormats,
-    ) -> *mut PixelFormats;
-    pub fn libcamera_stream_formats_sizes(
-        formats: *const StreamFormats,
-        pixel_format: *const PixelFormat,
-    ) -> *mut Sizes;
-    pub fn libcamera_pixel_formats_destroy(formats: *mut PixelFormats);
-    pub fn libcamera_pixel_formats_size(formats: *const PixelFormats) -> usize;
-    pub fn libcamera_pixel_formats_get(formats: *const PixelFormats, index: usize) -> PixelFormat;
-    pub fn libcamera_sizes_destroy(sizes: *mut Sizes);
-    pub fn libcamera_sizes_size(sizes: *const Sizes) -> usize;
-    pub fn libcamera_sizes_at(sizes: *const Sizes, index: usize) -> *const Size;
-
-    // Frame buffers.
-    pub fn libcamera_framebuffer_allocator_create(cam: *mut Camera) -> *mut Allocator;
-    pub fn libcamera_framebuffer_allocator_destroy(alloc: *mut Allocator);
-    pub fn libcamera_framebuffer_allocator_allocate(
-        alloc: *mut Allocator,
-        stream: *mut Stream,
-    ) -> c_int;
-    pub fn libcamera_framebuffer_allocator_free(
-        alloc: *mut Allocator,
-        stream: *mut Stream,
-    ) -> c_int;
-    pub fn libcamera_framebuffer_allocator_buffers(
-        alloc: *mut Allocator,
-        stream: *mut Stream,
-    ) -> *const FrameBufferList;
-    pub fn libcamera_framebuffer_list_size(list: *const FrameBufferList) -> usize;
-    pub fn libcamera_framebuffer_list_get(
-        list: *const FrameBufferList,
-        index: usize,
-    ) -> *const FrameBuffer;
-    pub fn libcamera_framebuffer_planes(fb: *const FrameBuffer) -> *mut FrameBufferPlanes;
-    pub fn libcamera_framebuffer_planes_destroy(planes: *mut FrameBufferPlanes);
-    pub fn libcamera_framebuffer_planes_size(planes: *const FrameBufferPlanes) -> usize;
-    pub fn libcamera_framebuffer_planes_at(
-        planes: *mut FrameBufferPlanes,
-        index: usize,
-    ) -> *mut FrameBufferPlane;
-    pub fn libcamera_framebuffer_plane_fd(plane: *mut FrameBufferPlane) -> c_int;
-    pub fn libcamera_framebuffer_plane_offset(plane: *const FrameBufferPlane) -> usize;
-    pub fn libcamera_framebuffer_plane_length(plane: *const FrameBufferPlane) -> usize;
-    pub fn libcamera_framebuffer_plane_offset_valid(plane: *const FrameBufferPlane) -> bool;
-
-    // Requests.
-    pub fn libcamera_request_destroy(request: *mut Request);
-    pub fn libcamera_request_controls(request: *mut Request) -> *mut ControlList;
-    pub fn libcamera_request_metadata(request: *mut Request) -> *const ControlList;
-    pub fn libcamera_request_add_buffer(
-        request: *mut Request,
-        stream: *const Stream,
-        buffer: *mut FrameBuffer,
-    ) -> c_int;
-    pub fn libcamera_request_find_buffer(
-        request: *const Request,
-        stream: *const Stream,
-    ) -> *mut FrameBuffer;
-    pub fn libcamera_request_sequence(request: *const Request) -> u32;
-    pub fn libcamera_request_cookie(request: *const Request) -> u64;
-    pub fn libcamera_request_status(request: *const Request) -> c_int;
-    pub fn libcamera_request_reuse(request: *mut Request, flags: c_int);
-
-    // Controls.
-    pub fn libcamera_control_list_create() -> *mut ControlList;
-    pub fn libcamera_control_list_destroy(list: *mut ControlList);
-    pub fn libcamera_control_list_set(
-        list: *mut ControlList,
-        id: c_uint,
-        value: *const ControlValue,
-    );
-    pub fn libcamera_control_list_get(list: *const ControlList, id: c_uint) -> *const ControlValue;
-    pub fn libcamera_control_value_create() -> *mut ControlValue;
-    pub fn libcamera_control_value_destroy(value: *mut ControlValue);
-    pub fn libcamera_control_value_set(
-        value: *mut ControlValue,
-        kind: c_uint,
-        data: *const c_void,
-        is_array: bool,
-        count: usize,
-    );
-    pub fn libcamera_control_value_num_elements(value: *const ControlValue) -> usize;
-    pub fn libcamera_control_value_get(value: *const ControlValue) -> *const c_void;
-
-    // Styx accessors (c_api/styx_shim.cpp).
-    pub fn styx_stream_fourcc(config: *const StreamConfiguration) -> u32;
-    pub fn styx_stream_modifier(config: *const StreamConfiguration) -> u64;
-    pub fn styx_stream_width(config: *const StreamConfiguration) -> c_uint;
-    pub fn styx_stream_height(config: *const StreamConfiguration) -> c_uint;
-    pub fn styx_stream_stride(config: *const StreamConfiguration) -> c_uint;
-    pub fn styx_stream_frame_size(config: *const StreamConfiguration) -> c_uint;
-    pub fn styx_stream_buffer_count(config: *const StreamConfiguration) -> c_uint;
-    pub fn styx_stream_set_format(
-        config: *mut StreamConfiguration,
-        fourcc: u32,
-        modifier: u64,
-        width: c_uint,
-        height: c_uint,
-    );
-    pub fn styx_stream_set_buffer_count(config: *mut StreamConfiguration, count: c_uint);
-    pub fn styx_control_id(which: c_uint) -> c_uint;
-    pub fn styx_property_id(which: c_uint) -> c_uint;
-
-    // The camera's control registry and its listing (controls.h, camera.h).
-    pub fn libcamera_camera_controls(cam: *const Camera) -> *const ControlInfoMap;
-    pub fn libcamera_camera_properties(cam: *const Camera) -> *const ControlList;
-    pub fn libcamera_control_info_map_iter_create(
-        map: *const ControlInfoMap,
-    ) -> *mut ControlInfoMapIter;
-    pub fn libcamera_control_info_map_iter_has_next(iter: *const ControlInfoMapIter) -> bool;
-    pub fn libcamera_control_info_map_iter_key(iter: *const ControlInfoMapIter) -> c_uint;
-    pub fn libcamera_control_info_map_iter_value(
-        iter: *const ControlInfoMapIter,
-    ) -> *const ControlInfo;
-    pub fn libcamera_control_info_map_iter_next(iter: *mut ControlInfoMapIter);
-    pub fn libcamera_control_info_map_iter_destroy(iter: *mut ControlInfoMapIter);
-    pub fn libcamera_control_info_min(info: *mut ControlInfo) -> *const ControlValue;
-    pub fn libcamera_control_info_max(info: *mut ControlInfo) -> *const ControlValue;
-    pub fn libcamera_control_info_def(info: *mut ControlInfo) -> *const ControlValue;
-    pub fn libcamera_control_from_id(id: c_uint) -> *mut ControlId;
-    pub fn libcamera_control_name(control: *mut ControlId) -> *const c_char;
-    pub fn libcamera_control_id_type(control: *mut ControlId) -> c_uint;
-    pub fn libcamera_control_id_is_input(control: *mut ControlId) -> bool;
-    pub fn libcamera_control_id_enumerators_iter_create(
-        control: *mut ControlId,
-    ) -> *mut ControlIdEnumeratorsIter;
-    pub fn libcamera_control_id_enumerators_iter_has_next(
-        iter: *const ControlIdEnumeratorsIter,
-    ) -> bool;
-    pub fn libcamera_control_id_enumerators_iter_destroy(iter: *mut ControlIdEnumeratorsIter);
+/// Property ids by Styx's name: 0 ScalerCropMaximum. Any other value is 0.
+pub fn styx_property_id(which: c_uint) -> c_uint {
+    match which {
+        0 => PropertyId::ScalerCropMaximum.into(),
+        _ => 0,
+    }
 }

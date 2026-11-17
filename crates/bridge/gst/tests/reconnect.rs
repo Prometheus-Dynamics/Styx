@@ -11,10 +11,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use gststyx::{LinkState, Source};
 use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
-use styx_gst::{LinkState, Source};
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
 const WIDTH: u32 = 64;

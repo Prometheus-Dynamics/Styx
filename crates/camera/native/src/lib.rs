@@ -12,8 +12,9 @@
 //! camera, and its health and reason are on the [`Camera`] for a caller to show. The one check
 //! that refuses a camera is the wiring check [`discover`] makes with the contracts: the receiver's
 //! `source` against the sensor's `identity` (see [`Refusal`]). A receiver that cannot say what is
-//! wired to its input (`NOT_SUPPORTED`) is unknown, carried as [`LinkCheck::Unknown`], and neither
-//! a match nor a mismatch.
+//! wired to its input (`NOT_SUPPORTED`) cannot contradict the link the board states, so that link
+//! stands ([`LinkCheck::Confirmed`]). A sensor with no identity to compare is
+//! [`LinkCheck::Unknown`]: neither a match nor a mismatch.
 //!
 //! Finding a chain does not claim it. One backend owns a camera at a time, and two cameras may
 //! name the same receiver on a board; choosing between them is for the layer that opens a camera.
@@ -77,8 +78,9 @@ impl Camera {
     }
 
     /// What the wiring check found: [`LinkCheck::Confirmed`] when the receiver's input is this
-    /// sensor, [`LinkCheck::Unknown`] with the reason when it cannot say (or was not asked, as
-    /// [`cameras`] does). A mismatch or nothing wired is refused by [`discover`], not carried here.
+    /// sensor or the receiver cannot say what is wired to it (the board's link then stands),
+    /// [`LinkCheck::Unknown`] with the reason when the two cannot be compared (or the receiver was
+    /// not asked, as [`cameras`] does). A mismatch or nothing wired is refused by [`discover`], not carried here.
     pub fn link(&self) -> &LinkCheck {
         &self.link
     }
@@ -282,6 +284,8 @@ mod tests {
             health: DeviceHealth::Ok,
             reason: String::new(),
             link: link.map(str::to_string),
+            jobs: Vec::new(),
+            refusal: None,
         }
     }
 

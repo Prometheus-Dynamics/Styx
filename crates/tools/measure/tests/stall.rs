@@ -248,6 +248,8 @@ fn a_lost_return_is_a_discontinuity_and_not_a_lost_frame() {
     std::thread::sleep(Duration::from_millis(1000));
     rig.inject_fault(None);
     let (stdout, stderr) = finish(child);
+    let status = ask(service.control_socket(), "list").join("\n");
+    let stderr = format!("{stderr}\nservice at the end: {status}");
     service.shutdown();
 
     let json: serde_json::Value =

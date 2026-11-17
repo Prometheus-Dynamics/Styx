@@ -1,4 +1,4 @@
-//! The libcamera binding: cameras, configuration, dma-buf frames and requests, over the C shim.
+//! The libcamera binding: cameras, configuration, dma-buf frames and requests, over libcamera-sys (the C API of lit-robotics libcamera-rs).
 //!
 //! Frames are meant to be zero-copy, and are not yet run on a camera (proof: PR H6): each libcamera
 //! buffer's dma-buf is mapped once (read-only) as a [`FdMemory`] in one [`FramePool`] per stream,
@@ -27,15 +27,14 @@ use crate::sys;
 use crate::{CameraInfo, CaptureConfig, CaptureStats, DeviceEntry, Error, FrameSink, StreamFormat};
 use styx_controls::{DeviceControl, DeviceKind, Rect};
 
-/// The shim's control ids (`styx_control_id`).
+/// Styx's control names, as [`sys::styx_control_id`] numbers them.
 const CTRL_EXPOSURE_TIME: c_int = 0;
 const CTRL_ANALOGUE_GAIN: c_int = 1;
 const CTRL_DIGITAL_GAIN: c_int = 2;
 const CTRL_SENSOR_TIMESTAMP: c_int = 3;
 
 fn control_id(which: c_int) -> u32 {
-    // SAFETY: a pure accessor over libcamera's static control ids; no state is touched.
-    unsafe { sys::styx_control_id(which as u32) }
+    sys::styx_control_id(which as u32)
 }
 
 /// The process-wide camera manager. libcamera allows one CameraManager per process (a second is
@@ -48,26 +47,58 @@ unsafe impl Send for Manager {}
 // SAFETY: as for `Send`.
 unsafe impl Sync for Manager {}
 
-static MANAGER: std::sync::OnceLock<Result<Manager, String>> = std::sync::OnceLock::new();
+static MANAGER: std::sync::OnceLock<Manager> = std::sync::OnceLock::new();
+static STARTING: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn manager() -> Result<&'static Manager, Error> {
-    match MANAGER.get_or_init(|| Manager::start().map_err(|err| err.to_string())) {
-        Ok(manager) => Ok(manager),
-        Err(message) => Err(Error::Camera(message.clone())),
+/// Why there is no camera manager.
+enum NoManager {
+    /// libcamera found no media devices on this machine (`-ENODEV`): there are no cameras to list.
+    NoMedia,
+    Failed(Error),
+}
+
+impl From<NoManager> for Error {
+    fn from(why: NoManager) -> Self {
+        match why {
+            NoManager::NoMedia => Error::Camera("this machine has no media devices".into()),
+            NoManager::Failed(err) => err,
+        }
     }
 }
 
+/// The process's one camera manager. Only a started manager is kept: a start that failed is tried
+/// again on the next call, so a machine whose first media device appears later gets its cameras.
+fn manager() -> Result<&'static Manager, NoManager> {
+    if let Some(manager) = MANAGER.get() {
+        return Ok(manager);
+    }
+    let _one = STARTING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(manager) = MANAGER.get() {
+        return Ok(manager);
+    }
+    let started = Manager::start()?;
+    Ok(MANAGER.get_or_init(|| started))
+}
+
 impl Manager {
-    fn start() -> Result<Self, Error> {
+    fn start() -> Result<Self, NoManager> {
         // SAFETY: creating a manager takes no arguments and returns an owned pointer or null.
-        let raw = NonNull::new(unsafe { sys::libcamera_camera_manager_create() })
-            .ok_or_else(|| Error::Camera("camera manager could not be created".into()))?;
+        let raw =
+            NonNull::new(unsafe { sys::libcamera_camera_manager_create() }).ok_or_else(|| {
+                NoManager::Failed(Error::Camera("camera manager could not be created".into()))
+            })?;
         // SAFETY: `raw` is a live manager owned by this value.
         let rc = unsafe { sys::libcamera_camera_manager_start(raw.as_ptr()) };
         if rc != 0 {
             // SAFETY: `raw` is owned here and not used again.
             unsafe { sys::libcamera_camera_manager_destroy(raw.as_ptr()) };
-            return Err(Error::Camera(format!("camera manager start failed ({rc})")));
+            return Err(if rc == -libc::ENODEV {
+                NoManager::NoMedia
+            } else {
+                NoManager::Failed(Error::Camera(format!("camera manager start failed ({rc})")))
+            });
         }
         Ok(Self(raw))
     }
@@ -88,7 +119,7 @@ impl Manager {
                 out.push(Camera(cam));
             }
         }
-        // SAFETY: the list was created by the shim and is not used after this.
+        // SAFETY: the list was created by the C API and is not used after this.
         unsafe { sys::libcamera_camera_list_destroy(list) };
         out
     }
@@ -117,7 +148,7 @@ impl Camera {
     }
 
     /// Generated configuration for `role`; the caller frees it through [`Configuration`].
-    fn configuration(&self, role: c_int) -> Option<Configuration> {
+    fn configuration(&self, role: sys::Role) -> Option<Configuration> {
         // SAFETY: the camera is live and the role array lives for the call.
         let raw =
             unsafe { sys::libcamera_camera_generate_configuration(self.0.as_ptr(), &role, 1) };
@@ -193,7 +224,11 @@ fn formats(camera: &Camera) -> Vec<StreamFormat> {
 
 /// Every camera libcamera lists, with the formats it offers.
 pub(crate) fn list_cameras() -> Result<Vec<CameraInfo>, Error> {
-    let manager = manager()?;
+    let manager = match manager() {
+        Ok(manager) => manager,
+        Err(NoManager::NoMedia) => return Ok(Vec::new()),
+        Err(NoManager::Failed(err)) => return Err(err),
+    };
     Ok(manager
         .cameras()
         .iter()
@@ -397,7 +432,8 @@ fn request_sensor_timestamp(request: *mut sys::Request) -> Option<u64> {
         if list.is_null() {
             return None;
         }
-        let value = sys::libcamera_control_list_get(list, control_id(CTRL_SENSOR_TIMESTAMP));
+        let value =
+            sys::libcamera_control_list_get(list.cast_mut(), control_id(CTRL_SENSOR_TIMESTAMP));
         if value.is_null() || sys::libcamera_control_value_num_elements(value) == 0 {
             return None;
         }
@@ -419,7 +455,7 @@ fn request_value<T: Copy>(request: *mut sys::Request, which: c_int) -> Option<T>
         if list.is_null() {
             return None;
         }
-        let value = sys::libcamera_control_list_get(list, control_id(which));
+        let value = sys::libcamera_control_list_get(list.cast_mut(), control_id(which));
         if value.is_null() || sys::libcamera_control_value_num_elements(value) == 0 {
             return None;
         }
@@ -533,7 +569,9 @@ fn list_controls(camera: &Camera) -> Vec<Listed> {
             let id = sys::libcamera_control_info_map_iter_key(iter);
             let info = sys::libcamera_control_info_map_iter_value(iter) as *mut sys::ControlInfo;
             sys::libcamera_control_info_map_iter_next(iter);
-            let control = sys::libcamera_control_from_id(id);
+            // The C API's id lookups and getters read only; its bindings differ on `const`, so
+            // the pointer is cast where a getter is declared `*mut`.
+            let control = sys::libcamera_control_from_id(id).cast_mut();
             if control.is_null() || info.is_null() {
                 continue;
             }
@@ -592,13 +630,14 @@ fn number(value: *const sys::ControlValue, ty: u32) -> f64 {
 /// The camera's `ScalerCropMaximum`, when it reports one.
 fn crop_maximum(camera: &Camera) -> Option<Rect> {
     // SAFETY: the camera is live; its property list is read while it lives, and the id is the
-    // one the shim names for `ScalerCropMaximum`.
+    // one libcamera names for `ScalerCropMaximum`.
     unsafe {
         let properties = sys::libcamera_camera_properties(camera.0.as_ptr());
         if properties.is_null() {
             return None;
         }
-        let value = sys::libcamera_control_list_get(properties, sys::styx_property_id(0));
+        let value =
+            sys::libcamera_control_list_get(properties.cast_mut(), sys::styx_property_id(0));
         if value.is_null() || sys::libcamera_control_value_num_elements(value) == 0 {
             return None;
         }
@@ -831,7 +870,7 @@ impl Capture {
         let callback = unsafe {
             sys::libcamera_camera_request_completed_connect(
                 camera.0.as_ptr(),
-                on_request_completed,
+                Some(on_request_completed),
                 (&mut *inner) as *mut Inner as *mut c_void,
             )
         };

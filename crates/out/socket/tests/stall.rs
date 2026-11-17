@@ -262,3 +262,80 @@ fn stalling_twice_keeps_the_first_time_and_resuming_twice_is_silent() {
     ));
     assert!(matches!(reader.next_event().expect("live"), Next::Idle));
 }
+
+/// A producer that resumes and publishes the moment its reader has been told of a stall, against
+/// a reader that asks as fast as it can: whatever the interleaving, a reader that was told of a
+/// stall gets `Resumed` before any frame. (The frame after a stall could come first when the
+/// producer resumed between the reader's look at the state and its look at the ring.) Every other
+/// stall ends at once, so stalls the reader never saw, and ones that end and begin again between
+/// two of its calls, are in the mix.
+#[test]
+fn a_reader_told_of_a_stall_never_gets_a_frame_before_resumed() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    const STALLS: u64 = 20_000;
+    let mut producer = producer();
+    let mut reader = attach(&mut producer, "order");
+    let stop = Arc::new(AtomicBool::new(false));
+    let told_count = Arc::new(AtomicU64::new(0));
+    let watcher = {
+        let (stop, told_count) = (stop.clone(), told_count.clone());
+        thread::spawn(move || {
+            let (mut told, mut frames, mut early) = (false, 0_u64, Vec::new());
+            while !stop.load(Ordering::Acquire) {
+                match reader.next_event().expect("the stream is live") {
+                    Next::Stalled(_) => {
+                        told = true;
+                        told_count.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Next::Resumed { .. } => told = false,
+                    Next::Frame(frame) => {
+                        frames += 1;
+                        if told && early.len() < 4 {
+                            early.push(frame.lease().id());
+                        }
+                    }
+                    Next::Idle => std::hint::spin_loop(),
+                }
+            }
+            (frames, early)
+        })
+    };
+    let mut id = 0_u64;
+    let deadline = Instant::now() + Duration::from_secs(120);
+    for stall in 0..STALLS {
+        for _ in 0..2 {
+            id += 1;
+            if let Ok(mut lease) = producer.begin(entry(id)) {
+                lease.write().expect("sole owner").bytes().fill(id as u8);
+                producer.publish(lease).expect("publish");
+            }
+        }
+        let told = told_count.load(Ordering::Acquire);
+        producer.stall(now_ns());
+        if stall % 2 == 0 {
+            // Held until the reader has been told of it; then the resume races the reader.
+            while told_count.load(Ordering::Acquire) == told {
+                assert!(
+                    Instant::now() < deadline,
+                    "the reader was never told of a stall"
+                );
+                std::hint::spin_loop();
+            }
+        }
+        producer.resume(Carried::Kept);
+    }
+    stop.store(true, Ordering::Release);
+    let (frames, early) = watcher.join().expect("reader thread");
+    let told = told_count.load(Ordering::Acquire);
+    assert!(
+        early.is_empty(),
+        "frames {early:?} came while the reader had been told of a stall and not of its end"
+    );
+    assert!(told >= STALLS / 2, "the reader was told of {told} stalls");
+    println!(
+        "proof: a racing reader told of {told} stalls of {STALLS} took {frames} frames, none \
+         before Resumed"
+    );
+}

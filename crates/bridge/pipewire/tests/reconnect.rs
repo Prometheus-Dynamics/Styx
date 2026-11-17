@@ -3,8 +3,7 @@
 //! away and connects its stream again with the new producer's buffers. Skips, with the reason
 //! printed, when this build has no PipeWire node or no daemon is running.
 //!
-//! Frames reaching a PipeWire consumer need a linked consumer; this host's session manager does not
-//! link video, so that leg is not part of this test (see the PR).
+//! Frames reaching a PipeWire consumer are `tests/consumer.rs`.
 
 #![cfg(target_os = "linux")]
 

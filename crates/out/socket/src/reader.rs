@@ -287,6 +287,12 @@ pub struct Reader {
     /// Whether this reader has been told of the stall in force: [`Next::Stalled`] was returned
     /// and [`Next::Resumed`] is owed when the camera runs again.
     told_stall: bool,
+    /// The state page's count of changes when this reader was told of that stall. A different
+    /// count later means the stall it was told of has ended, even if another is in force by then.
+    told_edges: u64,
+    /// A frame taken from the ring just as the stall this reader was told of ended: it is given
+    /// after [`Next::Resumed`], which comes before the first frame after a stall.
+    held_back: Option<Frame>,
 }
 
 /// One thing [`Reader::next_event`] returns: a frame, or a change in the producer's state, or
@@ -494,6 +500,8 @@ impl Reader {
             counters: Counters::default(),
             producer,
             told_stall: false,
+            told_edges: 0,
+            held_back: None,
         })
     }
 
@@ -505,6 +513,9 @@ impl Reader {
     ///
     /// [`ReadError::Ended`] with [`StreamEnd::ConsumerFault`] once the producer has cut this reader off.
     pub fn next_frame(&mut self) -> Result<Option<Frame>, ReadError> {
+        if let Some(frame) = self.held_back.take() {
+            return Ok(Some(frame));
+        }
         loop {
             // The end code is read before the ring: a ring that has ended has published every frame
             // before its end, and a read after this load sees them all.
@@ -576,20 +587,41 @@ impl Reader {
     ///
     /// As [`Reader::next_frame`].
     pub fn next_event(&mut self) -> Result<Next, ReadError> {
+        // The stall this reader was told of has ended once the state has changed since, whether
+        // the camera runs now or has stalled again: its end is told first.
         let before = self.producer.snapshot();
-        if self.told_stall && before.running() {
+        if self.told_stall && before.edges != self.told_edges {
             self.told_stall = false;
             return Ok(Next::Resumed {
                 state: before.recovery,
             });
         }
         if let Some(frame) = self.next_frame()? {
+            if self.told_stall {
+                // A frame while a stall is in force: if the stall ended between the look at the
+                // state above and the look at the ring, this is the first frame after it, and
+                // `Resumed` is owed first. Otherwise it was published just before the stall.
+                let after = self.producer.snapshot();
+                if after.edges != self.told_edges {
+                    self.told_stall = false;
+                    self.held_back = Some(frame);
+                    return Ok(Next::Resumed {
+                        state: after.recovery,
+                    });
+                }
+            }
             return Ok(Next::Frame(frame));
         }
         // No frame is pending: a stall this reader has not been told of is reported now.
         let now = self.producer.snapshot();
         if !self.told_stall && !now.running() {
+            // The producer publishes, then stalls: a frame published between this reader's look
+            // at the ring and the stall comes before the stall is told.
+            if let Some(frame) = self.next_frame()? {
+                return Ok(Next::Frame(frame));
+            }
             self.told_stall = true;
+            self.told_edges = now.edges;
             return Ok(Next::Stalled(now.state));
         }
         Ok(Next::Idle)
@@ -605,12 +637,16 @@ impl Reader {
         let buffers = &self.buffers;
         let producer = &self.producer;
         let told = self.told_stall;
+        let told_edges = self.told_edges;
+        let held_back = self.held_back.is_some();
         // An ended ring is ready at once: the next read reports the end.
         self.doorbell.wait(timeout, || {
-            buffers.pending() > 0
+            held_back
+                || buffers.pending() > 0
                 || buffers.end() != 0
                 || if told {
-                    producer.snapshot().running()
+                    // The stall this reader was told of has ended (see `next_event`).
+                    producer.snapshot().edges != told_edges
                 } else {
                     !producer.snapshot().running()
                 }

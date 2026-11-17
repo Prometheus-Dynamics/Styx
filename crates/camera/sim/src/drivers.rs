@@ -177,7 +177,16 @@ impl Lifecycle for SimSensor {
                 }
                 Health::Gone(reason)
             }
-            None => Health::Ok,
+            None => {
+                // A healthy read is the device alive again. An instance that started while the
+                // fault was still set did not revive it at its start; without this, a fault
+                // cleared between that start and this read left the device healthy and dead: it
+                // made no frame again.
+                if let Some(silicon) = self.clock.as_deref() {
+                    silicon.revive();
+                }
+                Health::Ok
+            }
         }
     }
 

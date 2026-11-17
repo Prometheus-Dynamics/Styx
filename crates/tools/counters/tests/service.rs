@@ -126,58 +126,27 @@ impl LibcameraLister for NoV4l2 {
     }
 }
 
-/// The frames one camera's outlets were given: how many, and the first and last identity. The
-/// identities are the simulator's frame clock's: the slots it made between the first and the last.
-#[derive(Default)]
-struct Seen {
-    count: AtomicU64,
-    first_id: AtomicU64,
-    last_id: AtomicU64,
-}
-
 /// Counts the frames each camera's outlets were given. Stands for the service's own way out.
 #[derive(Default)]
 struct Tally {
-    counts: Mutex<BTreeMap<String, Arc<Seen>>>,
+    counts: Mutex<BTreeMap<String, Arc<AtomicU64>>>,
 }
 
 impl Tally {
-    fn seen(&self, camera: &str) -> Option<Arc<Seen>> {
+    fn count(&self, camera: &str) -> u64 {
         self.counts
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .get(camera)
-            .cloned()
-    }
-
-    fn count(&self, camera: &str) -> u64 {
-        self.seen(camera)
-            .map_or(0, |seen| seen.count.load(Ordering::Relaxed))
-    }
-
-    /// The frame slots the simulator made between the camera's first and last delivered frame and
-    /// did not deliver (the camera's thread had not returned a buffer in time).
-    fn skipped(&self, camera: &str) -> u64 {
-        self.seen(camera).map_or(0, |seen| {
-            let count = seen.count.load(Ordering::Relaxed);
-            if count == 0 {
-                return 0;
-            }
-            let slots =
-                seen.last_id.load(Ordering::Relaxed) - seen.first_id.load(Ordering::Relaxed) + 1;
-            slots - count
-        })
+            .map_or(0, |c| c.load(Ordering::Relaxed))
     }
 }
 
-struct TallyOutlet(Arc<Seen>);
+struct TallyOutlet(Arc<AtomicU64>);
 
 impl Outlet for TallyOutlet {
-    fn frame(&mut self, _camera: &str, lease: &FrameLease<FrameMetadata>) {
-        if self.0.count.fetch_add(1, Ordering::Relaxed) == 0 {
-            self.0.first_id.store(lease.id(), Ordering::Relaxed);
-        }
-        self.0.last_id.store(lease.id(), Ordering::Relaxed);
+    fn frame(&mut self, _camera: &str, _lease: &FrameLease<FrameMetadata>) {
+        self.0.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -280,6 +249,15 @@ impl Run {
             .map(|s| s.state)
     }
 
+    /// Frame identities the service saw camera `camera`'s stream skip.
+    fn skipped(&self, camera: &str) -> u64 {
+        self.service
+            .statuses()
+            .into_iter()
+            .find(|s| s.id == camera)
+            .map_or(0, |s| s.skipped)
+    }
+
     fn frames(&self, camera: &str) -> u64 {
         self.service
             .statuses()
@@ -351,14 +329,18 @@ fn counters_move_as_a_streaming_camera_delivers_frames() {
         snap.frames, status_frames,
         "the counters and the status agree"
     );
-    // The simulator makes frames on the host's clock whether or not this process is given the
-    // time to take them, so how many slots it skipped is the simulator's to say (its identities),
-    // not this test's: the counters count exactly those, each once.
-    let skipped = run.tally.skipped(CAM0);
+    // Two counts of the same thing, made apart: the identities the service saw its camera's
+    // stream skip, and the gaps the counters saw in the frames the outlet was given with no drop
+    // to explain them. They agree, and are zero when the service kept up with its camera; when
+    // it did not (a busy machine), every one is still accounted for.
+    let skipped = run.skipped(CAM0);
+    if skipped > 0 {
+        println!("the service was {skipped} frames late for camera 0's stream: a busy machine");
+    }
     assert_eq!(
         snap.drops[DropReason::Unattributed as usize],
         skipped,
-        "every identity the simulator skipped is counted once, and nothing else"
+        "every identity the stream skipped is counted, and nothing else is"
     );
     assert_eq!(snap.copies, 0, "frames were copied");
     assert_eq!(copies(), 0, "the process copied frames");
@@ -418,7 +400,7 @@ fn counters_move_as_a_streaming_camera_delivers_frames() {
         "fps_milli is the sensor mode's floor"
     );
     println!(
-        "camera 0: frames {}, skipped {skipped}, windows checked {checked}, sensor {expected_ns} ns, last window {} milli-fps",
+        "camera 0: frames {}, windows checked {checked}, sensor {expected_ns} ns, last window {} milli-fps",
         snap.frames,
         run.latest(CAM0).map_or(0, |s| s.achieved_fps_milli)
     );
@@ -608,8 +590,11 @@ fn a_snapshot_is_read_by_a_reader_in_another_process() {
     let output = child.wait_with_output().expect("the reader's output");
     assert!(
         status.success(),
-        "reader process failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "reader process failed: {}\nthe publisher: {:?}, {} readers; camera 0: {} frames",
+        String::from_utf8_lossy(&output.stderr),
+        run.hub.publisher(),
+        run.hub.publisher().readers(),
+        run.frames(CAM0)
     );
 
     let bytes = std::fs::read(&out).expect("the reader wrote its snapshots");
@@ -668,15 +653,25 @@ fn snapshot_reader_child() {
     };
     let mut bytes = Vec::new();
     let mut got = 0;
+    let (mut others, mut last_seq) = (0_u64, 0_u64);
     while got < count {
-        assert!(Instant::now() < deadline, "only {got} snapshots");
+        assert!(
+            Instant::now() < deadline,
+            "only {got} snapshots of {CAM0} ({others} of other cameras, last seq {last_seq}); \
+             the reader's own counts: {:?}",
+            subscriber.stats()
+        );
         match subscriber.next_snapshot().expect("a snapshot") {
             // The service has every camera it lists: this reader takes camera 0's.
             Some(snap) if snap.camera.as_str() == CAM0 => {
+                last_seq = snap.seq;
                 bytes.extend_from_slice(&snap.to_bytes());
                 got += 1;
             }
-            Some(_) => {}
+            Some(snap) => {
+                last_seq = snap.seq;
+                others += 1;
+            }
             None => {
                 let _ = subscriber.wait(Duration::from_millis(100));
             }

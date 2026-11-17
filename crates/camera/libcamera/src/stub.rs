@@ -4,11 +4,7 @@ use crate::{CaptureStats, Error};
 use styx_controls::Update;
 
 /// Why the backend is unavailable in this build.
-pub(crate) const REASON: &str = if cfg!(feature = "libcamera") {
-    "libcamera was not found by pkg-config"
-} else {
-    "built without the libcamera feature"
-};
+pub(crate) const REASON: &str = "built without the libcamera feature";
 
 /// A capture, which never exists in this build.
 #[derive(Debug)]
