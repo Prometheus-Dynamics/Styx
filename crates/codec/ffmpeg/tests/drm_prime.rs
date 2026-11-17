@@ -1,6 +1,6 @@
 //! The DRM PRIME decode entry point through a software decoder: its frames are not DRM PRIME, so
-//! the sink refuses them with the reason and holds nothing. Skips, printing why, when FFmpeg is
-//! not installed. The hardware path (a decoder that outputs DRM PRIME) is not run here: see the
+//! the sink refuses them with the reason and holds nothing. Does not run, with the reason recorded,
+//! when FFmpeg is not installed. The hardware path (a decoder that outputs DRM PRIME) is not run here: see the
 //! PR text.
 #![cfg(all(feature = "ffmpeg", target_os = "linux"))]
 
@@ -60,11 +60,15 @@ fn encoded_packet() -> Option<(FramePool, styx_frame::FrameLease)> {
 #[test]
 fn software_output_is_refused_as_drm_prime() {
     if let Err(why) = styx_ffmpeg::available() {
-        eprintln!("skipped software_output_is_refused_as_drm_prime: {why}");
+        styx_frame::not_run::not_run("ffmpeg", "software output is refused as DRM PRIME", &why);
         return;
     }
     let Some((_packet_pool, packet)) = encoded_packet() else {
-        eprintln!("skipped software_output_is_refused_as_drm_prime: no MJPEG encoder");
+        styx_frame::not_run::not_run(
+            "ffmpeg",
+            "software output is refused as DRM PRIME",
+            "no MJPEG encoder",
+        );
         return;
     };
     let mut decoder = styx_ffmpeg::open_decoder(FourCc::MJPG, FourCc::I420).expect("decoder");

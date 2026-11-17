@@ -14,9 +14,10 @@
 //! return of a buffer as the consumer's (PipeWire returns it a cycle after sending, taken or not).
 //!
 //! Needs this build's PipeWire node, a running PipeWire daemon, and `gst-launch-1.0` with
-//! `pipewiresrc`. Without one of them the test prints `SKIPPED` and why.
+//! `pipewiresrc`. Built only with the `pipewire` feature. Without a daemon or `pipewiresrc` the
+//! proof is recorded as not run (`styx_frame::not_run`), or fails where PipeWire is required.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "pipewire"))]
 
 mod common;
 
@@ -26,17 +27,25 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use common::{Rig, has_pipewiresrc, no_node_or_daemon, one_at_a_time, refuse_a_required_skip};
+use common::{Rig, daemon_for, has_pipewiresrc, one_at_a_time};
 
 const FRAMES: usize = 40;
 
-/// Why this test cannot run here, if it cannot.
-fn missing() -> Option<String> {
-    no_node_or_daemon().or_else(|| {
-        refuse_a_required_skip(
-            (!has_pipewiresrc()).then(|| "no gst-inspect-1.0 with a pipewiresrc element".into()),
-        )
-    })
+/// Whether this proof can run here: a daemon and GStreamer's `pipewiresrc`. When not, it is
+/// recorded as not run.
+fn can_run(case: &str) -> bool {
+    if !daemon_for(case) {
+        return false;
+    }
+    if !has_pipewiresrc() {
+        styx_frame::not_run::not_run(
+            "pipewire",
+            case,
+            "no gst-inspect-1.0 with a pipewiresrc element",
+        );
+        return false;
+    }
+    true
 }
 
 #[test]
@@ -57,8 +66,9 @@ fn a_small_frame_reaches_a_pipewire_consumer() {
 }
 
 fn proof(width: u32, height: u32) {
-    if let Some(reason) = missing() {
-        println!("SKIPPED: {reason}");
+    if !can_run(&format!(
+        "a PipeWire consumer reads {width}x{height} frames"
+    )) {
         return;
     }
     let luma = (width * height) as usize;

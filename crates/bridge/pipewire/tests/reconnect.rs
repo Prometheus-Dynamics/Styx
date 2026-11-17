@@ -1,11 +1,11 @@
 //! The node over a real PipeWire daemon: the producer goes away mid-stream, and a new producer
 //! comes back on the same socket. The node is never restarted: it backs off while the producer is
-//! away and connects its stream again with the new producer's buffers. Skips, with the reason
-//! printed, when this build has no PipeWire node or no daemon is running.
+//! away and connects its stream again with the new producer's buffers. Not built without the
+//! `pipewire` feature; when no daemon is running, it does not run, and says why.
 //!
 //! Frames reaching a PipeWire consumer are `tests/consumer.rs`.
 
-#![cfg(target_os = "linux")]
+#![cfg(all(target_os = "linux", feature = "pipewire"))]
 
 use std::fs;
 use std::os::unix::net::UnixListener;
@@ -18,7 +18,7 @@ use std::time::{Duration, Instant};
 use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
-use styx_pipewire::{Control, LinkState, NodeConfig, NodeStatus, node_built, run};
+use styx_pipewire::{Control, LinkState, NodeConfig, NodeStatus, run};
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
 const WIDTH: u32 = 64;
@@ -28,19 +28,8 @@ const BUFFERS: usize = 4;
 const PAYLOAD: usize = (WIDTH * HEIGHT * 3 / 2) as usize;
 const NODE: &str = "styx-reconnect-proof";
 
-fn skip(reason: &str) -> bool {
-    println!("SKIPPED: {reason}");
-    true
-}
-
 /// Why this test cannot run here, if it cannot.
 fn missing() -> Option<String> {
-    if !node_built() {
-        return Some(
-            "this build has no PipeWire node (needs libpipewire-0.3 and the `pipewire` feature)"
-                .into(),
-        );
-    }
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")?;
     let remote = std::env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
     if !Path::new(&runtime).join(&remote).exists() {
@@ -148,7 +137,11 @@ fn wait_for(control: &Control, what: &str, timeout: Duration, ok: impl Fn(&NodeS
 #[test]
 fn the_node_survives_its_producer_and_renegotiates_when_a_new_one_returns() {
     if let Some(reason) = missing() {
-        skip(&reason);
+        styx_frame::not_run::not_run(
+            "pipewire",
+            "PipeWire node across a producer restart",
+            &reason,
+        );
         return;
     }
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));

@@ -19,8 +19,8 @@
 //! The memfd case has no dma-buf, so its frames reach the device through their bytes, from the
 //! frame's own start: copied, never imported. Each frame is written with its own pattern and the
 //! shader must read each frame's pattern, so a read from the descriptor's start would fail. The
-//! dma-heap cases skip, with the reason printed, when a GPU device can't open; a missing heap is
-//! `styx_frame::dma_case`'s (fails under `STYX_REQUIRE_DMA_HEAP=1`, else recorded as skipped).
+//! dma-heap cases do not run, with the reason recorded, when a GPU device can't open; a missing
+//! heap is `styx_frame::dma_case`'s (fails under `STYX_REQUIRE_DMA_HEAP=1`, else recorded as not run).
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
 use std::os::fd::{AsFd, OwnedFd};
@@ -342,7 +342,7 @@ fn memfd_frames_cut_from_one_descriptor_at_offsets_each_read_their_own_bytes() {
     let gpu = match open_gpu() {
         Ok(gpu) => gpu,
         Err(why) => {
-            println!("skipped: {why}");
+            styx_frame::not_run::not_run("gpu", "daedalus memfd frames at offsets", &why);
             return;
         }
     };
@@ -366,7 +366,7 @@ fn dma_heap_frames_at_page_offsets_each_read_their_own_bytes_and_are_imported_in
     let gpu = match open_gpu() {
         Ok(gpu) => gpu,
         Err(why) => {
-            println!("skipped: {why}");
+            styx_frame::not_run::not_run("gpu", "daedalus dma-heap frames at page offsets", &why);
             return;
         }
     };
@@ -427,7 +427,11 @@ fn dma_heap_frames_at_a_misaligned_offset_read_their_own_bytes_as_the_device_ali
     let gpu = match open_gpu() {
         Ok(gpu) => gpu,
         Err(why) => {
-            println!("skipped: {why}");
+            styx_frame::not_run::not_run(
+                "gpu",
+                "daedalus dma-heap frames at a misaligned offset",
+                &why,
+            );
             return;
         }
     };

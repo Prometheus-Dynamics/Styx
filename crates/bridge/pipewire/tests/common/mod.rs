@@ -16,42 +16,24 @@ use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
 use styx_pipewire::{
-    Control, LinkState, MIN_BUFFERS, NodeConfig, NodeError, NodeStats, node_built, run,
-    run_with_a_small_ring,
+    Control, LinkState, MIN_BUFFERS, NodeConfig, NodeError, NodeStats, run, run_with_a_small_ring,
 };
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig};
 
-/// Why no proof with a PipeWire consumer can run here, if none can. Under
-/// `STYX_REQUIRE_PIPEWIRE=1` (CI, which starts a daemon for these proofs) that is a failure, not
-/// a skip: a skipped proof must not read as a passed one.
-pub fn no_node_or_daemon() -> Option<String> {
-    let reason = if !node_built() {
-        Some("this build has no PipeWire node (the `pipewire` feature is off)".to_string())
-    } else {
-        let remote = std::env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
-        match std::env::var_os("XDG_RUNTIME_DIR") {
-            None => {
-                Some("XDG_RUNTIME_DIR is not set, so there is no PipeWire daemon socket".into())
-            }
-            Some(runtime) if !Path::new(&runtime).join(&remote).exists() => {
-                Some("no PipeWire daemon socket under XDG_RUNTIME_DIR".into())
-            }
-            Some(_) => None,
+/// Whether a proof with a PipeWire consumer can run here: there is a daemon to connect to. When
+/// there is none, `case` is recorded as not run (or fails, where PipeWire is required:
+/// `STYX_REQUIRE_PIPEWIRE=1`, which CI sets after starting a daemon) and this is `false`.
+pub fn daemon_for(case: &str) -> bool {
+    let remote = std::env::var_os("PIPEWIRE_REMOTE").unwrap_or_else(|| "pipewire-0".into());
+    let why = match std::env::var_os("XDG_RUNTIME_DIR") {
+        None => "XDG_RUNTIME_DIR is not set, so there is no PipeWire daemon socket",
+        Some(runtime) if !Path::new(&runtime).join(&remote).exists() => {
+            "no PipeWire daemon socket under XDG_RUNTIME_DIR"
         }
+        Some(_) => return true,
     };
-    refuse_a_required_skip(reason)
-}
-
-/// Passes `reason` on, unless these proofs are required here and the build has the node.
-pub fn refuse_a_required_skip(reason: Option<String>) -> Option<String> {
-    let required = std::env::var_os("STYX_REQUIRE_PIPEWIRE").is_some_and(|v| v == "1");
-    if let Some(reason) = &reason
-        && required
-        && node_built()
-    {
-        panic!("STYX_REQUIRE_PIPEWIRE=1 and the PipeWire consumer proof cannot run: {reason}");
-    }
-    reason
+    styx_frame::not_run::not_run("pipewire", case, why);
+    false
 }
 
 /// Whether GStreamer's `pipewiresrc` is installed.

@@ -46,8 +46,8 @@ pub(super) fn scene(w: usize, h: usize, shift: usize) -> (Vec<u8>, Vec<u8>, Vec<
     (y, u, v)
 }
 
-/// FFmpeg's decode of `stream` as I420 pictures. Without an `ffmpeg` binary the decode check is
-/// skipped, with the reason printed; `None` then.
+/// FFmpeg's decode of `stream` as I420 pictures. Without an `ffmpeg` binary the decode check does
+/// not run, with the reason recorded; `None` then.
 pub(super) fn ffmpeg_decode(stream: &[u8]) -> Option<Vec<u8>> {
     let spawned = Command::new("ffmpeg")
         .args([
@@ -61,7 +61,11 @@ pub(super) fn ffmpeg_decode(stream: &[u8]) -> Option<Vec<u8>> {
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
-            eprintln!("skipped the FFmpeg decode check: no ffmpeg binary ({error})");
+            styx_frame::not_run::not_run(
+                "ffmpeg",
+                "FFmpeg decode check",
+                &format!("no ffmpeg binary ({error})"),
+            );
             return None;
         }
     };

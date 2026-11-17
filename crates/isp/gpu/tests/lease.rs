@@ -1,5 +1,5 @@
 //! The GPU lease hook: asked before each frame's GPU work and released after it; refused frames
-//! make no GPU work. Skips with a printed reason when the host has no Vulkan device.
+//! make no GPU work. Does not run, with the reason recorded, when the host has no Vulkan device.
 #![cfg(feature = "vulkan")]
 
 #[path = "common/mod.rs"]
@@ -36,11 +36,15 @@ impl GpuLease for Counting {
 
 fn device() -> Option<GpuContext> {
     if styx_gpu::devices().is_empty() {
-        eprintln!("skipped: no suitable Vulkan device on this host");
+        styx_frame::not_run::not_run(
+            "gpu",
+            "GPU lease hook",
+            "no suitable Vulkan device on this host",
+        );
         return None;
     }
     GpuContext::open(DeviceSelect::Auto).ok().or_else(|| {
-        eprintln!("skipped: the Vulkan device did not open");
+        styx_frame::not_run::not_run("gpu", "GPU lease hook", "the Vulkan device did not open");
         None
     })
 }

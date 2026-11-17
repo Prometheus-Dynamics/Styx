@@ -6,7 +6,7 @@ fn loaded_library_versions_are_supported() {
     let (util, codec) = match styx_ffmpeg::loaded_versions() {
         Ok(versions) => versions,
         Err(why) => {
-            eprintln!("skipped loaded_library_versions_are_supported: {why}");
+            styx_frame::not_run::not_run("ffmpeg", "loaded library versions are supported", &why);
             return;
         }
     };

@@ -677,14 +677,18 @@ mod tests {
     }
 
     /// The sink end to end on FFmpeg's `AVFrame`s, with no decoder: each test frame is an
-    /// `AVFrame` in `drm_prime` whose `data[0]` is the descriptor above. Needs libavutil; skips
-    /// with the reason otherwise.
+    /// `AVFrame` in `drm_prime` whose `data[0]` is the descriptor above. Needs libavutil; does not
+    /// run, with the reason recorded, otherwise.
     #[test]
     fn sink_holds_a_dmabuf_while_its_lease_is_out() {
         let api = match crate::api::system() {
             Ok(api) => api,
             Err(why) => {
-                eprintln!("skipped sink_holds_a_dmabuf_while_its_lease_is_out: {why}");
+                styx_frame::not_run::not_run(
+                    "ffmpeg",
+                    "sink holds a dma-buf while its lease is out",
+                    &why,
+                );
                 return;
             }
         };

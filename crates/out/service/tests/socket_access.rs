@@ -206,9 +206,13 @@ fn socket_mode_600_gives_a_directory_with_no_group_or_other_access() {
 #[test]
 fn a_numeric_socket_group_in_the_process_groups_is_applied() {
     let Some(group) = supplementary_groups().first().copied() else {
-        println!(
-            "skipped: the test process has only its own group ({}), so there is no other group to give the sockets",
-            egid()
+        styx_frame::not_run::not_run(
+            "second-group",
+            "a numeric socket group in the process groups",
+            &format!(
+                "the test process has only its own group ({}), so there is no other group to give the sockets",
+                egid()
+            ),
         );
         return;
     };
@@ -227,9 +231,10 @@ fn a_group_name_as_a_string_is_looked_up_and_applied() {
         let _ = fields.next()?;
         (fields.next()?.parse::<u32>().ok()? == egid()).then(|| name.to_string())
     }) else {
-        println!(
-            "skipped: /etc/group has no name for the process's group {}",
-            egid()
+        styx_frame::not_run::not_run(
+            "group-name",
+            "a group name as a string is looked up and applied",
+            &format!("/etc/group has no name for the process's group {}", egid()),
         );
         return;
     };
@@ -286,12 +291,20 @@ fn a_bad_socket_mode_is_a_start_up_error_naming_the_key() {
 #[test]
 fn a_group_the_user_is_not_in_is_refused_at_start_up() {
     if uid() == 0 {
-        println!("skipped: run as root, every group can be given, so there is no refusal to see");
+        styx_frame::not_run::not_run(
+            "unprivileged",
+            "a group the user is not in is refused at start up",
+            "run as root, every group can be given, so there is no refusal to see",
+        );
         return;
     }
     // Group 0 (root's) is one this unprivileged test process is not in.
     if proc_status("Groups:").contains(&0) || egid() == 0 {
-        println!("skipped: the test process is in group 0");
+        styx_frame::not_run::not_run(
+            "unprivileged",
+            "a group the user is not in is refused at start up",
+            "the test process is in group 0",
+        );
         return;
     }
     let dir = test_dir("refused-group");

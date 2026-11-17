@@ -3,8 +3,8 @@
 //! The frame is a buffer of the system dma-heap, the way a camera service's pool hands them out.
 //! The host feeds it to a graph whose one node is a shader; the planner takes the device's import
 //! of the `styx:frame` value over any copy (a `styx:frame` has no byte upload on this device), and
-//! the shader reads the frame's bytes where they were written. The test skips, with the reason
-//! printed, when the dma-heap can't be opened or no usable device opens. `STYX_DAEDALUS_ADAPTER`
+//! the shader reads the frame's bytes where they were written. The test does not run, with the
+//! reason recorded, when the dma-heap can't be opened or no usable device opens. `STYX_DAEDALUS_ADAPTER`
 //! names the adapter (a substring of its name) to run on; by default the backend's best one.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
@@ -113,7 +113,7 @@ fn a_dma_heap_frame_is_imported_into_the_gpu_and_the_shader_reads_its_bytes() {
     let gpu = match open_gpu() {
         Ok(gpu) => gpu,
         Err(why) => {
-            println!("skipped: {why}");
+            styx_frame::not_run::not_run("gpu", "a dma-heap frame is imported into the GPU", &why);
             return;
         }
     };

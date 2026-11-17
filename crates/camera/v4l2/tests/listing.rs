@@ -3,7 +3,7 @@
 //!
 //! The fake-sysfs test runs everywhere. The machine tests use the real nodes when they exist (a vivid
 //! capture node by its sysfs name, and a virtual loopback node that must never be opened) and print
-//! why they skip otherwise.
+//! why they did not run otherwise.
 
 #![cfg(target_os = "linux")]
 
@@ -157,7 +157,11 @@ fn machine_listing_opens_nothing_and_names_the_vivid_node() {
         .iter()
         .find(|n| !n.virtual_node && n.name.starts_with("vivid") && n.name.contains("vid-cap"))
     else {
-        println!("SKIP vivid probe: no vivid capture node by sysfs name on this machine");
+        styx_frame::not_run::not_run(
+            "vivid",
+            "styx-v4l2 vivid probe",
+            "no vivid capture node by sysfs name on this machine",
+        );
         return;
     };
     println!(
@@ -179,7 +183,11 @@ fn a_named_probe_of_the_vivid_node_opens_only_that_node() {
         .find(|n| !n.virtual_node && n.name.starts_with("vivid") && n.name.contains("vid-cap"))
         .map(|n| n.name.clone())
     else {
-        println!("SKIP named probe: no vivid capture node by sysfs name on this machine");
+        styx_frame::not_run::not_run(
+            "vivid",
+            "styx-v4l2 named vivid probe",
+            "no vivid capture node by sysfs name on this machine",
+        );
         return;
     };
     let device = prober
@@ -216,23 +224,34 @@ fn a_non_default_input_is_selected_and_its_formats_are_listed() {
         .find(|n| !n.virtual_node && n.name.starts_with("vivid") && n.name.contains("vid-cap"))
         .map(|n| n.path)
     else {
-        println!("SKIP input: no vivid capture node on this machine");
+        styx_frame::not_run::not_run(
+            "vivid",
+            "styx-v4l2 vivid input",
+            "no vivid capture node on this machine",
+        );
         return;
     };
     let default = prober
         .probe_node(&path)
         .expect("default probe")
         .expect("capture node");
+    // The input is the device's, not this handle's: it outlasts the test, so it is put back.
+    let _restore = InputRestored::of(&path);
     let selected = match prober.probe_input(&path, 1) {
         Ok(Some(device)) => device,
         Ok(None) => {
-            println!("SKIP input: {} is not a capture node", path.display());
+            styx_frame::not_run::not_run(
+                "vivid",
+                "styx-v4l2 vivid input",
+                &format!("{} is not a capture node", path.display()),
+            );
             return;
         }
         Err(e) => {
-            println!(
-                "SKIP input: input 1 is not selectable on {}: {e}",
-                path.display()
+            styx_frame::not_run::not_run(
+                "vivid",
+                "styx-v4l2 vivid input",
+                &format!("input 1 is not selectable on {}: {e}", path.display()),
             );
             return;
         }
@@ -249,4 +268,39 @@ fn a_non_default_input_is_selected_and_its_formats_are_listed() {
         selected.formats.len(),
         default.formats.len()
     );
+}
+
+/// Puts a node's selected input back when dropped: a test that selects another input leaves the
+/// device as it found it for the next process that opens it.
+struct InputRestored {
+    path: PathBuf,
+    input: u32,
+}
+
+impl InputRestored {
+    fn of(path: &Path) -> Self {
+        let input = VideoDevice::open(path)
+            .and_then(|device| device.input())
+            .expect("the node's selected input");
+        Self {
+            path: path.to_path_buf(),
+            input,
+        }
+    }
+}
+
+impl Drop for InputRestored {
+    fn drop(&mut self) {
+        let restored =
+            VideoDevice::open(&self.path).and_then(|device| device.set_input(self.input));
+        if let Err(e) = restored
+            && !std::thread::panicking()
+        {
+            panic!(
+                "input {} not put back on {}: {e}",
+                self.input,
+                self.path.display()
+            );
+        }
+    }
 }

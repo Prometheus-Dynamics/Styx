@@ -114,7 +114,7 @@ fn cycle(kept_imports: usize) -> Option<(u64, u64)> {
     let gpu = match open_private(kept_imports) {
         Ok(gpu) => gpu,
         Err(why) => {
-            println!("skipped: {why}");
+            styx_frame::not_run::not_run("gpu", "kept dma-buf imports", &why);
             return None;
         }
     };

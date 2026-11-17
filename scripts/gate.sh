@@ -33,30 +33,54 @@ step() {
   echo "    $label: $((SECONDS - start)) s"
 }
 
-# dma-buf cases (styx_frame::dma_case): a case that cannot run here fails the gate unless the host
-# is declared heap-less with STYX_REQUIRE_DMA_HEAP=0, and then every skipped case is counted and
-# reported, never green as tested. This machine's gate has a heap: the default requires it.
+# Cases that cannot run here (styx_frame::not_run): no camera, no GPU, no dma-heap, no PipeWire
+# daemon, no test driver. A case whose need is required (STYX_REQUIRE_<NEED>=1) fails the gate.
+# Every other one is counted and reported here and in CI's job summary, by need: never green as
+# tested. The local gate requires a dma-heap, a C compiler, a PipeWire daemon, a GPU (a software
+# adapter counts) and the vivid test driver; a host without one declares it with
+# STYX_REQUIRE_<NEED>=0. A camera is not required: those cases are reported as not run, with the
+# reason.
 export STYX_REQUIRE_DMA_HEAP="${STYX_REQUIRE_DMA_HEAP:-1}"
-STYX_DMA_SKIP_LOG="$(mktemp "${TMPDIR:-/tmp}/styx-dma-skips.XXXXXX")"
-export STYX_DMA_SKIP_LOG
-dma_skips() {
-  local n
-  n=$(sort -u "$STYX_DMA_SKIP_LOG" | grep -c . || true)
+export STYX_REQUIRE_CC="${STYX_REQUIRE_CC:-1}"
+export STYX_REQUIRE_PIPEWIRE="${STYX_REQUIRE_PIPEWIRE:-1}"
+export STYX_REQUIRE_GPU="${STYX_REQUIRE_GPU:-1}"
+export STYX_REQUIRE_VIVID="${STYX_REQUIRE_VIVID:-1}"
+# vivid is a module, loaded by hand and gone after a reboot: said at once, not after the build.
+if [ "$STYX_REQUIRE_VIVID" = 1 ] && ! grep -qs '^vivid-' /sys/class/video4linux/*/name; then
+  echo "gate: vivid not loaded (sudo modprobe vivid), or set STYX_REQUIRE_VIVID=0 on a host without it" >&2
+  exit 1
+fi
+STYX_NOT_RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/styx-not-run.XXXXXX")"
+export STYX_NOT_RUN_LOG
+not_run_report() {
+  local n dma
+  n=$(sort -u "$STYX_NOT_RUN_LOG" | grep -c . || true)
+  dma=$(sort -u "$STYX_NOT_RUN_LOG" | grep -c '^NOT RUN \[dma-heap\]' || true)
+  echo "dma-buf cases SKIPPED: $dma"
   if [ "$n" != 0 ]; then
-    echo "dma-buf cases SKIPPED: $n (STYX_REQUIRE_DMA_HEAP=$STYX_REQUIRE_DMA_HEAP)"
-    sort -u "$STYX_DMA_SKIP_LOG" | sed 's/^/    /'
+    echo "cases NOT RUN: $n"
+    sort -u "$STYX_NOT_RUN_LOG" | sed -E 's/^NOT RUN \[([^]]*)\].*/\1/' | sort | uniq -c | sed 's/^/    /'
+    sort -u "$STYX_NOT_RUN_LOG" | sed 's/^/    /'
     if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      { echo "### dma-buf cases SKIPPED: $n"; echo; echo "This runner has no dma-heap: these cases did not run."; echo; sort -u "$STYX_DMA_SKIP_LOG" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+      {
+        echo "### Cases NOT RUN: $n"
+        echo
+        echo "These cases did not run on this runner (what each needs is in brackets). They are not covered by this run."
+        echo
+        echo "dma-buf cases SKIPPED: $dma"
+        echo
+        sort -u "$STYX_NOT_RUN_LOG" | sed 's/^/- /'
+      } >> "$GITHUB_STEP_SUMMARY"
     fi
     if [ -n "${GITHUB_ACTIONS:-}" ]; then
-      echo "::warning title=dma-buf cases SKIPPED::$n dma-buf cases did not run: this runner has no dma-heap"
+      echo "::warning title=Cases NOT RUN::$n cases did not run on this runner ($dma of them dma-buf cases): see the job summary"
     fi
   else
-    echo "dma-buf cases SKIPPED: 0"
+    echo "cases NOT RUN: 0"
   fi
-  rm -f "$STYX_DMA_SKIP_LOG"
+  rm -f "$STYX_NOT_RUN_LOG"
 }
-trap dma_skips EXIT
+trap not_run_report EXIT
 
 # The workspace glob matches nothing until the first crate lands.
 if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then

@@ -22,7 +22,11 @@ fn node_named(name: &str) -> Option<String> {
 #[test]
 fn vivid_capture_node_arrives_from_sysfs_and_the_socket_listens() {
     let Some(vivid) = node_named(VIVID_CAP) else {
-        println!("SKIP: no V4L2 node named {VIVID_CAP} in sysfs (the vivid driver is not loaded)");
+        styx_frame::not_run::not_run(
+            "vivid",
+            "styx-watch vivid node",
+            &format!("no V4L2 node named {VIVID_CAP} in sysfs (the vivid driver is not loaded)"),
+        );
         return;
     };
     let mut watch = Watch::new(WatchConfig::system(None));
@@ -67,7 +71,11 @@ fn vivid_capture_node_arrives_from_sysfs_and_the_socket_listens() {
     println!("vivid node {vivid} arrived; v4l2 socket: {:?}", status.v4l2);
     // Listening for two seconds with no error: the socket is live, or it said why it could not open.
     if let SourceStatus::Retrying { reason, .. } = &status.v4l2 {
-        println!("SKIP-SOCKET: the uevent socket could not open here: {reason}");
+        styx_frame::not_run::not_run(
+            "uevent-socket",
+            "styx-watch uevent socket",
+            &format!("the uevent socket could not open here: {reason}"),
+        );
     } else {
         assert!(matches!(
             status.v4l2,

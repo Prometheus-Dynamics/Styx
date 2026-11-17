@@ -104,11 +104,12 @@ fn zune_matches_jpeg_decoder_the_reference_dev_uses() {
 }
 
 #[test]
+#[cfg(feature = "turbojpeg")]
 fn turbojpeg_matches_zune_when_the_library_is_present() {
     let mut turbo = match MjpegDecoder::turbojpeg(FourCc::MJPG) {
         Ok(t) => t,
         Err(CodecError::Unavailable(why)) => {
-            eprintln!("SKIPPED turbojpeg comparison: {why}");
+            styx_frame::not_run::not_run("turbojpeg", "turbojpeg matches zune", &why);
             return;
         }
         Err(e) => panic!("{e}"),

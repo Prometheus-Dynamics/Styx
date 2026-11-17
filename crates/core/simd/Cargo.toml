@@ -30,5 +30,8 @@ libc = { version = "0.2", optional = true }
 styx-format = { path = "../format", default-features = false }
 styx-math = { path = "../math", default-features = false }
 
+[dev-dependencies]
+styx-frame = { path = "../frame", features = ["std"] }
+
 [lints]
 workspace = true
