@@ -16,7 +16,8 @@ use styx_controls::{Control, ControlValue};
 use styx_format::FourCc;
 use styx_lemnos::v4l2::v4l2::{BufType, VideoDevice};
 use styx_v4l2::{
-    Delivery, Device, Queue, Sizes, State, Stream, StreamConfig, copy_counters, probe_node,
+    Delivery, Device, Queue, Sizes, State, Stream, StreamConfig, copy_counters, probe_input,
+    probe_node,
 };
 
 /// vivid's "Disconnect" button, in its "Vivid Controls" class.
@@ -36,15 +37,25 @@ fn serial() -> MutexGuard<'static, ()> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The first vivid capture node, probed. `None` when the machine has none.
+/// vivid's webcam input: the one that lists discrete sizes (its TV, S-Video and HDMI inputs list
+/// ranges).
+const WEBCAM_INPUT: u32 = 0;
+
+/// The first vivid capture node, probed on its webcam input. `None` when the machine has none. The
+/// input is selected here, not assumed: it is the device's, and another process may have left it
+/// on another one.
 fn vivid() -> Option<Device> {
     for path in common::physical_nodes().into_iter().map(|node| node.path) {
         let Ok(Some(device)) = probe_node(&path) else {
             continue;
         };
-        if device.card.to_ascii_lowercase().contains("vivid") && device.queue == Queue::Single {
-            return Some(device);
+        if !device.card.to_ascii_lowercase().contains("vivid") || device.queue != Queue::Single {
+            continue;
         }
+        let device = probe_input(&path, WEBCAM_INPUT)
+            .expect("vivid's webcam input is selectable")
+            .expect("a capture node");
+        return Some(device);
     }
     None
 }
@@ -118,9 +129,7 @@ fn a_mapped_control_reaches_the_device_and_the_frame_metadata() {
     let Some(device) = vivid() else {
         return skip("brightness", "no vivid capture node on this machine");
     };
-    let Some(mut config) = yuyv_config(&device) else {
-        return skip("brightness", "vivid lists no discrete YUYV size");
-    };
+    let mut config = yuyv_config(&device).expect("vivid's webcam input lists a discrete YUYV size");
     config.controls = vec![(Control::Brightness, ControlValue::Manual(750))];
     let stream = Stream::start(&device.path, config).expect("start");
 
@@ -167,9 +176,7 @@ fn the_mapped_copy_path_copies_each_frame_once_and_matches_the_buffer() {
     let Some(device) = vivid() else {
         return skip("mmap copy", "no vivid capture node on this machine");
     };
-    let Some(mut config) = yuyv_config(&device) else {
-        return skip("mmap copy", "vivid lists no discrete YUYV size");
-    };
+    let mut config = yuyv_config(&device).expect("vivid's webcam input lists a discrete YUYV size");
     config.copy_mapped = true;
     let (width, height) = (config.width, config.height);
     // The baseline is taken before the stream starts: the stream's whole life is measured.
@@ -264,9 +271,7 @@ fn a_disconnected_device_retries_with_capped_backoff_and_comes_back() {
     let Some(device) = vivid() else {
         return skip("device loss", "no vivid capture node on this machine");
     };
-    let Some(config) = yuyv_config(&device) else {
-        return skip("device loss", "vivid lists no discrete YUYV size");
-    };
+    let config = yuyv_config(&device).expect("vivid's webcam input lists a discrete YUYV size");
     // vivid's Disconnect faults the stream (QBUF fails with ENODEV) and the node opens again at
     // once, so the first retry (250 ms) succeeds. The backoff cap is not reached on this device;
     // its sequence (250 ms doubling to 5 s) is checked by the unit test `backoff_doubles...`.

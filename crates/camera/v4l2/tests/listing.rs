@@ -235,6 +235,8 @@ fn a_non_default_input_is_selected_and_its_formats_are_listed() {
         .probe_node(&path)
         .expect("default probe")
         .expect("capture node");
+    // The input is the device's, not this handle's: it outlasts the test, so it is put back.
+    let _restore = InputRestored::of(&path);
     let selected = match prober.probe_input(&path, 1) {
         Ok(Some(device)) => device,
         Ok(None) => {
@@ -266,4 +268,39 @@ fn a_non_default_input_is_selected_and_its_formats_are_listed() {
         selected.formats.len(),
         default.formats.len()
     );
+}
+
+/// Puts a node's selected input back when dropped: a test that selects another input leaves the
+/// device as it found it for the next process that opens it.
+struct InputRestored {
+    path: PathBuf,
+    input: u32,
+}
+
+impl InputRestored {
+    fn of(path: &Path) -> Self {
+        let input = VideoDevice::open(path)
+            .and_then(|device| device.input())
+            .expect("the node's selected input");
+        Self {
+            path: path.to_path_buf(),
+            input,
+        }
+    }
+}
+
+impl Drop for InputRestored {
+    fn drop(&mut self) {
+        let restored =
+            VideoDevice::open(&self.path).and_then(|device| device.set_input(self.input));
+        if let Err(e) = restored
+            && !std::thread::panicking()
+        {
+            panic!(
+                "input {} not put back on {}: {e}",
+                self.input,
+                self.path.display()
+            );
+        }
+    }
 }
