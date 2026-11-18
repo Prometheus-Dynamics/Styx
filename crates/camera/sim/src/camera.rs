@@ -192,6 +192,10 @@ pub struct SimCamera {
     allowed: u64,
     /// Frames read so far.
     taken: u64,
+    /// Set from a reported stall until its return is reported: no frame is granted in between.
+    /// The host reads the sensor healthy a step before it posts the return, so a frame granted on
+    /// that read alone could reach the stream ahead of the return.
+    held: bool,
     /// Updates not yet posted, in the order they were set.
     pending: VecDeque<Pending>,
     /// The name the drivers' config gives this camera's clock.
@@ -345,6 +349,7 @@ impl SimCamera {
             silicon,
             allowed: 0,
             taken: 0,
+            held: false,
             pending: VecDeque::new(),
             token: token.to_string(),
             dir: dir.to_path_buf(),
@@ -470,8 +475,9 @@ impl SimCamera {
     /// the end of the stream, as the Lemnos stream reports them.
     pub fn next_event(&mut self, timeout: Duration) -> Result<SimEvent, Error> {
         // A failing sensor makes no frames: the stream is quiet while the fault lasts, and the stall
-        // is what the wait reports.
-        let failing = self.silicon.fault().is_some() || self.silicon.is_dead();
+        // is what the wait reports. After a reported stall, none until its return is reported: the
+        // return comes before the first frame after it.
+        let failing = self.held || self.silicon.fault().is_some() || self.silicon.is_dead();
         if !failing {
             let granted = self
                 .silicon
@@ -486,8 +492,14 @@ impl SimCamera {
         let mut lease = match self.frames.next_event(timeout).map_err(Error::Stream)? {
             FrameEvent::Frame(lease) => lease,
             FrameEvent::TimedOut => return Ok(SimEvent::Idle),
-            FrameEvent::Stalled { since_ns } => return Ok(SimEvent::Stalled { since_ns }),
-            FrameEvent::Resumed(carried) => return Ok(SimEvent::Resumed(carried)),
+            FrameEvent::Stalled { since_ns } => {
+                self.held = true;
+                return Ok(SimEvent::Stalled { since_ns });
+            }
+            FrameEvent::Resumed(carried) => {
+                self.held = false;
+                return Ok(SimEvent::Resumed(carried));
+            }
             FrameEvent::Ended(end) => return Ok(SimEvent::Ended(end)),
         };
         let id = lease.id();

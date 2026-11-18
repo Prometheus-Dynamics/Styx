@@ -61,9 +61,8 @@ fn a_transient_failure_is_one_stall_then_a_kept_return_and_the_sequence_goes_on(
     }
 
     cam.inject_fault(None);
-    // Let the host read the sensor's health on its tick (a millisecond) before frames are granted
-    // again: the return is then reported before the first frame, as the stream guarantees.
-    std::thread::sleep(Duration::from_millis(100));
+    // The camera grants no frame between the stall it reported and the return: the return is
+    // reported before the first frame, however late the host reads the sensor healthy.
     match next_edge(&mut cam) {
         SimEvent::Resumed(Carried::Kept) => {}
         other => panic!("the same instance comes back kept, got {other:?}"),
@@ -87,9 +86,8 @@ fn a_device_bound_again_is_a_stall_then_a_lost_return() {
     // The device stays dead until the fault clears; the host binds it again on its backoff, and a
     // bind that finds it healthy is the return, which says the device was bound again.
     cam.inject_fault(None);
-    // The host binds the device again on its backoff; frames are granted only by the next wait, so
-    // the bind is finished before the wait that reads the return.
-    std::thread::sleep(Duration::from_millis(600));
+    // The host binds the device again on its backoff. No frame is granted before the return is
+    // reported, so the return is the next event however long the bind takes.
     match next_edge(&mut cam) {
         SimEvent::Resumed(Carried::Lost) => {}
         other => panic!("a rebound device comes back lost, got {other:?}"),
