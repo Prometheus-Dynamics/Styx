@@ -34,7 +34,7 @@ if [ "${STYX_GATE_SLOTS:-2}" != 0 ] && command -v flock > /dev/null; then
 fi
 
 # A fresh worktree's empty target directory starts from the dependencies of an earlier green
-# gate (scripts/cargo-seed.sh; only with STYX_CARGO_SEED_DIR set, which CI does not).
+# gate (scripts/cargo-seed.sh: on for a CARGO_TARGET_DIR outside the worktree, never in CI).
 scripts/cargo-seed.sh restore
 
 step() {
@@ -109,16 +109,34 @@ trap not_run_report EXIT
 # STYX_TEST_FILTER (set by scripts/check.sh, never by CI) narrows the tests nextest runs to a
 # filterset, and only that: everything is built and checked as in the gate, so a narrowed run is
 # a subset of the gate and shares its build. It is not the gate, and says so.
+#
+# scripts/check.sh also leaves out whole passes, never parts of one: every command it runs is the
+# gate's, on the gate's build. STYX_CHECK_PASS (default or all) is the one feature pass it runs,
+# STYX_CHECK_DOCTESTS=0 leaves out the doctests, and STYX_CHECK_NO_STD lists the only no_std crates
+# it checks (directory names). Each pass left out is printed at the end: the gate runs it.
 filter=()
+check_pass="${STYX_CHECK_PASS:-}"
+skipped=()
 if [ -n "${STYX_TEST_FILTER:-}" ]; then
   cargo nextest --version > /dev/null 2>&1 || { echo "gate: STYX_TEST_FILTER needs cargo-nextest" >&2; exit 1; }
   filter=(-E "$STYX_TEST_FILTER" --no-tests=pass)
   echo "==> NOT THE GATE: tests narrowed to $STYX_TEST_FILTER"
+elif [ -n "$check_pass" ]; then
+  echo "gate: STYX_CHECK_PASS is scripts/check.sh's, with STYX_TEST_FILTER" >&2
+  exit 1
 fi
+case "$check_pass" in
+  "" | default | all) ;;
+  *) echo "gate: STYX_CHECK_PASS is default or all, not $check_pass" >&2; exit 1 ;;
+esac
 tests() {
   if cargo nextest --version > /dev/null 2>&1; then
     cargo nextest run --locked --workspace --no-fail-fast "${filter[@]}" "$@"
-    cargo test --locked --workspace --doc "$@"
+    if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
+      cargo test --locked --workspace --doc "$@"
+    else
+      skipped+=("doctests, ${*:-default features}: no changed file holds one")
+    fi
   else
     cargo test --locked --workspace "$@"
   fi
@@ -129,10 +147,18 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   # cargo fmt reads no dependency (and takes no --locked).
   step format cargo fmt --all --check
   # Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
-  step "clippy, default features" cargo clippy --locked --workspace --all-targets -- -D warnings
-  step "tests, default features" tests
-  step "clippy, all features" cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-  step "tests, all features" tests --all-features
+  if [ "$check_pass" != all ]; then
+    step "clippy, default features" cargo clippy --locked --workspace --all-targets -- -D warnings
+    step "tests, default features" tests
+  else
+    skipped+=("clippy and tests, default features")
+  fi
+  if [ -z "$check_pass" ] || [ "$check_pass" = all ]; then
+    step "clippy, all features" cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    step "tests, all features" tests --all-features
+  else
+    skipped+=("clippy and tests, all features")
+  fi
 
   # A crate that must build without std says so in its manifest:
   # [package.metadata.styx]
@@ -141,6 +167,11 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   # checks start together: a fresh one is mostly cargo resolving the workspace, which runs side
   # by side; any compiling waits its turn on the target directory's lock. Each reports alone.
   mapfile -t no_std_crates < <(grep -l '^no_std = true' crates/*/*/Cargo.toml | xargs -r -n1 dirname | xargs -r -n1 basename)
+  if [ -n "$check_pass" ]; then
+    all_no_std=${#no_std_crates[@]}
+    read -r -a no_std_crates <<< "${STYX_CHECK_NO_STD:-}"
+    [ "$all_no_std" = "${#no_std_crates[@]}" ] || skipped+=("no_std checks of the $((all_no_std - ${#no_std_crates[@]})) unchanged no_std crates")
+  fi
   no_std_out=$(mktemp -d)
   no_std_start=$SECONDS
   no_std_pids=()
@@ -186,6 +217,9 @@ step "one definition of the simulated camera drivers" bash -c '! grep -rn -E "#\
 step "one source for every shm crate" python3 scripts/one-shm.py
 
 if [ ${#filter[@]} -gt 0 ]; then
+  for s in "${skipped[@]}"; do
+    echo "check skipped: $s (the gate runs it)"
+  done
   echo "check passed, tests narrowed to $STYX_TEST_FILTER: not the gate"
 else
   echo "gate passed"

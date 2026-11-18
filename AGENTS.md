@@ -39,17 +39,25 @@ The work is a pre-planned list of PRs into `next`.
 ## Worker flow
 
 - The landing gate is the proof. A worker does not run the full gate before pushing. It runs
-  `scripts/check.sh` (the gate's format, lint and build steps, tests narrowed to the crates the
-  change reaches), the brief's proof that the change's test fails before it and passes after, and
-  nothing more. Nothing lands on a red gate.
+  `scripts/check.sh`, the brief's proof that the change's test fails before it and passes after,
+  and nothing more. Nothing lands on a red gate. `check.sh` runs the gate's own commands with whole
+  passes left out: one feature pass (all-features when a changed file is behind a feature), tests
+  of the crates the change reaches, doctests only when a changed file holds one, no_std checks only
+  of changed no_std crates. It prints each pass it left out. Green there is not the gate.
 - Repeat runs are set by risk, and the count is stated in the PR: many runs only for a change to
   timing or concurrency; three for a join of branches that each passed, and for an ordinary change.
 - A red landing gate is read and given a named cause. Never rerun it in hope.
 - Heavy jobs stay within the cores they are given: `taskset -c 6-31`, `-j 13`, and the gate's two
   slots. Don't start a second build beside your own.
-- Start warm. Reuse a kept worktree and its `CARGO_TARGET_DIR` for the next item once the previous
-  one has landed, or start a new one from the seed (`STYX_CARGO_SEED_DIR`, see
-  `scripts/cargo-seed.sh`).
+- Start warm. Cargo keys every workspace crate's build on the worktree's absolute path, so a new
+  worktree path compiles the whole workspace. Keep worktrees at fixed paths and reuse one, with its
+  `CARGO_TARGET_DIR`, for the next item once the previous one has landed. A new worktree with its
+  `CARGO_TARGET_DIR` outside it starts from the seed by default: the dependencies of the last green
+  gate (`scripts/cargo-seed.sh`).
+- A fail-before proof that edits a file and restores it leaves a new file time, and cargo then
+  rebuilds everything downstream of that file. Don't put the old time back (`touch -r`): cargo
+  judges a build current by file times, and would keep the build of the edited file. Run the
+  "before" side in a second kept worktree at the base commit instead, or take the rebuild.
 - A brief names its exact base commit and the files in scope, and fits in one context. Longer work
   hands off through a written state file next to the brief.
 - Board runs go one runner per board, side by side with software work.

@@ -7,8 +7,10 @@
 #   scripts/cargo-seed.sh save      after a green gate: keep this target's dependencies as the seed
 #                                   for its key, unless one exists
 #
-# Opt-in: nothing happens unless STYX_CARGO_SEED_DIR is set (CI never sets it). Put it on the targets'
-# filesystem, so a copy is a reflink.
+# On by default for a target directory kept outside its worktree (CARGO_TARGET_DIR, one per worktree,
+# on the targets' filesystem): the seeds are kept beside it, in <its parent>/seeds, so a copy is a
+# reflink. STYX_CARGO_SEED_DIR names another place, and set empty turns seeding off. A target inside
+# the worktree, and CI (GITHUB_ACTIONS), never seed.
 #
 # Dependencies only. A workspace crate's build products carry its checkout's absolute paths
 # (env!("CARGO_MANIFEST_DIR"), file!(), include_str!), and in another worktree cargo can find them
@@ -25,9 +27,17 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 die() { echo "cargo-seed: $*" >&2; exit 1; }
-seeds=${STYX_CARGO_SEED_DIR:-}
-[ -n "$seeds" ] || exit 0
+[ -z "${GITHUB_ACTIONS:-}" ] || exit 0
 target=${CARGO_TARGET_DIR:-$(pwd)/target}
+if [ -n "${STYX_CARGO_SEED_DIR+set}" ]; then
+  seeds=$STYX_CARGO_SEED_DIR
+elif [ -n "${CARGO_TARGET_DIR:-}" ] && [ "${CARGO_TARGET_DIR#/}" != "$CARGO_TARGET_DIR" ] \
+  && [ "${CARGO_TARGET_DIR#"$(pwd -P)"/}" = "$CARGO_TARGET_DIR" ]; then
+  seeds=$(dirname "$CARGO_TARGET_DIR")/seeds
+else
+  seeds=""
+fi
+[ -n "$seeds" ] || exit 0
 mkdir -p "$seeds"
 
 # The key reads the committed Cargo.lock (the gate has checked it against the manifests).
