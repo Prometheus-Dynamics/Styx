@@ -335,6 +335,10 @@ pub struct Session<'a, C: Clock> {
     last_frame_at: Option<Duration>,
     /// A silence the report has named, until a frame comes.
     silenced: bool,
+    /// A stall told before the sensor's device entry gave its reason (the host posts the stall to
+    /// the stream and the reason to the entry separately): the time it began, until the reason is
+    /// read on a later wait or the camera is back.
+    stall_without_reason: Option<u64>,
     /// The device was bound again (a Lost return) and the restart is not possible yet: it is tried
     /// again on each call, and the return is given once it has happened.
     restart_owed: bool,
@@ -390,6 +394,7 @@ impl<'a, C: Clock> Session<'a, C> {
             skipped_done: 0,
             last_frame_at: None,
             silenced: false,
+            stall_without_reason: None,
             restart_owed: false,
             parked: None,
             status: Status::new(),
@@ -602,8 +607,17 @@ impl<'a, C: Clock> Session<'a, C> {
                 }
             }
             Ok(FrameEvent::TimedOut) => {
-                // A camera that is retrying (a named stall) is already reported: nothing more here.
+                // A camera that is retrying (a named stall) is already reported: nothing more here,
+                // but the device's reason when the stall was told before the reason was.
                 if self.status.stall.is_some() {
+                    if let Some(since_ns) = self.stall_without_reason
+                        && let Some(reason) = self.sensor_reason()
+                    {
+                        self.stall_without_reason = None;
+                        let text = format!("camera failed, retrying since {since_ns}: {reason}");
+                        self.status.stall = Some(text.clone());
+                        self.status.last_error = Some(text);
+                    }
                     return Ok(Event::Idle);
                 }
                 // The no-frame report is report-only: it names the silence and tells the ring's
@@ -623,6 +637,7 @@ impl<'a, C: Clock> Session<'a, C> {
             }
             Ok(FrameEvent::Stalled { since_ns }) => Ok(self.stalled(since_ns)),
             Ok(FrameEvent::Resumed(Carried::Kept)) => {
+                self.stall_without_reason = None;
                 self.status.stall = None;
                 self.status.last_error = Some("camera back".to_string());
                 Ok(Event::Resumed(Carried::Kept))
@@ -658,18 +673,23 @@ impl<'a, C: Clock> Session<'a, C> {
         floor.max(4 * period + Duration::from_millis(450))
     }
 
-    /// The camera failed and is retried since `since_ns`. The reason is the sensor's own, as its
-    /// device entry gives it now (empty when it gives none).
-    fn stalled(&mut self, since_ns: u64) -> Event {
-        let sensor = self.camera.sensor().name.clone();
-        let reason = self
-            .client
+    /// The sensor's reason for failing, as its device entry gives it now; `None` when it gives none.
+    fn sensor_reason(&self) -> Option<String> {
+        let sensor = &self.camera.sensor().name;
+        self.client
             .list()
             .ok()
-            .and_then(|devices| devices.into_iter().find(|d| d.name == sensor))
+            .and_then(|devices| devices.into_iter().find(|d| &d.name == sensor))
             .map(|d| d.reason)
             .filter(|reason| !reason.is_empty())
-            .unwrap_or_else(|| "the device gave no reason".to_string());
+    }
+
+    /// The camera failed and is retried since `since_ns`. The reason is the sensor's own, as its
+    /// device entry gives it now; an entry without one yet is read again on later waits.
+    fn stalled(&mut self, since_ns: u64) -> Event {
+        let reason = self.sensor_reason();
+        self.stall_without_reason = reason.is_none().then_some(since_ns);
+        let reason = reason.unwrap_or_else(|| "the device gave no reason".to_string());
         let text = format!("camera failed, retrying since {since_ns}: {reason}");
         self.status.stall = Some(text.clone());
         self.status.last_error = Some(text.clone());
@@ -683,6 +703,7 @@ impl<'a, C: Clock> Session<'a, C> {
         match self.restart_same_stream() {
             Ok(()) => {
                 self.restart_owed = false;
+                self.stall_without_reason = None;
                 self.status.stall = None;
                 self.status.last_error =
                     Some("camera back: its device was bound again".to_string());

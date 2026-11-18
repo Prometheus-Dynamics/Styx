@@ -51,10 +51,24 @@ pub fn has_pipewiresrc() -> bool {
 /// PipeWire's data thread on purpose. Run together, one proof's stopped consumer held up
 /// another's graph about once in forty rounds, and that proof then waited for a send that could
 /// not come.
-pub fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
-    static TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    TURN.lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+///
+/// The daemon is the user's, not a test run's: two gates side by side ran these proofs together
+/// (nextest's `pipewire` group serializes one run only) and a consumer got no frame in 3 of 5
+/// pairs. So the turn is an exclusive file lock in `$XDG_RUNTIME_DIR` (where the daemon's own
+/// socket is), held until the returned file is dropped, and waited for.
+pub fn one_at_a_time() -> std::fs::File {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR")
+        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+    let path = dir.join("styx-pipewire-proofs.lock");
+    let file = std::fs::File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    file.lock()
+        .unwrap_or_else(|e| panic!("lock {}: {e}", path.display()));
+    file
 }
 
 /// A running producer and node.

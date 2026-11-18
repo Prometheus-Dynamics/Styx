@@ -281,9 +281,15 @@ fn a_reader_stays_attached_through_a_transient_failure_and_is_told_the_stall_the
         ),
         "the stall is the last event: {stall:?}"
     );
-    let during = fixture.wait("the camera to show retrying", |l| {
-        field(l, "producer").is_some_and(|p| p.starts_with("retrying:"))
-    });
+    // The host posts the stall to the stream and the device's reason to its entry separately:
+    // the line names the reason once the entry gives it (the session reads it on its next wait).
+    let during = fixture.wait(
+        "the camera to show retrying, with the device's reason",
+        |l| {
+            field(l, "producer").is_some_and(|p| p.starts_with("retrying:"))
+                && rest(l, "last_error").is_some_and(|t| t.ends_with(REASON))
+        },
+    );
     let since = field(&during, "producer")
         .and_then(|p| p.strip_prefix("retrying:"))
         .and_then(|s| s.parse::<u64>().ok())
