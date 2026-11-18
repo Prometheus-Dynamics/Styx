@@ -1,0 +1,26 @@
+# The gate's test runner (scripts/gate.sh). Each test runs in its own process, and tests from every
+# binary run side by side. A test that shares something outside its process with another test is
+# put in a group that runs one at a time; the reason is next to each group.
+
+[test-groups]
+# The vivid driver's node is one device for the whole machine: its input, controls and stream are
+# the device's, not a handle's.
+vivid = { max-threads = 1 }
+# The PipeWire proofs share one daemon and its graph: one proof's stopped consumer can hold up
+# another's graph (see crates/bridge/pipewire/tests/common/mod.rs, `one_at_a_time`).
+pipewire = { max-threads = 1 }
+
+[profile.default]
+# No retries: a test that fails on a quiet machine has a fault (a flaky test is fixed, not rerun).
+retries = 0
+fail-fast = false
+# A test still running here is reported, not killed: the cargo test runner's own 60 s notice.
+slow-timeout = { period = "60s" }
+
+[[profile.default.overrides]]
+filter = '(package(styx-v4l2) & (binary(vivid) | binary(listing) | binary(capture))) | (package(styx-watch) & binary(vivid))'
+test-group = 'vivid'
+
+[[profile.default.overrides]]
+filter = 'package(styx-pipewire) & kind(test)'
+test-group = 'pipewire'

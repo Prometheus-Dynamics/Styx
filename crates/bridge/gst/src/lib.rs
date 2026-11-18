@@ -30,7 +30,7 @@ mod element;
 #[cfg(feature = "gstreamer")]
 use gstreamer as gst;
 
-pub use link::{Backoff, LinkState, LinkStatus};
+pub use link::{BACKOFF_CAP, Backoff, LinkState, LinkStatus};
 pub use source::{Delivered, Source, SourceStats, gst_format};
 
 /// Whether the GStreamer element was built into this crate: the `gstreamer` feature is on.

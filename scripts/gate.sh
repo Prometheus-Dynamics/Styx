@@ -82,14 +82,26 @@ not_run_report() {
 }
 trap not_run_report EXIT
 
+# Tests run under cargo-nextest: each test in its own process, tests of every binary side by side
+# (.config/nextest.toml groups the ones that share a device or a daemon). nextest does not run
+# doctests, so they run after it. Without nextest, cargo test runs the same cases.
+tests() {
+  if cargo nextest --version > /dev/null 2>&1; then
+    cargo nextest run --workspace --no-fail-fast "$@"
+    cargo test --workspace --doc "$@"
+  else
+    cargo test --workspace "$@"
+  fi
+}
+
 # The workspace glob matches nothing until the first crate lands.
 if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   step format cargo fmt --all --check
   # Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
   step "clippy, default features" cargo clippy --workspace --all-targets -- -D warnings
-  step "tests, default features" cargo test --workspace
+  step "tests, default features" tests
   step "clippy, all features" cargo clippy --workspace --all-targets --all-features -- -D warnings
-  step "tests, all features" cargo test --workspace --all-features
+  step "tests, all features" tests --all-features
 
   # A crate that must build without std says so in its manifest:
   # [package.metadata.styx]

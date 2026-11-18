@@ -25,6 +25,10 @@ jobs:
       # rust-toolchain.toml selects the toolchain and its components.
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The gate runs its tests under cargo-nextest (scripts/gate.sh, .config/nextest.toml).
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.148
       # Every feature is built and tested: a feature left out would not be covered. GStreamer and
       # PipeWire come from the runner's packages; libcamera is built from source (the packaged
       # one is older than the versions styx-libcamera is checked against) and cached.

@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use gststyx::{LinkState, Source};
+use gststyx::{BACKOFF_CAP, LinkState, LinkStatus, Source};
 use shm_ring::SampleTime;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, packed_layouts};
@@ -96,6 +96,24 @@ impl Going {
     }
 }
 
+/// Pulls frames from `source` until `done` holds on the ids so far and the source's status, or
+/// until `within` has passed, and returns the ids. A phase that waits on the source's backoff ends
+/// on the event it claims, not after a fixed time: the backoff's own delays decide when that is.
+fn pull_until(
+    source: &mut Source,
+    within: Duration,
+    mut done: impl FnMut(&[u64], &LinkStatus) -> bool,
+) -> Vec<u64> {
+    let until = Instant::now() + within;
+    let mut ids = Vec::new();
+    while Instant::now() < until && !done(&ids, &source.status()) {
+        if let Some(frame) = source.next(Duration::from_millis(5)) {
+            ids.push(frame.id());
+        }
+    }
+    ids
+}
+
 /// Pulls frames from `source` for `for_` and returns their ids.
 fn pull(source: &mut Source, for_: Duration) -> Vec<u64> {
     let until = Instant::now() + for_;
@@ -127,12 +145,15 @@ fn the_source_keeps_running_across_its_producer_going_away_and_coming_back() {
         source.status()
     );
 
-    // The producer goes away. The source records it and waits out the backoff, without giving up.
+    // The producer goes away. The source records it and waits out the backoff, without giving up:
+    // three failed attempts take at most three of its waits, each no longer than the cap.
     first.stop();
-    let away = pull(&mut source, Duration::from_millis(2500));
+    let away = pull_until(&mut source, 3 * BACKOFF_CAP, |_, status| {
+        status.failures >= 3
+    });
     let status = source.status();
     println!(
-        "proof: producer away for 2.5 s, delivered {}, status {status:?}",
+        "proof: producer away, delivered {}, status {status:?}",
         away.len()
     );
     assert!(away.is_empty(), "no frames while the producer is away");
@@ -145,9 +166,10 @@ fn the_source_keeps_running_across_its_producer_going_away_and_coming_back() {
     assert!(status.next_delay.is_some(), "the next delay is reported");
     assert!(status.last_error.is_some(), "the last error is reported");
 
-    // A new producer on the same socket: the same source delivers its frames again.
+    // A new producer on the same socket: the same source delivers its frames again, after at most
+    // the wait it is in (no longer than the cap) and its reconnect. Thirty frames, then on.
     let second = start(&socket);
-    let resumed = pull(&mut source, Duration::from_millis(3000));
+    let resumed = pull_until(&mut source, 2 * BACKOFF_CAP, |ids, _| ids.len() >= 30);
     let status = source.status();
     println!(
         "proof: producer returned, delivered {} frames, status {status:?}",
