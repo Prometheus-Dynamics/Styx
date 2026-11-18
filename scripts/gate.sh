@@ -129,12 +129,35 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   # A crate that must build without std says so in its manifest:
   # [package.metadata.styx]
   # no_std = true
+  # Each crate is checked on its own (its features alone, not unified with the others'). The
+  # checks start together: a fresh one is mostly cargo resolving the workspace, which runs side
+  # by side; any compiling waits its turn on the target directory's lock. Each reports alone.
   mapfile -t no_std_crates < <(grep -l '^no_std = true' crates/*/*/Cargo.toml | xargs -r -n1 dirname | xargs -r -n1 basename)
+  no_std_out=$(mktemp -d)
+  no_std_start=$SECONDS
+  no_std_pids=()
+  no_std_labels=()
   for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf; do
     for crate in "${no_std_crates[@]}"; do
-      step "$crate on $target" cargo check -q -p "styx-$crate" --no-default-features --target "$target"
+      cargo check -q -p "styx-$crate" --no-default-features --target "$target" \
+        > "$no_std_out/${#no_std_pids[@]}" 2>&1 &
+      no_std_pids+=($!)
+      no_std_labels+=("$crate on $target")
     done
   done
+  no_std_failed=0
+  for i in "${!no_std_pids[@]}"; do
+    if wait "${no_std_pids[$i]}"; then
+      echo "==> ${no_std_labels[$i]}: ok"
+    else
+      echo "==> ${no_std_labels[$i]}: FAILED"
+      no_std_failed=1
+    fi
+    cat "$no_std_out/$i"
+  done
+  rm -rf "$no_std_out"
+  echo "    no_std checks (${#no_std_pids[@]}): $((SECONDS - no_std_start)) s"
+  [ "$no_std_failed" = 0 ] || { echo "gate: a no_std check failed" >&2; exit 1; }
 else
   echo "no crates yet"
 fi
