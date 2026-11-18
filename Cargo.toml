@@ -73,6 +73,19 @@ dbg_macro = "deny"
 todo = "deny"
 undocumented_unsafe_blocks = "deny"
 
+# The dev profile builds every gate and test run. Line tables keep file and line in panics and
+# backtraces; full debug info is most of the target directory's size (7.5 GB to 2.9 GB for the
+# default-feature tests) and no test reads it. Workspace code at opt-level 1: the long tests are
+# compute-bound in it (the simulated camera's scene, fits, encoders) and run about twice as fast,
+# for no measurable cost in a cold build; dependencies stay at 0, where 2 tripled the cold build.
+# Debug assertions and overflow checks stay on: they do not depend on the opt-level.
+[profile.dev]
+debug = "line-tables-only"
+opt-level = 1
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 lto = "thin"
 codegen-units = 1
