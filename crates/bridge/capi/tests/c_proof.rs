@@ -94,9 +94,15 @@ fn cc() -> Option<&'static str> {
     ok.then_some("cc")
 }
 
-/// `libstyx_capi.a` in this build's profile directory, built (or brought up to date) through cargo
-/// first: an integration test links the rlib, and the static library is a build product of this
-/// package. Cargo finds it current when nothing changed.
+/// `libstyx_capi.a` with the package's own default features, built (or brought up to date) through
+/// cargo first: an integration test links the rlib, and the static library is a build product of
+/// this package. A C program links it with libc alone; a build of the whole workspace's features
+/// would pull in their native libraries (libcamera's C++ among them).
+///
+/// It is built in its own target directory, `<profile>/c-proof`: a library with a C crate type
+/// keeps one file name whatever its features, so built beside the workspace's build it would
+/// overwrite the workspace's styx-capi and every later build would link it again. Cargo finds it
+/// current when nothing changed.
 fn staticlib() -> PathBuf {
     let exe = std::env::current_exe().expect("test binary");
     let profile = exe
@@ -104,15 +110,17 @@ fn staticlib() -> PathBuf {
         .and_then(Path::parent)
         .expect("the target profile directory")
         .to_path_buf();
+    let target = profile.join("c-proof");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let status = Command::new(cargo)
         .current_dir(&root)
+        .env("CARGO_TARGET_DIR", &target)
         .args(["build", "-p", "styx-capi", "--lib"])
         .status()
         .expect("cargo build styx-capi");
     assert!(status.success(), "cargo build -p styx-capi --lib");
-    let lib = profile.join("libstyx_capi.a");
+    let lib = target.join("debug").join("libstyx_capi.a");
     assert!(lib.exists(), "{} is built", lib.display());
     lib
 }
