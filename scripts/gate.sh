@@ -45,10 +45,13 @@ export STYX_REQUIRE_CC="${STYX_REQUIRE_CC:-1}"
 export STYX_REQUIRE_PIPEWIRE="${STYX_REQUIRE_PIPEWIRE:-1}"
 export STYX_REQUIRE_GPU="${STYX_REQUIRE_GPU:-1}"
 export STYX_REQUIRE_VIVID="${STYX_REQUIRE_VIVID:-1}"
-# The GPU ISP's tests run on the software Vulkan device (lavapipe's llvmpipe), not the desktop's
-# GPU, unless the caller names a device. (styx-daedalus's tests still open the default adapter:
-# on llvmpipe its graphs give no shader output, see STYX-NEXT-REMAINING.md.)
+# GPU tests run on the software Vulkan device (lavapipe's llvmpipe), not the desktop's GPU, unless
+# the caller names a device. The exception is styx-daedalus's import checks (tests/gpu.rs,
+# kept.rs, offset.rs): on a CPU adapter their graphs give no shader output, so they open a real GPU
+# (STYX_DAEDALUS_IMPORT_ADAPTER, unset = Daedalus's default). They are sub-second conformance and
+# import checks; no stress or soak test may join them.
 export STYX_GPUISP_DEVICE="${STYX_GPUISP_DEVICE:-llvmpipe}"
+export STYX_DAEDALUS_ADAPTER="${STYX_DAEDALUS_ADAPTER:-llvmpipe}"
 # vivid is a module, loaded by hand and gone after a reboot: said at once, not after the build.
 if [ "$STYX_REQUIRE_VIVID" = 1 ] && ! grep -qs '^vivid-' /sys/class/video4linux/*/name; then
   echo "gate: vivid not loaded (sudo modprobe vivid), or set STYX_REQUIRE_VIVID=0 on a host without it" >&2

@@ -4,8 +4,9 @@
 //! The host feeds it to a graph whose one node is a shader; the planner takes the device's import
 //! of the `styx:frame` value over any copy (a `styx:frame` has no byte upload on this device), and
 //! the shader reads the frame's bytes where they were written. The test does not run, with the
-//! reason recorded, when the dma-heap can't be opened or no usable device opens. `STYX_DAEDALUS_ADAPTER`
-//! names the adapter (a substring of its name) to run on; by default the backend's best one.
+//! reason recorded, when the dma-heap can't be opened or no usable device opens.
+//! `STYX_DAEDALUS_IMPORT_ADAPTER` names the adapter (a substring of its name) to run on; by default
+//! the backend's best one (see `open_gpu`).
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
 mod support;
@@ -91,9 +92,16 @@ fn pattern(at: usize) -> u8 {
 
 /// The device, opened with the import of `StyxFrame` and the readback of `Words`. Err with the
 /// reason when no usable device opens here.
+///
+/// These are the import checks that run on a real GPU, by name: the gate runs every other test on
+/// the software Vulkan device (`STYX_DAEDALUS_ADAPTER=llvmpipe`), but on a CPU adapter these
+/// graphs settle with no shader output, and a dma-heap frame is uploaded, not imported (parked:
+/// "Daedalus on a CPU adapter" in the remaining list). Sub-second conformance and import checks;
+/// no stress or soak test belongs here. `STYX_DAEDALUS_IMPORT_ADAPTER` names the device; unset,
+/// Daedalus's default (a real GPU).
 fn open_gpu() -> Result<WgpuBackend, String> {
     let options = Options {
-        adapter: std::env::var("STYX_DAEDALUS_ADAPTER").ok(),
+        adapter: std::env::var("STYX_DAEDALUS_IMPORT_ADAPTER").ok(),
         ..Options::default()
     };
     let backend = WgpuBackend::open(options)

@@ -92,11 +92,21 @@ const GRAPH: &str = r#"{
 /// A device of this run's own, with `kept_imports` as its bound. The process's shared device keeps
 /// the bound of whichever backend opened it, so the device is named, and so private. Err with the
 /// status line when no usable device opens here.
+///
+/// These are the import checks that run on a real GPU, by name: the gate runs every other test on
+/// the software Vulkan device (`STYX_DAEDALUS_ADAPTER=llvmpipe`), but on a CPU adapter these
+/// graphs settle with no shader output, and a dma-heap frame is uploaded, not imported (parked:
+/// "Daedalus on a CPU adapter" in the remaining list). Sub-second conformance and import checks;
+/// no stress or soak test belongs here. `STYX_DAEDALUS_IMPORT_ADAPTER` names the device; unset,
+/// Daedalus's default (a real GPU).
 fn open_private(kept_imports: usize) -> Result<WgpuBackend, String> {
-    let shared = GpuOptions::default()
-        .backend()
-        .start()
-        .map_err(|error| open_error_status(&error))?;
+    let shared = GpuOptions {
+        adapter: std::env::var("STYX_DAEDALUS_IMPORT_ADAPTER").ok(),
+        ..GpuOptions::default()
+    }
+    .backend()
+    .start()
+    .map_err(|error| open_error_status(&error))?;
     let backend = GpuOptions {
         adapter: Some(shared.adapter.name.clone()),
         kept_imports,
@@ -105,6 +115,9 @@ fn open_private(kept_imports: usize) -> Result<WgpuBackend, String> {
     .with_bytes::<Words>()
     .with_dmabuf::<StyxFrame>();
     backend.start().map_err(|error| open_error_status(&error))?;
+    if let Some(caps) = backend.caps() {
+        println!("gpu: {:?} dma_heap={}", caps.adapter, caps.dma_heap);
+    }
     Ok(backend)
 }
 
