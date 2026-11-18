@@ -33,8 +33,26 @@ The work is a pre-planned list of PRs into `next`.
   description. Core interfaces change only through A-series PRs.
 - A need named `X<n>` is an outside block (see `docs/design.md`). Don't work around it and don't
   open PRs in other repositories for it.
-- A PR merges when `scripts/gate.sh` passes and its own CI checks pass. Paste the proof named in
-  the brief into the PR description.
+- A PR merges when the lander's `scripts/gate.sh` passes. Paste the proof named in the brief into
+  the PR description.
+
+## Worker flow
+
+- The landing gate is the proof. A worker does not run the full gate before pushing. It runs
+  `scripts/check.sh` (the gate's format, lint and build steps, tests narrowed to the crates the
+  change reaches), the brief's proof that the change's test fails before it and passes after, and
+  nothing more. Nothing lands on a red gate.
+- Repeat runs are set by risk, and the count is stated in the PR: many runs only for a change to
+  timing or concurrency; three for a join of branches that each passed, and for an ordinary change.
+- A red landing gate is read and given a named cause. Never rerun it in hope.
+- Heavy jobs stay within the cores they are given: `taskset -c 6-31`, `-j 13`, and the gate's two
+  slots. Don't start a second build beside your own.
+- Start warm. Reuse a kept worktree and its `CARGO_TARGET_DIR` for the next item once the previous
+  one has landed, or start a new one from the seed (`STYX_CARGO_SEED_DIR`, see
+  `scripts/cargo-seed.sh`).
+- A brief names its exact base commit and the files in scope, and fits in one context. Longer work
+  hands off through a written state file next to the brief.
+- Board runs go one runner per board, side by side with software work.
 
 ## Rules
 
