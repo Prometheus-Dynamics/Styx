@@ -4,6 +4,13 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 
+# Cargo.lock is committed, and every cargo step below builds with --locked: the gate builds exactly
+# the versions in it. A manifest changed without its lock fails here, first, with the fix.
+if ! cargo metadata --locked --format-version 1 > /dev/null; then
+  echo "gate: Cargo.lock does not match the manifests: run \`cargo update --workspace\` (it changes only what the manifests need) and commit Cargo.lock" >&2
+  exit 1
+fi
+
 # At most two gates of this repository run at once on one machine: every gate links its test
 # binaries in the same minutes, and more than two of them starve each other and whatever else
 # the machine is doing. A gate waits here for one of two slots. STYX_GATE_SLOTS=0 turns it off.
@@ -110,20 +117,21 @@ if [ -n "${STYX_TEST_FILTER:-}" ]; then
 fi
 tests() {
   if cargo nextest --version > /dev/null 2>&1; then
-    cargo nextest run --workspace --no-fail-fast "${filter[@]}" "$@"
-    cargo test --workspace --doc "$@"
+    cargo nextest run --locked --workspace --no-fail-fast "${filter[@]}" "$@"
+    cargo test --locked --workspace --doc "$@"
   else
-    cargo test --workspace "$@"
+    cargo test --locked --workspace "$@"
   fi
 }
 
 # The workspace glob matches nothing until the first crate lands.
 if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
+  # cargo fmt reads no dependency (and takes no --locked).
   step format cargo fmt --all --check
   # Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
-  step "clippy, default features" cargo clippy --workspace --all-targets -- -D warnings
+  step "clippy, default features" cargo clippy --locked --workspace --all-targets -- -D warnings
   step "tests, default features" tests
-  step "clippy, all features" cargo clippy --workspace --all-targets --all-features -- -D warnings
+  step "clippy, all features" cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
   step "tests, all features" tests --all-features
 
   # A crate that must build without std says so in its manifest:
@@ -139,7 +147,7 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   no_std_labels=()
   for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf; do
     for crate in "${no_std_crates[@]}"; do
-      cargo check -q -p "styx-$crate" --no-default-features --target "$target" \
+      cargo check -q --locked -p "styx-$crate" --no-default-features --target "$target" \
         > "$no_std_out/${#no_std_pids[@]}" 2>&1 &
       no_std_pids+=($!)
       no_std_labels+=("$crate on $target")

@@ -24,12 +24,9 @@ jobs:
       - uses: actions/checkout@v5
       # rust-toolchain.toml selects the toolchain and its components.
       - uses: dtolnay/rust-toolchain@stable
-      # The cache's key is made from the lock file and the manifests. Cargo.lock is not committed,
-      # so it is resolved here first; without it the key stays the same while the resolved versions
-      # move, a full match is never saved again, and every run recompiled every dependency. The
-      # root manifest (its profiles change every artifact) is added to the key for the same reason.
-      - name: Resolve the dependencies
-        run: cargo generate-lockfile
+      # The cache's key is made from the committed lock file and the manifests: the build uses
+      # exactly that lock (the gate runs every cargo step with --locked). The root manifest (its
+      # profiles change every artifact) is in the key too.
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ hashFiles('Cargo.toml', 'Cargo.lock') }}

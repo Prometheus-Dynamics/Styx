@@ -30,8 +30,7 @@ seeds=${STYX_CARGO_SEED_DIR:-}
 target=${CARGO_TARGET_DIR:-$(pwd)/target}
 mkdir -p "$seeds"
 
-# Cargo.lock is not committed: resolve it first (as the build will), so restore and save key alike.
-cargo metadata --format-version 1 > /dev/null
+# The key reads the committed Cargo.lock (the gate has checked it against the manifests).
 key=$( { cat Cargo.lock
          awk '/^\[/{p = ($0 ~ /^\[profile/)} p' Cargo.toml
          cat .cargo/config.toml rust-toolchain.toml 2>/dev/null || true
@@ -40,7 +39,7 @@ key=$( { cat Cargo.lock
 # Removes the workspace's build products from a copy of a target directory.
 strip_workspace() {
   local dir="$1" names profile
-  names=$(cargo metadata --format-version 1 --no-deps | python3 -c '
+  names=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c '
 import json, sys
 meta = json.load(sys.stdin)
 for p in meta["packages"]:

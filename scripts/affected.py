@@ -16,7 +16,7 @@ import sys
 def main():
     rev = sys.argv[1] if len(sys.argv) > 1 else "origin/next"
     meta = json.loads(subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+        ["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
         check=True, capture_output=True, text=True,
     ).stdout)
     root = meta["workspace_root"]

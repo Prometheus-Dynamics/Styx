@@ -10,7 +10,7 @@ import sys
 
 meta = json.loads(
     subprocess.run(
-        ["cargo", "metadata", "--format-version", "1", "--all-features"],
+        ["cargo", "metadata", "--locked", "--format-version", "1", "--all-features"],
         check=True,
         capture_output=True,
         text=True,

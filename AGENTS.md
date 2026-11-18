@@ -26,7 +26,8 @@ The work is a pre-planned list of PRs into `next`.
   set the native path's order and types. Daedalus `docs/foreign-values.md` says how Styx's frame
   becomes a graph value. Orion `docs/design.md` (topics, buffers) says how a ring becomes a topic.
 - Stay inside the paths your PR creates. Don't edit the root `Cargo.toml`, `TODO.md`, or a changelog.
-  `Cargo.lock` is ignored.
+  `Cargo.lock` is committed and the gate builds with `--locked`: a PR that changes a manifest
+  commits the lock change `cargo update --workspace` makes.
 - Add a crate by creating its directory under `crates/<folder>/`. Name it `styx-<directory>`.
 - If your PR needs a shared interface changed (`crates/core/*`), stop and say so in the PR
   description. Core interfaces change only through A-series PRs.
