@@ -12,7 +12,7 @@
 //! The drivers keep no state across a restart. Each contract call that changes something is
 //! appended to a log.
 
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use lemnos_contract_camera_isp::{
     CameraIsp, ConfigLayout, Counters as IspCounters, IspInfo, IspInput, IspOutput, OutputLayout,
@@ -146,8 +146,9 @@ pub struct SimSensor {
     clamped: u8,
     clock: Option<Arc<Silicon>>,
     /// The reason this instance is dead, once an injected `Gone` fault reached it: the host binds
-    /// the sensor again (a new instance, healthy).
-    gone: Option<&'static str>,
+    /// the sensor again (a new instance, healthy). Set by the first `Gone` read and kept: a dead
+    /// instance stays dead after the fault clears, so only a bind again brings the device back.
+    gone: OnceLock<&'static str>,
 }
 
 impl Lifecycle for SimSensor {
@@ -161,7 +162,7 @@ impl Lifecycle for SimSensor {
     }
 
     fn health(&self) -> Health {
-        if let Some(reason) = self.gone {
+        if let Some(reason) = self.gone.get() {
             return Health::Gone(reason);
         }
         let fault = self.clock.as_deref().and_then(Silicon::fault);
@@ -175,6 +176,7 @@ impl Lifecycle for SimSensor {
                 if let Some(silicon) = self.clock.as_deref() {
                     silicon.mark_dead();
                 }
+                let _ = self.gone.set(reason);
                 Health::Gone(reason)
             }
             None => {
@@ -201,7 +203,7 @@ impl Lifecycle for SimSensor {
             applied: None,
             clamped: 0,
             clock: Some(alive(clock(cfg)?)),
-            gone: None,
+            gone: OnceLock::new(),
         })
     }
 }
