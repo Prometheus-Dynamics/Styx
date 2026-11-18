@@ -26,6 +26,10 @@ if [ "${STYX_GATE_SLOTS:-2}" != 0 ] && command -v flock > /dev/null; then
   done
 fi
 
+# A fresh worktree's empty target directory starts from the dependencies of an earlier green
+# gate (scripts/cargo-seed.sh; only with STYX_CARGO_SEED_DIR set, which CI does not).
+scripts/cargo-seed.sh restore
+
 step() {
   local label="$1" start
   shift
@@ -154,4 +158,5 @@ if [ ${#filter[@]} -gt 0 ]; then
   echo "check passed, tests narrowed to $STYX_TEST_FILTER: not the gate"
 else
   echo "gate passed"
+  scripts/cargo-seed.sh save || echo "cargo-seed: no seed kept (the reason is above); the gate passed"
 fi
