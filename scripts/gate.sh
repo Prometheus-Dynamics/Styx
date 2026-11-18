@@ -7,8 +7,10 @@ export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 # At most two gates of this repository run at once on one machine: every gate links its test
 # binaries in the same minutes, and more than two of them starve each other and whatever else
 # the machine is doing. A gate waits here for one of two slots. STYX_GATE_SLOTS=0 turns it off.
+# The slots are the user's, not a gate's: in $XDG_RUNTIME_DIR, so gates with their own TMPDIR
+# still share them.
 if [ "${STYX_GATE_SLOTS:-2}" != 0 ] && command -v flock > /dev/null; then
-  slots="${TMPDIR:-/tmp}/styx-gate-slots"
+  slots="${XDG_RUNTIME_DIR:-/tmp}/styx-gate-slots"
   mkdir -p "$slots"
   waited=0
   while :; do
@@ -92,9 +94,19 @@ trap not_run_report EXIT
 # Tests run under cargo-nextest: each test in its own process, tests of every binary side by side
 # (.config/nextest.toml groups the ones that share a device or a daemon). nextest does not run
 # doctests, so they run after it. Without nextest, cargo test runs the same cases.
+#
+# STYX_TEST_FILTER (set by scripts/check.sh, never by CI) narrows the tests nextest runs to a
+# filterset, and only that: everything is built and checked as in the gate, so a narrowed run is
+# a subset of the gate and shares its build. It is not the gate, and says so.
+filter=()
+if [ -n "${STYX_TEST_FILTER:-}" ]; then
+  cargo nextest --version > /dev/null 2>&1 || { echo "gate: STYX_TEST_FILTER needs cargo-nextest" >&2; exit 1; }
+  filter=(-E "$STYX_TEST_FILTER" --no-tests=pass)
+  echo "==> NOT THE GATE: tests narrowed to $STYX_TEST_FILTER"
+fi
 tests() {
   if cargo nextest --version > /dev/null 2>&1; then
-    cargo nextest run --workspace --no-fail-fast "$@"
+    cargo nextest run --workspace --no-fail-fast "${filter[@]}" "$@"
     cargo test --workspace --doc "$@"
   else
     cargo test --workspace "$@"
@@ -138,4 +150,8 @@ step "one definition of the simulated camera drivers" bash -c '! grep -rn -E "#\
 # One copy of the shared ring: every shm-* crate from one version and one source.
 step "one source for every shm crate" python3 scripts/one-shm.py
 
-echo "gate passed"
+if [ ${#filter[@]} -gt 0 ]; then
+  echo "check passed, tests narrowed to $STYX_TEST_FILTER: not the gate"
+else
+  echo "gate passed"
+fi
