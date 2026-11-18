@@ -9,7 +9,6 @@
 
 mod common;
 
-use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use styx_controls::{Control, ControlValue};
@@ -28,13 +27,9 @@ const OSD_DISABLED: i64 = 2;
 /// V4L2 `V4L2_CID_BRIGHTNESS`.
 const BRIGHTNESS: u32 = 0x0098_0900;
 
-/// The tests on the vivid node run one at a time.
-static SERIAL: Mutex<()> = Mutex::new(());
-
-fn serial() -> MutexGuard<'static, ()> {
-    SERIAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// The tests on the vivid node run one at a time, across every test run on the machine.
+fn serial() -> std::fs::File {
+    common::device_lock()
 }
 
 /// vivid's webcam input: the one that lists discrete sizes (its TV, S-Video and HDMI inputs list

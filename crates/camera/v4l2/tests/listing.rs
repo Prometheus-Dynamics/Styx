@@ -16,6 +16,8 @@ use styx_lemnos::v4l2::v4l2::VideoDevice;
 use styx_v4l2::Error;
 use styx_v4l2::{Opener, Prober, System};
 
+mod common;
+
 /// An opener that records every path it is asked to open, then opens it for real.
 #[derive(Clone, Default)]
 struct Counting {
@@ -174,6 +176,8 @@ fn machine_listing_opens_nothing_and_names_the_vivid_node() {
 
 #[test]
 fn a_named_probe_of_the_vivid_node_opens_only_that_node() {
+    // The device is the machine's: one test at a time across test runs.
+    let _device = common::device_lock();
     let counting = Counting::default();
     let prober = Prober::new(counting.clone(), "/sys/class/video4linux", "/dev");
     let listing = prober.list();
@@ -215,6 +219,8 @@ fn a_named_probe_of_the_vivid_node_opens_only_that_node() {
 
 #[test]
 fn a_non_default_input_is_selected_and_its_formats_are_listed() {
+    // The device is the machine's: one test at a time across test runs.
+    let _device = common::device_lock();
     let counting = Counting::default();
     let prober = Prober::new(counting.clone(), "/sys/class/video4linux", "/dev");
     let Some(path) = prober

@@ -29,6 +29,8 @@ fn first_stream_target() -> Option<(PathBuf, FourCc, u32, u32)> {
 
 #[test]
 fn probe_lists_capture_nodes_formats_and_controls() {
+    // The device is the machine's: one test at a time across test runs.
+    let _device = common::device_lock();
     let found = physical_devices();
     if found.is_empty() {
         styx_frame::not_run::not_run(
@@ -74,6 +76,8 @@ fn probe_lists_capture_nodes_formats_and_controls() {
 
 #[test]
 fn a_stream_delivers_frames_from_the_first_capture_node() {
+    // The device is the machine's: one test at a time across test runs.
+    let _device = common::device_lock();
     let Some((path, code, width, height)) = first_stream_target() else {
         styx_frame::not_run::not_run(
             "camera",

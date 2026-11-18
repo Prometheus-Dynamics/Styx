@@ -5,9 +5,29 @@
 
 #![allow(dead_code)]
 
+use std::fs::File;
 use std::path::PathBuf;
 
 use styx_v4l2::{Device, Node, probe, probe_node};
+
+/// The machine's capture devices, one test at a time across every process: a node's input, format
+/// and stream are the device's, so a test in another test run (another gate beside this one) that
+/// sets them fails with EBUSY or changes them under this one. nextest's `vivid` group serializes the
+/// tests of one run; this lock serializes runs. It is the user's (in `$XDG_RUNTIME_DIR`, so runs
+/// with their own TMPDIR share it), held until the returned file is dropped, and waited for.
+pub fn device_lock() -> File {
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+    let path = dir.join("styx-v4l2-devices.lock");
+    let file = File::options()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    file.lock()
+        .unwrap_or_else(|e| panic!("lock {}: {e}", path.display()));
+    file
+}
 
 /// The `videoN` nodes that are not virtual, from sysfs. Virtual nodes are reported on stderr and
 /// never opened.
