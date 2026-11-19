@@ -100,13 +100,20 @@ export STYX_REQUIRE_CC="${STYX_REQUIRE_CC:-1}"
 export STYX_REQUIRE_PIPEWIRE="${STYX_REQUIRE_PIPEWIRE:-1}"
 export STYX_REQUIRE_GPU="${STYX_REQUIRE_GPU:-1}"
 export STYX_REQUIRE_VIVID="${STYX_REQUIRE_VIVID:-1}"
-# GPU tests run on the software Vulkan device (lavapipe's llvmpipe), not the desktop's GPU, unless
-# the caller names a device. The exception is styx-daedalus's import checks (tests/gpu.rs,
-# kept.rs, offset.rs): on a CPU adapter their graphs give no shader output, so they open a real GPU
-# (STYX_DAEDALUS_IMPORT_ADAPTER, unset = Daedalus's default). They are sub-second conformance and
-# import checks; no stress or soak test may join them.
-export STYX_GPUISP_DEVICE="${STYX_GPUISP_DEVICE:-llvmpipe}"
-export STYX_DAEDALUS_ADAPTER="${STYX_DAEDALUS_ADAPTER:-llvmpipe}"
+# A gate never opens the desktop's GPU: every GPU test runs on the software Vulkan device
+# (lavapipe's llvmpipe). Naming the adapter is not enough, since enumerating adapters loads every
+# Vulkan driver and each opens its card, so the Vulkan loader is given lavapipe's driver alone. A
+# host without lavapipe then has no Vulkan device, and its GPU cases are not run (a failure where
+# STYX_REQUIRE_GPU=1), never run on another device.
+# A real GPU is for a person to choose, outside the gate: styx-daedalus's import checks on one are
+#   STYX_DAEDALUS_ADAPTER=<part of the adapter's name> cargo nextest run -p styx-daedalus \
+#     --all-features -E 'binary(offset) | test(/^(gpu|kept)::/)'
+# (crates/out/daedalus/tests/gpu.rs says what they check). Neither the gate nor CI runs it.
+lavapipe=/usr/share/vulkan/icd.d/lvp_icd.$(uname -m).json
+[ -e "$lavapipe" ] || [ ! -e /usr/share/vulkan/icd.d/lvp_icd.json ] || lavapipe=/usr/share/vulkan/icd.d/lvp_icd.json
+export VK_DRIVER_FILES="$lavapipe" VK_ICD_FILENAMES="$lavapipe"
+unset lavapipe
+export STYX_GPUISP_DEVICE=llvmpipe STYX_DAEDALUS_ADAPTER=llvmpipe
 # vivid is a module, loaded by hand and gone after a reboot: said at once, not after the build.
 if [ "$STYX_REQUIRE_VIVID" = 1 ] && ! grep -qs '^vivid-' /sys/class/video4linux/*/name; then
   echo "gate: vivid not loaded (sudo modprobe vivid), or set STYX_REQUIRE_VIVID=0 on a host without it" >&2
