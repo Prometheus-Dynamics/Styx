@@ -2,6 +2,11 @@
 # The check every PR into next must pass. CI runs exactly this.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# The gate runs under scripts/gate-supervise.py: whatever a step leaves running is stopped when the
+# gate ends and fails it, and the gate's output can't be held open by a process that outlives it.
+if [ -z "${STYX_GATE_SUPERVISOR:-}" ]; then
+  exec python3 scripts/gate-supervise.py "$0" "$@"
+fi
 export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 
 # Cargo.lock is committed, and every cargo step below builds with --locked: the gate builds exactly
@@ -35,16 +40,53 @@ fi
 
 # A fresh worktree's empty target directory starts from the dependencies of an earlier green
 # gate (scripts/cargo-seed.sh: on for a CARGO_TARGET_DIR outside the worktree, never in CI).
-scripts/cargo-seed.sh restore
-
+# Every step has a hard bound: about three times its slowest green time, which is written beside
+# it, and never under 60 s. A step runs as a process group of its own. Past its bound the group
+# gets SIGTERM, then SIGKILL, and the gate fails naming the step. A step that leaves a process in
+# its group fails too. Slowest green times are local (warm, cold, fresh worktree) and CI, since
+# nextest (2026-11-17).
 step() {
-  local label="$1" start
-  shift
+  local label="$1" bound="$2" start pid timer ended status=0 left
+  shift 2
   echo "==> $label"
   start=$SECONDS
-  "$@"
+  set -m
+  "$@" &
+  pid=$!
+  set +m
+  sleep "$bound" &
+  timer=$!
+  wait -n -p ended "$pid" "$timer" || status=$?
+  if [ "$ended" = "$timer" ]; then
+    echo "gate: step \"$label\" passed its bound of $bound s: stopping it" >&2
+    stop_group "$pid"
+    exit 1
+  fi
+  kill "$timer" 2> /dev/null || true
+  wait "$timer" 2> /dev/null || true
+  left=$(pgrep -a -g "$pid" || true)
+  if [ -n "$left" ]; then
+    echo "gate: step \"$label\" left processes running:" >&2
+    echo "$left" | sed 's/^/    /' >&2
+    stop_group "$pid"
+    exit 1
+  fi
   echo "    $label: $((SECONDS - start)) s"
+  return "$status"
 }
+# SIGTERM to a process group, then SIGKILL to what is left of it 5 s later.
+stop_group() {
+  kill -TERM -- "-$1" 2> /dev/null || true
+  for _ in $(seq 50); do
+    kill -0 -- "-$1" 2> /dev/null || break
+    sleep 0.1
+  done
+  kill -KILL -- "-$1" 2> /dev/null || true
+  wait "$1" 2> /dev/null || true
+}
+
+# Slowest green: 1.6 s (restore from a reflink seed, 2.1 GB).
+step "cargo seed" 60 scripts/cargo-seed.sh restore
 
 # Cases that cannot run here (styx_frame::not_run): no camera, no GPU, no dma-heap, no PipeWire
 # daemon, no test driver. A case whose need is required (STYX_REQUIRE_<NEED>=1) fails the gate.
@@ -161,33 +203,36 @@ all_tests() {
   # nextest does not run doctests.
   if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
     cargo test --locked --workspace --doc --all-features
-  else
-    skipped+=("doctests: no changed file holds one")
   fi
   cargo nextest list --locked --workspace --all-features --message-format json > "$lists/all.json"
 }
 
+[ "${STYX_CHECK_DOCTESTS:-1}" = 1 ] || skipped+=("doctests: no changed file holds one")
+
 # The workspace glob matches nothing until the first crate lands.
 if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   # cargo fmt reads no dependency (and takes no --locked).
-  step format cargo fmt --all --check
+  # Slowest green: 13 s.
+  step format 60 cargo fmt --all --check
   # Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
   if [ "$check_pass" != all ]; then
-    step "clippy, default features" cargo clippy --locked --workspace --all-targets -- -D warnings
-    step "tests, default features (build; the default-only tests)" default_tests
+    # Slowest green: 76 s (cold). Tests: 425 s (cold, building every default test binary).
+    step "clippy, default features" 230 cargo clippy --locked --workspace --all-targets -- -D warnings
+    step "tests, default features (build; the default-only tests)" 1275 default_tests
   else
     skipped+=("clippy and tests, default features")
   fi
   if [ "$check_pass" != default ]; then
-    step "clippy, all features" cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-    step "tests, all features" all_tests
-    # A test group's filter (.config/nextest.toml), term by term, still names tests.
-    step "every test group filter matches a test" python3 scripts/test-layout.py filters --all-features
+    # Slowest green: 94 s (cold). Tests: 267 s (fresh worktree), with the doctests.
+    step "clippy, all features" 285 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    step "tests, all features" 800 all_tests
+    # A test group's filter (.config/nextest.toml), term by term, still names tests. Slowest green: 6 s.
+    step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
   else
     skipped+=("clippy and tests, all features")
   fi
   if [ -f "$lists/default.json" ] && [ -f "$lists/all.json" ]; then
-    step "every default-only test is in the default-only run" \
+    step "every default-only test is in the default-only run" 60 \
       python3 scripts/test-layout.py default-only "$lists/default.json" "$lists/all.json"
   elif [ "$nextest" = 1 ]; then
     skipped+=("the default-only list check (it needs both passes)")
@@ -205,56 +250,58 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
     read -r -a no_std_crates <<< "${STYX_CHECK_NO_STD:-}"
     [ "$all_no_std" = "${#no_std_crates[@]}" ] || skipped+=("no_std checks of the $((all_no_std - ${#no_std_crates[@]})) unchanged no_std crates")
   fi
-  no_std_out=$(mktemp -d)
-  no_std_start=$SECONDS
-  no_std_pids=()
-  no_std_labels=()
-  for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf; do
-    for crate in "${no_std_crates[@]}"; do
-      cargo check -q --locked -p "styx-$crate" --no-default-features --target "$target" \
-        > "$no_std_out/${#no_std_pids[@]}" 2>&1 &
-      no_std_pids+=($!)
-      no_std_labels+=("$crate on $target")
+  no_std_checks() {
+    local no_std_out no_std_pids=() no_std_labels=() no_std_failed=0 target crate i
+    no_std_out=$(mktemp -d)
+    for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf; do
+      for crate in "${no_std_crates[@]}"; do
+        cargo check -q --locked -p "styx-$crate" --no-default-features --target "$target" \
+          > "$no_std_out/${#no_std_pids[@]}" 2>&1 &
+        no_std_pids+=($!)
+        no_std_labels+=("$crate on $target")
+      done
     done
-  done
-  no_std_failed=0
-  for i in "${!no_std_pids[@]}"; do
-    if wait "${no_std_pids[$i]}"; then
-      echo "==> ${no_std_labels[$i]}: ok"
-    else
-      echo "==> ${no_std_labels[$i]}: FAILED"
-      no_std_failed=1
-    fi
-    cat "$no_std_out/$i"
-  done
-  rm -rf "$no_std_out"
-  echo "    no_std checks (${#no_std_pids[@]}): $((SECONDS - no_std_start)) s"
-  [ "$no_std_failed" = 0 ] || { echo "gate: a no_std check failed" >&2; exit 1; }
+    for i in "${!no_std_pids[@]}"; do
+      if wait "${no_std_pids[$i]}"; then
+        echo "==> ${no_std_labels[$i]}: ok"
+      else
+        echo "==> ${no_std_labels[$i]}: FAILED"
+        no_std_failed=1
+      fi
+      cat "$no_std_out/$i"
+    done
+    rm -rf "$no_std_out"
+    [ "$no_std_failed" = 0 ] || { echo "gate: a no_std check failed" >&2; return 1; }
+  }
+  # Slowest green: 28 s (22 checks).
+  step "no_std checks (${#no_std_crates[@]} crates, 2 targets)" 90 no_std_checks
 else
   echo "no crates yet"
 fi
 
+# The checks below take a few seconds at most (slowest green 21 s); each is bound at 60 s.
+
 # Styx's code names no product, board or camera module. Those live in data.
 if compgen -G "crates/*/*/src" > /dev/null; then
-  step "no product names in code" bash -c '! grep -rn -i -E "\b(raze|helios|photonvision|systemcore|roborio|ov9782|cm5)\b" crates/*/*/src'
+  step "no product names in code" 60 bash -c '! grep -rn -i -E "\b(raze|helios|photonvision|systemcore|roborio|ov9782|cm5)\b" crates/*/*/src'
 fi
 
 # One lock per outside repository: crates name git dependencies through the workspace only.
-step "git dependencies are named in the workspace only" bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
+step "git dependencies are named in the workspace only" 60 bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
 
 # One simulated camera: the sensor, receiver and ISP drivers are defined in styx-sim only (S0/X15);
 # a test needs one from `styx_sim::paced` (free-running) or `styx_sim::SimCamera` (lock-step).
-step "one definition of the simulated camera drivers" bash -c '! grep -rn -E "#\[driver\(\"sim-(sensor|receiver|isp)\"" crates --include=*.rs | grep -v "^crates/camera/sim/src/"'
+step "one definition of the simulated camera drivers" 60 bash -c '! grep -rn -E "#\[driver\(\"sim-(sensor|receiver|isp)\"" crates --include=*.rs | grep -v "^crates/camera/sim/src/"'
 
 # Every tests/*.rs file is built: a crate that lists its test binaries (tests/all.rs) leaves none out.
-step "every test file is in a test binary" python3 scripts/test-layout.py files
+step "every test file is in a test binary" 60 python3 scripts/test-layout.py files
 # A merged test binary runs its tests as threads of one process under cargo test. A file in one
 # that installs a global allocator, reads /proc/self, or reaches a sim or test-support module's
 # process-wide static is its own [[test]], or listed in .config/shared-state.txt with its reason.
-step "merged test files share no process state unlisted" python3 scripts/test-layout.py shared-state
+step "merged test files share no process state unlisted" 60 python3 scripts/test-layout.py shared-state
 
 # One copy of the shared ring: every shm-* crate from one version and one source.
-step "one source for every shm crate" python3 scripts/one-shm.py
+step "one source for every shm crate" 60 python3 scripts/one-shm.py
 
 if [ ${#filter[@]} -gt 0 ]; then
   for s in "${skipped[@]}"; do
@@ -263,5 +310,6 @@ if [ ${#filter[@]} -gt 0 ]; then
   echo "check passed, tests narrowed to $STYX_TEST_FILTER: not the gate"
 else
   echo "gate passed"
-  scripts/cargo-seed.sh save || echo "cargo-seed: no seed kept (the reason is above); the gate passed"
+  # Slowest green: 115 s (a new seed: the target copied by reflink, then stripped).
+  step "cargo seed save" 350 bash -c 'scripts/cargo-seed.sh save || echo "cargo-seed: no seed kept (the reason is above); the gate passed"'
 fi
