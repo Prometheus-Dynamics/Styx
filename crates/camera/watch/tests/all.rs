@@ -4,7 +4,5 @@
 
 #[path = "replay.rs"]
 mod replay;
-#[path = "simulated.rs"]
-mod simulated;
 #[path = "vivid.rs"]
 mod vivid;

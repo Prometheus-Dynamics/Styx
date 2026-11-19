@@ -15,7 +15,7 @@
 //!
 //! The tests share the simulated block's switches and job log, so they run one at a time.
 
-use crate::sim;
+mod sim;
 
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, atomic::Ordering};
 use std::time::Duration;

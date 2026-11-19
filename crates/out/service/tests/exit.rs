@@ -9,7 +9,6 @@ use styx_sim::paced as sim;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
@@ -30,8 +29,7 @@ static SERIAL: Mutex<()> = Mutex::new(());
 /// Two complete chains (sensor, receiver, ISP each) on one daemon. Each board names its cameras
 /// uniquely: the simulated sensors and receivers share a frame clock by that name, process-wide.
 fn two_cameras() -> String {
-    static BOARDS: AtomicU32 = AtomicU32::new(0);
-    let n = BOARDS.fetch_add(1, Ordering::Relaxed);
+    let n = sim::next_board();
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
          [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\

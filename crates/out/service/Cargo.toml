@@ -48,5 +48,10 @@ name = "steady"
 path = "tests/steady.rs"
 
 [[test]]
+# Its own process: it reads styx-sim's process-wide call log, which every simulated device in the process writes.
+name = "exit"
+path = "tests/exit.rs"
+
+[[test]]
 name = "all"
 path = "tests/all.rs"

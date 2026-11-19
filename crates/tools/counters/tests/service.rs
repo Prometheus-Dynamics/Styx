@@ -44,8 +44,7 @@ const CHILD_COUNT: &str = "STYX_COUNTERS_CHILD_COUNT";
 /// Two complete chains (sensor, receiver, ISP each) on one daemon. Each call names its cameras'
 /// frame clocks uniquely, so the tests of this binary (which run in one process) do not share one.
 fn two_cameras() -> String {
-    static BOARDS: AtomicU64 = AtomicU64::new(0);
-    let n = BOARDS.fetch_add(1, Ordering::Relaxed);
+    let n = sim::next_board();
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
          [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\

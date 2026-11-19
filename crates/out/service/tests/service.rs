@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -42,8 +42,7 @@ fn mode0_shortest() -> (u32, u32) {
 /// Two cameras, each with its own receiver and ISP. Each call names its cameras' frame clocks
 /// uniquely, so the tests of this binary (which run in one process) do not share one.
 fn two_cameras() -> String {
-    static BOARDS: AtomicU32 = AtomicU32::new(0);
-    let n = BOARDS.fetch_add(1, Ordering::Relaxed);
+    let n = sim::next_board();
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-cameras\"\n\
          [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\

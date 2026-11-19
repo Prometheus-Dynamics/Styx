@@ -14,5 +14,3 @@ mod h264_streams;
 mod h264_streams_sim;
 #[path = "live.rs"]
 mod live;
-#[path = "race.rs"]
-mod race;

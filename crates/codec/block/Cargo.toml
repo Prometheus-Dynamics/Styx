@@ -34,5 +34,10 @@ styx-sim = { path = "../../camera/sim" }
 workspace = true
 
 [[test]]
+# Its own process: it sets the sim block's process-wide refusal and stall switches, which every simulated block reads.
+name = "race"
+path = "tests/race.rs"
+
+[[test]]
 name = "all"
 path = "tests/all.rs"

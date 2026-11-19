@@ -36,5 +36,20 @@ styx-sim = { path = "../../camera/sim" }
 workspace = true
 
 [[test]]
+# Its own process: it reads styx-sim's process-wide call log, which every simulated device in the process writes.
+name = "cycles"
+path = "tests/cycles.rs"
+
+[[test]]
+# Its own process: it sets styx-sim's process-wide fault switches, which every simulated device in the process reads.
+name = "recovery"
+path = "tests/recovery.rs"
+
+[[test]]
+# Its own process: it sets styx-sim's process-wide fault switches, which every simulated device in the process reads.
+name = "ends_sim"
+path = "tests/ends_sim.rs"
+
+[[test]]
 name = "all"
 path = "tests/all.rs"

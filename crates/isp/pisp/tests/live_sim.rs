@@ -8,7 +8,7 @@
 //! the session maps the configuration and input buffers writable. The second run needs a dma-heap
 //! this user may allocate from (see `styx_frame::dma_case` for a host without one).
 
-use crate::sim;
+mod sim;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};

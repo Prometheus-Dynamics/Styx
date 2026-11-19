@@ -4,13 +4,7 @@
 
 #[path = "controls.rs"]
 mod controls;
-#[path = "cycles.rs"]
-mod cycles;
 #[path = "ended.rs"]
 mod ended;
-#[path = "ends_sim.rs"]
-mod ends_sim;
-#[path = "recovery.rs"]
-mod recovery;
 #[path = "session_sim.rs"]
 mod session_sim;

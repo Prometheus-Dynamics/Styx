@@ -31,7 +31,11 @@ The work is a pre-planned list of PRs into `next`.
 - Add a crate by creating its directory under `crates/<folder>/`. Name it `styx-<directory>`.
 - A crate with two or more integration-test files builds them as one binary: `tests/all.rs` has a
   module per file (`#[path = "x.rs"] mod x;`). A new `tests/x.rs` goes into `tests/all.rs`, or the
-  gate fails it. A file with its own `#[global_allocator]` stays its own `[[test]]`.
+  gate fails it. A file that needs its process to itself stays its own `[[test]]`, with the reason
+  beside it in `Cargo.toml`: its own `#[global_allocator]`, counts of the process (`/proc/self`,
+  a shared device's counters), or a process-wide record or switch of a sim that other tests' sims
+  read or write. nextest gives each test a process, but `cargo test` runs a binary's tests as
+  threads of one.
 - If your PR needs a shared interface changed (`crates/core/*`), stop and say so in the PR
   description. Core interfaces change only through A-series PRs.
 - A need named `X<n>` is an outside block (see `docs/design.md`). Don't work around it and don't

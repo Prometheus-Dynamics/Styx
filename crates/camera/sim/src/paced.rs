@@ -171,6 +171,15 @@ pub static GONE_RECEIVER: AtomicBool = AtomicBool::new(false);
 /// (`fault_consumer`), and clears it. Set by a test.
 pub static FAULT_CONSUMER: AtomicBool = AtomicBool::new(false);
 
+/// A number no earlier call in this process returned, for naming a board's cameras: devices share a
+/// frame clock by camera name, process-wide, so two test files that each counted their boards from
+/// 0 would share clocks when their tests run in one process.
+#[must_use]
+pub fn next_board() -> u32 {
+    static NEXT: AtomicU32 = AtomicU32::new(0);
+    NEXT.fetch_add(1, Ordering::Relaxed)
+}
+
 /// Takes the calls logged since the last call, in arrival order.
 #[must_use]
 pub fn take_log() -> Vec<String> {

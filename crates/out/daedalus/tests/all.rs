@@ -15,8 +15,6 @@ mod graph;
 mod kept;
 #[path = "no_heap.rs"]
 mod no_heap;
-#[path = "offset.rs"]
-mod offset;
 #[path = "process.rs"]
 mod process;
 #[path = "ring.rs"]

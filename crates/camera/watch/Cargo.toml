@@ -33,5 +33,10 @@ lemnos-contract-camera-isp = { workspace = true }
 workspace = true
 
 [[test]]
+# Its own process: it counts this process's file descriptors and threads (/proc/self).
+name = "simulated"
+path = "tests/simulated.rs"
+
+[[test]]
 name = "all"
 path = "tests/all.rs"

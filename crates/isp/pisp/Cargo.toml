@@ -36,5 +36,15 @@ styx-sim = { path = "../../camera/sim" }
 workspace = true
 
 [[test]]
+# Its own process: it sets and reads the sim ISP's process-wide job record and gate.
+name = "live_order"
+path = "tests/live_order.rs"
+
+[[test]]
+# Its own process: it reads the sim ISP's process-wide record of the jobs it ran.
+name = "live_sim"
+path = "tests/live_sim.rs"
+
+[[test]]
 name = "all"
 path = "tests/all.rs"

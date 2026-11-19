@@ -54,5 +54,10 @@ daedalus-wgpu-author = { workspace = true }
 workspace = true
 
 [[test]]
+# Its own process: it counts imports and uploads on the process's one shared device, which other GPU tests also use.
+name = "offset"
+path = "tests/offset.rs"
+
+[[test]]
 name = "all"
 path = "tests/all.rs"
