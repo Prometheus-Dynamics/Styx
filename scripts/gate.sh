@@ -212,6 +212,24 @@ lists=$(mktemp -d "${TMPDIR:-/tmp}/styx-test-lists.XXXXXX")
 nextest=0
 cargo nextest --version > /dev/null 2>&1 && nextest=1
 default_tests() {
+  # The default pass builds in its own target directory, <target>/default. A library with a C
+  # crate type (styx-capi, styx-gst) has no feature hash in its file name, so in one directory
+  # each pass overwrote the other's and both rebuilt them every gate. The first time, the
+  # directory starts as a reflink copy of the target (the same worktree's paths, so cargo finds
+  # every unit both passes share current); without reflinks it starts empty.
+  local main="${CARGO_TARGET_DIR:-$PWD/target}"
+  export CARGO_TARGET_DIR="$main/default"
+  if [ ! -d "$CARGO_TARGET_DIR" ]; then
+    local entry part="$main/default.part"
+    rm -rf -- "${part:?}"
+    mkdir "$part"
+    for entry in "$main"/* "$main"/.[!.]*; do
+      [ -e "$entry" ] || continue
+      case "${entry##*/}" in default | default.part | tmp | nextest) continue ;; esac
+      cp -a --reflink=always "$entry" "$part/" 2> /dev/null || { rm -rf -- "${part:?}"; mkdir "$part"; break; }
+    done
+    mv "$part" "$CARGO_TARGET_DIR"
+  fi
   if [ "$nextest" = 0 ]; then
     cargo test --locked --workspace
     return
