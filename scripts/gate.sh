@@ -104,7 +104,8 @@ export STYX_REQUIRE_VIVID="${STYX_REQUIRE_VIVID:-1}"
 # (lavapipe's llvmpipe). Naming the adapter is not enough, since enumerating adapters loads every
 # Vulkan driver and each opens its card, so the Vulkan loader is given lavapipe's driver alone. A
 # host without lavapipe then has no Vulkan device, and its GPU cases are not run (a failure where
-# STYX_REQUIRE_GPU=1), never run on another device.
+# STYX_REQUIRE_GPU=1), never run on another device. scripts/gpu-opens.sh scripts/gate.sh proves it:
+# it names every GPU device node any process opens, and fails if there is one.
 # A real GPU is for a person to choose, outside the gate: styx-daedalus's import checks on one are
 #   STYX_DAEDALUS_ADAPTER=<part of the adapter's name> cargo nextest run -p styx-daedalus \
 #     --all-features -E 'binary(offset) | test(/^(gpu|kept)::/)'
