@@ -36,6 +36,7 @@ may come back empty.
 import json
 import os
 import re
+import concurrent.futures
 import subprocess
 import sys
 import tomllib
@@ -104,13 +105,19 @@ def filters(cargo_args):
     # Each alternative of a filter (its top-level `|` terms) must match on its own: a renamed
     # module in one term would hide behind the others' matches.
     terms = [(profile, term) for profile, expr in found for term in alternatives(expr)]
-    bad = 0
-    for profile, expr in terms:
-        out = subprocess.run(
+    # The terms are listed side by side: each list runs every test binary's --list, and one at a
+    # time they were most of this check's time. Results are printed in the terms' order.
+    def listed(term):
+        return subprocess.run(
             ["cargo", "nextest", "list", "--locked", "--workspace", *cargo_args,
-             "-E", expr, "--message-format", "json"],
+             "-E", term[1], "--message-format", "json"],
             cwd=ROOT, capture_output=True, text=True,
         )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(terms) or 1) as pool:
+        outs = list(pool.map(listed, terms))
+    bad = 0
+    for (profile, expr), out in zip(terms, outs):
         if out.returncode != 0:
             print(f"profile {profile}: {expr}\n{out.stderr}")
             bad += 1
