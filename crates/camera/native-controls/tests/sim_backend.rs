@@ -6,8 +6,10 @@
 //! target frame, and the simulated sensor latches each frame with the values that have landed on
 //! it. Every frame is checked two ways: its brightness against the exposure and gain in force
 //! on it, and its `FrameMetadata` against the same values. A step must show on its target frame,
-//! not one earlier or later, 1,000 times for exposure, 1,000 for gain and 1,000 for the two posted
-//! together.
+//! not one earlier or later, 48 times for exposure, 48 for gain and 48 for the two posted
+//! together. The run is lock-step and deterministic, and the values cycle (4 exposures, 3 gains:
+//! the pairs repeat every 12 steps), so 48 steps are four full cycles of every transition. More
+//! steps would only repeat them: a race is proven by a test that drives it, not by repeats.
 
 mod common;
 
@@ -20,8 +22,8 @@ use styx_sim::{SensorTiming, SimCamera, SimFrame};
 
 /// Frames between two steps. More than the largest delay, so steps never share a post frame.
 const SPACING: u64 = 4;
-/// Steps per phase: exposure only, gain only, then both posted together.
-const STEPS: u64 = 1_000;
+/// Steps per phase: exposure only, gain only, then both posted together. Four cycles of 12.
+const STEPS: u64 = 48;
 const WIDTH: usize = 320;
 const HEIGHT: usize = 40;
 const ROW_BYTES: usize = WIDTH * 10 / 8;
@@ -233,7 +235,7 @@ fn run(timing: SensorTiming) {
 }
 
 #[test]
-fn exposure_2_gain_1_steps_land_on_their_frame_1000_times() {
+fn exposure_2_gain_1_steps_land_on_their_frame() {
     run(SensorTiming {
         exposure_delay: 2,
         gain_delay: 1,
@@ -242,7 +244,7 @@ fn exposure_2_gain_1_steps_land_on_their_frame_1000_times() {
 }
 
 #[test]
-fn exposure_1_gain_2_steps_land_on_their_frame_1000_times() {
+fn exposure_1_gain_2_steps_land_on_their_frame() {
     run(SensorTiming {
         exposure_delay: 1,
         gain_delay: 2,

@@ -132,10 +132,13 @@ esac
 tests() {
   if cargo nextest --version > /dev/null 2>&1; then
     cargo nextest run --locked --workspace --no-fail-fast "${filter[@]}" "$@"
-    if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
-      cargo test --locked --workspace --doc "$@"
-    else
-      skipped+=("doctests, ${*:-default features}: no changed file holds one")
+    # Doctests run once, in the all-features pass.
+    if [ "$*" = --all-features ]; then
+      if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
+        cargo test --locked --workspace --doc "$@"
+      else
+        skipped+=("doctests: no changed file holds one")
+      fi
     fi
   else
     cargo test --locked --workspace "$@"

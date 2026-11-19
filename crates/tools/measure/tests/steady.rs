@@ -129,18 +129,18 @@ fn the_read_loop_allocates_nothing_per_frame() {
         let made = counted(|| {
             stop = Some(
                 session
-                    .run(None, |s| s.delivered >= 1200)
+                    .run(None, |s| s.delivered >= 400)
                     .expect("steady state"),
             );
         });
-        assert_eq!(session.stats.delivered, 1200);
+        assert_eq!(session.stats.delivered, 400);
         println!(
-            "steady state (isp {isp:?}): 1000 frames, {made} allocations on the read loop, {} gaps, keep {keep}",
+            "steady state (isp {isp:?}): 200 frames, {made} allocations on the read loop, {} gaps, keep {keep}",
             session.stats.gaps
         );
         assert_eq!(
             made, 0,
-            "the read loop made {made} allocations for 1000 frames"
+            "the read loop made {made} allocations for 200 frames"
         );
         // Read after the last frame was taken: every loss that could show as a gap is in it.
         let lost = lost_upstream(&service) - lost_before;

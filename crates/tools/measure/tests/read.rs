@@ -12,7 +12,9 @@ use std::process::Command;
 
 use support::{CAMERA, daemon, socket_of, start_service, test_dir, wait_publishing};
 
-const FRAMES: u64 = 1000;
+/// Frames per read: the measured rate is the assertion, so the camera runs at its real 120 fps;
+/// 200 frames give the rate within the 1 % asserted below.
+const FRAMES: u64 = 200;
 
 fn run_measure(args: &[&str]) -> (String, String, bool) {
     let out = Command::new(env!("CARGO_BIN_EXE_styx-measure"))

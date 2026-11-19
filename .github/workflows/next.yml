@@ -37,10 +37,19 @@ jobs:
       # Every feature is built and tested: a feature left out would not be covered. GStreamer and
       # PipeWire come from the runner's packages; libcamera is built from source (the packaged
       # one is older than the versions styx-libcamera is checked against) and cached.
+      # The packages' downloads are kept between runs (apt fetches only what changed), and the
+      # man-page index is not rebuilt for them.
+      - uses: actions/cache@v4
+        with:
+          path: ~/apt-archives
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/next.yml') }}
+          restore-keys: apt-${{ runner.os }}-
       - name: GStreamer, PipeWire and libcamera's build tools
         run: |
+          mkdir -p ~/apt-archives/partial
+          sudo rm -f /var/lib/man-db/auto-update
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          sudo apt-get install -y --no-install-recommends -o Dir::Cache::Archives="$HOME/apt-archives" \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev gstreamer1.0-tools \
             libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
             pipewire pipewire-bin wireplumber gstreamer1.0-pipewire dbus \
