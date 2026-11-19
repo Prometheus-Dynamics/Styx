@@ -136,20 +136,21 @@ fn proof(width: u32, height: u32) {
             id
         })
         .collect();
-    // Each buffer is a newer frame than the one before it: ids rise (modulo the byte), by however
-    // many the consumer was slow for. A stale buffer would repeat an id or step back.
-    for pair in ids.windows(2) {
-        let step = pair[1].wrapping_sub(pair[0]);
-        assert!(
-            (1..=127).contains(&step),
-            "frame ids {ids:?}: {} then {}",
-            pair[0],
-            pair[1]
-        );
-    }
+    // Order is not asserted. When every buffer held a frame a consumer could still take, the
+    // node sent the oldest again rather than stop (`NodeStats::resent`), and a slow consumer can
+    // then read an older frame after a newer one. On a link with one io area those steps back are
+    // at most the frames sent again (the model in `hold.rs` checks that); on a link with two (the
+    // graph cycle's low bit picks the area, PipeWire 1.2 on) a consumer can also step back across
+    // areas with nothing sent again, and this test cannot see which the link has. A consumer
+    // that needs order reads the frame's `SPA_META_Header` seq; `filesink` keeps no metadata, so
+    // the count is printed, not checked.
+    let back = ids
+        .windows(2)
+        .filter(|pair| !(1..=127).contains(&pair[1].wrapping_sub(pair[0])))
+        .count();
     assert!(stats.frames as usize >= FRAMES, "{stats:?}");
     println!(
-        "proof: a PipeWire consumer read {FRAMES} {width}x{height} frames, ids {} to {}, each the producer's; node {stats:?}",
+        "proof: a PipeWire consumer read {FRAMES} {width}x{height} frames, ids {} to {}, each the producer's, {back} repeat or step back; node {stats:?}",
         ids[0],
         ids[FRAMES - 1]
     );

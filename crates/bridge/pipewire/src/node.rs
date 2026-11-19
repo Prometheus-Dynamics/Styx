@@ -13,7 +13,8 @@
 //! stalls skips frames, and when it runs again it can be handed an older frame after a newer one
 //! (a PipeWire link holds up to two sent buffers, read in turn), or a frame it was handed before
 //! (when every buffer held a frame it could still take, the node sent the oldest again rather
-//! than stop; [`NodeStats::resent`] counts those).
+//! than stop; [`NodeStats::resent`] counts those: on a link with one area, a consumer steps back
+//! at most that many times, which the model in `hold.rs` checks for every short history).
 //!
 //! Each buffer carries PipeWire's header metadata for a consumer that asks for it
 //! (`SPA_META_Header`): `seq` is the frame's id and `pts` its capture time in nanoseconds. That

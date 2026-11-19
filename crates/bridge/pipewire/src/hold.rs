@@ -273,7 +273,9 @@ impl Holds {
 mod model {
     //! Every short history of a two- or three-buffer ring on a link with one or two areas, with
     //! the node knowing or not knowing each send's area: in no state may the producer write a
-    //! buffer that a consumer holds or can still take.
+    //! buffer that a consumer holds or can still take. The frames are numbered as well, so that the
+    //! order a consumer takes them in is counted: on one area, an older frame after a newer one
+    //! comes only from a frame sent again.
 
     use super::*;
 
@@ -307,6 +309,43 @@ mod model {
         /// Buffers the node may fill.
         free: Vec<bool>,
         cycle: u64,
+        /// The frame each buffer holds: the producer numbers its frames 1, 2, 3, ...
+        frame: Vec<u64>,
+        /// The next frame the producer writes.
+        next_frame: u64,
+        /// The newest frame the consumer has taken.
+        newest_taken: u64,
+        /// Takes of a frame older than one the consumer had already taken.
+        backward: u64,
+        /// Takes of the frame the consumer had taken last, again.
+        repeats: u64,
+        /// Cycles in which every buffer was held and the policy sent nothing.
+        stalls: u64,
+        /// The consumer gives back at once, undelivered, a frame no newer than the newest it has
+        /// delivered (by the header's seq), as a consumer that keeps order itself would.
+        drop_old: bool,
+        /// Frames the consumer gave back that way.
+        drops: u64,
+        /// Which frame the node sends again when every buffer is held.
+        policy: Resend,
+        /// `None`: the consumer reads either area at any time (the safety model's consumer).
+        /// `Some(lag)`: it reads only the area of the cycle `lag` cycles back, as a consumer that
+        /// runs in the cycle (0) or one behind (1) does.
+        lag: Option<u64>,
+    }
+
+    /// What the node sends again when the frames it holds leave the producer no buffer.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Resend {
+        /// The oldest held frame ([`Holds::oldest_held`]): the node as it is.
+        Oldest,
+        /// The newest frame the node may send again, if it is not older than the newest frame the
+        /// node saw a consumer take; otherwise that taken frame again (a repeat) when its buffer
+        /// may be sent; otherwise nothing (a stall).
+        NoStepBack,
+        /// The newest frame the node sent, when its buffer may be sent again; otherwise nothing.
+        /// No consumer can have taken a newer frame than the newest sent, so this can only repeat.
+        NewestSent,
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -336,12 +375,66 @@ mod model {
         Step::Again(false),
     ];
 
+    /// [`Resend::NoStepBack`], from what the node can see: its sends' order and the takes the busy
+    /// counts showed.
+    fn no_step_back(holds: &Holds, consumer_on: impl Fn(usize) -> bool) -> Option<usize> {
+        let last = |out: &Out| out.sends[out.count - 1].seq;
+        // The newest send the node saw taken.
+        let newest_taken = holds
+            .slots
+            .iter()
+            .flatten()
+            .filter(|out| out.count > 0 && out.takes > 0)
+            .map(last)
+            .max();
+        let sendable = |index: usize, out: &Out| {
+            out.count > 0
+                && !Holds::flying(out)
+                && out.back
+                && out.count < MAX_SENDS
+                && !consumer_on(index)
+        };
+        // The newest frame that may go again, when it is not older than what was taken.
+        let newest = holds
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|out| (i, out)))
+            .filter(|&(i, out)| sendable(i, out))
+            .max_by_key(|&(_, out)| last(out));
+        match (newest, newest_taken) {
+            (Some((index, out)), Some(taken)) if last(out) >= taken => Some(index),
+            (Some((index, _)), None) => Some(index),
+            _ => None,
+        }
+    }
+
+    /// [`Resend::NewestSent`]: the buffer holding the node's newest send, when it may go again.
+    fn newest_sent(holds: &Holds, consumer_on: impl Fn(usize) -> bool) -> Option<usize> {
+        let (index, out) = holds
+            .slots
+            .iter()
+            .enumerate()
+            .filter_map(|(i, slot)| slot.as_ref().map(|out| (i, out)))
+            .filter(|(_, out)| out.count > 0)
+            .max_by_key(|(_, out)| out.sends[out.count - 1].seq)?;
+        // Only the node's newest send: when that buffer was freed, every one still held is an
+        // older frame than one a consumer may have taken, so the cycle sends nothing.
+        let newest = out.sends[out.count - 1].seq == holds.sends;
+        let sendable = newest
+            && !Holds::flying(out)
+            && out.back
+            && out.count < MAX_SENDS
+            && !consumer_on(index);
+        sendable.then_some(index)
+    }
+
     fn explore(
         holds: &Holds,
         world: &World,
         depth: usize,
         trail: &mut Vec<Step>,
-        seen: &mut [u64; 3],
+        seen: &mut [u64; 8],
     ) {
         // The safety property, in every state: a free buffer is not held and not in an area.
         for (index, &free) in world.free.iter().enumerate() {
@@ -361,6 +454,12 @@ mod model {
             // Tallied at the leaves: histories in which a buffer was freed, or a frame sent again.
             seen[1] += u64::from(world.freed > 0);
             seen[2] += u64::from(world.resent > 0);
+            seen[3] += u64::from(world.backward > 0);
+            // More backward takes than frames sent again: a step back the resend does not explain.
+            seen[4] += u64::from(world.backward > world.resent);
+            seen[5] += u64::from(world.repeats > 0);
+            seen[6] += u64::from(world.stalls > 0);
+            seen[7] += u64::from(world.drops > 0);
             return;
         }
         for &step in &STEPS {
@@ -382,38 +481,75 @@ mod model {
                             None => continue,
                         }
                     } else {
-                        match holds.oldest_held(|i| world.counted[i]) {
+                        let stalled = world.policy != Resend::Oldest
+                            && holds.oldest_held(|i| world.counted[i]).is_some();
+                        let chosen = match world.policy {
+                            Resend::Oldest => holds.oldest_held(|i| world.counted[i]),
+                            Resend::NoStepBack => no_step_back(&holds, |i| world.counted[i]),
+                            Resend::NewestSent => newest_sent(&holds, |i| world.counted[i]),
+                        };
+                        match chosen {
                             Some(index) => {
                                 world.resent += 1;
                                 index
                             }
+                            // A stall is a cycle like `Idle`: the returns came back, nothing went
+                            // out, and the areas keep what they had.
+                            None if stalled => usize::MAX,
                             None => continue,
                         }
                     };
-                    world.free[index] = false;
-                    holds.send(index);
-                    let area = (world.cycle as usize) % world.areas;
-                    world.area[area] = Some(index);
-                    world.returning[index] = true;
-                    holds.went_out(
-                        index,
-                        if known {
-                            Area::Known(area as u8)
-                        } else {
-                            Area::Unknown
-                        },
-                    );
+                    if index == usize::MAX {
+                        world.stalls += 1;
+                    } else {
+                        if matches!(step, Step::Send(_)) {
+                            world.frame[index] = world.next_frame;
+                            world.next_frame += 1;
+                        }
+                        world.free[index] = false;
+                        holds.send(index);
+                        let area = (world.cycle as usize) % world.areas;
+                        world.area[area] = Some(index);
+                        world.returning[index] = true;
+                        holds.went_out(
+                            index,
+                            if known {
+                                Area::Known(area as u8)
+                            } else {
+                                Area::Unknown
+                            },
+                        );
+                    }
                 }
                 Step::Take(area) => {
-                    let area = usize::from(area);
+                    let mut area = usize::from(area);
+                    if let Some(lag) = world.lag {
+                        // The one area this consumer reads this cycle.
+                        if area != 0 || world.cycle < lag {
+                            continue;
+                        }
+                        area = ((world.cycle - lag) as usize) % world.areas;
+                    }
                     if area >= world.areas {
                         continue;
                     }
                     let Some(index) = world.area[area].take() else {
                         continue;
                     };
-                    world.held[index] = true;
+                    let frame = world.frame[index];
                     world.counted[index] = false;
+                    if world.drop_old && frame <= world.newest_taken {
+                        // Given back in the same look: never held, never delivered.
+                        world.drops += 1;
+                    } else {
+                        world.held[index] = true;
+                        if frame < world.newest_taken {
+                            world.backward += 1;
+                        } else if frame == world.newest_taken {
+                            world.repeats += 1;
+                        }
+                        world.newest_taken = world.newest_taken.max(frame);
+                    }
                 }
                 Step::Give(index) => {
                     let index = usize::from(index);
@@ -449,7 +585,18 @@ mod model {
         }
     }
 
-    fn run(buffers: usize, areas: usize, depth: usize) -> [u64; 3] {
+    fn run(buffers: usize, areas: usize, depth: usize) -> [u64; 8] {
+        run_with(buffers, areas, depth, Resend::Oldest, None, false)
+    }
+
+    fn run_with(
+        buffers: usize,
+        areas: usize,
+        depth: usize,
+        policy: Resend,
+        lag: Option<u64>,
+        drop_old: bool,
+    ) -> [u64; 8] {
         let world = World {
             areas,
             area: [None; 2],
@@ -458,10 +605,20 @@ mod model {
             returning: vec![false; buffers],
             free: vec![true; buffers],
             cycle: 0,
+            frame: vec![0; buffers],
+            next_frame: 1,
+            newest_taken: 0,
+            backward: 0,
+            repeats: 0,
+            stalls: 0,
+            drop_old,
+            drops: 0,
+            policy,
+            lag,
             resent: 0,
             freed: 0,
         };
-        let mut seen = [0; 3];
+        let mut seen = [0; 8];
         explore(
             &Holds::new(buffers),
             &world,
@@ -474,10 +631,21 @@ mod model {
 
     #[test]
     fn no_history_frees_a_buffer_a_consumer_holds_or_can_take() {
-        let mut total = [0_u64; 3];
+        let mut total = [0_u64; 8];
         for (buffers, depth) in [(2, 9), (3, 8)] {
             for areas in [1, 2] {
                 let seen = run(buffers, areas, depth);
+                println!("{buffers} buffers, {areas} areas: {seen:?}");
+                // On a link with one area, the consumer takes an older frame after a newer one only
+                // through a frame the node sent again, and never more often than it did (the bound
+                // NodeStats::resent states). Two areas read in turn can step back without a resend
+                // (see node.rs).
+                if areas == 1 {
+                    assert_eq!(
+                        seen[4], 0,
+                        "{buffers} buffers, one area: a backward take beyond the frames sent again"
+                    );
+                }
                 // The rule is not safe by never freeing: buffers are freed, and frames sent again,
                 // in many of the histories.
                 assert!(
@@ -490,9 +658,46 @@ mod model {
             }
         }
         println!(
-            "model: {} states, none unsafe; a buffer freed in {} histories, a frame sent again in {}",
-            total[0], total[1], total[2]
+            "model: {} states, none unsafe; a buffer freed in {} histories, a frame sent again in {}, an older frame taken after a newer in {} ({} beyond the frames sent again, all on two areas)",
+            total[0], total[1], total[2], total[3], total[4]
         );
+    }
+
+    /// The order a consumer sees, under each resend policy and each kind of consumer: histories
+    /// with a backward take, a repeat, and a stall. A study for a design choice, not a check of
+    /// the node as it is (that is `no_history_frees_a_buffer_a_consumer_holds_or_can_take`); the
+    /// safety property still holds in every state of every run here.
+    #[test]
+    #[ignore = "a study: run it with --ignored --nocapture"]
+    fn frame_order_under_each_resend_policy() {
+        println!(
+            "policy, consumer, buffers, areas: histories | backward | backward > resent | repeat | \
+             stall | drop"
+        );
+        let runs = [
+            (Resend::Oldest, false),
+            (Resend::NoStepBack, false),
+            (Resend::NewestSent, false),
+            (Resend::Oldest, true),
+        ];
+        for (policy, drop_old) in runs {
+            let name = if drop_old {
+                format!("{policy:?}+drop")
+            } else {
+                format!("{policy:?}")
+            };
+            for (who, lag) in [("free", None), ("in-cycle", Some(0)), ("behind", Some(1))] {
+                for (buffers, depth) in [(2, 9), (3, 8)] {
+                    for areas in [1, 2] {
+                        let seen = run_with(buffers, areas, depth, policy, lag, drop_old);
+                        println!(
+                            "{name}, {who}, {buffers}, {areas}: {} | {} | {} | {} | {} | {}",
+                            seen[0], seen[3], seen[4], seen[5], seen[6], seen[7]
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// The rule the model would also pass if nothing were ever freed: it does free.
