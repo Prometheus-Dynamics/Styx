@@ -403,7 +403,7 @@ dependencies = [
 [[package]]
 name = "daedalus"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-derive",
  "daedalus-graph",
@@ -419,12 +419,12 @@ dependencies = [
 [[package]]
 name = "daedalus-abi"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 
 [[package]]
 name = "daedalus-backend"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-graph",
@@ -435,7 +435,7 @@ dependencies = [
 [[package]]
 name = "daedalus-cpu"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-backend",
@@ -450,7 +450,7 @@ dependencies = [
 [[package]]
 name = "daedalus-cpu-author"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-cpu",
  "daedalus-registry",
@@ -459,7 +459,7 @@ dependencies = [
 [[package]]
 name = "daedalus-derive"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -469,7 +469,7 @@ dependencies = [
 [[package]]
 name = "daedalus-dma-sys"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "libc",
 ]
@@ -477,7 +477,7 @@ dependencies = [
 [[package]]
 name = "daedalus-dmabuf"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-backend",
@@ -488,7 +488,7 @@ dependencies = [
 [[package]]
 name = "daedalus-graph"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-types",
  "serde",
@@ -499,7 +499,7 @@ dependencies = [
 [[package]]
 name = "daedalus-host"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-backend",
@@ -518,7 +518,7 @@ dependencies = [
 [[package]]
 name = "daedalus-macros"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -528,7 +528,7 @@ dependencies = [
 [[package]]
 name = "daedalus-made"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-backend",
@@ -542,7 +542,7 @@ dependencies = [
 [[package]]
 name = "daedalus-plan"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-types",
 ]
@@ -550,7 +550,7 @@ dependencies = [
 [[package]]
 name = "daedalus-planner"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-backend",
@@ -568,7 +568,7 @@ dependencies = [
 [[package]]
 name = "daedalus-registry"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-backend",
  "daedalus-graph",
@@ -579,7 +579,7 @@ dependencies = [
 [[package]]
 name = "daedalus-runner"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-plan",
@@ -592,12 +592,12 @@ dependencies = [
 [[package]]
 name = "daedalus-types"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 
 [[package]]
 name = "daedalus-value"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-types",
@@ -606,7 +606,7 @@ dependencies = [
 [[package]]
 name = "daedalus-vk-sys"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "ash",
  "naga",
@@ -616,7 +616,7 @@ dependencies = [
 [[package]]
 name = "daedalus-wgpu"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-backend",
@@ -634,7 +634,7 @@ dependencies = [
 [[package]]
 name = "daedalus-wgpu-author"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "naga",
  "proc-macro2",
@@ -645,7 +645,7 @@ dependencies = [
 [[package]]
 name = "daedalus-wire"
 version = "3.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=eb542399a82c013ec3ff7b7adda03c8f53952a4c#eb542399a82c013ec3ff7b7adda03c8f53952a4c"
+source = "git+https://github.com/Prometheus-Dynamics/Daedalus.git?rev=e556c5239b69527b17a1f87a76d7e8191bab2244#e556c5239b69527b17a1f87a76d7e8191bab2244"
 dependencies = [
  "daedalus-abi",
  "daedalus-types",
