@@ -102,22 +102,22 @@ fn start(name: &str, text: &str) -> (tempfile::TempDir, Service, PathBuf) {
     (dir, service, socket)
 }
 
-/// Polls `next_event` until `done` accepts an event. Returns that event and how many frames came
-/// before it.
+/// Polls `next_event` until `done` accepts an event. Returns that event and the ids of the frames
+/// that came before it.
 fn until<C: Clock>(
     session: &mut Session<'_, C>,
     what: &str,
     mut done: impl FnMut(&Event) -> bool,
-) -> (Event, usize) {
+) -> (Event, Vec<u64>) {
     let deadline = Instant::now() + Duration::from_secs(10);
-    let mut frames = 0;
+    let mut frames = Vec::new();
     loop {
         assert!(Instant::now() < deadline, "{what}");
         let event = session
             .next_event(Duration::from_millis(20))
             .expect("next_event");
-        if matches!(event, Event::Frame(_)) {
-            frames += 1;
+        if let Event::Frame(lease) = &event {
+            frames.push(lease.id());
         }
         if done(&event) {
             return (event, frames);
@@ -202,6 +202,9 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     //    at this rate), and the status says so. When frames come back, `Resumed(Kept)` comes before
     //    the first of them, on the same session.
     clock.clear();
+    // Frames made before the silence and not yet read are in flight: the receiver keeps making
+    // them while nothing reads, so the silence starts with some still on their way.
+    std::thread::sleep(Duration::from_millis(100));
     sim::STALL_NOW.store(true, Ordering::SeqCst);
     let (event, frames) = until(&mut session, "the silence report", |e| {
         matches!(e, Event::Stalled { .. })
@@ -213,7 +216,15 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
         }
         other => panic!("{other:?}"),
     }
-    assert_eq!(frames, 0, "a silent camera makes no frame");
+    // Frames made before the silence still arrive (the sleep above makes sure some are on their
+    // way); a frame the camera made after the silence began is a fault.
+    let from = sim::STALLED_FROM.load(Ordering::SeqCst);
+    assert_ne!(from, u64::MAX, "the stall left a frame unmade");
+    let made_silent: Vec<u64> = frames.iter().copied().filter(|&id| id >= from).collect();
+    assert!(
+        made_silent.is_empty(),
+        "a silent camera makes no frame: {made_silent:?} at or after {from} (all: {frames:?})"
+    );
     assert_eq!(session.status().state, State::Streaming);
     assert_eq!(session.status().starts, 1);
     assert_eq!(session.status().total_failures, 8);
@@ -231,9 +242,9 @@ fn a_receiver_fault_recovers_with_capped_backoff() {
     let (event, frames) = until(&mut session, "the return", |e| {
         matches!(e, Event::Resumed(_))
     });
-    assert_eq!(
-        frames, 0,
-        "Resumed comes before the first frame after the silence"
+    assert!(
+        frames.is_empty(),
+        "Resumed comes before the first frame after the silence: {frames:?}"
     );
     assert!(matches!(event, Event::Resumed(Carried::Kept)), "{event:?}");
     assert_eq!(session.status().state, State::Streaming);

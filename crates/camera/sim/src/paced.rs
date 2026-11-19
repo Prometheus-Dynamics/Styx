@@ -20,7 +20,7 @@
 //! Each mode drops two frames, and the receiver has fault switches ([`FAIL_STARTS`],
 //! [`STALL_NOW`]) a test sets. Every call that changes something is logged ([`take_log`]).
 
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use lemnos_contract_camera_isp::{
@@ -163,6 +163,10 @@ static LOG: Mutex<Vec<String>> = Mutex::new(Vec::new());
 pub static FAIL_STARTS: AtomicU32 = AtomicU32::new(0);
 /// While set, a running receiver makes no frames. Cleared when the receiver is stopped. Set by a test.
 pub static STALL_NOW: AtomicBool = AtomicBool::new(false);
+/// The sequence of the first frame a stall left unmade, `u64::MAX` before one; cleared with
+/// [`STALL_NOW`]. A frame numbered below it was made before the silence (still on its way to a
+/// reader when the stall began); one at or above it came from a camera that should be silent.
+pub static STALLED_FROM: AtomicU64 = AtomicU64::new(u64::MAX);
 /// While set, every receiver reads as gone (`Health::Gone`: what it was bound with is dead): the
 /// host drops it and binds it again under the failure rule, and with the board's `auto_off_after`
 /// turns it off for good and ends its stream as device-failed. Set by a test.
@@ -614,6 +618,12 @@ impl Lifecycle for SimReceiver {
             self.clock.make_frame(run.sequence);
             // A stalled receiver makes no frame: the fault switch is on.
             if STALL_NOW.load(Ordering::Acquire) {
+                let _ = STALLED_FROM.compare_exchange(
+                    u64::MAX,
+                    run.sequence,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                );
                 run.sequence += 1;
                 next = next.saturating_add(run.interval_ns);
                 continue;
@@ -769,6 +779,7 @@ impl CameraReceiver for SimReceiver {
         log("receiver.stop");
         self.run = None;
         STALL_NOW.store(false, Ordering::Release);
+        STALLED_FROM.store(u64::MAX, Ordering::Release);
         Ok(())
     }
 
