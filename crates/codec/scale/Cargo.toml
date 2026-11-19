@@ -21,6 +21,7 @@ lemnos-contract-image-scaler = { workspace = true }
 lemnos-linux-stream = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 # The simulated backend: lemnosd in this process, with a simulated image.scaler driver (test only).
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }

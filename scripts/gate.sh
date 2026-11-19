@@ -45,13 +45,24 @@ fi
 # gets SIGTERM, then SIGKILL, and the gate fails naming the step. A step that leaves a process in
 # its group fails too. Slowest green times are local (warm, cold, fresh worktree) and CI, since
 # nextest (2026-11-17).
+# Each step gets an empty TMPDIR of its own, $TMPDIR/g.XXX/<step number> (short: a test's socket
+# path under it must stay under 108 bytes, and some already use 97 of them under /tmp), and
+# a step that leaves anything in it fails, naming what: a test that leaks into a shared TMPDIR
+# fills it, and a later run fails on something unrelated. The step's wall and CPU time (its
+# processes', user + system) are printed beside its name.
+step_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/g.XXX")"
+step_count=0
 step() {
-  local label="$1" bound="$2" start pid timer ended status=0 left
+  local label="$1" bound="$2" start pid timer ended status=0 left tmp before after
   shift 2
   echo "==> $label"
   start=$SECONDS
+  step_count=$((step_count + 1))
+  tmp="$step_tmp_root/$step_count"
+  mkdir "$tmp"
+  before=$(child_cpu)
   set -m
-  "$@" &
+  TMPDIR="$tmp" "$@" &
   pid=$!
   set +m
   sleep "$bound" &
@@ -71,8 +82,21 @@ step() {
     stop_group "$pid"
     exit 1
   fi
-  echo "    $label: $((SECONDS - start)) s"
+  after=$(child_cpu)
+  left=$(find "$tmp" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  rm -rf -- "${tmp:?}"
+  if [ -n "$left" ]; then
+    echo "gate: step \"$label\" left files in its TMPDIR:" >&2
+    echo "$left" | sed 's/^/    /' >&2
+    exit 1
+  fi
+  echo "    $label: $((SECONDS - start)) s, $(awk -v a="$before" -v b="$after" 'BEGIN { printf "%.1f", b - a }') CPU-s"
   return "$status"
+}
+# The CPU seconds (user + system) of this shell's waited-for children so far: cutime and cstime of
+# /proc/<this shell>/stat, read in a command substitution ($$ is still this shell there).
+child_cpu() {
+  awk -v hz="$(getconf CLK_TCK)" '{ printf "%.2f", ($16 + $17) / hz }' "/proc/$$/stat"
 }
 # SIGTERM to a process group, then SIGKILL to what is left of it 5 s later.
 stop_group() {
@@ -149,7 +173,7 @@ not_run_report() {
     echo "cases NOT RUN: 0"
   fi
   rm -f "$STYX_NOT_RUN_LOG"
-  rm -rf "${lists:-}"
+  rm -rf "${lists:-}" "${step_tmp_root:-}"
 }
 trap not_run_report EXIT
 

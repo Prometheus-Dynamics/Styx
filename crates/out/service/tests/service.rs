@@ -60,11 +60,12 @@ fn two_cameras() -> String {
     )
 }
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-service-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+/// A scratch folder for one test, removed when the guard drops.
+fn test_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-svc-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// Starts lemnosd at `socket` with the board text.
@@ -218,15 +219,15 @@ fn copies() -> usize {
 
 #[test]
 fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
-    let dir = test_dir("two");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let recorder = Arc::new(Recorder::default());
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
          [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\nexposure_us = 10000\n\
          [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\nexposure_us = 10000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, recorder, &lemnos_socket);
@@ -299,8 +300,8 @@ fn two_cameras_are_served_and_a_control_request_changes_exposure_on_one() {
 
 #[test]
 fn a_rate_above_the_mode_ceiling_is_answered_with_the_ceiling_and_the_status_says_why() {
-    let dir = test_dir("ceiling");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let recorder = Arc::new(Recorder::default());
     // 240 fps is above both simulated modes (120 and 60 fps): the fastest candidate runs at its
@@ -310,7 +311,7 @@ fn a_rate_above_the_mode_ceiling_is_answered_with_the_ceiling_and_the_status_say
          [camera.\"lemnos:cam0-sensor\"]\nwidth = 320\nheight = 40\nfps_milli = 240000\n\
          exposure_us = 5000\n\
          [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, recorder, &lemnos_socket);
@@ -343,8 +344,8 @@ fn a_rate_above_the_mode_ceiling_is_answered_with_the_ceiling_and_the_status_say
 
 #[test]
 fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_backoff() {
-    let dir = test_dir("exposure-ceiling");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let recorder = Arc::new(Recorder::default());
     // 240 fps is past mode 0's ceiling, so the frame is its shortest (`mode0_shortest`). Its exposure
@@ -355,7 +356,7 @@ fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_back
          [camera.\"lemnos:cam0-sensor\"]\nwidth = 320\nheight = 40\nfps_milli = 240000\n\
          exposure_us = 10000\n\
          [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, recorder, &lemnos_socket);
@@ -395,8 +396,8 @@ fn an_exposure_the_frame_cannot_hold_streams_clamped_with_the_reason_and_no_back
 
 #[test]
 fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
-    let dir = test_dir("exposure-set");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let recorder = Arc::new(Recorder::default());
     let text = format!(
@@ -404,7 +405,7 @@ fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
          [camera.\"lemnos:cam0-sensor\"]\nwidth = 320\nheight = 40\nfps_milli = 240000\n\
          exposure_us = 5000\n\
          [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, recorder, &lemnos_socket);
@@ -456,8 +457,8 @@ fn a_set_past_the_frame_is_answered_ok_and_applied_clamped_with_the_reason() {
 
 #[test]
 fn an_unknown_format_is_a_status_error_that_names_the_formats_the_modes_have() {
-    let dir = test_dir("format");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let recorder = Arc::new(Recorder::default());
     // The simulated modes are both 10-bit (pRAA): an 8-bit format is not among them.
@@ -465,7 +466,7 @@ fn an_unknown_format_is_a_status_error_that_names_the_formats_the_modes_have() {
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
          [camera.\"lemnos:cam0-sensor\"]\nformat = \"RGGB\"\nfps_milli = 60000\n\
          [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, recorder, &lemnos_socket);
@@ -488,8 +489,8 @@ fn an_unknown_format_is_a_status_error_that_names_the_formats_the_modes_have() {
 
 #[test]
 fn a_camera_that_leaves_and_returns_is_served_again_with_capped_backoff() {
-    let dir = test_dir("leave");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let board = two_cameras();
     let lemnos = daemon(&lemnos_socket, &board);
     let recorder = Arc::new(Recorder::default());
@@ -497,7 +498,7 @@ fn a_camera_that_leaves_and_returns_is_served_again_with_capped_backoff() {
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
          [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\n\
          [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, Arc::clone(&recorder), &lemnos_socket);
@@ -556,8 +557,8 @@ fn a_camera_that_leaves_and_returns_is_served_again_with_capped_backoff() {
 
 #[test]
 fn auto_off_is_a_configured_policy_and_a_manual_start_brings_the_camera_back() {
-    let dir = test_dir("auto-off");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let board = two_cameras();
     let lemnos = daemon(&lemnos_socket, &board);
     let recorder = Arc::new(Recorder::default());
@@ -566,7 +567,7 @@ fn auto_off_is_a_configured_policy_and_a_manual_start_brings_the_camera_back() {
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\nauto_off_after = 3\n\
          cameras = [\"{cam}\"]\n\
          [camera.\"{cam}\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, Arc::clone(&recorder), &lemnos_socket);
@@ -602,10 +603,10 @@ fn auto_off_is_a_configured_policy_and_a_manual_start_brings_the_camera_back() {
 
 #[test]
 fn requests_are_checked_and_never_panic() {
-    let dir = test_dir("requests");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let service = start_service(
-        &format!("socket_dir = \"{}\"\nscan_ms = 100\n", dir.display()),
+        &format!("socket_dir = \"{}\"\nscan_ms = 100\n", dir.path().display()),
         Arc::new(Recorder::default()),
         &lemnos_socket,
     );
@@ -876,15 +877,15 @@ fn start_recording_service(lemnos_socket: &Path, text: &str, seen: Seen) -> Serv
 
 #[test]
 fn frames_reach_readers_in_other_processes_with_their_metadata_and_bytes() {
-    let dir = test_dir("readers");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let seen: Seen = Arc::new(Mutex::new(BTreeMap::new()));
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
          [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\nexposure_us = 10000\n\
          [camera.\"lemnos:cam1-sensor\"]\nfps_milli = 60000\nexposure_us = 10000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_recording_service(&lemnos_socket, &text, Arc::clone(&seen));
@@ -897,7 +898,13 @@ fn frames_reach_readers_in_other_processes_with_their_metadata_and_bytes() {
     let mut readers: Vec<ChildReader> = cams
         .iter()
         .enumerate()
-        .map(|(i, c)| ChildReader::spawn(&dir, &camera_socket(&dir, c), &format!("reader{i}")))
+        .map(|(i, c)| {
+            ChildReader::spawn(
+                dir.path(),
+                &camera_socket(dir.path(), c),
+                &format!("reader{i}"),
+            )
+        })
         .collect();
     wait_until("both readers connected", Duration::from_secs(30), || {
         for reader in readers.iter_mut() {
@@ -1013,14 +1020,14 @@ fn frames_reach_readers_in_other_processes_with_their_metadata_and_bytes() {
 
 #[test]
 fn a_camera_that_leaves_and_returns_is_read_again_by_its_reader() {
-    let dir = test_dir("readers-return");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let board = two_cameras();
     let lemnos = daemon(&lemnos_socket, &board);
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
          [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let recorder = Arc::new(Recorder::default());
@@ -1032,7 +1039,7 @@ fn a_camera_that_leaves_and_returns_is_read_again_by_its_reader() {
     wait_until("streaming", Duration::from_secs(20), || {
         state_of(&control, cam) == "streaming"
     });
-    let mut reader = ChildReader::spawn(&dir, &camera_socket(&dir, cam), "reader");
+    let mut reader = ChildReader::spawn(dir.path(), &camera_socket(dir.path(), cam), "reader");
     wait_until("the reader has frames", Duration::from_secs(30), || {
         reader.pump(Duration::from_millis(20));
         reader.frames().len() >= 20
@@ -1123,15 +1130,15 @@ impl Outlets for TimedOutlets {
 
 #[test]
 fn a_reader_that_never_answers_does_not_stall_the_camera_and_is_dropped_at_the_timeout() {
-    let dir = test_dir("stuck");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let times: Times = Arc::default();
     let cam = "lemnos:cam0-sensor";
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\ncameras = [\"{cam}\"]\n\
          [camera.\"{cam}\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let config = Config::parse(&text).expect("config");
@@ -1145,7 +1152,7 @@ fn a_reader_that_never_answers_does_not_stall_the_camera_and_is_dropped_at_the_t
 
     // The stuck reader: it connects, is sent the offer, and never answers. It reads what it is
     // sent (so the offer does not just sit in a buffer) and waits to be closed.
-    let socket = camera_socket(&dir, cam);
+    let socket = camera_socket(dir.path(), cam);
     let mut stuck = UnixStream::connect(&socket).expect("connect the stuck reader");
     stuck
         .set_read_timeout(Some(Duration::from_millis(50)))
@@ -1224,14 +1231,14 @@ fn a_reader_that_never_answers_does_not_stall_the_camera_and_is_dropped_at_the_t
 
 #[test]
 fn a_reader_that_never_lets_go_is_cut_off_for_the_reserve_and_the_camera_keeps_streaming() {
-    let dir = test_dir("reserve");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let cam = "lemnos:cam0-sensor";
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\ncameras = [\"{cam}\"]\n\
          [camera.\"{cam}\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let service = start_service(&text, Arc::new(Recorder::default()), &lemnos_socket);
@@ -1239,7 +1246,7 @@ fn a_reader_that_never_lets_go_is_cut_off_for_the_reserve_and_the_camera_keeps_s
     wait_until("streaming", Duration::from_secs(20), || {
         state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 50
     });
-    let socket = camera_socket(&dir, cam);
+    let socket = camera_socket(dir.path(), cam);
 
     // The hoarder takes four frames and never lets go. Four is its limit, so the producer's limit
     // does not cut it off; the camera needs its buffer when the first of them leaves the window.

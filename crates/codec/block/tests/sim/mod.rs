@@ -93,17 +93,20 @@ pub fn board(memory: Memory) -> String {
 }
 
 /// A directory for a test's socket, under the temp directory.
-pub fn socket_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-block-{name}-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+pub fn socket_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-blk-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// Starts `lemnosd` in this process with the simulated block on its board. The socket is in a
 /// directory named after `name`, and the job stream is made of `memory`.
-pub fn start(name: &str, memory: Memory) -> (Service, PathBuf) {
-    let dir = socket_dir(name);
-    let socket = dir.join("sock");
+pub fn start(name: &str, memory: Memory) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = socket_dir();
+    let sub = dir.path().join(name);
+    std::fs::create_dir_all(&sub).unwrap();
+    let socket = sub.join("sock");
     let config = ServiceConfig {
         socket: socket.clone(),
         name: "styx-block-test".to_string(),
@@ -115,7 +118,7 @@ pub fn start(name: &str, memory: Memory) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 /// The access unit of one IDR frame: the stream's IDR slice, with its start code, first.

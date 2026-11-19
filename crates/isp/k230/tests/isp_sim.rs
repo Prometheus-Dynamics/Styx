@@ -28,12 +28,14 @@ const FRAME: (u32, u32) = (640, 480);
 /// The configuration buffer: room for the longest write list the layout takes.
 const CONFIG_BYTES: u32 = 16_384;
 
-fn start(memory: Memory) -> (Service, PathBuf) {
-    let dir = std::env::temp_dir()
-        .join(format!("styx-k230-sim-{}", std::process::id()))
-        .join(format!("{memory:?}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(memory: Memory) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-k230-")
+        .tempdir()
+        .expect("a scratch folder");
+    let sub = dir.path().join(format!("{memory:?}"));
+    std::fs::create_dir_all(&sub).unwrap();
+    let socket = sub.join("sock");
     let board = job_isp::board(job_isp::Board {
         config_layout: LAYOUT_WRITES,
         config_bytes: CONFIG_BYTES,
@@ -56,7 +58,7 @@ fn start(memory: Memory) -> (Service, PathBuf) {
         },
     })
     .expect("start lemnosd");
-    (service, socket)
+    (dir, service, socket)
 }
 
 /// Frame `n`'s settings: the white balance moves, so every job's writes differ.
@@ -69,7 +71,7 @@ fn settings(n: u64) -> IspSettings {
 
 fn job_path(memory: Memory) {
     job_isp::clear_seen();
-    let (service, socket) = start(memory);
+    let (_dir, service, socket) = start(memory);
     let client = Client::connect(&socket, "styx-k230-test").expect("connect");
     let device = client
         .list()

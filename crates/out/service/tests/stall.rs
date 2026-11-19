@@ -35,12 +35,12 @@ fn frames(events: &[Ev]) -> usize {
     events.iter().filter(|e| matches!(e, Ev::Frame(_))).count()
 }
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("styx-service-stall-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+/// A scratch folder for one test, removed when the guard drops.
+fn test_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-stall-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 #[derive(Debug)]
@@ -62,18 +62,18 @@ impl LibcameraLister for NoLister {
 struct Fixture {
     rig: SimRig,
     service: Service,
-    dir: PathBuf,
+    dir: tempfile::TempDir,
     control: PathBuf,
 }
 
 impl Fixture {
-    fn start(name: &str) -> Self {
-        let dir = test_dir(name);
+    fn start() -> Self {
+        let dir = test_dir();
         let rig = SimRig::start().expect("the simulated camera");
         let text = format!(
             "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
              [camera.\"{CAM}\"]\nfps_milli = 60000\n",
-            dir.display(),
+            dir.path().display(),
             rig.socket().display()
         );
         let deps = Deps {
@@ -103,7 +103,7 @@ impl Fixture {
     }
 
     fn camera_socket(&self) -> PathBuf {
-        camera_socket(&self.dir, CAM)
+        camera_socket(self.dir.path(), CAM)
     }
 
     /// The camera's status line, if the service lists it.
@@ -260,7 +260,7 @@ fn is_return(e: &Ev) -> bool {
 
 #[test]
 fn a_reader_stays_attached_through_a_transient_failure_and_is_told_the_stall_then_the_return() {
-    let fixture = Fixture::start("transient");
+    let fixture = Fixture::start();
     let mut reader = connect(&fixture.camera_socket());
     let before = events(&mut reader, "frames before the failure", |e| frames(e) >= 5);
     let last_before = match before.last() {
@@ -370,7 +370,7 @@ fn a_reader_stays_attached_through_a_transient_failure_and_is_told_the_stall_the
 
 #[test]
 fn a_failure_that_comes_back_lost_is_a_discontinuity_and_not_a_gap() {
-    let fixture = Fixture::start("lost");
+    let fixture = Fixture::start();
     let mut reader = connect(&fixture.camera_socket());
     events(&mut reader, "frames before the failure", |e| frames(e) >= 5);
     let line0 = fixture.line();
@@ -421,7 +421,7 @@ fn a_failure_that_comes_back_lost_is_a_discontinuity_and_not_a_gap() {
 
 #[test]
 fn a_silent_camera_is_reported_by_name_and_its_return_is_kept_on_the_same_session() {
-    let fixture = Fixture::start("silence");
+    let fixture = Fixture::start();
     let mut reader = connect(&fixture.camera_socket());
     events(&mut reader, "frames before the silence", |e| frames(e) >= 5);
     let line0 = fixture.line();

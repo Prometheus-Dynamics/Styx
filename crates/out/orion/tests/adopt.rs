@@ -170,7 +170,7 @@ fn dma_heap() -> Option<std::fs::File> {
 
 fn both_readers_get_the_same_frames(mut camera: Producer, memory: &str) {
     let dir = dir(memory);
-    let orion_socket = dir.join("orion.sock");
+    let orion_socket = dir.path().join("orion.sock");
     let (started, stop_comm) = comm_core(orion_socket.clone());
     started.recv().expect("the comm core starts");
     let camera_orion =
@@ -250,7 +250,7 @@ fn both_readers_get_the_same_frames(mut camera: Producer, memory: &str) {
 #[test]
 fn a_ring_of_another_shape_than_its_declaration_is_refused_as_malformed() {
     let dir = dir("malformed");
-    let orion_socket = dir.join("orion.sock");
+    let orion_socket = dir.path().join("orion.sock");
     let (started, stop_comm) = comm_core(orion_socket.clone());
     started.recv().expect("the comm core starts");
     let camera = Orion::connect(&Address::Local(orion_socket), "camera").expect("camera");
@@ -288,7 +288,7 @@ fn a_ring_of_another_shape_than_its_declaration_is_refused_as_malformed() {
 #[test]
 fn a_withdrawal_is_seen_by_the_subscriber_and_the_producer_goes_on() {
     let dir = dir("withdraw");
-    let orion_socket = dir.join("orion.sock");
+    let orion_socket = dir.path().join("orion.sock");
     let (started, stop_comm) = comm_core(orion_socket.clone());
     started.recv().expect("the comm core starts");
     let camera_orion =
@@ -345,7 +345,7 @@ fn a_withdrawal_is_seen_by_the_subscriber_and_the_producer_goes_on() {
 #[test]
 fn another_program_cannot_adopt_a_name_already_adopted() {
     let dir = dir("rival");
-    let orion_socket = dir.join("orion.sock");
+    let orion_socket = dir.path().join("orion.sock");
     let (started, stop_comm) = comm_core(orion_socket.clone());
     started.recv().expect("the comm core starts");
     let camera = Orion::connect(&Address::Local(orion_socket.clone()), "camera").expect("camera");

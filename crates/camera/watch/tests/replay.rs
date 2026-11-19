@@ -21,25 +21,26 @@ ACTION=bind\0DEVPATH=/devices/pci0000:00/0000:00:14.0/usb1/1-2/1-2:1.0\0SUBSYSTE
 DRIVER=uvcvideo\0SEQNUM=2142\0";
 
 struct Fixture {
-    root: PathBuf,
+    root: tempfile::TempDir,
 }
 
 impl Fixture {
-    fn new(tag: &str) -> Self {
-        let root =
-            std::env::temp_dir().join(format!("styx-watch-replay-{tag}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(root.join("class")).unwrap();
-        fs::create_dir_all(root.join("dev")).unwrap();
+    fn new() -> Self {
+        let root = tempfile::Builder::new()
+            .prefix("styx-watch-")
+            .tempdir()
+            .expect("a scratch folder");
+        fs::create_dir_all(root.path().join("class")).unwrap();
+        fs::create_dir_all(root.path().join("dev")).unwrap();
         Self { root }
     }
 
     fn class(&self) -> PathBuf {
-        self.root.join("class")
+        self.root.path().join("class")
     }
 
     fn dev(&self) -> PathBuf {
-        self.root.join("dev")
+        self.root.path().join("dev")
     }
 
     /// Creates `class/<node>` as sysfs shows a vivid capture node.
@@ -55,15 +56,9 @@ impl Fixture {
     }
 
     fn device(&self) -> PathBuf {
-        let dir = self.root.join("devices/platform/vivid.0");
+        let dir = self.root.path().join("devices/platform/vivid.0");
         fs::create_dir_all(&dir).unwrap();
         dir
-    }
-}
-
-impl Drop for Fixture {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -87,7 +82,7 @@ fn drain(watch: &mut Watch) -> Vec<Event> {
 
 #[test]
 fn recorded_add_and_remove_give_arrival_then_departure_with_no_open_node() {
-    let fixture = Fixture::new("order");
+    let fixture = Fixture::new();
     let device = fixture.device();
     let mut watch = watch(&fixture);
     assert!(
@@ -135,7 +130,7 @@ fn recorded_add_and_remove_give_arrival_then_departure_with_no_open_node() {
 
 #[test]
 fn a_node_on_the_board_at_start_arrives_on_the_first_poll() {
-    let fixture = Fixture::new("start");
+    let fixture = Fixture::new();
     let device = fixture.device();
     fixture.add_node("video1", "vivid-000-vid-cap", &device);
     fixture.add_node("video0", "OBS Virtual Camera", &device);

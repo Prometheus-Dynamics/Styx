@@ -35,12 +35,14 @@ const REQUEST: Request = Request {
     bayer: Some(BayerOrder::Rggb),
 };
 
-fn start(name: &str, text: &str) -> (Service, PathBuf) {
-    let dir = std::env::temp_dir()
-        .join(format!("styx-native-run-ends-{}", std::process::id()))
-        .join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(name: &str, text: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-nrun-")
+        .tempdir()
+        .expect("a scratch folder");
+    let folder = dir.path().join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let socket = folder.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: "styx-native-run-test".to_string(),
@@ -56,13 +58,13 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 /// Runs a session on `text` until it streams, sets the fault with `provoke`, and returns the
 /// session's error and status once its stream has ended.
 fn ended_by(name: &str, text: &str, provoke: impl FnOnce()) -> (Error, State, String) {
-    let (service, socket) = start(name, text);
+    let (_dir, service, socket) = start(name, text);
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
     let camera = &found.cameras[0];

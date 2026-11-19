@@ -17,6 +17,7 @@ lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-lens = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 # The simulated backend: lemnosd in this process with a simulated lens driver (test only). Same
 # pins as styx-lemnos's dev-dependencies.
 lemnosd = { workspace = true }

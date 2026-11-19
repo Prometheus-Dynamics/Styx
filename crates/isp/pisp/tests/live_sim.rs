@@ -40,14 +40,16 @@ const COPY_SITE: &str = "styx-frame: FrameLease::copy_into";
 /// The run is on dma-buf streams: each output lease must be a dma-buf.
 static DMA_BUF: AtomicBool = AtomicBool::new(false);
 
-fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-pisp-sim-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn socket_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-pisp-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
-fn start(text: &str, name: &str) -> (Service, PathBuf) {
-    let socket = socket_dir().join(name);
+fn start(text: &str, name: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = socket_dir();
+    let socket = dir.path().join(name);
     let config = Config {
         socket: socket.clone(),
         name: "styx-pisp-test".to_string(),
@@ -59,7 +61,7 @@ fn start(text: &str, name: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 /// The input as the front end gives it: 16-bit Bayer at the input's stride.
@@ -246,7 +248,7 @@ fn live_path(memory: Memory) {
     sim::clear_ran();
     DMA_BUF.store(memory == Memory::DmaBuf, Ordering::SeqCst);
     let name = format!("{memory:?}");
-    let (service, socket) = start(&sim::board(memory), &name);
+    let (_dir, service, socket) = start(&sim::board(memory), &name);
     let client = Client::connect(&socket, "styx-pisp-test").expect("connect");
     let devices: Vec<DeviceEntry> = client.list().expect("list");
     let device = devices

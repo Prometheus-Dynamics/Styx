@@ -17,16 +17,18 @@ fn example(name: &str) -> String {
 /// Runs `exe --sim [extra]` and returns its output. A failing exit is a test failure, with the
 /// example's own output.
 fn run_sim(exe: &str, name: &str, extra: &[&str]) -> Output {
-    let out =
-        std::env::temp_dir().join(format!("styx-examples-test-{name}-{}", std::process::id()));
+    // The example creates the folder it writes into; the guard removes it when this returns.
+    let out = tempfile::Builder::new()
+        .prefix("styx-ex-")
+        .tempdir()
+        .expect("a scratch folder");
     let output = Command::new(exe)
         .arg("--sim")
         .arg("--out")
-        .arg(&out)
+        .arg(out.path())
         .args(extra)
         .output()
         .unwrap_or_else(|e| panic!("cannot run {exe}: {e}"));
-    let _ = std::fs::remove_dir_all(&out);
     assert!(
         output.status.success(),
         "{name} exited with {:?}:\nstdout:\n{}\nstderr:\n{}",

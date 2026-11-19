@@ -9,7 +9,7 @@ use styx_sim::paced as sim;
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::path::PathBuf;
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -170,18 +170,18 @@ fn daemon(socket: &std::path::Path) -> LemnosDaemon {
 
 #[test]
 fn the_frame_path_allocates_and_copies_nothing_in_steady_state() {
-    let dir: PathBuf =
-        std::env::temp_dir().join(format!("styx-service-steady-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("dir");
-    let socket = dir.join("lemnos.sock");
+    let dir = tempfile::Builder::new()
+        .prefix("styx-steady-")
+        .tempdir()
+        .expect("a scratch folder");
+    let socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&socket);
 
     let tally = Arc::new(Tally::default());
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\ncameras = [\"lemnos:cam0-sensor\"]\n\
          [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         socket.display()
     );
     let config = Config::parse(&text).expect("config");

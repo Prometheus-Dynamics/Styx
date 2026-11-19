@@ -17,6 +17,7 @@ lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-camera-frames = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 # The simulated backend: lemnosd in this process with a simulated camera.frames/1 driver (test only).
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }

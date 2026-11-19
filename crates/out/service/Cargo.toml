@@ -39,6 +39,7 @@ lemnos-sim = { workspace = true }
 lemnos-hal = { workspace = true, features = ["std"] }
 lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-camera-isp = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

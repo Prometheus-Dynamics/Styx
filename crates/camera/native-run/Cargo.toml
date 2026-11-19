@@ -22,6 +22,7 @@ lemnos-contract-camera-sensor = { workspace = true }
 lemnos-contract-camera-receiver = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 # The simulated backend: lemnosd in this process, its drivers and board (test only). Same pins as
 # styx-lemnos's and styx-native's dev-dependencies.
 lemnosd = { workspace = true }

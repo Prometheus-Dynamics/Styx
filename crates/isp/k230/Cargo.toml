@@ -19,6 +19,7 @@ lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-camera-isp = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 # The simulated backend: lemnosd in this process with a simulated job ISP (test only).
 lemnosd = { workspace = true }

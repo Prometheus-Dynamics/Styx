@@ -21,22 +21,24 @@ use styx_sim::memory::{Memory, dma_buf_case};
 
 const CLIENT: &str = "styx-scale-test";
 
-fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-scale-sim-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn socket_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-scale-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// Starts a simulated scaler service named `name`, and returns it with its socket.
-fn start(name: &str) -> (Service, PathBuf) {
+fn start(name: &str) -> (tempfile::TempDir, Service, PathBuf) {
     start_on(name, Memory::Shared)
 }
 
 /// [`start`], with the scaler's job stream made of `memory`.
-fn start_on(name: &str, memory: Memory) -> (Service, PathBuf) {
-    let dir = socket_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start_on(name: &str, memory: Memory) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = socket_dir();
+    let sub = dir.path().join(name);
+    std::fs::create_dir_all(&sub).unwrap();
+    let socket = sub.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: CLIENT.to_string(),
@@ -48,7 +50,7 @@ fn start_on(name: &str, memory: Memory) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 /// Converts one frame on the software path (scalar reference) and returns its visible bytes.
@@ -77,7 +79,7 @@ fn on_a_dma_buf_job_stream_hardware_output_equals_the_scalar_reference() {
 }
 
 fn every_format_and_size(memory: Memory) {
-    let (service, socket) = start_on(&format!("every-{memory:?}"), memory);
+    let (_dir, service, socket) = start_on(&format!("every-{memory:?}"), memory);
     let pool = support::pool(4);
     let cases = [
         ((64u32, 48u32), (32u32, 24u32)),
@@ -111,7 +113,7 @@ fn every_format_and_size(memory: Memory) {
 
 #[test]
 fn a_format_the_scaler_does_not_take_is_unavailable() {
-    let (service, socket) = start("refused");
+    let (_dir, service, socket) = start("refused");
     let err = Lemnos::open(&socket, CLIENT, FourCc::R8).expect_err("R8 is not taken");
     assert!(err.to_string().contains("does not take"), "{err}");
     service.stop();
@@ -119,7 +121,7 @@ fn a_format_the_scaler_does_not_take_is_unavailable() {
 
 #[test]
 fn the_registry_prefers_the_hardware_and_gives_the_reason() {
-    let (service, socket) = start("prefer");
+    let (_dir, service, socket) = start("prefer");
     let mut registry: Registry<()> = Registry::new();
     register_lemnos(&mut registry, &socket, CLIENT);
     register_software(&mut registry, Path::Fast);
@@ -158,7 +160,8 @@ fn the_registry_prefers_the_hardware_and_gives_the_reason() {
 
 #[test]
 fn without_a_scaler_the_registry_says_why_and_takes_the_software() {
-    let dir = socket_dir().join("absent");
+    let root = socket_dir();
+    let dir = root.path().join("absent");
     std::fs::create_dir_all(&dir).unwrap();
     let missing = dir.join("no-service");
     let mut registry: Registry<()> = Registry::new();

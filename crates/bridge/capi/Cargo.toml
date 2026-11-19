@@ -36,6 +36,7 @@ lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-camera-sensor = { workspace = true }
 lemnos-contract-camera-receiver = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

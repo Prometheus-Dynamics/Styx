@@ -48,10 +48,13 @@ fn expected(id: u64, at: usize) -> u8 {
     (id as u8).wrapping_mul(3).wrapping_add(at as u8)
 }
 
-fn socket_path(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("styx-socket-{}-{name}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    path
+fn socket_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-sock-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path = dir.path().join(format!("{name}.sock"));
+    (dir, path)
 }
 
 fn entry(id: u64) -> FrameEntry {
@@ -294,7 +297,7 @@ fn a_dmabuf_pool_is_published_across_a_process_boundary() {
     let Some(second) = dmabuf(BUFFER) else {
         return;
     };
-    let path = socket_path("dmabuf");
+    let (_dir, path) = socket_path("dmabuf");
     let listener = UnixListener::bind(&path).expect("bind");
     let brackets = Arc::new(Brackets::default());
     let memories = vec![
@@ -394,7 +397,6 @@ fn a_dmabuf_pool_is_published_across_a_process_boundary() {
         copy_counters().iter().all(|c| c.copies() == 0),
         "no copy in the parent"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]

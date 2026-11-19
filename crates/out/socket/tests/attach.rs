@@ -63,19 +63,19 @@ fn publish_run(pool: &FramePool<()>, producer: &mut Producer<()>, from: u64, to:
     }
 }
 
-fn socket_path(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "styx-socket-attach-{}-{name}.sock",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
-    path
+fn socket_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-sock-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path = dir.path().join(format!("{name}.sock"));
+    (dir, path)
 }
 
 /// Attaches a reader with `start`: the reader connects in a thread, the producer accepts it on
 /// this one. The producer publishes nothing while the handshake runs.
 fn attach(producer: &mut Producer<()>, name: &str, start: Start) -> Reader {
-    let path = socket_path(name);
+    let (_dir, path) = socket_path(name);
     let listener = UnixListener::bind(&path).expect("bind");
     let reader_path = path.clone();
     let reader = thread::spawn(move || {
@@ -222,7 +222,7 @@ fn a_frame_published_before_the_reader_is_linked_wakes_it_at_the_link() {
     producer.set_keep(KEEP);
     publish_run(&pool, &mut producer, 0, 3);
 
-    let path = socket_path("link-wake");
+    let (_dir, path) = socket_path("link-wake");
     let listener = UnixListener::bind(&path).expect("bind");
     let reader_path = path.clone();
     let reader = thread::spawn(move || {

@@ -48,17 +48,17 @@ fn json_f64(v: &serde_json::Value, path: &[&str]) -> f64 {
 #[test]
 fn read_measures_the_simulated_camera_with_and_without_the_soft_isp() {
     let dir = test_dir("read");
-    let lemnos = dir.join("lemnos.sock");
+    let lemnos = dir.path().join("lemnos.sock");
     let _daemon = daemon(&lemnos);
-    let service = start_service(&dir, &lemnos);
+    let service = start_service(dir.path(), &lemnos);
     wait_publishing(&service);
-    let frame_socket = socket_of(&dir);
+    let frame_socket = socket_of(dir.path());
     let control = service.control_socket().display().to_string();
     let frame_socket_text = frame_socket.display().to_string();
     let frames = FRAMES.to_string();
 
     // Without the ISP.
-    let plain = dir.join("plain.json");
+    let plain = dir.path().join("plain.json");
     let (stdout, stderr, ok) = run_measure(&[
         "read",
         "--socket",
@@ -79,7 +79,7 @@ fn read_measures_the_simulated_camera_with_and_without_the_soft_isp() {
     check_report(&plain, false);
 
     // With the soft ISP on each frame, into NV12 at the raw size.
-    let with_isp = dir.join("isp.json");
+    let with_isp = dir.path().join("isp.json");
     let (stdout, stderr, ok) = run_measure(&[
         "read",
         "--socket",

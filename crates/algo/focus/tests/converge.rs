@@ -28,10 +28,12 @@ const FRAMES: u64 = 400;
 /// Lens moves a run may take: a coarse scan, a fine scan and a settle, with slack.
 const MOVE_BOUND: u32 = 40;
 
-fn start(name: &str, text: &str) -> (Service, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("styx-focus-sim-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join(format!("{name}.sock"));
+fn start(name: &str, text: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-focus-")
+        .tempdir()
+        .expect("a scratch folder");
+    let socket = dir.path().join(format!("{name}.sock"));
     let config = Config {
         socket: socket.clone(),
         name: "styx-focus-test".to_string(),
@@ -43,7 +45,7 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 /// Contrast of the synthetic scene with the lens at `code`: the default map is a straight line
@@ -120,7 +122,7 @@ fn check_converged(focus: &Focus, final_code: Option<u16>, af: &Autofocus) {
 
 #[test]
 fn focus_converges_on_the_peak_through_the_lens_contract() {
-    let (service, socket) = start("converge", &sim::board(0));
+    let (_dir, service, socket) = start("converge", &sim::board(0));
     let client = Client::connect(&socket, "styx-focus-test").expect("connect");
 
     let mut af = Autofocus::open(&client, "lens0", AutofocusConfig::default()).expect("open");
@@ -144,7 +146,7 @@ fn focus_converges_on_the_peak_through_the_lens_contract() {
 
 #[test]
 fn a_lens_that_fails_its_moves_is_retried_and_still_converges() {
-    let (service, socket) = start("retry", &sim::board(3));
+    let (_dir, service, socket) = start("retry", &sim::board(3));
     let client = Client::connect(&socket, "styx-focus-test").expect("connect");
 
     let mut af = Autofocus::open(&client, "lens0", AutofocusConfig::default()).expect("open");
@@ -163,7 +165,7 @@ fn a_lens_that_fails_its_moves_is_retried_and_still_converges() {
 #[test]
 fn the_lens_direction_answer_sets_the_focus_scale_and_unknown_keeps_the_map() {
     // Unknown: the map's direction, rising. The nearest end (the top code) is Focus 0.
-    let (service, socket) = start("dir-unknown", &sim::board_with(0, 0, None));
+    let (_dir, service, socket) = start("dir-unknown", &sim::board_with(0, 0, None));
     let client = Client::connect(&socket, "styx-focus-test").expect("connect");
     let af = Autofocus::open(&client, "lens0", AutofocusConfig::default()).expect("open");
     assert_eq!((af.scale().value(0.0), af.scale().value(1023.0)), (1000, 0));
@@ -172,7 +174,7 @@ fn the_lens_direction_answer_sets_the_focus_scale_and_unknown_keeps_the_map() {
     service.stop();
 
     // Toward near: increasing positions focus nearer, so the scale rises.
-    let (service, socket) = start("dir-near", &sim::board_with(0, 1, None));
+    let (_dir, service, socket) = start("dir-near", &sim::board_with(0, 1, None));
     let client = Client::connect(&socket, "styx-focus-test").expect("connect");
     let af = Autofocus::open(&client, "lens0", AutofocusConfig::default()).expect("open");
     assert_eq!((af.scale().value(0.0), af.scale().value(1023.0)), (1000, 0));
@@ -181,7 +183,7 @@ fn the_lens_direction_answer_sets_the_focus_scale_and_unknown_keeps_the_map() {
     service.stop();
 
     // Toward far: the same map, the other way: the scale falls, so the bottom code is nearest.
-    let (service, socket) = start("dir-far", &sim::board_with(0, 2, None));
+    let (_dir, service, socket) = start("dir-far", &sim::board_with(0, 2, None));
     let client = Client::connect(&socket, "styx-focus-test").expect("connect");
     let af = Autofocus::open(&client, "lens0", AutofocusConfig::default()).expect("open");
     assert_eq!((af.scale().value(0.0), af.scale().value(1023.0)), (0, 1000));
@@ -195,7 +197,7 @@ fn the_lens_direction_answer_sets_the_focus_scale_and_unknown_keeps_the_map() {
 #[test]
 fn the_lens_settle_answer_is_used_per_move_and_the_config_is_the_fallback() {
     // The lens's own 100 ms at a 33 ms frame is 4 frames (rounded up).
-    let (service, socket) = start("settle-given", &sim::board_with(0, 0, Some(100_000)));
+    let (_dir, service, socket) = start("settle-given", &sim::board_with(0, 0, Some(100_000)));
     let client = Client::connect(&socket, "styx-focus-test").expect("connect");
     let mut af = Autofocus::open(&client, "lens0", AutofocusConfig::default()).expect("open");
     let mut saw_fault = false;
@@ -206,7 +208,7 @@ fn the_lens_settle_answer_is_used_per_move_and_the_config_is_the_fallback() {
     service.stop();
 
     // No figure: the configured 12 ms at 33 ms is one frame.
-    let (service, socket) = start("settle-none", &sim::board_with(0, 0, None));
+    let (_dir, service, socket) = start("settle-none", &sim::board_with(0, 0, None));
     let client = Client::connect(&socket, "styx-focus-test").expect("connect");
     let mut af = Autofocus::open(&client, "lens0", AutofocusConfig::default()).expect("open");
     let mut saw_fault = false;

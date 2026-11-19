@@ -32,7 +32,7 @@ fn decode_jobs_run_on_the_simulated_block_and_the_pictures_come_back_with_no_cop
 
 fn decode(memory: Memory, kind: MemoryKind) {
     sim::JOBS.lock().unwrap().clear();
-    let (service, socket) = sim::start(&format!("decode-{memory:?}"), memory);
+    let (_dir, service, socket) = sim::start(&format!("decode-{memory:?}"), memory);
     let client = Client::connect(&socket, "styx-block-test").expect("connect");
     let device = client
         .find(CODEC_TAG)

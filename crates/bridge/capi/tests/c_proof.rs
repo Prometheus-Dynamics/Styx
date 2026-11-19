@@ -42,11 +42,11 @@ fn two_cameras() -> String {
         .to_string()
 }
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-capi-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+fn test_dir(_name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-capi-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 fn daemon(socket: &Path) -> LemnosDaemon {
@@ -477,22 +477,22 @@ fn deep(mode: &str, socket: &Path) {
 #[test]
 fn the_c_surface_opens_the_simulated_camera_in_process_and_gets_ordered_frames() {
     let dir = test_dir("local");
-    let socket = dir.join("lemnos.sock");
+    let socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&socket);
-    c_caller(&dir, "local", &socket);
+    c_caller(dir.path(), "local", &socket);
     deep("local", &socket);
 }
 
 #[test]
 fn the_c_surface_opens_the_same_camera_over_the_service_socket_and_gets_ordered_frames() {
     let dir = test_dir("service");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket);
 
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
          [camera.\"{CAMERA}\"]\nfps_milli = 60000\nexposure_us = 10000\n",
-        dir.display(),
+        dir.path().display(),
         lemnos_socket.display()
     );
     let deps = Deps {
@@ -509,7 +509,7 @@ fn the_c_surface_opens_the_same_camera_over_the_service_socket_and_gets_ordered_
     let service = Service::start(Config::parse(&text).expect("config"), deps).expect("service");
     let control = service.control_socket().to_path_buf();
     wait_until_listed(&control, CAMERA);
-    c_caller(&dir, "service", &control);
+    c_caller(dir.path(), "service", &control);
     deep("service", &control);
     // The frames the service served were not copied either: its own counters stay at zero.
     let copies: u64 = styx_frame::copy_counters()

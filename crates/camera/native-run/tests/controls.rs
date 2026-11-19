@@ -24,16 +24,18 @@ const START: Initial = Initial {
     frame_rate_milli: 60_000,
 };
 
-fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-native-run-controls-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn socket_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-nrun-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
-fn start(name: &str) -> (Service, PathBuf) {
-    let dir = socket_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(name: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = socket_dir();
+    let folder = dir.path().join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let socket = folder.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: "styx-native-run-test".to_string(),
@@ -49,7 +51,7 @@ fn start(name: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 fn request() -> Request {
@@ -65,7 +67,7 @@ fn request() -> Request {
 
 #[test]
 fn a_value_posted_to_a_running_camera_lands_on_its_frame_and_each_frame_carries_its_metadata() {
-    let (service, socket) = start("land");
+    let (_dir, service, socket) = start("land");
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
     let camera = &found.cameras[0];
@@ -149,7 +151,7 @@ fn a_value_posted_to_a_running_camera_lands_on_its_frame_and_each_frame_carries_
 
 #[test]
 fn controls_must_be_configured() {
-    let (service, socket) = start("refuse");
+    let (_dir, service, socket) = start("refuse");
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
     let camera = &found.cameras[0];

@@ -6,8 +6,6 @@
 //! no assertion depends on time.
 
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use shm_ring::SampleTime;
@@ -53,16 +51,14 @@ fn producer(pool: FramePool<()>, keep: usize, reserve: usize) -> Producer<()> {
     producer
 }
 
-/// Connects one reader to `producer`, over a socket of its own. Tests run in parallel, so the
-/// name carries a counter as well as the process id: two tests never share a path.
+/// Connects one reader to `producer`, over a socket of its own in a scratch folder that is
+/// removed when this returns.
 fn attach_reader(producer: &mut Producer<()>, name: &str) -> Reader {
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-    let path: PathBuf = std::env::temp_dir().join(format!(
-        "styx-socket-reserve-{}-{}-{name}.sock",
-        std::process::id(),
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&path);
+    let dir = tempfile::Builder::new()
+        .prefix("styx-sock-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path = dir.path().join(format!("{name}.sock"));
     let listener = UnixListener::bind(&path).expect("bind");
     let connect = path.clone();
     let reader = thread::spawn(move || {
@@ -72,9 +68,7 @@ fn attach_reader(producer: &mut Producer<()>, name: &str) -> Reader {
     producer
         .accept(stream, Limits::default())
         .expect("accept the reader");
-    let reader = reader.join().expect("reader thread");
-    let _ = std::fs::remove_file(&path);
-    reader
+    reader.join().expect("reader thread")
 }
 
 /// The camera's step: a lease from the pool, filled with the frame's id, published, then reclaim.

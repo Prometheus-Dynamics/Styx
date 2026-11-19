@@ -15,7 +15,6 @@
 
 use crate::support;
 
-use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
@@ -151,9 +150,11 @@ fn accept_within(listener: &UnixListener, limit: Duration) -> UnixStream {
 #[test]
 fn a_graph_in_another_process_takes_the_ring_frames_in_order_and_the_buffers_come_back() {
     let copies_before = copies();
-    let path: PathBuf =
-        std::env::temp_dir().join(format!("styx-daedalus-process-{}.sock", std::process::id()));
-    let _ = fs::remove_file(&path);
+    let dir = tempfile::Builder::new()
+        .prefix("styx-dd-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path: PathBuf = dir.path().join("graph.sock");
     let listener = UnixListener::bind(&path).expect("a listener");
 
     let mut child = Command::new(std::env::current_exe().expect("this test binary"))
@@ -252,7 +253,6 @@ fn a_graph_in_another_process_takes_the_ring_frames_in_order_and_the_buffers_com
         1,
         "the graph process's socket was reaped"
     );
-    let _ = fs::remove_file(&path);
 }
 
 /// A test of this file by its full name in the test binary: the file is one module of the crate's

@@ -42,17 +42,20 @@ fn entry(id: u64) -> FrameEntry {
     FrameEntry::new(id, SampleTime::now().as_nanos(), format, layouts)
 }
 
-fn socket_path() -> PathBuf {
-    let path = std::env::temp_dir().join(format!("styx-socket-pool-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    path
+fn socket_path() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-sock-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path = dir.path().join("pool.sock");
+    (dir, path)
 }
 
 #[test]
 fn a_producer_publishes_an_existing_pool_of_another_type_with_its_opaque_part() {
     let pool = pool();
     let mut producer = Producer::with_pool(pool.clone(), 8).expect("producer over the pool");
-    let path = socket_path();
+    let (_dir, path) = socket_path();
     let listener = UnixListener::bind(&path).expect("bind");
     let reader_path = path.clone();
     let reader = thread::spawn(move || {

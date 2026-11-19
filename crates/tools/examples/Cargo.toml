@@ -71,5 +71,8 @@ path = "../../../examples/05_apps/socket_reader/main.rs"
 name = "daedalus_frames"
 path = "../../../examples/02_graph/daedalus_frames/main.rs"
 
+[dev-dependencies]
+tempfile = { workspace = true }
+
 [lints]
 workspace = true

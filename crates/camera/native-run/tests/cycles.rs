@@ -25,16 +25,18 @@ const CONTROLS: Initial = Initial {
     frame_rate_milli: 60_000,
 };
 
-fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-native-run-sim-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn socket_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-nrun-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
-fn start(name: &str, text: &str) -> (Service, PathBuf) {
-    let dir = socket_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(name: &str, text: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = socket_dir();
+    let folder = dir.path().join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let socket = folder.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: "styx-native-run-test".to_string(),
@@ -50,12 +52,12 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 #[test]
 fn start_and_stop_100_times_on_the_simulated_backend() {
-    let (service, socket) = start("cycles", &sim::board(Some("csi0")));
+    let (_dir, service, socket) = start("cycles", &sim::board(Some("csi0")));
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
     assert!(found.refused.is_empty(), "refused: {:?}", found.refused);

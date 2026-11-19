@@ -16,13 +16,12 @@ use styx_service::{Config, camera_socket};
 /// The camera the config names, so the service makes its frame socket at start.
 const CAMERA: &str = "test:cam0";
 
-/// A fresh directory for one test run.
-fn test_dir(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("styx-socket-access-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+/// A fresh directory for one test run, removed when the guard drops.
+fn test_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-acc-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// The fields of `/proc/self/status` for `key` (`Gid:`, `Groups:`, `Uid:`), split on blanks.
@@ -182,8 +181,8 @@ fn check_access(running: &Running, socket_mode: u32, dir_mode: u32, group: u32) 
 #[test]
 fn the_default_sockets_are_owner_and_group_only_under_any_umask() {
     for umask in ["000", "022", "077"] {
-        let dir = test_dir(&format!("default-{umask}"));
-        let running = start(&dir, "", umask);
+        let dir = test_dir();
+        let running = start(dir.path(), "", umask);
         // Owner and group only: 0660, and the process's own group, whatever the umask.
         check_access(&running, 0o660, 0o750, egid());
     }
@@ -191,15 +190,15 @@ fn the_default_sockets_are_owner_and_group_only_under_any_umask() {
 
 #[test]
 fn socket_mode_666_gives_0666_under_a_restrictive_umask() {
-    let dir = test_dir("mode-666");
-    let running = start(&dir, "socket_mode = \"666\"", "077");
+    let dir = test_dir();
+    let running = start(dir.path(), "socket_mode = \"666\"", "077");
     check_access(&running, 0o666, 0o755, egid());
 }
 
 #[test]
 fn socket_mode_600_gives_a_directory_with_no_group_or_other_access() {
-    let dir = test_dir("mode-600");
-    let running = start(&dir, "socket_mode = \"600\"", "000");
+    let dir = test_dir();
+    let running = start(dir.path(), "socket_mode = \"600\"", "000");
     check_access(&running, 0o600, 0o700, egid());
 }
 
@@ -216,8 +215,8 @@ fn a_numeric_socket_group_in_the_process_groups_is_applied() {
         );
         return;
     };
-    let dir = test_dir("numeric-group");
-    let running = start(&dir, &format!("socket_group = {group}\n"), "077");
+    let dir = test_dir();
+    let running = start(dir.path(), &format!("socket_group = {group}\n"), "077");
     check_access(&running, 0o660, 0o750, group);
 }
 
@@ -238,8 +237,8 @@ fn a_group_name_as_a_string_is_looked_up_and_applied() {
         );
         return;
     };
-    let dir = test_dir("named-group");
-    let running = start(&dir, &format!("socket_group = \"{name}\"\n"), "077");
+    let dir = test_dir();
+    let running = start(dir.path(), &format!("socket_group = \"{name}\"\n"), "077");
     check_access(&running, 0o660, 0o750, egid());
 }
 
@@ -272,18 +271,19 @@ fn start_expecting_failure(dir: &Path, extra: &str) -> (std::process::ExitStatus
 
 #[test]
 fn an_unknown_socket_group_name_is_a_start_up_error_naming_the_key() {
-    let dir = test_dir("unknown-group");
-    let (status, log) = start_expecting_failure(&dir, "socket_group = \"styx-no-such-group-x7\"\n");
+    let dir = test_dir();
+    let (status, log) =
+        start_expecting_failure(dir.path(), "socket_group = \"styx-no-such-group-x7\"\n");
     assert!(!status.success(), "{status}");
     assert!(log.contains("socket_group"), "{log}");
     assert!(log.contains("not in /etc/group"), "{log}");
-    assert!(!dir.join("sock").join("control.sock").exists());
+    assert!(!dir.path().join("sock").join("control.sock").exists());
 }
 
 #[test]
 fn a_bad_socket_mode_is_a_start_up_error_naming_the_key() {
-    let dir = test_dir("bad-mode");
-    let (status, log) = start_expecting_failure(&dir, "socket_mode = \"689\"\n");
+    let dir = test_dir();
+    let (status, log) = start_expecting_failure(dir.path(), "socket_mode = \"689\"\n");
     assert!(!status.success(), "{status}");
     assert!(log.contains("socket_mode"), "{log}");
 }
@@ -307,8 +307,8 @@ fn a_group_the_user_is_not_in_is_refused_at_start_up() {
         );
         return;
     }
-    let dir = test_dir("refused-group");
-    let (status, log) = start_expecting_failure(&dir, "socket_group = 0\n");
+    let dir = test_dir();
+    let (status, log) = start_expecting_failure(dir.path(), "socket_group = 0\n");
     assert!(!status.success(), "{status}");
     assert!(log.contains("socket_group"), "{log}");
     assert!(log.contains("must be in that group"), "{log}");

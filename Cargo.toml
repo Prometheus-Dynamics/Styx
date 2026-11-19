@@ -63,6 +63,9 @@ orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev =
 orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a13d4030dbb15241d9b9518f295fe3e71bfd8552" }
 orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a13d4030dbb15241d9b9518f295fe3e71bfd8552" }
 orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "a13d4030dbb15241d9b9518f295fe3e71bfd8552" }
+# Tests only: a test's own scratch folder, removed when the test ends (passed or panicked). Never
+# a normal dependency: no product code writes temporary files.
+tempfile = "3"
 
 [workspace.lints.rust]
 missing_debug_implementations = "warn"

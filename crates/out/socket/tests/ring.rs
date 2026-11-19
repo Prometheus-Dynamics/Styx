@@ -32,10 +32,13 @@ const HEIGHT: u32 = 32;
 const PAYLOAD: usize = (WIDTH * HEIGHT) as usize;
 const CHILD_SOCKET: &str = "STYX_SOCKET_TEST_CHILD_SOCKET";
 
-fn socket_path(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!("styx-socket-{}-{name}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    path
+fn socket_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-sock-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path = dir.path().join(format!("{name}.sock"));
+    (dir, path)
 }
 
 fn entry(id: u64) -> FrameEntry {
@@ -114,7 +117,7 @@ fn spawn_reader(
 #[test]
 fn two_readers_one_slow_skips_and_counts_with_no_copies() {
     const FRAMES: u64 = 400;
-    let path = socket_path("two-readers");
+    let (_dir, path) = socket_path("two-readers");
     let listener = UnixListener::bind(&path).expect("bind");
     let mut producer = Producer::new(ProducerConfig {
         payload: PAYLOAD,
@@ -173,7 +176,6 @@ fn two_readers_one_slow_skips_and_counts_with_no_copies() {
     );
     assert_eq!(fast.delivered + fast.skipped, FRAMES);
     assert!(no_copies(), "no copies on the producer or the readers");
-    let _ = std::fs::remove_file(&path);
 }
 
 /// The child process: a reader that takes one frame, holds it, and exits while holding it. It
@@ -207,7 +209,7 @@ fn dying_reader_child() {
 
 #[test]
 fn a_reader_that_dies_holding_frames_gives_its_buffers_back() {
-    let path = socket_path("dies");
+    let (_dir, path) = socket_path("dies");
     let listener = UnixListener::bind(&path).expect("bind");
     let mut producer = Producer::new(ProducerConfig {
         payload: PAYLOAD,
@@ -280,12 +282,11 @@ fn a_reader_that_dies_holding_frames_gives_its_buffers_back() {
     println!("after the reader died: {after:?}");
     assert_eq!((after.readers, after.gone), (0, 1));
     assert!(no_copies());
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn a_reader_over_its_own_limit_is_limited_and_over_the_producers_hold_time_is_cut_off() {
-    let path = socket_path("limits");
+    let (_dir, path) = socket_path("limits");
     let listener = UnixListener::bind(&path).expect("bind");
     let mut producer = Producer::new(ProducerConfig {
         payload: PAYLOAD,
@@ -343,12 +344,11 @@ fn a_reader_over_its_own_limit_is_limited_and_over_the_producers_hold_time_is_cu
         0,
         "dropping the frame lets go of its buffer"
     );
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
 fn latest_passes_over_older_frames_and_counts_them() {
-    let path = socket_path("latest");
+    let (_dir, path) = socket_path("latest");
     let listener = UnixListener::bind(&path).expect("bind");
     let mut producer = Producer::new(ProducerConfig {
         payload: PAYLOAD,
@@ -380,7 +380,6 @@ fn latest_passes_over_older_frames_and_counts_them() {
     );
     drop(newest);
     assert_eq!(reader.stats().held, 0);
-    let _ = std::fs::remove_file(&path);
 }
 
 #[test]
@@ -457,7 +456,7 @@ fn outside_bells_are_a_fixed_set_and_a_stale_id_does_nothing() {
 #[test]
 fn a_pool_past_256_buffers_is_one_memfd_and_the_geometry_round_trips() {
     const BUFFERS: usize = 300;
-    let path = socket_path("many");
+    let (_dir, path) = socket_path("many");
     let listener = UnixListener::bind(&path).expect("bind");
     let config = ProducerConfig {
         payload: PAYLOAD,
@@ -502,7 +501,6 @@ fn a_pool_past_256_buffers_is_one_memfd_and_the_geometry_round_trips() {
     }
     assert_eq!(seen, 3);
     assert!(no_copies());
-    let _ = std::fs::remove_file(&path);
 }
 
 /// A test of this file by its full name in the test binary: the file is one module of the crate's

@@ -47,11 +47,12 @@ fn two_cameras() -> String {
     )
 }
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-exit-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+/// A scratch folder for one test, removed when the guard drops.
+fn test_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-exit-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// Starts lemnosd at `socket` with the board text.
@@ -249,12 +250,12 @@ fn sockets_left(dir: &Path) -> Vec<PathBuf> {
 /// streams at once: no busy refusal and no backoff.
 fn stop_then_restart(signal: &str) {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let dir = test_dir(&format!("stop{}", signal.trim_start_matches('-')));
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _daemon = daemon(&lemnos_socket);
-    let text = config_text(&dir, &lemnos_socket);
+    let text = config_text(dir.path(), &lemnos_socket);
 
-    let mut first = Process::spawn(&dir, &text, 1);
+    let mut first = Process::spawn(dir.path(), &text, 1);
     wait_streaming(&first.control, &CAMERAS);
     let _ = sim::take_log();
 
@@ -283,13 +284,13 @@ fn stop_then_restart(signal: &str) {
     }
     assert!(!first.control.exists(), "the control socket is left");
     assert_eq!(
-        sockets_left(&dir),
+        sockets_left(dir.path()),
         Vec::<PathBuf>::new(),
         "camera sockets left"
     );
 
     // The next start streams at once.
-    let mut second = Process::spawn(&dir, &text, 2);
+    let mut second = Process::spawn(dir.path(), &text, 2);
     wait_streaming(&second.control, &CAMERAS);
     for camera in CAMERAS {
         let line = line_of(&second.control, camera).expect("listed");
@@ -320,10 +321,10 @@ fn sigint_stops_every_camera_and_the_next_start_streams_at_once() {
 #[test]
 fn a_sensor_left_started_by_a_previous_owner_is_stopped_at_start_and_the_service_streams() {
     let _serial = SERIAL.lock().unwrap_or_else(PoisonError::into_inner);
-    let dir = test_dir("left");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _daemon = daemon(&lemnos_socket);
-    let text = config_text(&dir, &lemnos_socket);
+    let text = config_text(dir.path(), &lemnos_socket);
 
     // The previous owner: its sensor started by hand through the contract, no service.
     {
@@ -341,7 +342,7 @@ fn a_sensor_left_started_by_a_previous_owner_is_stopped_at_start_and_the_service
     );
     let _ = sim::take_log();
 
-    let mut service = Process::spawn(&dir, &text, 1);
+    let mut service = Process::spawn(dir.path(), &text, 1);
     wait_streaming(&service.control, &CAMERAS);
 
     let cam0 = line_of(&service.control, CAMERAS[0]).expect("listed");

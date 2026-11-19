@@ -65,7 +65,7 @@ struct Run {
 
 /// Decodes each bitstream on one session over the simulated block, in order.
 fn decode_each(name: &str, bitstreams: &[Vec<u8>]) -> Run {
-    let (service, socket) = sim::start(name, styx_sim::memory::Memory::Shared);
+    let (_dir, service, socket) = sim::start(name, styx_sim::memory::Memory::Shared);
     let client = Client::connect(&socket, "styx-block-test").expect("connect");
     let device = client
         .find(CODEC_TAG)

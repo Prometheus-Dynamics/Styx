@@ -39,6 +39,7 @@ lemnos-driver-k230isp = { workspace = true, optional = true }
 lemnos-driver-isp600 = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 styx-sim = { path = "../../camera/sim" }
 # The simulated backend: lemnosd in this process, its drivers and board (test only).
 lemnosd = { workspace = true }

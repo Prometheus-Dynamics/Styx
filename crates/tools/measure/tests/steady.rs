@@ -107,11 +107,11 @@ fn counted(f: impl FnOnce()) -> u64 {
 #[test]
 fn the_read_loop_allocates_nothing_per_frame() {
     let dir = test_dir("steady");
-    let lemnos = dir.join("lemnos.sock");
+    let lemnos = dir.path().join("lemnos.sock");
     let _daemon = daemon(&lemnos);
-    let service = start_service(&dir, &lemnos);
+    let service = start_service(dir.path(), &lemnos);
     wait_publishing(&service);
-    let socket = socket_of(&dir);
+    let socket = socket_of(dir.path());
     let _ = parse_fps_milli("120.00").expect("the rate parses");
     // One frame each 8 333 333 ns at 120 fps; the keep window is read from the status.
     let period_ns = 1e9 / 120.0;

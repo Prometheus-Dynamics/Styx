@@ -19,11 +19,14 @@ use lemnosd::{Config, Service};
 use styx_format::FourCc;
 use styx_lemnos::{Client, Frames, find_chain, open_frames};
 
-fn start(name: &str, text: &str) -> (Service, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("styx-lemnos-close-{}", std::process::id()));
-    let dir = dir.join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(name: &str, text: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-lem-")
+        .tempdir()
+        .expect("a scratch folder");
+    let sub = dir.path().join(name);
+    std::fs::create_dir_all(&sub).unwrap();
+    let socket = sub.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: "styx-lemnos-test".to_string(),
@@ -39,12 +42,12 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 #[test]
 fn a_dropped_frame_stream_reopens_twenty_times_and_close_returns_the_answer() {
-    let (service, socket) = start(
+    let (_dir, service, socket) = start(
         "reopen",
         &sim::board_from(sim::Board {
             sensor_link: Some("csi0"),

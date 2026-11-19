@@ -26,10 +26,12 @@ use styx_pisp::{Geometry, IspSettings, LiveIsp, Output};
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
 
-fn start() -> (Service, PathBuf) {
-    let dir = std::env::temp_dir().join(format!("styx-pisp-order-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start() -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-pisp-")
+        .tempdir()
+        .expect("a scratch folder");
+    let socket = dir.path().join("sock");
     let config = Config {
         socket: socket.clone(),
         name: "styx-pisp-order".to_string(),
@@ -41,7 +43,7 @@ fn start() -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 fn input_image() -> ImageFormatConfig {
@@ -121,7 +123,7 @@ fn wait_until(what: &str, mut ok: impl FnMut() -> bool) {
 
 #[test]
 fn a_job_naming_a_buffer_returned_after_the_isps_look_still_completes() {
-    let (service, socket) = start();
+    let (_dir, service, socket) = start();
     let client = Client::connect(&socket, "styx-pisp-order").expect("connect");
     let device = client
         .list()

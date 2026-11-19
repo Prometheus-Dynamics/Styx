@@ -72,12 +72,6 @@ impl Clock for FakeClock {
     }
 }
 
-fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-native-run-recover-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
-}
-
 fn daemon_config(socket: &std::path::Path, text: &str) -> Config {
     Config {
         socket: socket.to_path_buf(),
@@ -96,12 +90,16 @@ fn daemon_config(socket: &std::path::Path, text: &str) -> Config {
     }
 }
 
-fn start(name: &str, text: &str) -> (Service, PathBuf) {
-    let dir = socket_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(name: &str, text: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-nrun-")
+        .tempdir()
+        .expect("a scratch folder");
+    let folder = dir.path().join(name);
+    std::fs::create_dir_all(&folder).unwrap();
+    let socket = folder.join("sock");
     let service = Service::start(daemon_config(&socket, text)).expect("start lemnosd");
-    (service, socket)
+    (dir, service, socket)
 }
 
 /// Polls `next_event` until `done` accepts an event. Returns that event and how many frames came
@@ -152,7 +150,7 @@ fn frames_flow<C: Clock>(session: &mut Session<'_, C>, want: usize, what: &str) 
 
 #[test]
 fn a_receiver_fault_recovers_with_capped_backoff() {
-    let (service, socket) = start("recover", &sim::board(Some("csi0")));
+    let (_dir, service, socket) = start("recover", &sim::board(Some("csi0")));
     let client = Client::connect(&socket, "styx-native-run-test").expect("connect");
     let found = styx_native::discover(&client).expect("discover");
     assert!(found.refused.is_empty(), "refused: {:?}", found.refused);

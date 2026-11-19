@@ -55,11 +55,11 @@ impl LibcameraLister for NoV4l2 {
     }
 }
 
-pub fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-measure-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+pub fn test_dir(_name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-meas-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// lemnosd in this process on the one-camera simulated board.

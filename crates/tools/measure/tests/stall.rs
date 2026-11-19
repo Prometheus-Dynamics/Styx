@@ -7,7 +7,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -36,12 +36,11 @@ impl LibcameraLister for NoLister {
     }
 }
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir =
-        std::env::temp_dir().join(format!("styx-measure-stall-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+fn test_dir(_name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-meas-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// Sends one request to the control socket and reads its lines through `ok` or `err`.
@@ -144,13 +143,13 @@ fn json_f64s(v: &serde_json::Value, path: &[&str]) -> Vec<f64> {
 }
 
 /// A rig and the service on it, with the camera streaming.
-fn start(name: &str) -> (SimRig, Service, PathBuf) {
+fn start(name: &str) -> (tempfile::TempDir, SimRig, Service) {
     let dir = test_dir(name);
     let rig = SimRig::start().expect("the simulated camera");
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
          [camera.\"{CAM}\"]\nfps_milli = 60000\n",
-        dir.display(),
+        dir.path().display(),
         rig.socket().display()
     );
     let deps = Deps {
@@ -174,16 +173,16 @@ fn start(name: &str) -> (SimRig, Service, PathBuf) {
         );
         std::thread::sleep(Duration::from_millis(20));
     }
-    (rig, service, dir)
+    (dir, rig, service)
 }
 
 /// Reads the camera's frames for two seconds, a stall of about a second, then the return; the
 /// report and the edges printed by the tool are what the test checks.
 #[test]
 fn a_stall_and_its_return_are_printed_counted_and_not_counted_as_lost_frames() {
-    let (rig, service, dir) = start("kept");
-    let socket = camera_socket(&dir, CAM);
-    let report = dir.join("kept.json");
+    let (dir, rig, service) = start("kept");
+    let socket = camera_socket(dir.path(), CAM);
+    let report = dir.path().join("kept.json");
     let child = run_measure(&socket, &report, "6");
     std::thread::sleep(Duration::from_secs(2));
     rig.inject_fault(Some(Fault::Failed(REASON)));
@@ -239,9 +238,9 @@ fn a_stall_and_its_return_are_printed_counted_and_not_counted_as_lost_frames() {
 /// The device is bound again while it is down: the return is Lost, a discontinuity of the sequence.
 #[test]
 fn a_lost_return_is_a_discontinuity_and_not_a_lost_frame() {
-    let (rig, service, dir) = start("lost");
-    let socket = camera_socket(&dir, CAM);
-    let report = dir.join("lost.json");
+    let (dir, rig, service) = start("lost");
+    let socket = camera_socket(dir.path(), CAM);
+    let report = dir.path().join("lost.json");
     let child = run_measure(&socket, &report, "6");
     std::thread::sleep(Duration::from_secs(2));
     rig.inject_fault(Some(Fault::Gone(REASON)));

@@ -41,20 +41,20 @@ fn entry(id: u64) -> FrameEntry {
     FrameEntry::new(id, SampleTime::now().as_nanos(), format, layouts)
 }
 
-fn socket_path(name: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "styx-socket-keep-{}-{name}.sock",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
-    path
+fn socket_path(name: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-sock-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path = dir.path().join(format!("{name}.sock"));
+    (dir, path)
 }
 
 /// A producer over `pool` with one reader connected. The reader is returned; the producer is the
 /// caller's (its keep window is set by the caller).
 fn connect(pool: FramePool<()>, name: &str) -> (Producer<()>, Reader) {
     let mut producer = Producer::with_pool(pool, HISTORY).expect("producer over the pool");
-    let path = socket_path(name);
+    let (_dir, path) = socket_path(name);
     let listener = UnixListener::bind(&path).expect("bind");
     let reader_path = path.clone();
     let reader = thread::spawn(move || {

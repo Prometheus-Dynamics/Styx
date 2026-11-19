@@ -24,6 +24,7 @@ styx-frame = { path = "../../core/frame", features = ["linux"] }
 orion = { workspace = true, optional = true, features = ["topics", "buffers"] }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 lemnos-linux-sys = { workspace = true }
 # The in-process comm core the Orion tests start, as Orion's own tests do.
 orion-broker = { workspace = true }

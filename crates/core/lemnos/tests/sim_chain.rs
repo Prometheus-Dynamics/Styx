@@ -21,16 +21,18 @@ use styx_format::FourCc;
 use styx_frame::copy_counters;
 use styx_lemnos::{ChainError, Client, Frames, find_chain, open_frames};
 
-fn socket_dir() -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-lemnos-sim-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+fn socket_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-lem-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
-fn start(name: &str, text: &str) -> (Service, PathBuf) {
-    let dir = socket_dir().join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(name: &str, text: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = socket_dir();
+    let sub = dir.path().join(name);
+    std::fs::create_dir_all(&sub).unwrap();
+    let socket = sub.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: "styx-lemnos-test".to_string(),
@@ -46,12 +48,12 @@ fn start(name: &str, text: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 #[test]
 fn two_sensors_on_the_simulated_board_are_refused_by_tag() {
-    let (service, socket) = start("two", &sim::board_with_two_sensors());
+    let (_dir, service, socket) = start("two", &sim::board_with_two_sensors());
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
     let devices = client.list().expect("list");
     assert_eq!(find_chain(&devices), Err(ChainError::SensorCount(2)));
@@ -61,7 +63,7 @@ fn two_sensors_on_the_simulated_board_are_refused_by_tag() {
 
 #[test]
 fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
-    let (service, socket) = start(
+    let (_dir, service, socket) = start(
         "chain",
         &sim::board_from(sim::Board {
             sensor_link: Some("csi0"),
@@ -160,7 +162,7 @@ fn chain_found_by_tag_and_link_and_frames_arrive_with_no_copies() {
 
 #[test]
 fn compressed_stream_leases_are_one_plane_of_each_frames_bytes() {
-    let (service, socket) = start(
+    let (_dir, service, socket) = start(
         "compressed",
         &sim::board_from(sim::Board {
             sensor_link: Some("csi0"),

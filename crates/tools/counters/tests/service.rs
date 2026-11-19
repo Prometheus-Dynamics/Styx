@@ -64,11 +64,11 @@ fn two_cameras() -> String {
     )
 }
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-counters-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("test dir");
-    dir
+fn test_dir(_name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-cnt-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 fn daemon(socket: &Path, text: &str) -> LemnosDaemon {
@@ -295,10 +295,10 @@ fn copies() -> u64 {
 #[test]
 fn counters_move_as_a_streaming_camera_delivers_frames() {
     let dir = test_dir("move");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let mut run = Run::start(
-        &dir,
+        dir.path(),
         &lemnos_socket,
         &format!(
             "[camera.\"{CAM0}\"]\nfps_milli = 60000\nexposure_us = 10000\n\
@@ -409,17 +409,17 @@ fn counters_move_as_a_streaming_camera_delivers_frames() {
 #[test]
 fn a_slow_reader_skips_frames_and_the_counters_show_it_is_connected() {
     let dir = test_dir("slow");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let mut run = Run::start(
-        &dir,
+        dir.path(),
         &lemnos_socket,
         &format!("[camera.\"{CAM0}\"]\nfps_milli = 60000\n"),
     );
     run.until("camera 0 streaming", Duration::from_secs(30), |r| {
         r.frames(CAM0) > 10
     });
-    let socket = camera_socket(&dir, CAM0);
+    let socket = camera_socket(dir.path(), CAM0);
     run.until("camera 0 publishing", Duration::from_secs(10), |r| {
         r.latest(CAM0)
             .is_some_and(|s| s.publish == styx_counters::PublishState::Publishing)
@@ -484,11 +484,11 @@ fn a_slow_reader_skips_frames_and_the_counters_show_it_is_connected() {
 #[test]
 fn a_camera_that_leaves_and_returns_shows_backoff_and_then_streaming() {
     let dir = test_dir("leave");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let board = two_cameras();
     let lemnos = daemon(&lemnos_socket, &board);
     let mut run = Run::start(
-        &dir,
+        dir.path(),
         &lemnos_socket,
         &format!("[camera.\"{CAM0}\"]\nfps_milli = 60000\n"),
     );
@@ -547,10 +547,10 @@ fn a_snapshot_is_read_by_a_reader_in_another_process() {
         return; // the child role: see `snapshot_reader_child`
     }
     let dir = test_dir("process");
-    let lemnos_socket = dir.join("lemnos.sock");
+    let lemnos_socket = dir.path().join("lemnos.sock");
     let _lemnos = daemon(&lemnos_socket, &two_cameras());
     let mut run = Run::start(
-        &dir,
+        dir.path(),
         &lemnos_socket,
         &format!("[camera.\"{CAM0}\"]\nfps_milli = 60000\n"),
     );
@@ -558,7 +558,7 @@ fn a_snapshot_is_read_by_a_reader_in_another_process() {
         r.frames(CAM0) > 10
     });
 
-    let out = dir.join("child-snapshots.bin");
+    let out = dir.path().join("child-snapshots.bin");
     let exe = std::env::current_exe().expect("this test binary");
     let mut child = Command::new(exe)
         .args([
@@ -568,7 +568,7 @@ fn a_snapshot_is_read_by_a_reader_in_another_process() {
             "--nocapture",
             "--test-threads=1",
         ])
-        .env(CHILD_SOCKET, dir.join("counters.sock"))
+        .env(CHILD_SOCKET, dir.path().join("counters.sock"))
         .env(CHILD_OUT, &out)
         .env(CHILD_COUNT, "5")
         .stdout(Stdio::piped())

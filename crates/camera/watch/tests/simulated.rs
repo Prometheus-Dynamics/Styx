@@ -5,7 +5,7 @@
 use styx_sim::paced as sim;
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,11 +35,11 @@ const CAM0: &str = "lemnos:cam0-sensor";
 const CAM1: &str = "lemnos:cam1-sensor";
 const NAME: &str = "styx-watch-test";
 
-fn test_dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-watch-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&dir).expect("test dir");
-    dir
+fn test_dir() -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-watch-")
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// lemnosd at `socket` with the board text, as the service tests start it.
@@ -130,9 +130,9 @@ fn thread_count() -> usize {
 #[test]
 fn add_and_remove_give_events_in_order() {
     let _serial = serial();
-    let dir = test_dir("order");
-    let socket = dir.join("lemnos.sock");
-    let mut watch = watch_of(&socket, &dir);
+    let dir = test_dir();
+    let socket = dir.path().join("lemnos.sock");
+    let mut watch = watch_of(&socket, dir.path());
     let lemnos = daemon(&socket);
 
     // Added: both cameras arrive. Arrivals are in the board's order or any order, but both come
@@ -172,15 +172,14 @@ fn add_and_remove_give_events_in_order() {
     assert_eq!(watch.lost(), 0);
     drop(lemnos);
     drop(watch);
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn a_device_that_goes_off_and_comes_back_gives_leave_then_arrive() {
     let _serial = serial();
-    let dir = test_dir("offon");
-    let socket = dir.join("lemnos.sock");
-    let mut watch = watch_of(&socket, &dir);
+    let dir = test_dir();
+    let socket = dir.path().join("lemnos.sock");
+    let mut watch = watch_of(&socket, dir.path());
     let lemnos = daemon(&socket);
     until(
         &mut watch,
@@ -233,14 +232,13 @@ fn a_device_that_goes_off_and_comes_back_gives_leave_then_arrive() {
     drop(control);
     drop(lemnos);
     drop(watch);
-    let _ = fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn cycles_of_add_and_remove_leak_no_fds_or_threads() {
     let _serial = serial();
-    let dir = test_dir("leak");
-    let socket = dir.join("lemnos.sock");
+    let dir = test_dir();
+    let socket = dir.path().join("lemnos.sock");
     let cycle = |watch: &mut Watch| {
         let lemnos = daemon(&socket);
         until(watch, Duration::from_secs(20), "arrive", |seen| {
@@ -251,7 +249,7 @@ fn cycles_of_add_and_remove_leak_no_fds_or_threads() {
             has(seen, Kind::Left, CAM0) && has(seen, Kind::Left, CAM1)
         });
     };
-    let mut watch = watch_of(&socket, &dir);
+    let mut watch = watch_of(&socket, dir.path());
     // One warm-up cycle: the first use of each library opens its own descriptors once.
     cycle(&mut watch);
     let fds_before = fd_count();
@@ -266,7 +264,6 @@ fn cycles_of_add_and_remove_leak_no_fds_or_threads() {
         "{N} add/remove cycles: fds {fds_before} -> {fds_after}, threads {threads_before} -> {threads_after}"
     );
     drop(watch);
-    let _ = fs::remove_dir_all(&dir);
     assert_eq!(fds_before, fds_after, "descriptors leaked");
     assert_eq!(threads_before, threads_after, "threads leaked");
 }

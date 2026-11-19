@@ -22,12 +22,14 @@ const WIDTH: u32 = 100;
 const HEIGHT: u32 = 8;
 const PACKED_ROW: u32 = 125;
 
-fn start(name: &str) -> (Service, PathBuf) {
-    let dir = std::env::temp_dir()
-        .join(format!("styx-lemnos-stride-{}", std::process::id()))
-        .join(name);
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(name: &str) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-lem-")
+        .tempdir()
+        .expect("a scratch folder");
+    let sub = dir.path().join(name);
+    std::fs::create_dir_all(&sub).unwrap();
+    let socket = sub.join("sock");
     let config = Config {
         socket: socket.clone(),
         name: "styx-lemnos-test".to_string(),
@@ -48,12 +50,12 @@ fn start(name: &str) -> (Service, PathBuf) {
             ..Options::default()
         },
     };
-    (Service::start(config).expect("start lemnosd"), socket)
+    (dir, Service::start(config).expect("start lemnosd"), socket)
 }
 
 #[test]
 fn the_receivers_stride_is_the_leases_stride_and_row_r_starts_at_r_times_stride() {
-    let (service, socket) = start("padded");
+    let (_dir, service, socket) = start("padded");
     let client = Client::connect(&socket, "styx-lemnos-test").expect("connect");
     let devices = client.list().expect("list");
     let receiver_index = devices

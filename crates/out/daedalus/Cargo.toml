@@ -37,6 +37,7 @@ styx-format = { path = "../../core/format", optional = true }
 orion = { workspace = true, optional = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 lemnos-linux-sys = { workspace = true }
 styx-frame = { path = "../../core/frame", features = ["linux"] }
 daedalus = { workspace = true, features = ["std"] }

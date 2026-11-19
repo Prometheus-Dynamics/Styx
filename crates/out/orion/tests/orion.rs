@@ -99,8 +99,8 @@ fn advert_for(frames: &Path) -> Advert {
 #[test]
 fn a_reader_finds_the_ring_by_name_and_reads_its_frames_with_no_copy() {
     let dir = dir("discover");
-    let orion_socket = dir.join("orion.sock");
-    let frames = dir.join("frames.sock");
+    let orion_socket = dir.path().join("orion.sock");
+    let frames = dir.path().join("frames.sock");
 
     let (started, stop_comm) = comm_core(orion_socket.clone());
     started.recv().expect("the comm core starts");

@@ -19,6 +19,7 @@ shm-ring-holds = { workspace = true }
 shm-fdpass = { workspace = true }
 
 [dev-dependencies]
+tempfile = { workspace = true }
 lemnos-linux-sys = { workspace = true }
 
 [lints]

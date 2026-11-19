@@ -3,7 +3,6 @@
 //! typed error from every read after, promptly, and a reader asleep on its doorbell wakes.
 
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -49,11 +48,11 @@ fn publish(producer: &mut Producer<()>, id: u64) {
 /// Attaches one reader over a real socket: the reader connects in a thread and the producer
 /// accepts it here.
 fn attach(producer: &mut Producer<()>, name: &str) -> Reader {
-    let path: PathBuf = std::env::temp_dir().join(format!(
-        "styx-socket-ended-{}-{name}.sock",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
+    let dir = tempfile::Builder::new()
+        .prefix("styx-sock-")
+        .tempdir()
+        .expect("a scratch folder");
+    let path = dir.path().join(format!("{name}.sock"));
     let listener = UnixListener::bind(&path).expect("bind");
     let connect = path.clone();
     let reader = thread::spawn(move || {

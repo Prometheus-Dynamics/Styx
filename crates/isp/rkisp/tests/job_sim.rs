@@ -27,12 +27,14 @@ const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
 const GENERATION: Generation = Generation::Isp21;
 
-fn start(memory: Memory) -> (Service, PathBuf) {
-    let dir = std::env::temp_dir()
-        .join(format!("styx-rkisp-sim-{}", std::process::id()))
-        .join(format!("{memory:?}"));
-    std::fs::create_dir_all(&dir).unwrap();
-    let socket = dir.join("sock");
+fn start(memory: Memory) -> (tempfile::TempDir, Service, PathBuf) {
+    let dir = tempfile::Builder::new()
+        .prefix("styx-rk-")
+        .tempdir()
+        .expect("a scratch folder");
+    let sub = dir.path().join(format!("{memory:?}"));
+    std::fs::create_dir_all(&sub).unwrap();
+    let socket = sub.join("sock");
     let config = GENERATION.config_layout();
     let statistics = GENERATION.statistics_layout();
     let board = job_isp::board(job_isp::Board {
@@ -57,7 +59,7 @@ fn start(memory: Memory) -> (Service, PathBuf) {
         },
     })
     .expect("start lemnosd");
-    (service, socket)
+    (dir, service, socket)
 }
 
 /// Frame `n`'s settings: the white balance moves, so every job's parameters differ.
@@ -70,7 +72,7 @@ fn settings(n: u64) -> IspSettings {
 
 fn job_path(memory: Memory) {
     job_isp::clear_seen();
-    let (service, socket) = start(memory);
+    let (_dir, service, socket) = start(memory);
     let client = Client::connect(&socket, "styx-rkisp-test").expect("connect");
     let device = client
         .list()

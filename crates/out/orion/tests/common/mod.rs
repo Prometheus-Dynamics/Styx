@@ -18,11 +18,12 @@ pub const HEIGHT: u32 = 32;
 /// One GREY frame.
 pub const PAYLOAD: usize = (WIDTH * HEIGHT) as usize;
 
-pub fn dir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("styx-orion-{}-{name}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("dir");
-    dir
+pub fn dir(name: &str) -> tempfile::TempDir {
+    tempfile::Builder::new()
+        .prefix("styx-orion-")
+        .suffix(&format!("-{name}"))
+        .tempdir()
+        .expect("a scratch folder")
 }
 
 /// The comm core: Orion's broker on a Unix socket, until `stop` is sent.
