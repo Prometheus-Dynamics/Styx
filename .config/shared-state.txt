@@ -1,0 +1,7 @@
+# Merged test files (modules of a tests/all.rs) that share process state, and why each one
+# still gets the state of its own test. One per line: <path from the repo root> <reason>.
+# scripts/test-layout.py shared-state fails a flagged file not listed here (give it its own
+# [[test]] with the reason in Cargo.toml instead) and a line naming a file it does not flag.
+crates/codec/block/tests/live.rs the only file of its binary that runs the sim block, whose JOBS record it reads; the files that set the block's switches (race.rs) have their own binary
+crates/isp/rkisp/tests/job_sim.rs the only file of its binary that runs the sim job ISP, whose record of the jobs it saw it reads and clears
+crates/out/service/tests/socket_access.rs reads the process's own uid, gid and groups from /proc/self/status, which no test changes

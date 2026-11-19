@@ -248,6 +248,10 @@ step "one definition of the simulated camera drivers" bash -c '! grep -rn -E "#\
 
 # Every tests/*.rs file is built: a crate that lists its test binaries (tests/all.rs) leaves none out.
 step "every test file is in a test binary" python3 scripts/test-layout.py files
+# A merged test binary runs its tests as threads of one process under cargo test. A file in one
+# that installs a global allocator, reads /proc/self, or reaches a sim or test-support module's
+# process-wide static is its own [[test]], or listed in .config/shared-state.txt with its reason.
+step "merged test files share no process state unlisted" python3 scripts/test-layout.py shared-state
 
 # One copy of the shared ring: every shm-* crate from one version and one source.
 step "one source for every shm crate" python3 scripts/one-shm.py
