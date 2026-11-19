@@ -563,6 +563,7 @@ fn a_snapshot_is_read_by_a_reader_in_another_process() {
     let mut child = Command::new(exe)
         .args([
             "--exact",
+            "--ignored",
             &own_test("snapshot_reader_child"),
             "--nocapture",
             "--test-threads=1",
@@ -631,6 +632,7 @@ fn bytes_first_frames(bytes: &[u8]) -> u64 {
 
 /// The child role: connects to the counters ring, reads snapshots, and writes them to a file.
 #[test]
+#[ignore = "a child role: its parent test runs it, with --ignored"]
 fn snapshot_reader_child() {
     let Ok(socket) = std::env::var(CHILD_SOCKET) else {
         return;

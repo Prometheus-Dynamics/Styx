@@ -673,6 +673,7 @@ fn closed(socket: &UnixStream) -> bool {
 /// Connects again when the producer closes its connection. Does nothing when the environment does
 /// not name a socket, so the normal test run passes it by.
 #[test]
+#[ignore = "a child role: its parent test runs it, with --ignored"]
 fn reader_child() {
     let Ok(socket) = std::env::var(CHILD_SOCKET) else {
         return;
@@ -750,6 +751,7 @@ impl ChildReader {
         let mut child = Command::new(exe)
             .args([
                 "--exact",
+                "--ignored",
                 &own_test("reader_child"),
                 "--nocapture",
                 "--test-threads=1",

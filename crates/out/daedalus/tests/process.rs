@@ -69,6 +69,7 @@ fn copies() -> Vec<usize> {
 /// The child: a graph that takes the ring's frames, one at a time, and answers each. Runs only
 /// when the parent spawned it with the socket's path set.
 #[test]
+#[ignore = "a child role: its parent test runs it, with --ignored"]
 fn graph_process() {
     let Ok(path) = std::env::var(CHILD_SOCKET) else {
         return;
@@ -156,6 +157,7 @@ fn a_graph_in_another_process_takes_the_ring_frames_in_order_and_the_buffers_com
     let mut child = Command::new(std::env::current_exe().expect("this test binary"))
         .args([
             "--exact",
+            "--ignored",
             &own_test("graph_process"),
             "--nocapture",
             "--test-threads=1",

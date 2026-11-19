@@ -103,11 +103,16 @@ impl Publisher {
         let _ = std::fs::remove_file(path);
         let listener = UnixListener::bind(path)?;
         listener.set_nonblocking(true)?;
-        let producer = Producer::new(ProducerConfig {
+        let mut producer = Producer::new(ProducerConfig {
             payload: SNAPSHOT_BYTES,
             buffers: BUFFERS,
             history: HISTORY,
         })?;
+        // Every snapshot of the history stays readable until newer ones push it out, held by a
+        // reader or not. The producer's own window is the newest snapshot alone: a tick publishes
+        // one snapshot per camera, and a reader that woke after the tick would find all but the
+        // last camera's buffers given back and written over.
+        producer.set_keep(HISTORY as usize);
         let media = MediaFormat::with_defaults(
             FourCc::GREY,
             Resolution::new(SNAPSHOT_BYTES as u32, 1).ok_or(Error::Empty)?,
@@ -243,5 +248,55 @@ impl Subscriber {
     /// The reader's own counts (its skipped snapshots among them).
     pub fn stats(&self) -> styx_socket::ReaderStats {
         self.reader.stats()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Instant;
+
+    use super::*;
+    use crate::snapshot::Text;
+
+    /// A reader that looks only after several snapshots were published (two cameras' snapshots in
+    /// one tick, and a reader woken late under load) reads every one of them, up to the ring's
+    /// history: the publisher keeps them for it, rather than giving back the buffers of all but
+    /// the newest for the next snapshots to be written over.
+    #[test]
+    fn a_reader_that_looks_late_reads_every_snapshot_published_since() {
+        let dir = std::env::temp_dir().join(format!("styx-counters-late-{}", std::process::id()));
+        let path = dir.join("counters.sock");
+        let mut publisher = Publisher::bind(&path).expect("bind the counters ring");
+        let connecting = std::thread::spawn({
+            let path = path.clone();
+            move || Subscriber::connect(&path)
+        });
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while publisher.readers() == 0 {
+            assert!(Instant::now() < deadline, "the reader did not attach");
+            publisher.accept().expect("accept the reader");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let mut subscriber = connecting
+            .join()
+            .expect("the connecting thread")
+            .expect("connect to the counters ring");
+
+        let sent: Vec<u64> = (1..=4).collect();
+        for &seq in &sent {
+            let mut snap = crate::snapshot::tests::sample();
+            snap.seq = seq;
+            snap.camera = Text::new(if seq % 2 == 1 { "cam0" } else { "cam1" });
+            assert!(
+                publisher.publish(&snap).expect("publish"),
+                "snapshot {seq} dropped"
+            );
+        }
+        let mut got = Vec::new();
+        while let Some(snap) = subscriber.next_snapshot().expect("read a snapshot") {
+            got.push(snap.seq);
+        }
+        assert_eq!(got, sent, "the reader's counts: {:?}", subscriber.stats());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -555,10 +555,10 @@ impl Take<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
-    fn sample() -> Snapshot {
+    pub(crate) fn sample() -> Snapshot {
         let mut hist = [0_u32; AGE_BUCKETS];
         hist[20] = 7;
         Snapshot {

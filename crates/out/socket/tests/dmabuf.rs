@@ -234,6 +234,7 @@ fn field(line: &str, key: &str) -> u64 {
 /// The child process: a reader that does what its stdin says. It does nothing unless the parent
 /// started it with the socket's path in the environment.
 #[test]
+#[ignore = "a child role: its parent test runs it, with --ignored"]
 fn dmabuf_reader_child() {
     let Some(path) = std::env::var_os(CHILD) else {
         return;
@@ -314,6 +315,7 @@ fn a_dmabuf_pool_is_published_across_a_process_boundary() {
     let mut child = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
+            "--ignored",
             &own_test("dmabuf_reader_child"),
             "--nocapture",
             "--test-threads=1",

@@ -179,6 +179,7 @@ fn two_readers_one_slow_skips_and_counts_with_no_copies() {
 /// The child process: a reader that takes one frame, holds it, and exits while holding it. It
 /// does nothing unless the parent started it with the socket's path in the environment.
 #[test]
+#[ignore = "a child role: its parent test runs it, with --ignored"]
 fn dying_reader_child() {
     let Some(path) = std::env::var_os(CHILD_SOCKET) else {
         return;
@@ -217,6 +218,7 @@ fn a_reader_that_dies_holding_frames_gives_its_buffers_back() {
     let mut child = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
+            "--ignored",
             &own_test("dying_reader_child"),
             "--nocapture",
             "--test-threads=1",
