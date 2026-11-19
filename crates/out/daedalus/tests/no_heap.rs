@@ -149,8 +149,10 @@ fn run_one(gpu: &WgpuBackend, pool: &styx_frame::FramePool<()>, id: u64) -> Vec<
     let host = loaded.host();
     host.feed_typed("frame", Arc::clone(&value))
         .expect("the frame is fed");
-    host.step_until_settled(std::time::Duration::from_secs(10))
-        .expect("the graph settles without a fault");
+    let waited = host
+        .step_until_settled(std::time::Duration::from_secs(10))
+        .expect("the graph settles");
+    assert_eq!(waited.faults, 0, "the graph settles without a fault");
     let words = host
         .take::<Words>("words")
         .expect("the words are taken")

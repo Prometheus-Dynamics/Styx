@@ -172,8 +172,10 @@ fn a_dma_heap_frame_is_imported_into_the_gpu_and_the_shader_reads_its_bytes() {
         .expect("the frame is fed");
     println!("holders with the host's reference out: {}", value.holders());
     assert_eq!(value.holders(), holders_made, "a reference is not a lease");
-    host.step_until_settled(std::time::Duration::from_secs(10))
+    let waited = host
+        .step_until_settled(std::time::Duration::from_secs(10))
         .expect("the graph settles");
+    assert_eq!(waited.faults, 0, "the graph settles without a fault");
     let words = host
         .take::<Words>("words")
         .expect("the words are taken")

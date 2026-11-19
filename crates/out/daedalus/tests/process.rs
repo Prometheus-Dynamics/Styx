@@ -103,8 +103,10 @@ fn graph_process() {
         let holds_before = reader.stats().held;
         host.feed_typed("frame", Arc::new(value))
             .expect("the frame is fed");
-        host.step_until_settled(Duration::from_secs(10))
+        let waited = host
+            .step_until_settled(Duration::from_secs(10))
             .expect("the graph settles");
+        assert_eq!(waited.faults, 0, "the graph settles without a fault");
         let got = host
             .take_copy::<u64>("id")
             .expect("the id is taken")

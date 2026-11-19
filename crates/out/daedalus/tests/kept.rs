@@ -161,8 +161,10 @@ fn cycle(kept_imports: usize) -> Option<(u64, u64)> {
             let value = Arc::new(StyxFrame::from_lease(lease, pool.buffer_size()).expect("a size"));
             host.feed_typed("frame", Arc::clone(&value))
                 .expect("the frame is fed");
-            host.step_until_settled(std::time::Duration::from_secs(10))
-                .expect("the graph settles without a fault");
+            let waited = host
+                .step_until_settled(std::time::Duration::from_secs(10))
+                .expect("the graph settles");
+            assert_eq!(waited.faults, 0, "the graph settles without a fault");
             let words = host
                 .take::<Words>("words")
                 .expect("the words are taken")
