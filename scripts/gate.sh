@@ -159,6 +159,8 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   if [ -z "$check_pass" ] || [ "$check_pass" = all ]; then
     step "clippy, all features" cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
     step "tests, all features" tests --all-features
+    # A test group's filter (.config/nextest.toml), term by term, still names tests.
+    step "every test group filter matches a test" python3 scripts/test-layout.py filters --all-features
   else
     skipped+=("clippy and tests, all features")
   fi
@@ -215,6 +217,9 @@ step "git dependencies are named in the workspace only" bash -c '! grep -n -E "(
 # One simulated camera: the sensor, receiver and ISP drivers are defined in styx-sim only (S0/X15);
 # a test needs one from `styx_sim::paced` (free-running) or `styx_sim::SimCamera` (lock-step).
 step "one definition of the simulated camera drivers" bash -c '! grep -rn -E "#\[driver\(\"sim-(sensor|receiver|isp)\"" crates --include=*.rs | grep -v "^crates/camera/sim/src/"'
+
+# Every tests/*.rs file is built: a crate that lists its test binaries (tests/all.rs) leaves none out.
+step "every test file is in a test binary" python3 scripts/test-layout.py files
 
 # One copy of the shared ring: every shm-* crate from one version and one source.
 step "one source for every shm crate" python3 scripts/one-shm.py
