@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Checks that every test is built and every test group still names its tests.
+"""Checks that every test is built and run, and every test group still names its tests.
 
 Usage: test-layout.py files                 a crate that lists its test binaries itself
                                             (autotests = false) leaves no tests/*.rs file out
@@ -9,6 +9,16 @@ files: a crate's integration tests are one binary, tests/all.rs, with one module
 then builds only the binaries the manifest lists, so a new tests/x.rs that no binary includes
 would never build or run. Each top-level tests/*.rs file must be a [[test]] path of the manifest
 or a module of one (a `#[path = "x.rs"]` or `mod x;` in a test file).
+
+       test-layout.py default-only <default list> <all-features list>
+                                            the tests only the default build has are exactly the
+                                            ones in .config/default-only.txt
+       test-layout.py default-only-filter   the filterset that runs .config/default-only.txt
+                                            (empty output: none)
+
+default-only: tests run in the all-features pass only. A test that exists only under default
+features (cfg(not(feature = ...))) would then never run unless the default pass runs it, so the
+two nextest lists (`--message-format json`) are compared and the difference must be the list.
 
 filters: a group's filter, or one `|` term of it, that matches nothing (a renamed module or
 binary) would silently stop putting its tests in the group. Each term is listed with nextest; none
@@ -108,10 +118,51 @@ def filters(cargo_args):
         sys.exit(1)
 
 
+def default_only_entries():
+    entries = set()
+    with open(os.path.join(ROOT, ".config", "default-only.txt"), encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                binary, _, test = line.partition(" ")
+                entries.add((binary, test.strip()))
+    return entries
+
+
+def listed(path):
+    with open(path, encoding="utf-8") as f:
+        suites = json.load(f)["rust-suites"]
+    return {(binary, test) for binary, suite in suites.items() for test in suite["testcases"]}
+
+
+def default_only(default_list, all_list):
+    only = listed(default_list) - listed(all_list)
+    entries = default_only_entries()
+    bad = 0
+    for binary, test in sorted(only - entries):
+        print(f"{binary} {test}: exists only under default features; add the line to .config/default-only.txt")
+        bad += 1
+    for binary, test in sorted(entries - only):
+        print(f"{binary} {test}: in .config/default-only.txt but not a default-only test; remove the line")
+        bad += 1
+    if bad:
+        sys.exit(1)
+    print(f"default-only tests: {len(only)}, all in .config/default-only.txt")
+
+
+def default_only_filter():
+    terms = [f"(binary_id(={b}) & test(={t}))" for b, t in sorted(default_only_entries())]
+    print(" | ".join(terms))
+
+
 if __name__ == "__main__":
     if sys.argv[1:2] == ["files"]:
         files()
     elif sys.argv[1:2] == ["filters"]:
         filters(sys.argv[2:])
+    elif sys.argv[1:2] == ["default-only"] and len(sys.argv) == 4:
+        default_only(sys.argv[2], sys.argv[3])
+    elif sys.argv[1:2] == ["default-only-filter"]:
+        default_only_filter()
     else:
         sys.exit(__doc__)

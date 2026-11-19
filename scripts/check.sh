@@ -10,8 +10,8 @@
 # the gate's, on the gate's build (no -p or --exclude, which change how features unify), so a red
 # here is red in the gate. What it leaves out (scripts/affected.py --plan):
 #   - the tests of crates the change cannot reach: nextest runs rdeps(<crate>) of the changed ones;
-#   - one of the two feature passes (clippy and tests): the default one, or the all-features one
-#     when a changed file is behind a feature;
+#   - the default-features pass (clippy, the test build, the default-only tests), unless a changed
+#     file holds code compiled only without a feature: tests run in the all-features pass;
 #   - the doctests, when no changed file holds one;
 #   - the no_std checks of crates that did not change.
 # Each one left out is printed at the end; the gate runs it. Green here is not the gate. A change

@@ -12,9 +12,10 @@ left out.
 
 --plan prints, one per line:
   crate <name>     a changed crate (scripts/check.sh tests it and its dependents)
-  pass default     the one feature pass to run: "all" when a changed file is behind a feature
-  pass all         (a cfg naming a feature in the file, or in the attributes of a `mod` that
-                   declares it, or of one declaring that, up to the crate root), else "default"
+  pass all         the feature passes to run. Tests run in the all-features pass, so it always
+  pass both        runs; the default pass too ("both") when a changed file holds code compiled
+                   only without a feature (a cfg naming not(feature ...) in the file, or on a
+                   `mod` declaring it, up to the crate root)
   doctests 1       a changed file holds a doctest (a code fence in a doc comment, or a Markdown
                    file in a crate, which a crate may include as its documentation)
   no_std <dir>     a changed crate whose manifest says no_std = true (its directory name)
@@ -26,7 +27,7 @@ import re
 import subprocess
 import sys
 
-FEATURE = re.compile(r"\bcfg(_attr)?\s*\([^\n]*\bfeature\s*=")
+FEATURE = re.compile(r"\bcfg(_attr)?\s*\([^\n]*\bnot\s*\(\s*feature\s*=")
 FENCE = re.compile(r"^\s*(///|//!).*```")
 ATTR = re.compile(r"^\s*#\[")
 PATH_ATTR = re.compile(r'#\[path\s*=\s*"([^"]+)"\]')
@@ -79,7 +80,7 @@ def declarations(path, crate_dir):
 
 
 def declared_behind_feature(path, crate_dir, seen):
-    """Whether a `mod` declaring the file, or one declaring that, up to the root, names a feature."""
+    """Whether a `mod` declaring the file, or one declaring that, up to the root, names not(feature)."""
     if path in seen:
         return False
     seen.add(path)
@@ -90,7 +91,7 @@ def declared_behind_feature(path, crate_dir, seen):
 
 
 def behind_feature(path, crate_dir):
-    """Whether a feature decides if the file at path is compiled, or what it compiles."""
+    """Whether the file at path holds code compiled only without a feature."""
     if not path.endswith(".rs"):
         return False
     return bool(FEATURE.search(read(path))) or declared_behind_feature(path, crate_dir, set())
@@ -155,7 +156,7 @@ def main():
     for n in sorted(owners):
         print("crate", n)
     if owners:
-        print("pass", "all" if feature else "default")
+        print("pass", "both" if feature else "all")
         print("doctests", 1 if doctests else 0)
     for n in sorted(owners & no_std):
         print("no_std", os.path.basename(dirs[n]))

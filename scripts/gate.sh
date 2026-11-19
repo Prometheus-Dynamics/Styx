@@ -99,6 +99,7 @@ not_run_report() {
     echo "cases NOT RUN: 0"
   fi
   rm -f "$STYX_NOT_RUN_LOG"
+  rm -rf "${lists:-}"
 }
 trap not_run_report EXIT
 
@@ -111,7 +112,7 @@ trap not_run_report EXIT
 # a subset of the gate and shares its build. It is not the gate, and says so.
 #
 # scripts/check.sh also leaves out whole passes, never parts of one: every command it runs is the
-# gate's, on the gate's build. STYX_CHECK_PASS (default or all) is the one feature pass it runs,
+# gate's, on the gate's build. STYX_CHECK_PASS is the feature passes it runs (default, all, both),
 # STYX_CHECK_DOCTESTS=0 leaves out the doctests, and STYX_CHECK_NO_STD lists the only no_std crates
 # it checks (directory names). Each pass left out is printed at the end: the gate runs it.
 filter=()
@@ -126,23 +127,44 @@ elif [ -n "$check_pass" ]; then
   exit 1
 fi
 case "$check_pass" in
-  "" | default | all) ;;
-  *) echo "gate: STYX_CHECK_PASS is default or all, not $check_pass" >&2; exit 1 ;;
+  "" | default | all | both) ;;
+  *) echo "gate: STYX_CHECK_PASS is default, all or both, not $check_pass" >&2; exit 1 ;;
 esac
-tests() {
-  if cargo nextest --version > /dev/null 2>&1; then
-    cargo nextest run --locked --workspace --no-fail-fast "${filter[@]}" "$@"
-    # Doctests run once, in the all-features pass.
-    if [ "$*" = --all-features ]; then
-      if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
-        cargo test --locked --workspace --doc "$@"
-      else
-        skipped+=("doctests: no changed file holds one")
-      fi
-    fi
-  else
-    cargo test --locked --workspace "$@"
+# Tests run once, in the all-features pass, which builds the most code. The default pass builds
+# its tests too (a test that does not build without the features fails there) and runs only the
+# tests the default build alone has (.config/default-only.txt: code under cfg(not(feature))). The
+# two passes' test lists are compared: a default-only test missing from that list fails the gate.
+lists=$(mktemp -d "${TMPDIR:-/tmp}/styx-test-lists.XXXXXX")
+nextest=0
+cargo nextest --version > /dev/null 2>&1 && nextest=1
+default_tests() {
+  if [ "$nextest" = 0 ]; then
+    cargo test --locked --workspace
+    return
   fi
+  cargo nextest list --locked --workspace --message-format json > "$lists/default.json"
+  local expr
+  expr=$(python3 scripts/test-layout.py default-only-filter)
+  if [ -z "$expr" ]; then
+    echo "default-only tests: none"
+    return
+  fi
+  [ -z "${STYX_TEST_FILTER:-}" ] || expr="($expr) & ($STYX_TEST_FILTER)"
+  cargo nextest run --locked --workspace --no-fail-fast --no-tests=pass -E "$expr"
+}
+all_tests() {
+  if [ "$nextest" = 0 ]; then
+    cargo test --locked --workspace --all-features
+    return
+  fi
+  cargo nextest run --locked --workspace --no-fail-fast "${filter[@]}" --all-features
+  # nextest does not run doctests.
+  if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
+    cargo test --locked --workspace --doc --all-features
+  else
+    skipped+=("doctests: no changed file holds one")
+  fi
+  cargo nextest list --locked --workspace --all-features --message-format json > "$lists/all.json"
 }
 
 # The workspace glob matches nothing until the first crate lands.
@@ -152,17 +174,23 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   # Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
   if [ "$check_pass" != all ]; then
     step "clippy, default features" cargo clippy --locked --workspace --all-targets -- -D warnings
-    step "tests, default features" tests
+    step "tests, default features (build; the default-only tests)" default_tests
   else
     skipped+=("clippy and tests, default features")
   fi
-  if [ -z "$check_pass" ] || [ "$check_pass" = all ]; then
+  if [ "$check_pass" != default ]; then
     step "clippy, all features" cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-    step "tests, all features" tests --all-features
+    step "tests, all features" all_tests
     # A test group's filter (.config/nextest.toml), term by term, still names tests.
     step "every test group filter matches a test" python3 scripts/test-layout.py filters --all-features
   else
     skipped+=("clippy and tests, all features")
+  fi
+  if [ -f "$lists/default.json" ] && [ -f "$lists/all.json" ]; then
+    step "every default-only test is in the default-only run" \
+      python3 scripts/test-layout.py default-only "$lists/default.json" "$lists/all.json"
+  elif [ "$nextest" = 1 ]; then
+    skipped+=("the default-only list check (it needs both passes)")
   fi
 
   # A crate that must build without std says so in its manifest:

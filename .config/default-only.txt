@@ -1,0 +1,6 @@
+# Tests that exist only under default features (code under cfg(not(feature = ...))). Tests run in
+# the all-features pass; these, absent there, run in the default pass instead (scripts/gate.sh).
+# The gate fails when a test exists only under default features and is not listed here, and when a
+# line here names a test that is not default-only.
+#
+# One test per line: <nextest binary id> <test name>, as `cargo nextest list` prints them.
