@@ -46,43 +46,89 @@ key=$( { cat Cargo.lock
          cat .cargo/config.toml rust-toolchain.toml 2>/dev/null || true
          rustc -vV; } | sha256sum | cut -c1-16)
 
-# Removes the workspace's build products from a copy of a target directory.
-strip_workspace() {
-  local dir="$1" names profile
-  names=$(cargo metadata --locked --format-version 1 --no-deps | python3 -c '
-import json, sys
+# Copies a target directory's dependency build products into a new directory: every file but the
+# workspace's. A workspace package's units go by its .fingerprint/<package>-<hash> directory: that
+# directory, its build/<package>-* scripts and every deps/ file carrying the hash (a dependency may
+# share a target's name, not its hash). A library with a C crate type has no hash in its file names:
+# those go by target name. Final artifacts (the files directly in a profile directory), examples,
+# incremental state, test scratch and the C proof's own target are all the workspace's. One pass
+# over the target names the files to keep; only those are copied (by reflink where it can).
+copy_dependencies() {
+  local from="$1" to="$2"
+  cargo metadata --locked --format-version 1 --no-deps | python3 -c '
+import fnmatch, json, os, sys
+target = sys.argv[1]
 meta = json.load(sys.stdin)
+pkgs, names = [], []
 for p in meta["packages"]:
     if p["id"] in meta["workspace_members"]:
-        print("pkg", p["name"])
-        for t in p["targets"]:
-            print("target", t["name"].replace("-", "_"))
-')
-  # Each profile directory: <profile>/deps, or <triple>/<profile>/deps.
-  while read -r profile; do
-    profile=$(dirname "$profile")
-    # Final artifacts (uplifted binaries and libraries, their .d files), examples, incremental
-    # state, test scratch and the C proof's own target are all the workspace's.
-    find "$profile" -maxdepth 1 -type f -delete
-    rm -rf "$profile/examples" "$profile/incremental" "$profile/c-proof"
-    # A unit's deps/ files carry the hash of its .fingerprint/<package>-<hash> directory: those of
-    # a workspace package go by that hash (a dependency may share a target's name, not its hash).
-    # A library with a C crate type has no hash in its file names: those go by target name.
-    while read -r kind name; do
-      if [ "$kind" = pkg ]; then
-        for fp in "$profile/.fingerprint/$name"-*; do
-          [ -d "$fp" ] || continue
-          hash=${fp##*-}
-          find "$profile/deps" -maxdepth 1 -name "*-$hash*" -delete
-          rm -rf "$fp"
-        done
-        rm -rf "$profile/build/$name"-*
-      else
-        find "$profile/deps" -maxdepth 1 \( -name "$name.*" -o -name "lib$name.*" \) -delete
-      fi
-    done <<< "$names"
-  done < <(find "$dir" -mindepth 2 -maxdepth 3 -type d -name deps)
-  rm -rf "$dir/tmp" "$dir/nextest"
+        pkgs.append(p["name"])
+        names += [t["name"].replace("-", "_") for t in p["targets"]]
+trees = {os.path.join(target, "tmp"), os.path.join(target, "nextest")}
+files = set()
+def listdir(d):
+    try:
+        return os.listdir(d)
+    except OSError:
+        return []
+# A profile directory holds deps/: <profile>/deps or <triple>/<profile>/deps.
+profiles = []
+for a in listdir(target):
+    for b in listdir(os.path.join(target, a)):
+        if b == "deps" and os.path.isdir(os.path.join(target, a, b)) and not os.path.islink(os.path.join(target, a, b)):
+            profiles.append(os.path.join(target, a))
+        for c in listdir(os.path.join(target, a, b)):
+            d = os.path.join(target, a, b, c)
+            if c == "deps" and os.path.isdir(d) and not os.path.islink(d):
+                profiles.append(os.path.join(target, a, b))
+for profile in profiles:
+    for e in listdir(profile):
+        f = os.path.join(profile, e)
+        if os.path.isfile(f) and not os.path.islink(f):
+            files.add(f)
+    trees.update(os.path.join(profile, x) for x in ("examples", "incremental", "c-proof"))
+    deps = listdir(os.path.join(profile, "deps"))
+    fps = listdir(os.path.join(profile, ".fingerprint"))
+    builds = listdir(os.path.join(profile, "build"))
+    tags = set()
+    for name in pkgs:
+        for fp in fps:
+            if fp.startswith(name + "-") and os.path.isdir(os.path.join(profile, ".fingerprint", fp)):
+                tags.add(fp.rsplit("-", 1)[1])
+                trees.add(os.path.join(profile, ".fingerprint", fp))
+        trees.update(os.path.join(profile, "build", e) for e in builds if e.startswith(name + "-"))
+    # A deps/ file of a unit carries "-<hash>" in its name (the glob *-<hash>*): each "-" in a name
+    # is looked up once, for each length a hash has, rather than every name against every hash.
+    sizes = {len(tag) for tag in tags}
+    for e in deps:
+        at = e.find("-")
+        while at >= 0:
+            if any(e[at + 1:at + 1 + n] in tags for n in sizes):
+                files.add(os.path.join(profile, "deps", e))
+                break
+            at = e.find("-", at + 1)
+    for name in names:
+        files.update(os.path.join(profile, "deps", e) for e in deps
+                     if fnmatch.fnmatchcase(e, f"{name}.*") or fnmatch.fnmatchcase(e, f"lib{name}.*"))
+out = sys.stdout.buffer
+for top, dirs, entries in os.walk(target):
+    dirs[:] = [d for d in dirs if os.path.join(top, d) not in trees]
+    kept = 0
+    for e in entries + [d for d in dirs if os.path.islink(os.path.join(top, d))]:
+        f = os.path.join(top, e)
+        if f not in files and f not in trees:
+            out.write(b"F" + os.path.relpath(f, target).encode() + b"\0")
+            kept += 1
+    if not kept and not dirs and top != target:
+        out.write(b"D" + os.path.relpath(top, target).encode() + b"\0")
+' "$from" > "$to.list"
+  mkdir -p "$to"
+  (
+    cd "$from"
+    grep -z '^F' "$to.list" | cut -z -c2- | xargs -0 -r cp -a --reflink=auto --parents -t "$to"
+    grep -z '^D' "$to.list" | cut -z -c2- | (cd "$to" && xargs -0 -r mkdir -p)
+  )
+  rm -f "$to.list"
 }
 
 case ${1:-} in
@@ -114,8 +160,7 @@ case ${1:-} in
       [ -f "$seeds/$key/.seed-complete" ] && exit 0
       tmp=$seeds/.new-$key.$$
       rm -rf "$tmp"
-      cp -a --reflink=auto "$target" "$tmp"
-      strip_workspace "$tmp"
+      copy_dependencies "$target" "$tmp"
       worktree=$(pwd -P)
       left=$(grep -rlF "$worktree/" "$tmp" || true)
       if [ -n "$left" ]; then

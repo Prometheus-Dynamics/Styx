@@ -310,6 +310,6 @@ if [ ${#filter[@]} -gt 0 ]; then
   echo "check passed, tests narrowed to $STYX_TEST_FILTER: not the gate"
 else
   echo "gate passed"
-  # Slowest green: 115 s (a new seed: the target copied by reflink, then stripped).
-  step "cargo seed save" 350 bash -c 'scripts/cargo-seed.sh save || echo "cargo-seed: no seed kept (the reason is above); the gate passed"'
+  # Slowest green: 13 s (a new seed: the dependencies' files copied by reflink, 2.3 GB).
+  step "cargo seed save" 60 bash -c 'scripts/cargo-seed.sh save || echo "cargo-seed: no seed kept (the reason is above); the gate passed"'
 fi
