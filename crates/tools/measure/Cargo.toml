@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-measure"
 description = "The board-side reader for Styx's camera frame sockets: attaches to a camera's frames in another process, runs the software ISP on each raw frame if asked, and measures the rate, gaps, latency, copies, CPU and memory from the board's own clocks and counters. A binary (`styx-measure read`, `styx-measure status`) and a small library."
 version.workspace = true
@@ -45,3 +46,11 @@ lemnos-contract-camera-isp = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "steady"
+path = "tests/steady.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

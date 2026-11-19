@@ -1,7 +1,7 @@
 //! Preview behaviour over real rings: frames in from a source ring, JPEG frames out on the
 //! preview's own ring, read by a reader in another thread.
 
-mod common;
+use crate::common;
 
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;

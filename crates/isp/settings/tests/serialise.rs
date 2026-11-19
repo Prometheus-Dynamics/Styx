@@ -1,7 +1,7 @@
 //! Serialisation: the settings round-trip, and the controller's own JSON reads and writes here
 //! unchanged.
 
-mod common;
+use crate::common;
 
 use styx_settings::IspSettings;
 

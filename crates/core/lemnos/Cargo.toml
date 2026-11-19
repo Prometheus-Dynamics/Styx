@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-lemnos"
 description = "Styx's Lemnos client for cameras: finds the sensor, receiver and ISP by tag and link, opens frame streams and maps their buffers into FrameLeases without copying."
 version.workspace = true
@@ -48,3 +49,7 @@ lemnos-hal = { workspace = true, features = ["std"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

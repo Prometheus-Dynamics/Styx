@@ -1,7 +1,7 @@
 //! A Styx frame as a Daedalus value: its key, its dma-buf, and when its buffer goes back.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
-mod support;
+use crate::support;
 
 use std::sync::Arc;
 

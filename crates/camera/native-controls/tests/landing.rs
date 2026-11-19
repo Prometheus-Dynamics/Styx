@@ -1,7 +1,7 @@
 //! The proof: a control value lands on the frame its delay says, on a sensor that keeps the mode's
 //! delays (see `common`).
 
-mod common;
+use crate::common;
 
 use common::*;
 use lemnos_contract_camera_sensor::{fps_milli_of, frame_length_for_fps_milli};

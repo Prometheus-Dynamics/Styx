@@ -22,7 +22,7 @@ use styx_daedalus::fault::{
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{BufferMemory, BufferSize, FdMemory, FramePool, MemoryKind};
 
-mod support;
+use crate::support;
 
 /// GPU memory: no CPU mapping, no descriptor. A real cause for a step that needs the CPU's bytes.
 struct GpuBuffer {

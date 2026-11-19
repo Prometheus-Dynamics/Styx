@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-socket"
 description = "Frames to other processes over the shared ring: the producer hands each reader the buffers, the ring and a doorbell once over a Unix socket, then one ring entry per frame. Readers hold by marks; the producer drops and never waits."
 version.workspace = true
@@ -22,3 +23,7 @@ lemnos-linux-sys = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

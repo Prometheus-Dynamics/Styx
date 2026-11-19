@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-orion"
 description = "Orion as the discovery and reach for Styx's shared frame ring: a topic names the ring's socket and its shape; the frames themselves never leave the ring. Feature `orion` (off by default) adds the Orion client."
 version.workspace = true
@@ -33,3 +34,7 @@ tokio = { version = "1.53.2", default-features = false, features = ["rt", "macro
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

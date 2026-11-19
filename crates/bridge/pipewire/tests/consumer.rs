@@ -19,7 +19,7 @@
 
 #![cfg(all(target_os = "linux", feature = "pipewire"))]
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::PathBuf;

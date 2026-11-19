@@ -18,7 +18,9 @@ fail-fast = false
 slow-timeout = { period = "60s" }
 
 [[profile.default.overrides]]
-filter = '(package(styx-v4l2) & (binary(vivid) | binary(listing) | binary(capture))) | (package(styx-watch) & binary(vivid))'
+# Each crate's integration tests are one binary (tests/all.rs), one module per file: the files
+# that open the vivid node are named by their module.
+filter = '(package(styx-v4l2) & binary(all) & test(/^(vivid|listing|capture)::/)) | (package(styx-watch) & binary(all) & test(/^vivid::/))'
 test-group = 'vivid'
 
 [[profile.default.overrides]]

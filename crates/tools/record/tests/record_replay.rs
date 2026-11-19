@@ -2,7 +2,7 @@
 //! back exactly, from memory and from a file, and a consumer that holds every buffer has frames
 //! dropped and counted.
 
-mod support;
+use crate::support;
 
 use std::io::Cursor;
 use std::path::Path;

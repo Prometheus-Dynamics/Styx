@@ -10,7 +10,7 @@
 //! reason recorded, when the dma-heap can't be opened or no usable device opens.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
-mod support;
+use crate::support;
 
 use std::sync::Arc;
 

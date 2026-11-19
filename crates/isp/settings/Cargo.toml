@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-settings"
 description = "The neutral ISP settings every ISP maps from: black level, white balance, colour matrix, tone, denoise, sharpening and output formats, with comparison and interpolation between tunings."
 version.workspace = true
@@ -21,3 +22,11 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "clone_from"
+path = "tests/clone_from.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

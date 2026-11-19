@@ -2,7 +2,7 @@
 //! version, checksums that do not match, and frame layouts that run past their buffer. Records
 //! with a valid checksum but a bad value are refused by their checks, not by the checksum.
 
-mod support;
+use crate::support;
 
 use std::io::Cursor;
 

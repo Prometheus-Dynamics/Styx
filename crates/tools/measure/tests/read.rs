@@ -5,8 +5,7 @@
 //! keeps up sees every frame: the test asserts no gap and no skip. A reader later than the window
 //! would be counted as skips; this one is not.
 
-#[path = "support/mod.rs"]
-mod support;
+use crate::support;
 
 use std::process::Command;
 

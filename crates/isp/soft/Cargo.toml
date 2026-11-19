@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-soft"
 description = "Software ISP for raw Bayer frames: unpacking, black level, white balance, lens shading, demosaic, colour, tone, RGB/NV12/I420/luma output and 3A statistics, from a FrameLease into a caller's FrameLease."
 version.workspace = true
@@ -37,3 +38,11 @@ rvv = ["std", "styx-simd/rvv"]
 
 [lints]
 workspace = true
+
+[[test]]
+name = "alloc"
+path = "tests/alloc.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

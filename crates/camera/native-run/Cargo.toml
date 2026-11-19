@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-native-run"
 description = "Native camera sessions: picks a sensor mode, configures the receiver with its link, starts receiver then sensor, drops the mode's first frames, stops in reverse, and comes back after a fault with capped backoff."
 version.workspace = true
@@ -33,3 +34,7 @@ styx-sim = { path = "../../camera/sim" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

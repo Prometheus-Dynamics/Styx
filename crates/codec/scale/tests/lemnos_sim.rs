@@ -4,8 +4,8 @@
 //! converter opens its job stream, writes the input image, posts the job and takes the completion;
 //! every output is compared with the software path's scalar reference.
 
-mod sim;
-mod support;
+use crate::sim;
+use crate::support;
 
 use std::path::PathBuf;
 use std::time::Duration;

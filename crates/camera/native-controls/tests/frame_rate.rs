@@ -2,7 +2,7 @@
 //! mode's frame lengths cannot reach is clamped by the driver and reported; nothing is a nominal
 //! table.
 
-mod common;
+use crate::common;
 
 use lemnos_contract_camera_sensor::{GainRange, Mode, fps_milli_of, frame_length_for_fps_milli};
 use styx_native_controls::{Initial, NativeControls};

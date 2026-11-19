@@ -2,7 +2,7 @@
 //! for every colour space, odd and even sizes, padded and tight strides, and one- and two-plane
 //! NV12. No dev-recorded pixel vectors exist for these; every expected value is computed here.
 
-mod common;
+use crate::common;
 
 use common::*;
 use styx_codec_api::{CodecError, Converter};

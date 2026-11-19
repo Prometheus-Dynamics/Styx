@@ -6,7 +6,7 @@
 //! so the graph runs without a device). The planner's choice of moves is the thing under test.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
-mod support;
+use crate::support;
 
 use std::borrow::Cow;
 use std::marker::PhantomData;

@@ -11,7 +11,7 @@
 
 #![cfg(all(target_os = "linux", feature = "orion"))]
 
-mod common;
+use crate::common;
 
 use std::num::NonZeroU32;
 use std::os::unix::net::UnixListener;

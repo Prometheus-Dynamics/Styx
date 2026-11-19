@@ -1,8 +1,6 @@
 //! The gain conversion follows the mode's own gain law (the contract's `GainRange::law`): each
 //! law's formula, and its refusals. The laws' round trips and monotonicity are in `src/gain.rs`.
 
-mod common;
-
 use lemnos_contract_camera_sensor::{GainLaw, GainRange};
 use styx_native_controls::{Error, code_to_gain, gain_to_code};
 

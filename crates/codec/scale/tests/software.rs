@@ -1,7 +1,7 @@
 //! The software path: the fast kernels equal the scalar reference, hand-checked values, and the
 //! registry's choice with software only.
 
-mod support;
+use crate::support;
 
 use styx_codec_api::{CodecKind, Converter, Registry, Request};
 use styx_format::FourCc;

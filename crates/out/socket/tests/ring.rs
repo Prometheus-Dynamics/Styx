@@ -217,7 +217,7 @@ fn a_reader_that_dies_holding_frames_gives_its_buffers_back() {
     let mut child = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
-            "dying_reader_child",
+            &own_test("dying_reader_child"),
             "--nocapture",
             "--test-threads=1",
         ])
@@ -501,4 +501,13 @@ fn a_pool_past_256_buffers_is_one_memfd_and_the_geometry_round_trips() {
     assert_eq!(seen, 3);
     assert!(no_copies());
     let _ = std::fs::remove_file(&path);
+}
+
+/// A test of this file by its full name in the test binary: the file is one module of the crate's
+/// test binary (tests/all.rs), so its tests' names start with the module's path.
+fn own_test(name: &str) -> String {
+    match module_path!().split_once("::") {
+        Some((_, module)) => format!("{module}::{name}"),
+        None => name.to_string(),
+    }
 }

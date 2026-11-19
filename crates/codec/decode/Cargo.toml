@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-decode"
 description = "MJPEG decoders and raw YUV converters for Styx frames: native codec implementations, registered in styx-codec-api's registry."
 version.workspace = true
@@ -29,3 +30,11 @@ jpeg-decoder = { version = "0.3.2", default-features = false }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "steady_state"
+path = "tests/steady_state.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

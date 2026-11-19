@@ -1,6 +1,6 @@
 //! Comparison: equality, and the named field-wise diff.
 
-mod common;
+use crate::common;
 
 use styx_aaa::Pwl;
 use styx_format::{FourCc, MediaFormat};

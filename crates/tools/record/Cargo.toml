@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-record"
 description = "Recordings: one format (styxrec) for raw frames and their per-frame metadata, replay of it as a camera that hands out FrameLeases as recorded, and import of MCAP recordings into it."
 version.workspace = true
@@ -20,3 +21,7 @@ mcap = { version = "0.25", default-features = false }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

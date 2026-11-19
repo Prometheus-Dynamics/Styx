@@ -2,7 +2,7 @@
 //! gradient it was made from, and against `jpeg-decoder`, the reference dev's tests use.
 //! Also the registry's choice and the refusals.
 
-mod common;
+use crate::common;
 
 use common::*;
 use styx_codec_api::{CodecError, CodecKind, Decoder, Registry, Request, Verdict};

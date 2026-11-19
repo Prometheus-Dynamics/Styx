@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-service"
 description = "The camera service: one process per board holding every camera. Opens cameras through styx-select, runs each on its own thread with capped retries that never give up, answers control requests over a Unix socket, and hands each camera's frames to the ways out (a trait; none wired by default)."
 version.workspace = true
@@ -41,3 +42,11 @@ lemnos-contract-camera-isp = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "steady"
+path = "tests/steady.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

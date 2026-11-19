@@ -16,7 +16,7 @@ use daedalus_dmabuf::DmaBufMemory;
 use daedalus_wgpu::{HostBytes, WgpuBackend};
 use styx_daedalus::{GpuOptions, StyxFrame, dmabuf_memory, open_error_status};
 
-mod support;
+use crate::support;
 
 #[derive(Clone, Debug, Type)]
 #[type_key("gpu:kept_words")]

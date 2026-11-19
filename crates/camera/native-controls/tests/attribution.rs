@@ -7,7 +7,7 @@
 //! unknown. The sensor's landing (`post_values_at`) is what makes the posts' frames exact, also when
 //! the receiver has counted frames the session has not read yet.
 
-mod common;
+use crate::common;
 
 use common::{Run, START, Sensor, code_for_us, mode, report_us, shown_us, update};
 use lemnos_contract_camera_sensor::Mode;

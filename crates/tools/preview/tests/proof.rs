@@ -12,7 +12,7 @@
 //! offers each frame to a `Preview` (15 fps, quality 70, 640x400), and a viewer reads the
 //! preview's JPEG ring.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};

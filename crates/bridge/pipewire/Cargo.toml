@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-pipewire"
 description = "PipeWire video source node for Styx frames: a Video/Source node whose buffers are the producer's memfds, so frames reach PipeWire consumers without a copy. Off by default; the node needs the `pipewire` feature and a libpipewire-0.3 the system can link."
 version.workspace = true
@@ -26,3 +27,7 @@ shm-ring = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

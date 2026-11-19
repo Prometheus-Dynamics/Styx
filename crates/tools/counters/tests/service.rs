@@ -564,7 +564,7 @@ fn a_snapshot_is_read_by_a_reader_in_another_process() {
     let mut child = Command::new(exe)
         .args([
             "--exact",
-            "snapshot_reader_child",
+            &own_test("snapshot_reader_child"),
             "--nocapture",
             "--test-threads=1",
         ])
@@ -679,4 +679,13 @@ fn snapshot_reader_child() {
     }
     std::fs::write(&out, &bytes).expect("write the snapshots");
     println!("STYX SNAPSHOTS {got}");
+}
+
+/// A test of this file by its full name in the test binary: the file is one module of the crate's
+/// test binary (tests/all.rs), so its tests' names start with the module's path.
+fn own_test(name: &str) -> String {
+    match module_path!().split_once("::") {
+        Some((_, module)) => format!("{module}::{name}"),
+        None => name.to_string(),
+    }
 }

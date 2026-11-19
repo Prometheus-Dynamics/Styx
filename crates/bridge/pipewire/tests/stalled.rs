@@ -28,7 +28,7 @@
 
 #![cfg(all(target_os = "linux", feature = "pipewire"))]
 
-mod common;
+use crate::common;
 
 use std::io::Cursor;
 use std::ptr;

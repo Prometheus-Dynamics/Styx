@@ -1,6 +1,6 @@
 //! Output and statistics equal to dev's software ISP, bit for bit, on the recorded raw frame.
 
-mod common;
+use crate::common;
 
 use common::*;
 use styx_aaa::Statistics;

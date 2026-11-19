@@ -314,7 +314,7 @@ fn a_dmabuf_pool_is_published_across_a_process_boundary() {
     let mut child = Command::new(std::env::current_exe().expect("test binary"))
         .args([
             "--exact",
-            "dmabuf_reader_child",
+            &own_test("dmabuf_reader_child"),
             "--nocapture",
             "--test-threads=1",
         ])
@@ -405,4 +405,13 @@ fn a_pool_of_host_memory_cannot_be_published_across_processes() {
         ),
         "host memory has no descriptor to send"
     );
+}
+
+/// A test of this file by its full name in the test binary: the file is one module of the crate's
+/// test binary (tests/all.rs), so its tests' names start with the module's path.
+fn own_test(name: &str) -> String {
+    match module_path!().split_once("::") {
+        Some((_, module)) => format!("{module}::{name}"),
+        None => name.to_string(),
+    }
 }

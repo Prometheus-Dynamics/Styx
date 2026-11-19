@@ -2,7 +2,7 @@
 //! blended scalars and tables, the tone curve over the union of breakpoints, and the fields that
 //! take the nearer side whole.
 
-mod common;
+use crate::common;
 
 use styx_aaa::{LensShading, Pwl, SharpenParams, ZoneGrid};
 use styx_format::{FourCc, MediaFormat};

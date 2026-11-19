@@ -2,7 +2,7 @@
 //! `styx/msg/FrameMeta` and one image message per frame, a clock and a pyramid channel that are
 //! skipped) come back as the same frames in `styxrec`.
 
-mod support;
+use crate::support;
 
 use std::collections::BTreeMap;
 use std::io::Cursor;

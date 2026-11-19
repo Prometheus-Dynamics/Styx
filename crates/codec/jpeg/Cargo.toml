@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-jpeg"
 description = "Styx's own baseline JPEG encoder: planar YUV or grey in, JFIF out, on styx-simd's DCT and colour kernels, as a styx-codec-api Encoder."
 version.workspace = true
@@ -20,3 +21,11 @@ zune-jpeg = "0.5.15"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "steady_state"
+path = "tests/steady_state.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

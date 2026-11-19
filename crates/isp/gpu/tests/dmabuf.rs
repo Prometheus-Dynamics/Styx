@@ -3,8 +3,7 @@
 //! with the reason recorded, without a Vulkan device or a system dma-heap.
 #![cfg(feature = "vulkan")]
 
-#[path = "common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::fs::File;
 use std::os::fd::AsFd;

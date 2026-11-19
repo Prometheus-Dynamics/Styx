@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-scale"
 description = "Scalers and format converters for Styx: resize and channel or chroma-order conversion through Lemnos's image.scaler/1 contract when the chip has one, and a software path (SIMD rows where they fit, scalar elsewhere) otherwise, behind styx-codec-api's Converter trait."
 version.workspace = true
@@ -30,3 +31,7 @@ styx-sim = { path = "../../camera/sim" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

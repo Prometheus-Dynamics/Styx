@@ -5,7 +5,7 @@
 
 #![cfg(all(target_os = "linux", feature = "orion"))]
 
-mod common;
+use crate::common;
 
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};

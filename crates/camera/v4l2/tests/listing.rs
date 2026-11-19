@@ -16,7 +16,7 @@ use styx_lemnos::v4l2::v4l2::VideoDevice;
 use styx_v4l2::Error;
 use styx_v4l2::{Opener, Prober, System};
 
-mod common;
+use crate::common;
 
 /// An opener that records every path it is asked to open, then opens it for real.
 #[derive(Clone, Default)]

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-frame"
 description = "The Styx frame: buffers registered once, per-frame entries in them, read-only shares and counted copies."
 version.workspace = true
@@ -31,3 +32,11 @@ libc = "0.2"
 
 [lints]
 workspace = true
+
+[[test]]
+name = "steady_state"
+path = "tests/steady_state.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

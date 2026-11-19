@@ -11,7 +11,7 @@
 //! the pairs repeat every 12 steps), so 48 steps are four full cycles of every transition. More
 //! steps would only repeat them: a race is proven by a test that drives it, not by repeats.
 
-mod common;
+use crate::common;
 
 use std::time::Duration;
 

@@ -2,8 +2,7 @@
 //! make no GPU work. Does not run, with the reason recorded, when the host has no Vulkan device.
 #![cfg(feature = "vulkan")]
 
-#[path = "common/mod.rs"]
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};

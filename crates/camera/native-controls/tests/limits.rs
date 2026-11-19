@@ -5,7 +5,7 @@ use lemnos_contract_camera_sensor::{GainRange, Mode, fps_milli_of, frame_length_
 use styx_controls::{Control, ControlValue, Update, ValueError};
 use styx_native_controls::{ClampReason, Error, Initial, NativeControls};
 
-mod common;
+use crate::common;
 
 use common::Sensor;
 

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-pisp"
 description = "The PiSP (BCM2712 ISP) path: Styx's neutral ISP settings mapped into Lemnos's PiSP front and back end configuration, tiling, statistics layouts and ISP jobs on camera.isp/1 and isp.pisp/1."
 version.workspace = true
@@ -33,3 +34,7 @@ styx-sim = { path = "../../camera/sim" }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

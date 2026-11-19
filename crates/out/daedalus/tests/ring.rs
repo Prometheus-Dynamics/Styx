@@ -2,7 +2,7 @@
 //! pair over a Unix socket; the value holds the reader's ring hold until it drops.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
-mod support;
+use crate::support;
 
 use std::os::unix::net::UnixStream;
 use std::thread;

@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-v4l2"
 description = "Styx's V4L2 capture backend: any capture node (UVC webcams, other boards' capture drivers) on Lemnos's lemnos-v4l2 library, probed for formats, sizes, intervals and controls, streamed as FrameLeases from DMABUF or copied MMAP buffers."
 version.workspace = true
@@ -17,3 +18,7 @@ styx-lemnos = { path = "../../core/lemnos", features = ["v4l2"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

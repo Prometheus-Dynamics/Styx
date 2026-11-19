@@ -3,7 +3,7 @@
 //! double does, as the driver does) and reports; these tests check that the native controls take the
 //! applied value and the clamp, and the reason, from that report.
 
-mod common;
+use crate::common;
 
 use lemnos_contract_camera_sensor::{GainRange, Mode};
 use styx_controls::{Control, ControlValue, Update};

@@ -2,7 +2,7 @@
 //! post what was asked for again, forget what the old sequence had in force, and report nothing
 //! as applied until a post has landed on the new sequence.
 
-mod common;
+use crate::common;
 
 use common::{START, Sensor, code_for_us, mode, update};
 use styx_controls::Control;

@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use styx_format::FourCc;
 use styx_v4l2::{Delivery, Queue, Sizes, Stream, StreamConfig};
 
-mod common;
+use crate::common;
 use common::physical_devices;
 
 /// The first capture node with a format that lists discrete sizes, and that format's first size.

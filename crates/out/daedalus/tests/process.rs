@@ -13,7 +13,7 @@
 //! read in both processes and must be zero.
 #![cfg(all(feature = "daedalus", target_os = "linux"))]
 
-mod support;
+use crate::support;
 
 use std::fs;
 use std::io::{BufRead, BufReader};
@@ -156,7 +156,7 @@ fn a_graph_in_another_process_takes_the_ring_frames_in_order_and_the_buffers_com
     let mut child = Command::new(std::env::current_exe().expect("this test binary"))
         .args([
             "--exact",
-            "graph_process",
+            &own_test("graph_process"),
             "--nocapture",
             "--test-threads=1",
         ])
@@ -249,4 +249,13 @@ fn a_graph_in_another_process_takes_the_ring_frames_in_order_and_the_buffers_com
         "the graph process's socket was reaped"
     );
     let _ = fs::remove_file(&path);
+}
+
+/// A test of this file by its full name in the test binary: the file is one module of the crate's
+/// test binary (tests/all.rs), so its tests' names start with the module's path.
+fn own_test(name: &str) -> String {
+    match module_path!().split_once("::") {
+        Some((_, module)) => format!("{module}::{name}"),
+        None => name.to_string(),
+    }
 }

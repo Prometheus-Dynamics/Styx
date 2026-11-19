@@ -749,7 +749,12 @@ impl ChildReader {
         let _ = std::fs::remove_file(&stop);
         let exe = std::env::current_exe().expect("the test binary");
         let mut child = Command::new(exe)
-            .args(["--exact", "reader_child", "--nocapture", "--test-threads=1"])
+            .args([
+                "--exact",
+                &own_test("reader_child"),
+                "--nocapture",
+                "--test-threads=1",
+            ])
             .env(CHILD_SOCKET, socket)
             .env(CHILD_STOP, &stop)
             .stdout(Stdio::piped())
@@ -1317,4 +1322,13 @@ fn a_reader_that_never_lets_go_is_cut_off_for_the_reserve_and_the_camera_keeps_s
     }
     drop(held);
     service.shutdown();
+}
+
+/// A test of this file by its full name in the test binary: the file is one module of the crate's
+/// test binary (tests/all.rs), so its tests' names start with the module's path.
+fn own_test(name: &str) -> String {
+    match module_path!().split_once("::") {
+        Some((_, module)) => format!("{module}::{name}"),
+        None => name.to_string(),
+    }
 }

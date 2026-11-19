@@ -3,8 +3,7 @@
 //! the reason recorded, when the host has no Vulkan device (the device is probed at run time).
 #![cfg(feature = "vulkan")]
 
-#[path = "common/mod.rs"]
-mod common;
+use crate::common;
 
 use common::*;
 use styx_aaa::Statistics;

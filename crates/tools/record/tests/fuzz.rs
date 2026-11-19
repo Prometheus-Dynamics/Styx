@@ -2,7 +2,7 @@
 //! A mutated header is always refused (its checksum covers every byte of it); a mutated record
 //! never panics and never yields a frame that fails its own checks. Nothing here panics.
 
-mod support;
+use crate::support;
 
 use std::io::Cursor;
 

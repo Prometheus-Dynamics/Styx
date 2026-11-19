@@ -1,4 +1,5 @@
 [package]
+autotests = false
 name = "styx-counters"
 description = "Per-camera counters for the camera service: frames, drops by reason, copies, frame age, achieved and requested rate, device health, backend, backoff. Updated on the frame path with atomics only; read as a fixed-layout little-endian snapshot published on a shared ring (a 'counters' topic per service) that any process reads with styx-socket."
 version.workspace = true
@@ -32,3 +33,11 @@ lemnos-contract-camera-isp = { workspace = true }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "alloc"
+path = "tests/alloc.rs"
+
+[[test]]
+name = "all"
+path = "tests/all.rs"
