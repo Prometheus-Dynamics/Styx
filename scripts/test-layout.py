@@ -158,7 +158,8 @@ def stateful_items(path):
     text = open(path, encoding="utf-8").read()
     statics = {name for name, _ in STATEFUL_STATIC.findall(text)}
     # A counter only ever advanced with fetch_add hands each caller a number no other caller gets:
-    # a source of unique names, not state one test can see of another's.
+    # a source of unique names, not state one test can see of another's. Only that: an atomic that
+    # is also loaded, stored or swapped anywhere is state another test can set or read, and counts.
     statics = {s for s in statics
                if len(re.findall(rf"\b{s}\b", text)) - 1 != len(re.findall(rf"\b{s}\s*\.\s*fetch_add\s*\(", text))}
     if not statics:
