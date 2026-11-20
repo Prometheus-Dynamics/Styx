@@ -178,6 +178,11 @@ fn a_reader_holding_the_four_oldest_frames_is_cut_off_when_its_frame_leaves_the_
     // The cut-off reader reads the end, with the reason, and takes no more frames.
     let end = take(&mut holder).expect_err("the holder is cut off");
     assert_eq!(end, ReadError::Ended(StreamEnd::ConsumerFault));
+    assert_eq!(
+        holder.cut_reason(),
+        shm_ring_buffers::page::cut::HELD,
+        "the reserve cut gives its reason: the reader held a buffer the producer took back"
+    );
     assert!(
         end.to_string().contains("past the keep window"),
         "the message names the cause: {end}"

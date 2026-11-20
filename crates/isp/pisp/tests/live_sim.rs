@@ -257,6 +257,11 @@ fn live_path(memory: Memory) {
         .expect("the simulated ISP")
         .clone();
     let geometry = geometry();
+    // The ISP takes a lent input from here on; no frame is lent until the upstream pool is named
+    // (case 3), so cases 1 and 2 copy every frame.
+    sim::set_lend(true);
+    sim::refuse_lends(false);
+    sim::refuse(None);
     let mut live =
         LiveIsp::open(&client, &device, &geometry, Duration::from_secs(10)).expect("open");
 
@@ -401,6 +406,7 @@ fn live_path(memory: Memory) {
         "the copied bytes"
     );
     assert_eq!(live.input_copies(), total as usize);
+    assert_eq!(live.lent(), 0, "no upstream pool named: nothing lent");
 
     eprintln!(
         "live path proof ({name}): jobs run {}; refused while both config buffers were in flight: {} (case 1), \
@@ -415,7 +421,128 @@ fn live_path(memory: Memory) {
         bytes_after - bytes_before,
         BeTilesConfig::SIZE
     );
+
+    lend_cases(&mut live, &mut expect, &frames[frames.len() - 1], &pool);
     live.stop().expect("stop the ISP");
     drop(client);
     service.stop();
+}
+
+/// Cases 3 to 5, after the copied ones: a lent input, a lend refused and posted again with the
+/// copy, and a refused job that reaches the caller.
+fn lend_cases(
+    live: &mut LiveIsp,
+    expect: &mut BackEndBuilder,
+    (settings, exposure): &(IspSettings, f64),
+    upstream: &FramePool<()>,
+) {
+    let next = |expect: &mut BackEndBuilder, identity: u64, raw: &FrameLease<()>, hashed: bool| {
+        expect.update(settings, *exposure).expect("expected config");
+        sim::expect(
+            identity,
+            sim::Expect {
+                config: config_bytes(expect.config()),
+                input_hash: if hashed { raw_hash(raw) } else { 0 },
+                input_len: input_len(),
+            },
+        );
+    };
+    let last_ran = || *sim::ran().last().expect("a job ran");
+
+    // Case 3: the upstream pool is named, so its frame is lent: no copy, the job names the frame's
+    // buffer, and the frame's lease is held until the job completes.
+    assert!(live.lend_from(upstream), "the ISP takes a lent input");
+    let (copies_before, _) = copies();
+    let raw = raw_frame(upstream, 100);
+    next(expect, 100, &raw, false);
+    live.post(100, settings, *exposure, &raw)
+        .expect("lent post");
+    assert_eq!(
+        raw.holders(),
+        2,
+        "the lent frame is held while its job runs"
+    );
+    let job = live.wait().expect("wait").expect("a completion in time");
+    let done = check(job, expect);
+    assert_eq!(done, 100);
+    let ran = last_ran();
+    assert_eq!(
+        ran.lent,
+        Some(raw.buffer_index() as u32),
+        "the job named the frame's buffer"
+    );
+    assert_eq!(
+        ran.input_buffer, NO_BUFFER,
+        "and no input buffer of its own"
+    );
+    assert!(ran.config_ok, "job 100 named its configuration");
+    assert_eq!(raw.holders(), 1, "given back with its job");
+    assert_eq!(copies().0, copies_before, "a lent frame is not copied");
+    assert_eq!((live.lent(), live.lend_fallbacks()), (1, 0));
+    drop(raw);
+
+    // Case 4: Lemnos refuses the lend for one frame: the job ends `not-lent`, and the frame is
+    // posted again with the copy, once. It completes; nothing is dropped.
+    sim::refuse_lends(true);
+    let raw = raw_frame(upstream, 101);
+    next(expect, 101, &raw, true);
+    live.post(101, settings, *exposure, &raw)
+        .expect("lent post");
+    let job = live
+        .wait()
+        .expect("wait")
+        .expect("the copied frame completes");
+    assert_eq!(
+        check(job, expect),
+        101,
+        "the refused lend's frame is not dropped"
+    );
+    let ran = last_ran();
+    assert_eq!(ran.identity, 101);
+    assert_eq!(ran.lent, None, "the second post is the copy");
+    assert!(
+        ran.input_ok,
+        "job 101 read the frame copied in after the refusal"
+    );
+    assert!(ran.config_ok, "job 101 named its configuration");
+    assert_eq!(copies().0, copies_before + 1, "the fallback copies once");
+    assert_eq!((live.lent(), live.lend_fallbacks()), (2, 1));
+    assert_eq!(raw.holders(), 1, "the refused lend's lease is given back");
+    sim::refuse_lends(false);
+    drop(raw);
+
+    // Case 5: a job the ISP refuses reaches the caller as its end, with Lemnos's reason, at once
+    // and not as a stall; its buffers are free again and the next frame runs.
+    let other: FramePool<()> =
+        FramePool::host(1, BufferSize::new(input_len(), 0)).expect("another pool");
+    sim::refuse(Some(102));
+    let raw = raw_frame(&other, 102);
+    next(expect, 102, &raw, true);
+    live.post(102, settings, *exposure, &raw).expect("post");
+    let started = std::time::Instant::now();
+    match live.wait() {
+        Err(PispError::JobEnded { identity, reason }) => {
+            assert_eq!((identity, reason.as_str()), (102, "bad-config"));
+        }
+        other => panic!("the refused job must end with its reason, got {other:?}"),
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "the end is read at once, not at the wait's timeout"
+    );
+    assert_eq!(live.in_flight(), 0, "the refused job is not in flight");
+    assert_eq!(
+        live.lend_fallbacks(),
+        1,
+        "a copied job's end is not a lend fallback"
+    );
+    sim::refuse(None);
+    drop(raw);
+    let raw = raw_frame(&other, 103);
+    next(expect, 103, &raw, true);
+    live.post(103, settings, *exposure, &raw)
+        .expect("post after the refusal");
+    let job = live.wait().expect("wait").expect("completion");
+    assert_eq!(check(job, expect), 103);
+    assert!(last_ran().input_ok && last_ran().config_ok);
 }

@@ -19,6 +19,14 @@
 //! and by [`LiveIsp::input_copies`]. The output frames and the config buffer are not copied: the
 //! config is encoded straight into its buffer.
 //!
+//! Lent input: when the ISP takes one (`IspInfo::input_lend`) and the caller named the upstream
+//! output-0 pool with [`LiveIsp::lend_from`], a raw frame from that pool is not copied: the job
+//! names its buffer (`input_lent`, `lent_buffer`) and the frame's lease is kept until the job
+//! completes, so the buffer is not refilled under the ISP. A lend Lemnos refuses for one frame (the
+//! job ends `not-lent`, `identity-mismatch`, `busy`, ...) is posted again with the copy, once, and
+//! counted in [`LiveIsp::lend_fallbacks`]: the frame is never dropped. The input buffer the copy
+//! needs is held from the first post, so the copy always has one.
+//!
 //! Untested on board (H1). The sequence is the README's; the simulated backend tests check it
 //! against a simulated ISP that parses the job with the contract's codec (`tests/live_sim.rs`).
 
@@ -28,9 +36,9 @@ use lemnos_contract_camera_isp::{CameraIsp, IspInput, IspOutput, MAX_STREAM_NAME
 use lemnos_contract_camera_receiver::BayerOrder as ContractBayer;
 use lemnos_contract_isp_pisp::{IspPisp, LAYOUT_BACK_END, OUTPUT_BACK_END_0, OUTPUT_BACK_END_1};
 use styx_format::{FourCc, MediaFormat, Resolution};
-use styx_frame::{FrameEntry, FrameLease, Layouts, PlaneLayout};
+use styx_frame::{FrameEntry, FrameLease, FramePool, Layouts, PlaneLayout};
 use styx_lemnos::pisp::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, Wire};
-use styx_lemnos::{Client, DeviceEntry, HeldFrame, JobStream, open_job_stream};
+use styx_lemnos::{Client, Completion, DeviceEntry, HeldFrame, JobStream, open_job_stream};
 use styx_settings::IspSettings;
 
 use crate::PispError;
@@ -59,17 +67,23 @@ pub struct LiveJob {
 
 /// A job posted and not yet complete.
 #[derive(Debug)]
-struct Flight {
+struct Flight<M> {
     identity: u64,
     config: usize,
+    /// The input buffer: written for a copied job, held unwritten for a lent one (the copy's,
+    /// should the lend be refused).
     input: usize,
     outputs: [usize; 2],
     done: [Option<FrameLease<()>>; 2],
     timestamp_ns: u64,
+    /// The raw frame's lease while its buffer is lent to the job; `None` for a copied job.
+    lent: Option<FrameLease<M>>,
+    /// The lend was refused and the copy is not posted yet (the job ring was full).
+    copy_owed: bool,
 }
 
 /// The live back end: see the module documentation.
-pub struct LiveIsp {
+pub struct LiveIsp<M = ()> {
     isp: lemnos_core::Bound<dyn CameraIsp, lemnos_client::RemoteCaller>,
     config: JobStream<()>,
     input: JobStream<()>,
@@ -78,7 +92,7 @@ pub struct LiveIsp {
     output_media: [MediaFormat; 2],
     output_layouts: [Layouts; 2],
     builder: BackEndBuilder,
-    flights: Vec<Flight>,
+    flights: Vec<Flight<M>>,
     input_busy: Vec<bool>,
     output_busy: [Vec<bool>; 2],
     timeout: Duration,
@@ -90,20 +104,28 @@ pub struct LiveIsp {
     /// `false` and nothing was queued. Not a Lemnos counter: the Lemnos `refused` stat counts only
     /// jobs that starved for a buffer the driver picks, and this path picks its own.
     posts_refused: u64,
+    /// Whether the ISP takes a lent input (`IspInfo::input_lend`).
+    input_lend: bool,
+    /// The upstream output-0 pool whose frames are lent rather than copied ([`LiveIsp::lend_from`]).
+    upstream: Option<FramePool<M>>,
+    lent: u64,
+    lend_fallbacks: u64,
 }
 
-impl std::fmt::Debug for LiveIsp {
+impl<M> std::fmt::Debug for LiveIsp<M> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LiveIsp")
             .field("config", &self.config.name())
             .field("input", &self.input.name())
             .field("in_flight", &self.flights.len())
             .field("input_copies", &self.input_copies)
+            .field("lent", &self.lent)
+            .field("lend_fallbacks", &self.lend_fallbacks)
             .finish()
     }
 }
 
-impl LiveIsp {
+impl<M> LiveIsp<M> {
     /// Sets up `device` (a `camera.isp/1` device with the PiSP back end) for `geometry`, and
     /// starts it. `timeout` bounds a [`Self::wait`] for the frames of posted jobs.
     pub fn open(
@@ -199,6 +221,10 @@ impl LiveIsp {
             pisp.enable_temporal_denoise(false)
                 .map_err(|e| setup(format!("enable_temporal_denoise: {e:?}")))?;
         }
+        let input_lend = isp
+            .info()
+            .map_err(|e| setup(format!("info: {e:?}")))?
+            .input_lend;
         isp.start().map_err(|e| setup(format!("start: {e:?}")))?;
         let output_media = [geometry.outputs[0].media, geometry.outputs[1].media];
         Ok(Self {
@@ -217,7 +243,31 @@ impl LiveIsp {
             input_copies: 0,
             starved: 0,
             posts_refused: 0,
+            input_lend,
+            upstream: None,
+            lent: 0,
+            lend_fallbacks: 0,
         })
+    }
+
+    /// Lends raw frames from `upstream` (the output-0 pool of the device this ISP is linked
+    /// from) instead of copying them, when the ISP takes a lent input. Frames from any other pool
+    /// are still copied. Returns whether lending is on: `false` when the ISP takes no lent input.
+    pub fn lend_from(&mut self, upstream: &FramePool<M>) -> bool {
+        if self.input_lend {
+            self.upstream = Some(upstream.clone());
+        }
+        self.input_lend
+    }
+
+    /// Jobs posted with a lent input since the setup (each one not copied, unless it fell back).
+    pub fn lent(&self) -> u64 {
+        self.lent
+    }
+
+    /// Lent jobs Lemnos refused and that were posted again with the copy, since the setup.
+    pub fn lend_fallbacks(&self) -> u64 {
+        self.lend_fallbacks
     }
 
     /// Input frames copied into the ISP's input buffers, since the setup.
@@ -252,11 +302,12 @@ impl LiveIsp {
     }
 
     /// Posts one frame: `raw` (a 16-bit Bayer frame of the geometry's input size) is copied into
-    /// a free input buffer, its configuration built from `settings` (with `exposure` for temporal
-    /// denoise) into a free config buffer, and the job naming both and two free output buffers is
-    /// posted. A frame that cannot be posted now is [`PispError::Busy`] with nothing changed in
-    /// the ISP.
-    pub fn post<M>(
+    /// a free input buffer (or lent: see the module documentation), its configuration built from
+    /// `settings` (with `exposure` for temporal denoise) into a free config buffer, and the job
+    /// naming both and two free output buffers is posted. A frame that cannot be posted now is
+    /// [`PispError::Busy`] with nothing changed in the ISP. A lent job's `identity` is the
+    /// identity Lemnos gave the raw frame, which the lend is checked against.
+    pub fn post(
         &mut self,
         identity: u64,
         settings: &IspSettings,
@@ -292,21 +343,16 @@ impl LiveIsp {
         // The configuration, encoded straight into the config buffer.
         self.builder.update(settings, exposure)?;
         self.write_config(config, identity)?;
-        // The raw frame, copied into the input buffer: the one copy the sequence needs.
-        self.copy_input(input, identity, raw)?;
-        let job = back_end_job(
-            identity,
-            config as u32,
-            Some(input as u32),
-            [Some(outputs[0] as u32), Some(outputs[1] as u32), None, None],
-        );
-        debug_assert_eq!(job.layout, LAYOUT_BACK_END);
-        let mut bytes = [0u8; JOB_CAPACITY];
-        let len = encode_job(&job, &mut bytes)?;
-        let posted = self
-            .config
-            .post(&bytes[..len])
-            .map_err(|e| PispError::Sink(format!("{e}")))?;
+        let lend = self
+            .upstream
+            .as_ref()
+            .is_some_and(|upstream| raw.is_of(upstream));
+        if !lend {
+            // The raw frame, copied into the input buffer: the one copy the sequence needs.
+            self.copy_input(input, identity, raw)?;
+        }
+        let lent_buffer = lend.then(|| raw.buffer_index() as u32);
+        let posted = self.post_job(identity, config, input, outputs, lent_buffer)?;
         if !posted {
             // Nothing was sent: the temporal average starts over with the next frame.
             self.builder.reset_tdn();
@@ -317,6 +363,9 @@ impl LiveIsp {
         for (k, &j) in outputs.iter().enumerate() {
             self.output_busy[k][j] = true;
         }
+        if lend {
+            self.lent += 1;
+        }
         self.flights.push(Flight {
             identity,
             config,
@@ -324,8 +373,102 @@ impl LiveIsp {
             outputs,
             done: [None, None],
             timestamp_ns: raw.timestamp_ns(),
+            lent: lend.then(|| raw.share()),
+            copy_owed: false,
         });
         Ok(())
+    }
+
+    /// Encodes and posts the job for these buffers: the input is `lent_buffer` of the upstream
+    /// output 0 when it is given, else input buffer `input`. `Ok(false)` when the job ring is full.
+    fn post_job(
+        &mut self,
+        identity: u64,
+        config: usize,
+        input: usize,
+        outputs: [usize; 2],
+        lent_buffer: Option<u32>,
+    ) -> Result<bool, PispError> {
+        let base = back_end_job(
+            identity,
+            config as u32,
+            lent_buffer.is_none().then_some(input as u32),
+            [Some(outputs[0] as u32), Some(outputs[1] as u32), None, None],
+        );
+        let job = match lent_buffer {
+            Some(buffer) => lemnos_contract_camera_isp::IspJob {
+                input_lent: true,
+                lent_buffer: buffer,
+                ..base
+            },
+            None => base,
+        };
+        debug_assert_eq!(job.layout, LAYOUT_BACK_END);
+        let mut bytes = [0u8; JOB_CAPACITY];
+        let len = encode_job(&job, &mut bytes)?;
+        self.config
+            .post(&bytes[..len])
+            .map_err(|e| PispError::Sink(format!("{e}")))
+    }
+
+    /// A job ended without a frame. A lent job is posted again with the copy (once: the copy's
+    /// own end reaches the caller); any other is taken off, its buffers freed, and is the error.
+    fn job_ended(
+        &mut self,
+        identity: u64,
+        reason: styx_lemnos::JobReason,
+    ) -> Result<(), PispError> {
+        let Some(at) = self.flights.iter().position(|f| f.identity == identity) else {
+            return Err(setup(format!(
+                "output 0: job {identity} ended ({reason}) and no job in flight has that identity"
+            )));
+        };
+        if self.flights[at].lent.is_some() {
+            self.lend_fallbacks += 1;
+            self.flights[at].copy_owed = true;
+            return self.post_owed_copies();
+        }
+        let flight = self.flights.swap_remove(at);
+        self.free(&flight);
+        Err(PispError::JobEnded {
+            identity,
+            reason: reason.to_string(),
+        })
+    }
+
+    /// Posts the copy of each refused lend whose copy is owed, while the job ring takes them.
+    fn post_owed_copies(&mut self) -> Result<(), PispError> {
+        for at in 0..self.flights.len() {
+            if !self.flights[at].copy_owed {
+                continue;
+            }
+            let (identity, config, input, outputs) = {
+                let f = &self.flights[at];
+                (f.identity, f.config, f.input, f.outputs)
+            };
+            let raw = self.flights[at]
+                .lent
+                .take()
+                .expect("an owed copy keeps its lease");
+            self.copy_input(input, identity, &raw)?;
+            if !self.post_job(identity, config, input, outputs, None)? {
+                // The ring is full: kept owed, with the frame, for the next look.
+                self.flights[at].lent = Some(raw);
+                return Ok(());
+            }
+            self.flights[at].copy_owed = false;
+        }
+        Ok(())
+    }
+
+    /// Frees the buffers a flight held: its input and the outputs it did not complete.
+    fn free(&mut self, flight: &Flight<M>) {
+        self.input_busy[flight.input] = false;
+        for k in 0..2 {
+            if flight.done[k].is_none() {
+                self.output_busy[k][flight.outputs[k]] = false;
+            }
+        }
     }
 
     /// Waits up to the timeout for a posted frame to complete on both outputs, and returns it.
@@ -346,11 +489,16 @@ impl LiveIsp {
             if Instant::now() >= deadline {
                 return Err(self.stalled());
             }
-            if let Some(held) = self.outputs[0]
-                .wait(POLL)
+            self.post_owed_copies()?;
+            match self.outputs[0]
+                .next_completion(POLL)
                 .map_err(|e| PispError::Sink(format!("output 0: {e}")))?
             {
-                self.complete(0, held)?;
+                Some(Completion::Frame(held)) => self.complete(0, held)?,
+                Some(Completion::JobEnded { identity, reason }) => {
+                    self.job_ended(identity, reason)?;
+                }
+                None => {}
             }
             if let Some(held) = self.outputs[1]
                 .wait(Duration::ZERO)
@@ -407,6 +555,8 @@ impl LiveIsp {
     /// The first flight whose two outputs are both in: its frame, with its buffers freed for
     /// the jobs that follow.
     fn take_done(&mut self) -> Option<LiveJob> {
+        // A completed job's lent lease (if any) drops with its flight: the upstream buffer is
+        // then free to be filled again.
         let at = self
             .flights
             .iter()
@@ -487,7 +637,7 @@ impl LiveIsp {
     }
 
     /// Copies `raw` into input buffer `input`.
-    fn copy_input<M>(
+    fn copy_input(
         &mut self,
         input: usize,
         identity: u64,

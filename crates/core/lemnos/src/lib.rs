@@ -16,7 +16,9 @@ use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-pub use lemnos_client::{Client, DeviceEntry, FrameStream, HeldFrame, StreamPlatform, follow};
+pub use lemnos_client::{
+    Client, DeviceEntry, FrameStream, HeldFrame, JobReason, StreamPlatform, follow,
+};
 use lemnos_client::{Next, ProducerState};
 use lemnos_linux_stream::LinuxStreams;
 use styx_format::{FourCc, MediaFormat};
@@ -50,9 +52,30 @@ pub const ISP_TAG: &str = "camera.isp/1";
 /// The tag of a device that delivers finished frames itself (USB).
 pub const FRAMES_TAG: &str = "camera.frames/1";
 
-/// Connects to the Lemnos service at `path` as `name`.
+/// Connects to the Lemnos service at `path` as `name`. No service there (no socket, or nothing
+/// listening on it) fails at once; [`connect_within`] waits for one that is starting.
 pub fn connect(path: impl AsRef<std::path::Path>, name: &str) -> Result<Client, Error> {
     Client::connect(path, name).map_err(Error::from_client)
+}
+
+/// How long [`connect_within`] is usually given: a service started beside its client is
+/// answering by then.
+pub const CONNECT_BOUND: Duration = Duration::from_secs(2);
+
+/// Connects to the Lemnos service at `path` as `name`, waiting up to `bound` for it to answer
+/// (Lemnos retries a missing service on its own schedule meanwhile). A zero bound is
+/// [`connect`].
+///
+/// # Errors
+///
+/// `lemnos_client::Error::TimedOut` (as [`Error::Client`]) when no service answered within
+/// `bound`, and the errors of [`connect`].
+pub fn connect_within(
+    path: impl AsRef<std::path::Path>,
+    name: &str,
+    bound: Duration,
+) -> Result<Client, Error> {
+    Client::connect_within(path, name, bound).map_err(Error::from_client)
 }
 
 /// A camera's devices, found by tag and link.
@@ -314,6 +337,10 @@ pub enum Event<M = ()> {
     Stalled { since_ns: u64 },
     /// The camera is back, once after a `Stalled` and before the first frame after it.
     Resumed(Carried),
+    /// A job posted with `identity` ended without a frame, for `reason`: the block failed it, its
+    /// time ran out, or it named a buffer that was not its own. Once per job, in stream order; the
+    /// stream goes on.
+    JobEnded { identity: u64, reason: JobReason },
     /// The stream ended and every frame it had is read.
     Ended(StreamEnd),
 }
@@ -692,6 +719,7 @@ fn open_frames_with<M: Default + Send + Sync>(
         format,
         layouts,
         held_drops: 0,
+        at_limit: 0,
         oversize_drops: 0,
         by_job: false,
     })
@@ -803,6 +831,7 @@ pub struct Frames<M = ()> {
     layouts: Option<Layouts>,
     held_drops: u64,
     oversize_drops: u64,
+    at_limit: u64,
     /// Number each frame by the job that made it, not by its place in the stream.
     by_job: bool,
 }
@@ -858,6 +887,13 @@ impl<M> Frames<M> {
         self.held_drops
     }
 
+    /// Reads that found every buffer this reader may hold still held by its leases: no frame was
+    /// taken, and the read was a [`Event::TimedOut`]. A count that grows means leases are kept too
+    /// long for the stream's depth.
+    pub fn at_limit(&self) -> u64 {
+        self.at_limit
+    }
+
     /// Compressed frames dropped because they were longer than a buffer's payload.
     pub fn oversize_drops(&self) -> u64 {
         self.oversize_drops
@@ -909,6 +945,13 @@ impl<M> Frames<M> {
                 },
             }),
             Next::Resumed { state } => Ok(Event::Resumed(state.into())),
+            Next::JobEnded { identity, reason } => Ok(Event::JobEnded { identity, reason }),
+            // The reader holds every buffer it is granted: no frame can be taken until a lease
+            // drops. Counted, and the read is a timeout, not an event of its own.
+            Next::AtLimit => {
+                self.at_limit += 1;
+                Ok(Event::TimedOut)
+            }
             Next::Ended(end) => Ok(Event::Ended(end.into())),
         }
     }
@@ -928,7 +971,7 @@ impl<M> Frames<M> {
             match self.next_event(left)? {
                 Event::Frame(lease) => return Ok(Some(lease)),
                 Event::TimedOut => return Ok(None),
-                Event::Stalled { .. } | Event::Resumed(_) => {}
+                Event::Stalled { .. } | Event::Resumed(_) | Event::JobEnded { .. } => {}
                 Event::Ended(end) => return Err(Error::StreamEnded(end)),
             }
         }
@@ -1032,6 +1075,15 @@ impl<M> Frames<M> {
     }
 }
 
+/// One read of a job stream ([`JobStream::next_completion`]).
+#[derive(Debug)]
+pub enum Completion {
+    /// A job's result, to give back with [`JobStream::release`].
+    Frame(HeldFrame),
+    /// The job posted with `identity` ended without a result, for `reason`.
+    JobEnded { identity: u64, reason: JobReason },
+}
+
 /// A writable job stream: one stream whose buffers the consumer fills and whose jobs it posts.
 ///
 /// The buffers are one [`FramePool`]. The consumer takes a buffer by number with
@@ -1112,6 +1164,40 @@ impl<M> JobStream<M> {
                 None => Ok(None),
                 Some(end) => Err(Error::StreamEnded(end.into())),
             },
+        }
+    }
+
+    /// Waits up to `timeout` for the next completion: a frame, or a job that ended without one
+    /// (refused or timed out, with Lemnos's reason). `None` after the timeout; a stall and its
+    /// return on a job stream are not completions and are waited past. [`JobStream::wait`] passes
+    /// over job ends; a caller that holds buffers for a job until it completes reads them here, so
+    /// a job that will never complete is known at once.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::StreamEnded`] once the host has ended the stream and no completion is left.
+    pub fn next_completion(&mut self, timeout: Duration) -> Result<Option<Completion>, Error> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            let next = self
+                .taken
+                .stream_mut()
+                .next_or_end(left)
+                .map_err(Error::from_client)?;
+            match next {
+                Next::Frame(frame) => return Ok(Some(Completion::Frame(frame))),
+                Next::JobEnded { identity, reason } => {
+                    return Ok(Some(Completion::JobEnded { identity, reason }));
+                }
+                Next::TimedOut | Next::AtLimit => return Ok(None),
+                Next::Stalled(_) | Next::Resumed { .. } => {
+                    if left.is_zero() {
+                        return Ok(None);
+                    }
+                }
+                Next::Ended(end) => return Err(Error::StreamEnded(end.into())),
+            }
         }
     }
 

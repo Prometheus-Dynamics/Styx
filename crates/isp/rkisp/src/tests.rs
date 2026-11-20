@@ -78,6 +78,7 @@ fn a_job_encodes_and_decodes_at_the_contract_size() {
         config_buffer: 3,
         input_buffer: NO_BUFFER,
         outputs: [1, NO_BUFFER, NO_BUFFER, NO_BUFFER],
+        ..Default::default()
     };
     let mut buf = [0u8; 64];
     let mut w = Writer::new(&mut buf);

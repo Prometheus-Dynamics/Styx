@@ -53,7 +53,7 @@ pub fn find_device<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lemnos_client::{DeviceHealth, DeviceState};
+    use lemnos_client::{DeviceHealth, DeviceState, Refusal};
 
     fn device(index: u32, name: &str, tags: &[&str]) -> DeviceEntry {
         DeviceEntry {
@@ -66,7 +66,7 @@ mod tests {
             reason: String::new(),
             link: None,
             jobs: Vec::new(),
-            refusal: None,
+            refusal: Refusal::NONE,
         }
     }
 

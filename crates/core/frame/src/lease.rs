@@ -69,6 +69,12 @@ impl<M> FrameLease<M> {
         self.index
     }
 
+    /// Whether this lease's buffer is one of `pool`'s: the same pool (a handle on it), not one
+    /// that only looks the same.
+    pub fn is_of(&self, pool: &crate::FramePool<M>) -> bool {
+        Arc::ptr_eq(&self.shared, &pool.shared)
+    }
+
     pub fn memory(&self) -> &dyn BufferMemory {
         self.slot().memory()
     }

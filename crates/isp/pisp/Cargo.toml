@@ -30,6 +30,8 @@ lemnosd = { workspace = true }
 lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }
 lemnos-hal = { workspace = true, features = ["std"] }
+# The job-end reasons the simulated ISP refuses with.
+lemnos-wire = { workspace = true }
 # Stream memory for the simulated boards, and whether this host has a dma-heap.
 styx-sim = { path = "../../camera/sim" }
 

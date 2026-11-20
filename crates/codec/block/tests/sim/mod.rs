@@ -193,6 +193,7 @@ impl SimCodec {
                     sequence: 0,
                     identity: 0,
                     timestamp_ns: 0,
+                    ..Default::default()
                 });
                 self.held &= !(1 << buffer);
             }
@@ -269,6 +270,7 @@ impl SimCodec {
             sequence: self.counters.jobs + self.counters.refused + self.counters.failed,
             identity: job.identity,
             timestamp_ns: now_ns,
+            ..Default::default()
         });
         match status {
             JobStatus::Done => self.counters.jobs += 1,

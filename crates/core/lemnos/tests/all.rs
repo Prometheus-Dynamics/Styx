@@ -4,6 +4,8 @@
 
 #[path = "close_on_drop.rs"]
 mod close_on_drop;
+#[path = "connect.rs"]
+mod connect;
 #[path = "discovery.rs"]
 mod discovery;
 #[path = "sim_chain.rs"]

@@ -22,6 +22,7 @@ pub fn job(identity: u64, config_buffer: u32, output: Option<u32>) -> IspJob {
         config_buffer,
         input_buffer: NO_BUFFER,
         outputs,
+        ..Default::default()
     }
 }
 

@@ -137,6 +137,7 @@ impl SimJobIsp {
                         sequence: self.sequence,
                         identity: job.identity,
                         timestamp_ns: now_ns,
+                        ..Default::default()
                     })
                     .map_err(|_| Status::IO)?;
             }
@@ -206,6 +207,7 @@ impl CameraIsp for SimJobIsp {
             config_layouts: 1,
             statistics_layout: self.statistics_layout,
             statistics_bytes: self.statistics_bytes,
+            ..Default::default()
         })
     }
 

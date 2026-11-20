@@ -217,6 +217,7 @@ fn job_round_trips_through_lemnos_codec() {
         config_buffer: 3,
         input_buffer: NO_BUFFER,
         outputs: [NO_BUFFER; MAX_OUTPUTS],
+        ..Default::default()
     };
     let mut buf = [0u8; 64];
     let mut w = Writer::new(&mut buf);

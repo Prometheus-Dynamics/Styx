@@ -28,6 +28,7 @@ use crate::topic::OrionError;
 pub struct Subscription {
     subscriber: BufferSubscriber,
     frames: Option<FramePool<()>>,
+    no_buffers: u64,
 }
 
 impl std::fmt::Debug for Subscription {
@@ -90,10 +91,17 @@ pub fn subscribe(orion: &Orion, name: &str, max_held: u32) -> Result<Subscriptio
     Ok(Subscription {
         subscriber,
         frames: None,
+        no_buffers: 0,
     })
 }
 
 impl Subscription {
+    /// Entries that named no buffer (metadata alone, such as a job's end), passed over.
+    #[must_use]
+    pub fn no_buffers(&self) -> u64 {
+        self.no_buffers
+    }
+
     /// Where the topic is: waiting, live, or its publisher gone (withdrawn or dropped).
     #[must_use]
     pub fn status(&self) -> Status {
@@ -130,13 +138,15 @@ impl Subscription {
         loop {
             let frames = self.frames.as_ref();
             match self.subscriber.next() {
-                NextBatch::Batch(batch) => {
+                NextBatch::Frame(batch) => {
                     if let Some(frames) = frames
                         && let Some(frame) = admit(frames, batch)
                     {
                         return Ok(Some(frame));
                     }
                 }
+                // An entry of metadata alone carries no frame: passed over, counted.
+                NextBatch::NoBuffers(_) => self.no_buffers += 1,
                 NextBatch::Skipped(_) => {}
                 NextBatch::Empty | NextBatch::Limited => return Ok(None),
                 NextBatch::CutOff => return Err(OrionError::Frames("cut off by the publisher")),

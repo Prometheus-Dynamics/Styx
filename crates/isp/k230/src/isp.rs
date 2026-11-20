@@ -189,6 +189,7 @@ impl Isp {
             config_buffer: index as u32,
             input_buffer: NO_BUFFER,
             outputs: [NO_BUFFER; MAX_OUTPUTS],
+            ..Default::default()
         };
         let mut scratch = [0u8; JOB_SCRATCH];
         let mut writer = Writer::new(&mut scratch);

@@ -501,6 +501,8 @@ impl SimCamera {
                 return Ok(SimEvent::Resumed(carried));
             }
             FrameEvent::Ended(end) => return Ok(SimEvent::Ended(end)),
+            // The sim's sensor posts no jobs on its frame stream.
+            FrameEvent::JobEnded { .. } => return Ok(SimEvent::Idle),
         };
         let id = lease.id();
         let in_force = self.silicon.in_force(id).ok_or(Error::NoRecord(id))?;

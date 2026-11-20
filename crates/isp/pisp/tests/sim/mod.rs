@@ -21,7 +21,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
 use lemnos_contract_camera_isp::{
@@ -60,6 +60,9 @@ pub struct Ran {
     pub config_ok: bool,
     /// The input the job named matched what the test expects.
     pub input_ok: bool,
+    /// The upstream buffer the job named as its lent input; `None` for a job on its own input.
+    /// The simulated ISP has no upstream to read, so a lent job's input is not checked.
+    pub lent: Option<u32>,
 }
 
 static EXPECTS: Mutex<Option<HashMap<u64, Expect>>> = Mutex::new(None);
@@ -67,6 +70,27 @@ static RAN: Mutex<Vec<Ran>> = Mutex::new(Vec::new());
 static GATE: AtomicBool = AtomicBool::new(false);
 static PAUSE: AtomicBool = AtomicBool::new(false);
 static PAUSED: AtomicBool = AtomicBool::new(false);
+static LEND: AtomicBool = AtomicBool::new(false);
+static REFUSE_LENDS: AtomicBool = AtomicBool::new(false);
+static REFUSE: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// Whether the simulated ISP says it takes a lent input (`IspInfo::input_lend`), from its next
+/// `info` on.
+pub fn set_lend(on: bool) {
+    LEND.store(on, Ordering::SeqCst);
+}
+
+/// Refuses every lent job, as Lemnos does a lend it cannot make: the job ends `not-lent` on
+/// output 0 and nothing runs.
+pub fn refuse_lends(on: bool) {
+    REFUSE_LENDS.store(on, Ordering::SeqCst);
+}
+
+/// Refuses the job posted as `identity` (`bad-config` on output 0), as the block refuses one it
+/// cannot run; `None` refuses none.
+pub fn refuse(identity: Option<u64>) {
+    REFUSE.store(identity.unwrap_or(u64::MAX), Ordering::SeqCst);
+}
 
 /// Expectations for the jobs the test will post, by identity.
 pub fn expect(identity: u64, e: Expect) {
@@ -185,9 +209,24 @@ impl SimPisp {
                 return Ok(());
             }
         };
+        let refused = if REFUSE.load(Ordering::SeqCst) == job.identity {
+            Some(lemnos_wire::ring::reason::BAD_CONFIG)
+        } else if job.input_lent && REFUSE_LENDS.load(Ordering::SeqCst) {
+            Some(lemnos_wire::ring::reason::NOT_LENT)
+        } else {
+            None
+        };
+        if let Some(reason) = refused {
+            // Refused: the job's consumer is told why on output 0, and nothing runs.
+            self.counters.dropped += 1;
+            return self
+                .output0
+                .publish_job_end(job.identity, reason, 0)
+                .map_err(|_| Status::IO);
+        }
         let names_ok = job.layout == LAYOUT_BACK_END
             && self.slots[0].has(job.config_buffer)
-            && self.slots[1].has(job.input_buffer)
+            && (job.input_lent || self.slots[1].has(job.input_buffer))
             && self.running;
         if !names_ok {
             self.counters.dropped += 1;
@@ -205,6 +244,7 @@ impl SimPisp {
             .and_then(|m| m.get(&job.identity).cloned());
         let config_ok = read && expect.as_ref().is_some_and(|e| e.config == cfg);
         let input_ok = match (&expect, self.input_len()) {
+            _ if job.input_lent => false,
             (Some(e), Some(len)) => {
                 let mut frame = vec![0u8; len.max(e.input_len)];
                 let read = self
@@ -223,6 +263,7 @@ impl SimPisp {
             outputs: [NO_BUFFER, NO_BUFFER],
             config_ok,
             input_ok,
+            lent: job.input_lent.then_some(job.lent_buffer),
         };
         // The log is held while the outputs go out and the job is logged before it is let go: a
         // test that has a job's outputs finds the job in the log.
@@ -255,6 +296,7 @@ impl SimPisp {
                     sequence: self.sequence,
                     identity: job.identity,
                     timestamp_ns: now_ns,
+                    ..Default::default()
                 })
                 .map_err(|_| Status::IO)?;
             self.slots[2 + k].held &= !(1 << buffer);
@@ -355,6 +397,7 @@ impl CameraIsp for SimPisp {
             config_layouts: 1,
             statistics_layout: 0,
             statistics_bytes: 0,
+            input_lend: LEND.load(Ordering::SeqCst),
         })
     }
 

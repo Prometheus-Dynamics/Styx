@@ -102,6 +102,7 @@ impl Lifecycle for SimUvc {
                         sequence: run.sequence,
                         identity: run.sequence,
                         timestamp_ns: next,
+                        ..Default::default()
                     };
                     match self.frames.publish(frame) {
                         Ok(()) => self.counters.frames += 1,

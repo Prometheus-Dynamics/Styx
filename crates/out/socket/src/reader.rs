@@ -164,6 +164,9 @@ pub struct ReaderStats {
     pub limited: u64,
     /// Entries this build could not read, or whose buffer the pool refused.
     pub malformed: u64,
+    /// Entries that named no buffer (metadata alone, such as a job's end), passed over. Styx's
+    /// own producer publishes none.
+    pub no_buffers: u64,
     /// Buffers this reader holds now.
     pub held: u32,
     /// Entries published that this reader has not looked at yet: its queue depth.
@@ -187,6 +190,7 @@ struct Counters {
     superseded: u64,
     limited: u64,
     malformed: u64,
+    no_buffers: u64,
     age_sum: u64,
     age_max: u64,
     age_last: u64,
@@ -293,6 +297,8 @@ pub struct Reader {
     /// A frame taken from the ring just as the stall this reader was told of ended: it is given
     /// after [`Next::Resumed`], which comes before the first frame after a stall.
     held_back: Option<Frame>,
+    /// This reader's slot in the producer's hold table and pool page.
+    slot: u32,
 }
 
 /// One thing [`Reader::next_event`] returns: a frame, or a change in the producer's state, or
@@ -502,6 +508,7 @@ impl Reader {
             told_stall: false,
             told_edges: 0,
             held_back: None,
+            slot,
         })
     }
 
@@ -521,11 +528,13 @@ impl Reader {
             // before its end, and a read after this load sees them all.
             let ended = self.buffers.end();
             match self.buffers.next() {
-                NextBatch::Batch(batch) => {
+                NextBatch::Frame(batch) => {
                     if let Some(frame) = admit(&self.frames, &mut self.counters, batch) {
                         return Ok(Some(frame));
                     }
                 }
+                // No frame to give: counted and passed over, never an end.
+                NextBatch::NoBuffers(_) => self.counters.no_buffers += 1,
                 NextBatch::Skipped(_) => {}
                 NextBatch::Empty => {
                     return match StreamEnd::from_code(ended) {
@@ -653,6 +662,13 @@ impl Reader {
         })
     }
 
+    /// Why the producer cut this reader off, as a `shm_ring_buffers::page::cut` reason (`HELD`
+    /// for a reader that held a buffer the producer had to take back), or zero while it has not.
+    #[must_use]
+    pub fn cut_reason(&self) -> u64 {
+        self.buffers.pool().cut_off_reason(self.slot)
+    }
+
     /// Counts, now.
     pub fn stats(&self) -> ReaderStats {
         let counters = &self.counters;
@@ -662,6 +678,7 @@ impl Reader {
             superseded: counters.superseded,
             limited: counters.limited,
             malformed: counters.malformed,
+            no_buffers: counters.no_buffers,
             held: self.marks.held(),
             queued: self.buffers.pending(),
             dma_brackets: self.tally.brackets.load(Ordering::Relaxed),

@@ -473,6 +473,7 @@ impl Lifecycle for SimReceiver {
                         sequence: id,
                         identity: id,
                         timestamp_ns: next,
+                        ..Default::default()
                     };
                     match self.frames.publish(frame) {
                         Ok(()) => self.counters.frames += 1,
@@ -646,6 +647,7 @@ impl CameraIsp for SimIsp {
             config_layouts: 0,
             statistics_layout: 0,
             statistics_bytes: 0,
+            ..Default::default()
         })
     }
 

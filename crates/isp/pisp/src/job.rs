@@ -26,6 +26,7 @@ pub fn back_end_job(
         config_buffer: config,
         input_buffer: input.unwrap_or(NO_BUFFER),
         outputs: outputs.map(|o| o.unwrap_or(NO_BUFFER)),
+        ..Default::default()
     }
 }
 

@@ -910,7 +910,13 @@ impl<M> Producer<M> {
                 continue;
             }
             self.holds.remove(link.slot, self.writer.pool().page());
-            page::cut_off(self.writer.pool().page(), buffers, link.slot);
+            // A reader holding a buffer the producer must take back holds past what it may: HELD.
+            page::cut_off(
+                self.writer.pool().page(),
+                buffers,
+                link.slot,
+                page::cut::HELD,
+            );
             link.bell.ring();
             link.marks = None;
             link.reserve_cut = true;

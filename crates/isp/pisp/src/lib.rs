@@ -59,6 +59,9 @@ pub enum PispError {
     /// Jobs were in flight and did not complete within the wait's timeout: the flights, and the
     /// device's counters at that point.
     Stalled(String),
+    /// A posted job ended without a frame: the ISP refused it or its time ran out, for `reason`
+    /// (Lemnos's word for it). Its buffers are free again; the frame was not processed.
+    JobEnded { identity: u64, reason: String },
 }
 
 impl std::fmt::Display for PispError {
@@ -72,6 +75,9 @@ impl std::fmt::Display for PispError {
             Self::Sink(e) => write!(f, "pisp job stream: {e}"),
             Self::Stats(e) => write!(f, "pisp statistics: {e}"),
             Self::Stalled(e) => write!(f, "pisp jobs stalled: {e}"),
+            Self::JobEnded { identity, reason } => {
+                write!(f, "pisp job {identity} ended without a frame: {reason}")
+            }
         }
     }
 }

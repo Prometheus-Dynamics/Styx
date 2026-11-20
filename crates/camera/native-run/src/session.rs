@@ -611,7 +611,7 @@ impl<'a, C: Clock> Session<'a, C> {
                 // but the device's reason when the stall was told before the reason was.
                 if self.status.stall.is_some() {
                     if let Some(since_ns) = self.stall_without_reason
-                        && let Some(reason) = self.sensor_reason()
+                        && let Some(reason) = self.sensor_reason(since_ns)
                     {
                         self.stall_without_reason = None;
                         let text = format!("camera failed, retrying since {since_ns}: {reason}");
@@ -647,7 +647,8 @@ impl<'a, C: Clock> Session<'a, C> {
                 self.resume_lost(timeout)
             }
             Ok(FrameEvent::Ended(end)) => self.ended(end),
-            Err(styx_lemnos::Error::Held(_)) => Ok(Event::Idle),
+            // A capture stream runs no jobs; a job's end on it says nothing about the camera.
+            Ok(FrameEvent::JobEnded { .. }) | Err(styx_lemnos::Error::Held(_)) => Ok(Event::Idle),
             Err(e) => {
                 if let Some(refusal) = e.layout_refusal() {
                     self.status.layout = Some(refusal);
@@ -673,21 +674,22 @@ impl<'a, C: Clock> Session<'a, C> {
         floor.max(4 * period + Duration::from_millis(450))
     }
 
-    /// The sensor's reason for failing, as its device entry gives it now; `None` when it gives none.
-    fn sensor_reason(&self) -> Option<String> {
-        let sensor = &self.camera.sensor().name;
-        self.client
-            .list()
-            .ok()
-            .and_then(|devices| devices.into_iter().find(|d| &d.name == sensor))
-            .map(|d| d.reason)
-            .filter(|reason| !reason.is_empty())
+    /// Why the stall that began at `since_ns` happened: see [`stall_reason`].
+    fn sensor_reason(&self, since_ns: u64) -> Option<String> {
+        let devices = self.client.list().ok()?;
+        let stalls = if since_ns == 0 {
+            Vec::new()
+        } else {
+            self.client.last_stalls().unwrap_or_default()
+        };
+        stall_reason(&devices, &stalls, &self.camera.sensor().name, since_ns)
     }
 
-    /// The camera failed and is retried since `since_ns`. The reason is the sensor's own, as its
-    /// device entry gives it now; an entry without one yet is read again on later waits.
+    /// The camera failed and is retried since `since_ns`. The reason is the one Lemnos kept for
+    /// that stall (see [`Session::sensor_reason`]); a stall without one yet is read again on later
+    /// waits.
     fn stalled(&mut self, since_ns: u64) -> Event {
-        let reason = self.sensor_reason();
+        let reason = self.sensor_reason(since_ns);
         self.stall_without_reason = reason.is_none().then_some(since_ns);
         let reason = reason.unwrap_or_else(|| "the device gave no reason".to_string());
         let text = format!("camera failed, retrying since {since_ns}: {reason}");
@@ -970,6 +972,114 @@ impl<'a, C: Clock> Session<'a, C> {
             Ok(()) => Ok(running),
             Err(fault) => Err(unwind(running, fault)),
         }
+    }
+}
+
+/// Why the stall that began at `since_ns` on `sensor`'s stream happened: the reason Lemnos kept
+/// for it on the sensor or a device its links lead to (a receiver's failure stalls the sensor's
+/// stream too). A kept stall outlives the device's recovery, so a stall read after it ended still
+/// has its reason. With no stall kept at that time (a service that keeps none, or a stall with no
+/// time), the sensor's reason as its device entry gives it now. `None` when neither gives one.
+fn stall_reason(
+    devices: &[styx_lemnos::DeviceEntry],
+    stalls: &[lemnos_client::Stall],
+    sensor: &str,
+    since_ns: u64,
+) -> Option<String> {
+    let chain = styx_lemnos::follow(devices, sensor);
+    stalls
+        .iter()
+        .filter(|_| since_ns != 0)
+        .find(|stall| stall.since_ns == since_ns && chain.iter().any(|d| d.index == stall.index))
+        .map(|stall| stall.reason.clone())
+        .filter(|reason| !reason.is_empty())
+        .or_else(|| {
+            chain
+                .first()
+                .map(|d| d.reason.clone())
+                .filter(|reason| !reason.is_empty())
+        })
+}
+
+#[cfg(test)]
+mod stall_reason_tests {
+    use lemnos_client::{DeviceHealth, DeviceState, Refusal, Stall};
+    use styx_lemnos::DeviceEntry;
+
+    use super::stall_reason;
+
+    fn device(index: u32, name: &str, link: Option<&str>, reason: &str) -> DeviceEntry {
+        DeviceEntry {
+            index,
+            name: name.to_string(),
+            driver: String::new(),
+            tags: Vec::new(),
+            state: DeviceState::Running,
+            health: DeviceHealth::Ok,
+            reason: reason.to_string(),
+            link: link.map(str::to_string),
+            jobs: Vec::new(),
+            refusal: Refusal::NONE,
+        }
+    }
+
+    fn stall(index: u32, name: &str, since_ns: u64, ended_ns: Option<u64>, reason: &str) -> Stall {
+        Stall {
+            index,
+            name: name.to_string(),
+            since_ns,
+            ended_ns,
+            reason: reason.to_string(),
+        }
+    }
+
+    fn chain(sensor_reason: &str) -> Vec<DeviceEntry> {
+        vec![
+            device(0, "sensor", Some("receiver"), sensor_reason),
+            device(1, "receiver", None, ""),
+            device(2, "elsewhere", None, ""),
+        ]
+    }
+
+    #[test]
+    fn a_stall_that_ended_keeps_its_reason() {
+        // The sensor recovered: its entry's reason is cleared, the kept stall still has it.
+        let stalls = [stall(0, "sensor", 500, Some(900), "bus error")];
+        assert_eq!(
+            stall_reason(&chain(""), &stalls, "sensor", 500).as_deref(),
+            Some("bus error")
+        );
+    }
+
+    #[test]
+    fn a_linked_devices_stall_is_the_reason() {
+        let stalls = [stall(1, "receiver", 500, None, "receiver overflow")];
+        assert_eq!(
+            stall_reason(&chain(""), &stalls, "sensor", 500).as_deref(),
+            Some("receiver overflow")
+        );
+    }
+
+    #[test]
+    fn another_time_or_an_unlinked_device_is_not_the_reason() {
+        let stalls = [
+            stall(0, "sensor", 400, Some(450), "an older stall"),
+            stall(2, "elsewhere", 500, None, "not this camera"),
+        ];
+        assert_eq!(stall_reason(&chain(""), &stalls, "sensor", 500), None);
+        assert_eq!(
+            stall_reason(&chain("failing now"), &stalls, "sensor", 500).as_deref(),
+            Some("failing now")
+        );
+    }
+
+    #[test]
+    fn a_stall_with_no_time_takes_the_entrys_reason() {
+        let stalls = [stall(0, "sensor", 0, None, "kept")];
+        assert_eq!(
+            stall_reason(&chain("now"), &stalls, "sensor", 0).as_deref(),
+            Some("now")
+        );
     }
 }
 

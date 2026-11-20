@@ -131,6 +131,7 @@ impl SimScaler {
             sequence: self.sequence,
             identity: 0,
             timestamp_ns: now_ns,
+            ..Default::default()
         };
         if self.scale.publish(frame).is_ok() {
             self.held &= !(1 << buffer);
@@ -186,6 +187,7 @@ impl SimScaler {
                     sequence: self.sequence,
                     identity: job.identity,
                     timestamp_ns: now_ns,
+                    ..Default::default()
                 };
                 if self.scale.publish(frame).is_ok() {
                     self.held &= !(1 << output);
