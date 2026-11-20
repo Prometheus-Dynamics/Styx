@@ -816,6 +816,13 @@ impl<'a, C: Clock> Session<'a, C> {
         self.skipped_done + self.running.as_ref().map_or(0, |r| r.frames.skipped())
     }
 
+    /// The buffers the running stream declared it holds at once, when it was taken
+    /// (`styx_lemnos::consumer_hold`); `None` while no stream runs. Every lease out of the stream,
+    /// shares included, counts against it.
+    pub fn hold(&self) -> Option<u32> {
+        self.running.as_ref().and_then(|r| r.frames.hold())
+    }
+
     /// Stops the devices after a fault, backs off, and starts again.
     fn fault(&mut self, text: String) -> Result<(), Error> {
         self.silenced = false;

@@ -8,6 +8,8 @@ mod close_on_drop;
 mod connect;
 #[path = "discovery.rs"]
 mod discovery;
+#[path = "hold.rs"]
+mod hold;
 #[path = "sim_chain.rs"]
 mod sim_chain;
 #[path = "stride.rs"]

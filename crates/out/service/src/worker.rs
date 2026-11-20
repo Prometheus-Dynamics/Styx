@@ -105,6 +105,18 @@ pub fn default_reserve(buffers: usize) -> usize {
     (buffers / 2).max(2).min(buffers)
 }
 
+/// The reserve to set for a camera whose reader declared `hold` buffers at once: at least what
+/// the hold leaves the camera, plus one for the frame in hand while the ring and its readers keep
+/// the rest, so the next frame can always be taken. With no hold declared, `asked` as it is.
+pub fn reserve_for(buffers: usize, asked: usize, hold: Option<u32>) -> usize {
+    match hold {
+        Some(hold) => asked
+            .max(buffers.saturating_sub(hold as usize) + 1)
+            .min(buffers),
+        None => asked,
+    }
+}
+
 /// The keep window for a pool of `buffers` with `reserve` kept for the camera: the newest
 /// `min(HISTORY, buffers - reserve)` frames stay with the ring, and at least one does.
 pub fn keep_for(buffers: usize, reserve: usize) -> usize {
@@ -601,7 +613,8 @@ fn pump(
                                 .settings
                                 .hardware_reserve
                                 .map_or(default_reserve(buffers), |r| (r as usize).min(buffers));
-                            let reserve = producer.set_reserve(asked);
+                            let reserve =
+                                producer.set_reserve(reserve_for(buffers, asked, capture.hold()));
                             let keep = producer.set_keep(keep_for(buffers, reserve));
                             window = KeepWindow {
                                 keep,

@@ -61,6 +61,10 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
         self.session.skipped()
     }
 
+    fn hold(&self) -> Option<u32> {
+        self.session.hold()
+    }
+
     fn next_frame(
         &mut self,
         timeout: Duration,

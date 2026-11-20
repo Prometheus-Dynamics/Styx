@@ -202,10 +202,17 @@ fn check_report(path: &std::path::Path, isp: bool) {
     // The service's copies, from its status: none on the frame path.
     assert_eq!(json_u64(&v, &["copies", "service_total"]), 0, "{text}");
     let period_ns = 1e9 / 120.0;
+    // The camera's stream declares a hold of 4 of its 8 buffers; the frame in hand is one of
+    // them, so the ring keeps 3 and the reserve is 5.
     let keep = json_u64(&v, &["service_camera", "end", "keep"]) as f64;
     assert_eq!(
-        keep, 4.0,
-        "keep is min(history 8, buffers 8 - reserve 4): {text}"
+        json_u64(&v, &["service_camera", "end", "hardware_reserve"]),
+        5,
+        "reserve is buffers 8 - hold 4 + the frame in hand: {text}"
+    );
+    assert_eq!(
+        keep, 3.0,
+        "keep is min(history 8, buffers 8 - reserve 5): {text}"
     );
     let isp_max = if isp {
         json_u64(&v, &["isp", "time_ns", "max"]) as f64

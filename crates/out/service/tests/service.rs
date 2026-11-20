@@ -1248,13 +1248,23 @@ fn a_reader_that_never_lets_go_is_cut_off_for_the_reserve_and_the_camera_keeps_s
     });
     let socket = camera_socket(dir.path(), cam);
 
-    // The hoarder takes four frames and never lets go. Four is its limit, so the producer's limit
-    // does not cut it off; the camera needs its buffer when the first of them leaves the window.
+    // The hoarder takes all the frames the readers may hold (the pool's buffers less the reserve)
+    // and never lets go. That is within its limit, so the producer's limit does not cut it off; the
+    // camera needs its buffer when the first of them leaves the window.
+    let hoard = {
+        let status = line_of(&control, cam).expect("listed");
+        let number = |key: &str| -> usize {
+            field(&status, key)
+                .and_then(|v| v.parse().ok())
+                .unwrap_or_else(|| panic!("{key} in {status}"))
+        };
+        number("buffers") - number("reserve")
+    };
     let mut hoarder = Reader::connect(UnixStream::connect(&socket).expect("connect"))
         .expect("the handshake completes");
     let mut held = Vec::new();
     let until = Instant::now() + Duration::from_secs(20);
-    while held.len() < 4 {
+    while held.len() < hoard {
         assert!(
             Instant::now() < until,
             "the hoarder took only {} frames",

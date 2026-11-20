@@ -374,6 +374,15 @@ pub enum Error {
     Planes(u32),
     /// A frame names a buffer outside the stream.
     BadBuffer(u32),
+    /// The stream has too few buffers for a consumer to hold one under [`consumer_hold`]: the
+    /// producer keeps them all. Nothing was taken.
+    NoHold {
+        stream: String,
+        buffers: u32,
+    },
+    /// The host gives no layout for the stream before it is taken, so the hold to declare is not
+    /// known. Nothing was taken.
+    Undescribed(String),
     /// A frame named a buffer whose lease is still out; the frame was given back to Lemnos.
     Held(u32),
     /// A compressed frame is longer than its buffer's payload; the frame was given back.
@@ -467,6 +476,16 @@ impl fmt::Display for Error {
             Self::NoBuffers => write!(f, "stream has no mappable buffers"),
             Self::Planes(n) => write!(f, "stream has {n} planes per buffer; one is mapped here"),
             Self::BadBuffer(b) => write!(f, "frame names buffer {b}, which is out of range"),
+            Self::NoHold { stream, buffers } => write!(
+                f,
+                "stream {stream} has {buffers} buffers: its producer keeps them all, so a \
+                 consumer can hold none"
+            ),
+            Self::Undescribed(stream) => write!(
+                f,
+                "the host gives no layout for stream {stream} before it is taken, so the hold \
+                 to declare is not known"
+            ),
             Self::Held(b) => write!(f, "buffer {b} still held; frame dropped"),
             Self::Oversize { len, payload } => {
                 write!(f, "compressed frame of {len} bytes; buffers hold {payload}")
@@ -542,21 +561,64 @@ impl fmt::Debug for Taken {
     }
 }
 
-/// Opens `stream` on `device` and maps each of its buffers into one pool. The stream is taken as
-/// its writable or read-only form; on any error after it is taken it is given back.
+/// The buffers a consumer of a stream of `buffers` buffers holds at once, at most: what is left
+/// when the producer keeps half of them, and never fewer than two. 2 of 4, 3 of 6, 4 of 8; 1 of 3;
+/// none of 2 or fewer. Styx's policy, declared to Lemnos when a frame stream is taken.
+///
+/// The hold counts buffers, not leases: a buffer goes back to Lemnos only when no lease on it is
+/// out, so frames an outlet still shares (a socket reader, a pipeline stage) are inside it.
+#[must_use]
+pub const fn consumer_hold(buffers: u32) -> u32 {
+    let producer = if buffers / 2 > 2 { buffers / 2 } else { 2 };
+    buffers.saturating_sub(producer)
+}
+
+/// The hold to declare for `stream` on `device` ([`consumer_hold`]), from the stream's layout as
+/// the host describes it before anything is taken.
+fn declared_hold(client: &Client, device: u32, stream: &str) -> Result<u32, Error> {
+    let description = client.describe(device).map_err(Error::from_client)?;
+    let buffers = description
+        .stream_layout(stream)
+        .ok_or_else(|| Error::Undescribed(stream.to_string()))?
+        .buffers;
+    match consumer_hold(buffers) {
+        0 => Err(Error::NoHold {
+            stream: stream.to_string(),
+            buffers,
+        }),
+        hold => Ok(hold),
+    }
+}
+
+/// How a stream is taken: read-only with the consumer's hold declared, or writable (a producer in
+/// this process, or a job stream's writer) with none.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Take {
+    Held,
+    Writable,
+}
+
+/// Opens `stream` on `device` and maps each of its buffers into one pool. On any error after the
+/// stream is taken it is given back.
 fn open_mapped<M: Default + Send + Sync>(
     client: &Client,
     device: u32,
     stream: &str,
-    writable: bool,
-) -> Result<(Taken, FramePool<M>), Error> {
+    take: Take,
+) -> Result<(Taken, FramePool<M>, Option<u32>), Error> {
     let platform: Arc<dyn StreamPlatform> = Arc::new(LinuxStreams);
-    let opened = if writable {
-        client.open_stream_writable(device, stream, platform)
-    } else {
-        client.open_stream(device, stream, platform)
-    }
-    .map_err(Error::from_client)?;
+    let writable = take == Take::Writable;
+    let (opened, hold) = match take {
+        Take::Writable => (client.open_stream_writable(device, stream, platform), None),
+        Take::Held => {
+            let hold = declared_hold(client, device, stream)?;
+            (
+                client.open_stream_held(device, stream, hold, platform),
+                Some(hold),
+            )
+        }
+    };
+    let opened = opened.map_err(Error::from_client)?;
     // From here the stream is given back on every error path: `Taken` does it on drop.
     let taken = Taken {
         client: client.clone(),
@@ -567,7 +629,7 @@ fn open_mapped<M: Default + Send + Sync>(
         return Err(Error::NoBuffers);
     }
     let pool = pool_over(memories, taken.stream().buffer_len())?;
-    Ok((taken, pool))
+    Ok((taken, pool, hold))
 }
 
 /// A frame stream's geometry: its format, its size, and the bytes per line the receiver writes
@@ -697,7 +759,8 @@ fn open_frames_with<M: Default + Send + Sync>(
     geometry: Geometry,
     writable: bool,
 ) -> Result<Frames<M>, Error> {
-    let (taken, pool) = open_mapped::<M>(client, device, stream, writable)?;
+    let take = if writable { Take::Writable } else { Take::Held };
+    let (taken, pool, hold) = open_mapped::<M>(client, device, stream, take)?;
     let format = MediaFormat::with_defaults(
         geometry.code,
         styx_format::Resolution::new(geometry.width, geometry.height).ok_or(Error::NoBuffers)?,
@@ -722,6 +785,7 @@ fn open_frames_with<M: Default + Send + Sync>(
         at_limit: 0,
         oversize_drops: 0,
         by_job: false,
+        hold,
     })
 }
 
@@ -735,7 +799,7 @@ pub fn open_job_stream<M: Default + Send + Sync>(
     device: u32,
     stream: &str,
 ) -> Result<JobStream<M>, Error> {
-    let (taken, pool) = open_mapped::<M>(client, device, stream, true)?;
+    let (taken, pool, _) = open_mapped::<M>(client, device, stream, Take::Writable)?;
     Ok(JobStream { taken, pool })
 }
 
@@ -832,6 +896,8 @@ pub struct Frames<M = ()> {
     held_drops: u64,
     oversize_drops: u64,
     at_limit: u64,
+    /// The hold declared when the stream was taken ([`consumer_hold`]); `None` for a writable one.
+    hold: Option<u32>,
     /// Number each frame by the job that made it, not by its place in the stream.
     by_job: bool,
 }
@@ -885,6 +951,12 @@ impl<M> Frames<M> {
     /// Frames dropped because their buffer's previous lease was still out.
     pub fn held_drops(&self) -> u64 {
         self.held_drops
+    }
+
+    /// The buffers this reader declared it holds at once when it took the stream
+    /// ([`consumer_hold`]); `None` for a stream taken writable, which declares none.
+    pub fn hold(&self) -> Option<u32> {
+        self.hold
     }
 
     /// Reads that found every buffer this reader may hold still held by its leases: no frame was

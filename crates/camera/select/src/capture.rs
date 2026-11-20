@@ -114,6 +114,14 @@ pub trait Capture {
         0
     }
 
+    /// The buffers of the camera's pool this reader declared it holds at once, every lease and
+    /// share of its frames included (a native camera's Lemnos stream); `None` where the backend
+    /// bounds no hold. A frame in hand is one of them, so whatever keeps frames past it (a ring of
+    /// recent frames for late readers) fits in one fewer.
+    fn hold(&self) -> Option<u32> {
+        None
+    }
+
     /// The change in the camera since the last call, if one came with the last `next_frame`
     /// (which then returned no frame). A backend without stalls says nothing.
     fn take_edge(&mut self) -> Option<Edge> {
