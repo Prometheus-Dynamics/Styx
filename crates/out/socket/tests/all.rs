@@ -12,6 +12,8 @@ mod ended;
 mod keep;
 #[path = "pool.rs"]
 mod pool;
+#[path = "reader_sets.rs"]
+mod reader_sets;
 #[path = "reserve.rs"]
 mod reserve;
 #[path = "ring.rs"]
