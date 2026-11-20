@@ -58,11 +58,11 @@ daedalus-runner = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git",
 daedalus-types = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "e556c5239b69527b17a1f87a76d7e8191bab2244" }
 daedalus-wgpu = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "e556c5239b69527b17a1f87a76d7e8191bab2244" }
 daedalus-wgpu-author = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "e556c5239b69527b17a1f87a76d7e8191bab2244" }
-orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "1099dd74fd8be46cdf7a47019a9239b35897ccfb", default-features = false }
-orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "1099dd74fd8be46cdf7a47019a9239b35897ccfb" }
-orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "1099dd74fd8be46cdf7a47019a9239b35897ccfb" }
-orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "1099dd74fd8be46cdf7a47019a9239b35897ccfb" }
-orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "1099dd74fd8be46cdf7a47019a9239b35897ccfb" }
+orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "e37baf92f8f51a8bf93ec9885143e4f860df81d2", default-features = false }
+orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "e37baf92f8f51a8bf93ec9885143e4f860df81d2" }
+orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "e37baf92f8f51a8bf93ec9885143e4f860df81d2" }
+orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "e37baf92f8f51a8bf93ec9885143e4f860df81d2" }
+orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "e37baf92f8f51a8bf93ec9885143e4f860df81d2" }
 # Tests only: a test's own scratch folder, removed when the test ends (passed or panicked). Never
 # a normal dependency: no product code writes temporary files.
 tempfile = "3"

@@ -1294,10 +1294,10 @@ source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a7556
 dependencies = [
  "lemnos-core",
  "lemnos-wire",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-doorbell 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-holds 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-ring",
+ "shm-ring-buffers",
+ "shm-ring-doorbell",
+ "shm-ring-holds",
 ]
 
 [[package]]
@@ -2426,11 +2426,11 @@ dependencies = [
  "lemnos-hal",
  "lemnos-wire",
  "serde",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-doorbell 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-holds 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-sample-time 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-ring",
+ "shm-ring-buffers",
+ "shm-ring-doorbell",
+ "shm-ring-holds",
+ "shm-sample-time",
  "thiserror 2.0.21",
  "toml",
 ]
@@ -2481,9 +2481,9 @@ version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
 dependencies = [
  "libc",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-holds 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-ring",
+ "shm-ring-buffers",
+ "shm-ring-holds",
 ]
 
 [[package]]
@@ -2519,7 +2519,7 @@ dependencies = [
  "lemnos-hal",
  "lemnos-slot-store",
  "serde",
- "shm-sample-time 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-sample-time",
  "subtle",
  "thiserror 2.0.21",
  "typenum",
@@ -2568,10 +2568,10 @@ version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
 dependencies = [
  "lemnos-core",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-doorbell 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-holds 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-ring",
+ "shm-ring-buffers",
+ "shm-ring-doorbell",
+ "shm-ring-holds",
 ]
 
 [[package]]
@@ -2997,7 +2997,7 @@ dependencies = [
 [[package]]
 name = "orion"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-buffers",
  "orion-connect",
@@ -3008,28 +3008,28 @@ dependencies = [
  "orion-topics",
  "orion-types",
  "orion-wire",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
 ]
 
 [[package]]
 name = "orion-broker"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-config",
  "orion-msg-topics",
  "orion-server",
  "orion-types",
  "orion-wire",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
- "shm-ring-doorbell 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
+ "shm-ring-doorbell",
  "tracing",
 ]
 
 [[package]]
 name = "orion-broker-buffers"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-broker",
  "orion-msg-topics",
@@ -3041,21 +3041,21 @@ dependencies = [
 [[package]]
 name = "orion-buffers"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-connect",
  "orion-msg-topics",
  "orion-topics",
  "orion-wire",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
- "shm-ring-holds 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
+ "shm-ring-buffers",
+ "shm-ring-holds",
 ]
 
 [[package]]
 name = "orion-check"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-types",
  "serde",
@@ -3064,7 +3064,7 @@ dependencies = [
 [[package]]
 name = "orion-config"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-check",
  "orion-types",
@@ -3073,7 +3073,7 @@ dependencies = [
 [[package]]
 name = "orion-connect"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-identity",
  "orion-msg-session",
@@ -3082,13 +3082,13 @@ dependencies = [
  "orion-types",
  "orion-wire",
  "rustix",
- "shm-fdpass 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-fdpass",
 ]
 
 [[package]]
 name = "orion-identity"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "ed25519-dalek 3.0.0",
  "getrandom",
@@ -3102,7 +3102,7 @@ dependencies = [
 [[package]]
 name = "orion-msg-peers"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-msg-records",
  "orion-types",
@@ -3113,7 +3113,7 @@ dependencies = [
 [[package]]
 name = "orion-msg-records"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-types",
  "orion-wire",
@@ -3123,7 +3123,7 @@ dependencies = [
 [[package]]
 name = "orion-msg-session"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-types",
  "orion-wire",
@@ -3133,7 +3133,7 @@ dependencies = [
 [[package]]
 name = "orion-msg-topics"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-types",
  "orion-wire",
@@ -3143,7 +3143,7 @@ dependencies = [
 [[package]]
 name = "orion-net-handshake"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "hmac",
  "orion-identity",
@@ -3154,7 +3154,7 @@ dependencies = [
 [[package]]
 name = "orion-server"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-check",
  "orion-config",
@@ -3162,7 +3162,7 @@ dependencies = [
  "orion-supervise",
  "orion-types",
  "orion-wire",
- "shm-fdpass 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-fdpass",
  "tokio",
  "tracing",
 ]
@@ -3170,46 +3170,46 @@ dependencies = [
 [[package]]
 name = "orion-supervise"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 
 [[package]]
 name = "orion-topics"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-connect",
  "orion-msg-topics",
  "orion-types",
  "orion-wire",
  "rustix",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
- "shm-ring-doorbell 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
+ "shm-ring-doorbell",
  "shm-ring-time",
 ]
 
 [[package]]
 name = "orion-types"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "serde",
- "shm-sample-time 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-sample-time",
 ]
 
 [[package]]
 name = "orion-unix"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-server",
- "shm-fdpass 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-fdpass",
  "tokio",
 ]
 
 [[package]]
 name = "orion-wire"
 version = "1.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=1099dd74fd8be46cdf7a47019a9239b35897ccfb#1099dd74fd8be46cdf7a47019a9239b35897ccfb"
+source = "git+https://github.com/Prometheus-Dynamics/Orion.git?rev=e37baf92f8f51a8bf93ec9885143e4f860df81d2#e37baf92f8f51a8bf93ec9885143e4f860df81d2"
 dependencies = [
  "orion-types",
  "postcard",
@@ -3607,29 +3607,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "shm-fdpass"
-version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0#c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "shm-ring"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
 dependencies = [
  "libc",
- "shm-sample-time 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
-]
-
-[[package]]
-name = "shm-ring"
-version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0#c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0"
-dependencies = [
- "libc",
- "shm-sample-time 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-sample-time",
 ]
 
 [[package]]
@@ -3638,16 +3621,7 @@ version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
 dependencies = [
  "libc",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
-]
-
-[[package]]
-name = "shm-ring-buffers"
-version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0#c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0"
-dependencies = [
- "libc",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
 ]
 
 [[package]]
@@ -3656,16 +3630,7 @@ version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
 dependencies = [
  "libc",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
-]
-
-[[package]]
-name = "shm-ring-doorbell"
-version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0#c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0"
-dependencies = [
- "libc",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
 ]
 
 [[package]]
@@ -3673,41 +3638,23 @@ name = "shm-ring-holds"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
 dependencies = [
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
-]
-
-[[package]]
-name = "shm-ring-holds"
-version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0#c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0"
-dependencies = [
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
+ "shm-ring-buffers",
 ]
 
 [[package]]
 name = "shm-ring-time"
 version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0#c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
 dependencies = [
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
- "shm-ring-doorbell 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0)",
+ "shm-ring",
+ "shm-ring-doorbell",
 ]
 
 [[package]]
 name = "shm-sample-time"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8#5ee2f64a75561db988d519ac68395a8dd1054bb8"
-dependencies = [
- "libc",
- "serde",
-]
-
-[[package]]
-name = "shm-sample-time"
-version = "2.0.1-dev"
-source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0#c8f1b3d26db45dd9b1b2ef70c533f5360f100cc0"
 dependencies = [
  "libc",
  "serde",
@@ -3865,7 +3812,7 @@ dependencies = [
  "lemnos-host",
  "lemnos-sim",
  "lemnosd",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-ring",
  "styx-controls",
  "styx-format",
  "styx-frame",
@@ -4025,8 +3972,8 @@ dependencies = [
  "gstreamer-allocators",
  "gstreamer-base",
  "gstreamer-video",
- "shm-fdpass 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-fdpass",
+ "shm-ring",
  "styx-format",
  "styx-frame",
  "styx-socket",
@@ -4249,9 +4196,9 @@ dependencies = [
  "orion-broker-buffers",
  "orion-server",
  "orion-unix",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-holds 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-sample-time 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-ring-buffers",
+ "shm-ring-holds",
+ "shm-sample-time",
  "styx-format",
  "styx-frame",
  "styx-socket",
@@ -4277,8 +4224,8 @@ name = "styx-pipewire"
 version = "2.0.2-dev"
 dependencies = [
  "pipewire",
- "shm-fdpass 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-fdpass",
+ "shm-ring",
  "styx-format",
  "styx-frame",
  "styx-socket",
@@ -4312,7 +4259,7 @@ dependencies = [
 name = "styx-preview"
 version = "2.0.2-dev"
 dependencies = [
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-ring",
  "styx-format",
  "styx-frame",
  "styx-jpeg",
@@ -4457,11 +4404,11 @@ name = "styx-socket"
 version = "2.0.2-dev"
 dependencies = [
  "lemnos-linux-sys",
- "shm-fdpass 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-buffers 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-doorbell 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
- "shm-ring-holds 2.0.1-dev (git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=5ee2f64a75561db988d519ac68395a8dd1054bb8)",
+ "shm-fdpass",
+ "shm-ring",
+ "shm-ring-buffers",
+ "shm-ring-doorbell",
+ "shm-ring-holds",
  "styx-format",
  "styx-frame",
  "tempfile",
