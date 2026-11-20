@@ -90,10 +90,21 @@ fn daemon(socket: &Path, text: &str) -> LemnosDaemon {
     LemnosDaemon::start(config).expect("start lemnosd")
 }
 
-/// Records each backoff wait, and pauses briefly so a failing camera does not spin.
+/// Records each backoff wait, and pauses briefly so a failing camera does not spin. A wait is
+/// 2 ms here whatever the policy asks, so the failures a camera makes while away grow with how
+/// long it is away; what the policy promises is that each failure is followed by its wait.
 #[derive(Default)]
 struct Recorder {
     waits: Mutex<Vec<Duration>>,
+}
+
+impl Recorder {
+    fn waits(&self) -> Vec<Duration> {
+        self.waits
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
+    }
 }
 
 impl Clock for Recorder {
@@ -170,6 +181,7 @@ struct Run {
     registry: Arc<Registry>,
     history: Vec<Snapshot>,
     control: PathBuf,
+    clock: Arc<Recorder>,
 }
 
 impl Run {
@@ -182,8 +194,9 @@ impl Run {
         let tally = Arc::new(Tally::default());
         let counted = Counted::new(Arc::clone(&tally) as Arc<dyn Outlets>);
         let registry = counted.registry();
+        let clock = Arc::new(Recorder::default());
         let deps = Deps {
-            clock: Arc::new(Recorder::default()),
+            clock: Arc::clone(&clock) as Arc<dyn Clock + Send + Sync>,
             listers: Listers {
                 native: Arc::new(styx_service::Daemon {
                     socket: lemnos_socket.to_path_buf(),
@@ -205,6 +218,7 @@ impl Run {
             registry,
             history: Vec::new(),
             control,
+            clock,
         }
     }
 
@@ -514,6 +528,16 @@ fn a_camera_that_leaves_and_returns_shows_backoff_and_then_streaming() {
     );
     assert!(!backoff.last_error.is_empty(), "{backoff:?}");
 
+    // It stays away long enough to retry past a thousand times on this clock's 2 ms waits (a
+    // connect with no service fails at once, so nothing else paces the retries): the count is
+    // the time away, and each retry must still have had its wait.
+    run.until("many retries", Duration::from_secs(30), |r| {
+        r.service
+            .statuses()
+            .iter()
+            .any(|s| s.id.as_str() == CAM0 && s.total_failures > 1_100)
+    });
+
     // It comes back: the same socket, the same board.
     let _lemnos = daemon(&lemnos_socket, &board);
     run.until("camera 0 streaming again", Duration::from_secs(40), |r| {
@@ -535,8 +559,23 @@ fn a_camera_that_leaves_and_returns_shows_backoff_and_then_streaming() {
         states[first_backoff..].contains(&CameraState::Streaming),
         "streaming after the backoff: {states:?}"
     );
-    let waits = run.service.statuses();
-    assert!(waits.iter().all(|s| s.total_failures < 1000));
+    // Every failure waited the policy's wait before the next attempt (a camera may be between a
+    // failure and its wait as this is read, so one per camera may be owed), and every wait is the
+    // policy's: from the first wait, doubling, to the cap, never shorter.
+    let statuses = run.service.statuses();
+    let failures: u64 = statuses.iter().map(|s| s.total_failures).sum();
+    let waits = run.clock.waits();
+    assert!(
+        waits.len() as u64 + statuses.len() as u64 >= failures,
+        "{} waits for {failures} failures",
+        waits.len()
+    );
+    let (first, cap) = (Duration::from_millis(250), Duration::from_secs(5));
+    assert!(
+        waits.iter().all(|w| (first..=cap).contains(w)),
+        "a wait outside the policy: {waits:?}"
+    );
+    assert!(waits.contains(&cap), "the waits reach the cap");
     assert_eq!(copies(), 0);
     run.service.shutdown();
 }
