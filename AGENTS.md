@@ -40,17 +40,18 @@ The work is a pre-planned list of PRs into `next`.
   description. Core interfaces change only through A-series PRs.
 - A need named `X<n>` is an outside block (see `docs/design.md`). Don't work around it and don't
   open PRs in other repositories for it.
-- A PR merges when the lander's `scripts/gate.sh` passes. Paste the proof named in the brief into
-  the PR description.
+- A PR merges when the lander's `scripts/gate.sh` passes. It runs the lanes the change selects
+  (`docs/gate.md`), and the landed commit carries its `Gate-Lanes` and `Gate-Tree` trailers
+  (`scripts/gate.sh --trailer`); `scripts/land.sh` pushes only a tip whose trailers match a green
+  record. Paste the proof named in the brief into the PR description.
 
 ## Worker flow
 
 - The landing gate is the proof. A worker does not run the full gate before pushing. It runs
   `scripts/check.sh`, the brief's proof that the change's test fails before it and passes after,
-  and nothing more. Nothing lands on a red gate. `check.sh` runs the gate's own commands with whole
-  passes left out: one feature pass (all-features when a changed file is behind a feature), tests
-  of the crates the change reaches, doctests only when a changed file holds one, no_std checks only
-  of changed no_std crates. It prints each pass it left out. Green there is not the gate.
+  and nothing more. Nothing lands on a red gate. `check.sh` is the gate with the lanes the change
+  selects, its tests narrowed to the crates the change reaches and the doctests left out when no
+  changed file holds one. It records no gate. Green there is not the gate.
 - Repeat runs are set by risk, and the count is stated in the PR: many runs only for a change to
   timing or concurrency; three for a join of branches that each passed, and for an ordinary change.
 - A red landing gate is read and given a named cause. Never rerun it in hope.

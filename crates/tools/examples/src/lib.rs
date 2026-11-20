@@ -99,7 +99,8 @@ impl Lab {
     /// The simulated backend: `lemnosd` in this process, with one simulated camera
     /// ([`SIM_CAMERA`]). `name` keeps this process's socket directory apart from others.
     pub fn sim(name: &str) -> Result<Self, String> {
-        let dir = std::env::temp_dir().join(format!("styx-examples-{name}-{}", std::process::id()));
+        // Short: a camera's socket path under it must stay under 108 bytes in any TMPDIR.
+        let dir = std::env::temp_dir().join(format!("styx-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let guard = DirGuard(dir.clone());
@@ -335,10 +336,9 @@ impl Served {
 /// Starts a camera service on `camera` in a directory of this process's own, named `name`. See
 /// [`start_service`].
 pub fn serve(lab: &Lab, name: &str, camera: &str, format: Option<&str>) -> Result<Served, String> {
-    let dir = std::env::temp_dir().join(format!(
-        "styx-examples-{name}-service-{}",
-        std::process::id()
-    ));
+    // Short: a camera's socket path under it (cameras/<camera>-<hash>.sock) must stay under 108
+    // bytes in any TMPDIR.
+    let dir = std::env::temp_dir().join(format!("styx-{name}-{}s", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let guard = DirGuard(dir.clone());

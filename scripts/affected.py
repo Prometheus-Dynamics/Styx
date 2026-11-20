@@ -1,25 +1,14 @@
 #!/usr/bin/env python3
 """The workspace crates owning the files that differ from a revision (default: origin/next),
-untracked files included.
+untracked files included, one package name per line. scripts/gate.py uses its rules for which
+changed files hold code compiled only without a feature (host:default) and doctests.
 
-Usage: affected.py [<rev>]          one package name per line
-       affected.py --plan [<rev>]   what scripts/check.sh runs (below)
+Usage: affected.py [<rev>]
 
 A change outside every crate (the workspace manifest, the lock file, .cargo/, .config/, scripts/,
 the toolchain), or to a crate's own manifest (its features and dependencies), prints "--workspace":
 only the whole gate covers it. Markdown files and docs/ outside the crates change no build and are
 left out.
-
---plan prints, one per line:
-  crate <name>     a changed crate (scripts/check.sh tests it and its dependents)
-  pass all         the feature passes to run. Tests run in the all-features pass, so it always
-  pass both        runs; the default pass too ("both") when a changed file holds code compiled
-                   only without a feature (a cfg naming not(feature ...) in the file, or on a
-                   `mod` declaring it, up to the crate root)
-  doctests 1       a changed file holds a doctest (a code fence in a doc comment, or a Markdown
-                   file in a crate, which a crate may include as its documentation)
-  no_std <dir>     a changed crate whose manifest says no_std = true (its directory name)
-or "--workspace" alone.
 """
 import json
 import os
@@ -107,8 +96,6 @@ def holds_doctest(path):
 
 def main():
     args = sys.argv[1:]
-    plan = "--plan" in args
-    args = [a for a in args if a != "--plan"]
     rev = args[0] if args else "origin/next"
     meta = json.loads(subprocess.run(
         ["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
@@ -117,10 +104,6 @@ def main():
     root = meta["workspace_root"]
     members = [p for p in meta["packages"] if p["id"] in meta["workspace_members"]]
     dirs = {p["name"]: os.path.dirname(p["manifest_path"]) for p in members}
-    no_std = {
-        p["name"] for p in members
-        if ((p.get("metadata") or {}).get("styx") or {}).get("no_std") is True
-    }
 
     def git(*args):
         return subprocess.run(
@@ -129,7 +112,6 @@ def main():
 
     files = git("diff", "--name-only", rev, "--") + git("ls-files", "--others", "--exclude-standard")
     owners = set()
-    feature = doctests = False
     for f in filter(None, files):
         path = os.path.join(root, f)
         owner = max(
@@ -145,21 +127,8 @@ def main():
             print("--workspace")
             return
         owners.add(owner)
-        # A deleted file is gone: what declared it changed too, and is judged on its own.
-        if os.path.exists(path):
-            feature = feature or behind_feature(path, dirs[owner])
-            doctests = doctests or holds_doctest(path)
-    if not plan:
-        for n in sorted(owners):
-            print(n)
-        return
     for n in sorted(owners):
-        print("crate", n)
-    if owners:
-        print("pass", "both" if feature else "all")
-        print("doctests", 1 if doctests else 0)
-    for n in sorted(owners & no_std):
-        print("no_std", os.path.basename(dirs[n]))
+        print(n)
 
 
 if __name__ == "__main__":

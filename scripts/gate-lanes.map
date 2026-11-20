@@ -1,0 +1,25 @@
+# Which gate lanes a changed file selects (scripts/gate.py; the first matching pattern wins, `*`
+# matches across directories). Lanes: all, host, bare, or LANE:VARIANT (host:checks, host:all,
+# host:default, bare:thumbv7em, bare:riscv32imac). A file no pattern matches: a crate's file selects
+# host:all, plus host:default when it holds not(feature) code and bare when a no_std crate reaches
+# it; documentation no code or script names selects host:checks; anything else host:all.
+
+# What every lane builds or runs with.
+Cargo.toml                  all
+Cargo.lock                  all
+rust-toolchain.toml         all
+.cargo/*                    all
+.config/*                   all
+crates/*/Cargo.toml         all
+crates/*/build.rs           all
+scripts/gate*               all
+scripts/affected.py         all
+scripts/test-layout.py      all
+scripts/one-shm.py          all
+scripts/cargo-seed.sh       all
+scripts/lanes-behind.sh     all
+scripts/release-check.sh    all
+scripts/land.sh             all
+scripts/check.sh            all
+# Test data any crate's tests may read (content keys rerun only the crates whose runs read it).
+data/*                      host:all
