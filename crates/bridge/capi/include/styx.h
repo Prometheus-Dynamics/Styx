@@ -54,6 +54,7 @@ typedef int32_t styx_status;
 #define STYX_E_RANGE (-10)      /* a control value outside its range */
 #define STYX_E_LAYOUT (-11)     /* a frame socket's shared ring or marks page is another layout:
                                    styx_layout_refusal gives which, found and expected */
+#define STYX_E_ACCESS (-12)     /* the control cannot be set now: read-only, grabbed or disabled */
 
 /* The structure a STYX_E_LAYOUT refusal names (styx_layout_refusal's first value). */
 #define STYX_LAYOUT_RING 1  /* the frame ring's header */
@@ -63,6 +64,7 @@ typedef int32_t styx_status;
 typedef struct styx_source styx_source;
 typedef struct styx_camera styx_camera;
 typedef struct styx_frame styx_frame;
+typedef struct styx_controls styx_controls;
 
 /* Control values: kind STYX_VALUE_AUTO (value ignored), STYX_VALUE_MANUAL (value in the control's
  * unit), or STYX_VALUE_FLAG (value 0 or 1). Crops are not settable or readable here. */
@@ -74,6 +76,77 @@ typedef struct styx_control_value {
     uint32_t kind;
     uint32_t value;
 } styx_control_value;
+
+/* A camera's controls (styx_camera_controls). Each info struct's `known` says which fields the camera
+ * gave; a field whose bit is clear is unknown (the backend does not say) and holds 0. Styx never fills
+ * one in from a generic table. */
+#define STYX_KNOWN_RANGE 1
+#define STYX_KNOWN_STEP 2
+#define STYX_KNOWN_DEFAULT 4
+#define STYX_KNOWN_EFFECTIVE 8
+#define STYX_KNOWN_AUTO 16
+#define STYX_KNOWN_VALUE 32
+#define STYX_KNOWN_STANDARD 64
+
+/* A standard control's range: min..max in its unit, a flag (0..1), or a rectangle (crop). */
+#define STYX_RANGE_MANUAL 0
+#define STYX_RANGE_FLAG 1
+#define STYX_RANGE_RECT 2
+
+/* Whether a set is taken now. INACTIVE is taken (the device keeps it for when it is in effect);
+ * READ_ONLY, GRABBED and DISABLED are refused with STYX_E_ACCESS. */
+#define STYX_ACCESS_READ_WRITE 0
+#define STYX_ACCESS_READ_ONLY 1
+#define STYX_ACCESS_INACTIVE 2
+#define STYX_ACCESS_GRABBED 3
+#define STYX_ACCESS_DISABLED 4
+
+/* A device control's kind. */
+#define STYX_DEVICE_INTEGER 0
+#define STYX_DEVICE_INTEGER64 1
+#define STYX_DEVICE_BOOLEAN 2
+#define STYX_DEVICE_MENU 3
+#define STYX_DEVICE_BITMASK 4
+#define STYX_DEVICE_BUTTON 5
+#define STYX_DEVICE_OTHER 6
+
+/* A standard control as this camera has it, in the control's documented unit (a backend converts).
+ * effective_min..effective_max is the range it takes now (a frame rate moves exposure's ceiling).
+ * auto_mode is 1 when the control has an automatic mode. A crop's default is not carried. */
+typedef struct styx_control_info {
+    uint32_t known;
+    uint32_t range_kind;
+    uint32_t min;
+    uint32_t max;
+    uint32_t step;
+    uint32_t effective_min;
+    uint32_t effective_max;
+    uint32_t auto_mode;
+    uint32_t access;
+    styx_control_value default_value;
+} styx_control_info;
+
+/* A device control, in the device's own units, by the backend's id (a V4L2 V4L2_CID_*, a libcamera
+ * control id, or 1 for a native sensor's test pattern menu). entries is the menu's entry count.
+ * With STYX_KNOWN_STANDARD it is the standard control at index `standard` of the same answer: setting
+ * either moves the same value. A libcamera `value` is the value last set, not read back (what the
+ * camera applied is in frame metadata). */
+typedef struct styx_device_info {
+    uint32_t id;
+    uint32_t kind;
+    uint32_t access;
+    uint32_t known;
+    int64_t min;
+    int64_t max;
+    uint64_t step;
+    int64_t default_value;
+    int64_t effective_min;
+    int64_t effective_max;
+    int64_t value;
+    uint64_t entries;
+    uint32_t standard;
+    uint32_t reserved;
+} styx_device_info;
 
 /* Open options. Zero means the default (exposure 10000 us, gain 1000). The in-process path needs
  * fps_milli (frames per second in thousandths; the sensor mode must reach it). Width and height
@@ -171,14 +244,72 @@ styx_status styx_camera_open(const styx_source *source, const uint8_t *name, siz
 void styx_camera_close(styx_camera *camera);
 
 /* Sets control `name` (as styx-controls names it: exposure, gain, frame_rate, and so on) to
- * `value`, applied from frame `frame` on. Not thread-safe with other calls on the same camera. */
+ * `value`, applied from frame `frame` on, checked against this camera's range (styx_camera_controls):
+ * STYX_E_NOT_FOUND for a control the camera does not have, STYX_E_RANGE outside its range or between
+ * its steps, STYX_E_ACCESS when it cannot be set now. A value inside the range but past the
+ * effective range is taken and clamped by the camera. Not thread-safe with other calls on the same
+ * camera. */
 styx_status styx_camera_set_control(styx_camera *camera, const uint8_t *name, size_t len,
                                     styx_control_value value, uint64_t frame);
 
 /* Reads control `name`'s value in force on the camera's newest frame (on the service path, the
- * service's value for the newest frame). Not thread-safe with other calls on the same camera. */
+ * service's value for the newest frame). STYX_E_NOT_FOUND for a control the camera does not have,
+ * or before the first frame. Not thread-safe with other calls on the same camera. */
 styx_status styx_camera_get_control(styx_camera *camera, const uint8_t *name, size_t len,
                                     styx_control_value *out);
+
+/* ---- Controls as the camera has them -------------------------------------------------- */
+
+/* The camera's controls now, as one answer (over the service, one `controls` request). Read it with
+ * the styx_controls_* calls, which are thread-safe on one answer, and free it with
+ * styx_controls_free. Ask again when styx_controls_seq moves. Not thread-safe with other calls on the
+ * same camera. */
+styx_status styx_camera_controls(styx_camera *camera, styx_controls **out);
+
+/* Frees an answer (NULL is a no-op). */
+void styx_controls_free(styx_controls *controls);
+
+/* The camera's controls count when the answer was made: it moves on any applied set from any client,
+ * on a range change and on reconnect. */
+styx_status styx_controls_seq(const styx_controls *controls, uint64_t *out);
+
+/* The standard controls the camera has (a control it lacks is not listed). STYX_E_NOT_FOUND past
+ * the last index in each call below. */
+styx_status styx_controls_standard_count(const styx_controls *controls, size_t *count);
+styx_status styx_controls_standard(const styx_controls *controls, size_t index,
+                                   styx_control_info *out);
+styx_status styx_controls_standard_name(const styx_controls *controls, size_t index, uint8_t *buf,
+                                        size_t cap, size_t *len);
+
+/* Every control the camera has. */
+styx_status styx_controls_device_count(const styx_controls *controls, size_t *count);
+styx_status styx_controls_device(const styx_controls *controls, size_t index,
+                                 styx_device_info *out);
+styx_status styx_controls_device_name(const styx_controls *controls, size_t index, uint8_t *buf,
+                                      size_t cap, size_t *len);
+
+/* Menu entry `entry` of device control `device`: the value that selects it, and its label.
+ * styx_controls_entry_label is STYX_E_NOT_FOUND for an entry the device gives no name (show the
+ * number; never make one up). */
+styx_status styx_controls_entry(const styx_controls *controls, size_t device, size_t entry,
+                                int64_t *out);
+styx_status styx_controls_entry_label(const styx_controls *controls, size_t device, size_t entry,
+                                      uint8_t *buf, size_t cap, size_t *len);
+
+/* Standard control `name` (len bytes) as the camera has it. STYX_E_NOT_FOUND when it does not have
+ * it. Not thread-safe with other calls on the same camera. */
+styx_status styx_camera_control_info(styx_camera *camera, const uint8_t *name, size_t len,
+                                     styx_control_info *out);
+
+/* Device control `id`'s value. STYX_E_NOT_FOUND for an id the camera does not have or a value the
+ * backend does not say. Not thread-safe with other calls on the same camera. */
+styx_status styx_camera_get_device(styx_camera *camera, uint32_t id, int64_t *out);
+
+/* Sets device control `id` to `value`, in the device's units. STYX_E_RANGE outside the camera's
+ * range, between its steps, or none of a menu's entries; STYX_E_ACCESS when it cannot be set now;
+ * STYX_E_INVALID for the wrong kind of value; STYX_E_NOT_FOUND for an id it does not have. Not
+ * thread-safe with other calls on the same camera. */
+styx_status styx_camera_set_device(styx_camera *camera, uint32_t id, int64_t value);
 
 /* Waits up to timeout_ms for the next frame. On STYX_OK, *out is a frame to release. Returns
  * STYX_E_TIMEOUT when none came. Not thread-safe with other calls on the same camera. */

@@ -13,6 +13,7 @@
 use std::num::NonZeroU32;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -23,7 +24,7 @@ use styx_lemnos::Client;
 use styx_native::discover;
 use styx_native_run::{AutoOff, Initial, Policy, Request, Session, SystemClock};
 use styx_select::adapters::NativeCapture;
-use styx_select::{Backend, Capture, CaptureError, Selected};
+use styx_select::{Backend, Capture, CaptureError, ControlsInfo, DeviceInfo, Selected};
 use styx_socket::{Reader, SharedLayout, SocketError};
 
 use crate::frame::Frame;
@@ -52,6 +53,15 @@ pub struct OpenOptions {
     pub fps_milli: u32,
     pub exposure_us: u32,
     pub gain_milli: u32,
+}
+
+/// A camera's controls as one answer: what `styx_camera_controls` hands out. `seq` is the camera's
+/// controls count when it was made (the service's `controls_seq`; in process, the capture's
+/// controls generation): a caller asks again when it moves.
+#[derive(Debug, Clone)]
+pub struct Controls {
+    pub seq: u64,
+    pub info: Arc<ControlsInfo>,
 }
 
 /// One open camera.
@@ -127,11 +137,21 @@ impl Camera {
             )),
         })?;
         match &mut self.link {
-            Link::Local(link) => link.set(Update {
-                control,
-                value,
-                frame,
-            }),
+            Link::Local(link) => {
+                // The service checks against the camera's own ranges; in process, the same check.
+                let controls = link.controls()?;
+                controls
+                    .info
+                    .standard(control)
+                    .ok_or_else(|| no_control(control))?
+                    .check(value)
+                    .map_err(wire::refusal)?;
+                link.set(Update {
+                    control,
+                    value,
+                    frame,
+                })
+            }
             Link::Remote(link) => link.set(&self.name, control, value, frame),
         }
     }
@@ -139,15 +159,75 @@ impl Camera {
     /// The value in force on the newest frame.
     pub(crate) fn get_control(&mut self, control: Control) -> Res<ControlValue> {
         match &mut self.link {
-            Link::Local(_) => self
-                .last
-                .as_ref()
-                .map(|meta| meta.control(control))
-                .ok_or_else(|| Fail::new(E_NOT_FOUND, "no frame yet, so no value")),
+            Link::Local(link) => {
+                if link.controls()?.info.standard(control).is_none() {
+                    return Err(no_control(control));
+                }
+                self.last
+                    .as_ref()
+                    .map(|meta| meta.control(control))
+                    .ok_or_else(|| Fail::new(E_NOT_FOUND, "no frame yet, so no value"))
+            }
             Link::Remote(link) => {
                 let lines = link.control.ask(&format!("controls {}", self.name))?;
                 wire::value_of(&lines, control)
             }
+        }
+    }
+
+    /// The camera's controls now: the standard ones with this camera's ranges and every device
+    /// control.
+    pub(crate) fn controls(&mut self) -> Res<Controls> {
+        match &mut self.link {
+            Link::Local(link) => link.controls(),
+            Link::Remote(link) => {
+                let lines = link.control.ask(&format!("controls {}", self.name))?;
+                let (seq, info) = wire::controls_of(&lines);
+                Ok(Controls {
+                    seq,
+                    info: Arc::new(info),
+                })
+            }
+        }
+    }
+
+    /// Device control `id`'s value, in the device's units. `E_NOT_FOUND` for an id the camera does
+    /// not have, or a value the backend cannot say.
+    pub(crate) fn get_device(&mut self, id: u32) -> Res<i64> {
+        let device = match &mut self.link {
+            Link::Local(link) => link.controls()?.info.device(id).cloned(),
+            Link::Remote(link) => {
+                let lines = link.control.ask(&format!("getd {} {id:#x}", self.name))?;
+                wire::controls_of(&lines)
+                    .1
+                    .device
+                    .into_iter()
+                    .find(|d| d.id == id)
+            }
+        };
+        let device = device.ok_or_else(|| no_device(id))?;
+        device.value.ok_or_else(|| {
+            Fail::new(
+                E_NOT_FOUND,
+                format!("{}: the backend does not say its value", device.name),
+            )
+        })
+    }
+
+    /// Sets device control `id` to `value`, in the device's units, checked against what the camera
+    /// says of the control.
+    pub(crate) fn set_device(&mut self, id: u32, value: i64) -> Res<()> {
+        match &mut self.link {
+            Link::Local(link) => {
+                let controls = link.controls()?;
+                let device: &DeviceInfo = controls.info.device(id).ok_or_else(|| no_device(id))?;
+                device.check(value).map_err(wire::refusal)?;
+                link.set_device(id, value)
+            }
+            Link::Remote(link) => link
+                .control
+                .ask(&format!("setd {} {id:#x} {value}", self.name))
+                .map(|_| ()),
         }
     }
 
@@ -181,6 +261,20 @@ impl Camera {
     }
 }
 
+fn no_control(control: Control) -> Fail {
+    Fail::new(
+        E_NOT_FOUND,
+        format!("the camera has no control {}", control.name()),
+    )
+}
+
+fn no_device(id: u32) -> Fail {
+    Fail::new(
+        E_NOT_FOUND,
+        format!("the camera has no device control {id:#x}"),
+    )
+}
+
 // In-process path -----------------------------------------------------------------------------
 
 enum Command {
@@ -191,6 +285,14 @@ enum Command {
     Set {
         update: Update,
         reply: Sender<Result<(), CaptureError>>,
+    },
+    SetDevice {
+        id: u32,
+        value: i64,
+        reply: Sender<Result<(), CaptureError>>,
+    },
+    Controls {
+        reply: Sender<Controls>,
     },
 }
 
@@ -266,6 +368,24 @@ impl LocalLink {
             .recv_timeout(IO_WAIT)
             .map_err(|_| Fail::new(E_IO, "the camera did not answer"))?
             .map_err(set_error)
+    }
+
+    fn set_device(&mut self, id: u32, value: i64) -> Res<()> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Command::SetDevice { id, value, reply })?;
+        answer
+            .recv_timeout(IO_WAIT)
+            .map_err(|_| Fail::new(E_IO, "the camera did not answer"))?
+            .map_err(set_error)
+    }
+
+    /// The camera's controls, as the worker last built them (again only when they moved).
+    fn controls(&mut self) -> Res<Controls> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Command::Controls { reply })?;
+        answer
+            .recv_timeout(IO_WAIT)
+            .map_err(|_| Fail::new(E_IO, "the camera did not answer"))
     }
 }
 
@@ -355,6 +475,9 @@ fn work(
         }
     };
     let _ = ready.send(Ok(()));
+    // The controls answer, built again only when the capture's generation moves: a caller that
+    // asks per frame shares one.
+    let mut controls: Option<Controls> = None;
     while let Ok(command) = commands.recv() {
         match command {
             Command::Next { timeout, reply } => {
@@ -362,6 +485,21 @@ fn work(
             }
             Command::Set { update, reply } => {
                 let _ = reply.send(capture.set_controls(&[update]));
+            }
+            Command::SetDevice { id, value, reply } => {
+                let _ = reply.send(capture.set_device(id, value));
+            }
+            Command::Controls { reply } => {
+                let seq = capture.controls_generation();
+                let current = match controls.take() {
+                    Some(held) if held.seq == seq => held,
+                    _ => Controls {
+                        seq,
+                        info: Arc::new(capture.controls_info()),
+                    },
+                };
+                let _ = reply.send(current.clone());
+                controls = Some(current);
             }
         }
     }

@@ -22,6 +22,8 @@ _Static_assert(sizeof(styx_open_options) == STYX_EXPECT_OPEN_OPTIONS, "styx_open
 _Static_assert(sizeof(styx_frame_info) == STYX_EXPECT_FRAME_INFO, "styx_frame_info size");
 _Static_assert(sizeof(styx_plane) == STYX_EXPECT_PLANE, "styx_plane size");
 _Static_assert(sizeof(styx_counter_snapshot) == STYX_EXPECT_COUNTER_SNAPSHOT, "styx_counter_snapshot size");
+_Static_assert(sizeof(styx_control_info) == STYX_EXPECT_CONTROL_INFO, "styx_control_info size");
+_Static_assert(sizeof(styx_device_info) == STYX_EXPECT_DEVICE_INFO, "styx_device_info size");
 
 #define FRAMES 30
 

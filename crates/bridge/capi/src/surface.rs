@@ -12,7 +12,10 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue};
 
-use crate::camera::{Camera, OpenOptions};
+use styx_controls::DeviceKind;
+use styx_select::{Access, DeviceInfo, Span, StandardInfo};
+
+use crate::camera::{Camera, Controls, OpenOptions};
 use crate::counters::{self, CounterSnapshot};
 use crate::frame::{Frame, FrameInfo, PlaneOut};
 use crate::source::Source;
@@ -32,11 +35,176 @@ pub const VALUE_MANUAL: u32 = 1;
 pub const VALUE_FLAG: u32 = 2;
 
 /// A control value as the header's `styx_control_value`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(C)]
 pub struct StyxControlValue {
     pub kind: u32,
     pub value: u32,
+}
+
+/// Bits of `known` in [`StyxControlInfo`] and [`StyxDeviceInfo`]: which fields the camera gave. A
+/// field whose bit is clear is unknown (the backend does not say) and holds 0.
+pub const KNOWN_RANGE: u32 = 1;
+pub const KNOWN_STEP: u32 = 1 << 1;
+pub const KNOWN_DEFAULT: u32 = 1 << 2;
+pub const KNOWN_EFFECTIVE: u32 = 1 << 3;
+pub const KNOWN_AUTO: u32 = 1 << 4;
+pub const KNOWN_VALUE: u32 = 1 << 5;
+pub const KNOWN_STANDARD: u32 = 1 << 6;
+
+/// A standard control's range kinds, as `StyxControlInfo.range_kind`.
+pub const RANGE_MANUAL: u32 = 0;
+pub const RANGE_FLAG: u32 = 1;
+pub const RANGE_RECT: u32 = 2;
+
+/// Why a control takes or refuses a set, as `access` in both info structs.
+pub const ACCESS_READ_WRITE: u32 = 0;
+pub const ACCESS_READ_ONLY: u32 = 1;
+pub const ACCESS_INACTIVE: u32 = 2;
+pub const ACCESS_GRABBED: u32 = 3;
+pub const ACCESS_DISABLED: u32 = 4;
+
+/// A device control's kinds, as `StyxDeviceInfo.kind`.
+pub const DEVICE_INTEGER: u32 = 0;
+pub const DEVICE_INTEGER64: u32 = 1;
+pub const DEVICE_BOOLEAN: u32 = 2;
+pub const DEVICE_MENU: u32 = 3;
+pub const DEVICE_BITMASK: u32 = 4;
+pub const DEVICE_BUTTON: u32 = 5;
+pub const DEVICE_OTHER: u32 = 6;
+
+/// One standard control as the camera has it, as the header's `styx_control_info`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct StyxControlInfo {
+    pub known: u32,
+    pub range_kind: u32,
+    pub min: u32,
+    pub max: u32,
+    pub step: u32,
+    pub effective_min: u32,
+    pub effective_max: u32,
+    pub auto_mode: u32,
+    pub access: u32,
+    pub default_value: StyxControlValue,
+}
+
+/// One device control, as the header's `styx_device_info`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct StyxDeviceInfo {
+    pub id: u32,
+    pub kind: u32,
+    pub access: u32,
+    pub known: u32,
+    pub min: i64,
+    pub max: i64,
+    pub step: u64,
+    pub default_value: i64,
+    pub effective_min: i64,
+    pub effective_max: i64,
+    pub value: i64,
+    pub entries: u64,
+    /// The index of the standard control this one is, in the same answer's standard list
+    /// (with `KNOWN_STANDARD`).
+    pub standard: u32,
+    pub reserved: u32,
+}
+
+fn access_to_c(access: Access) -> u32 {
+    match access {
+        Access::ReadWrite => ACCESS_READ_WRITE,
+        Access::ReadOnly => ACCESS_READ_ONLY,
+        Access::Inactive => ACCESS_INACTIVE,
+        Access::Grabbed => ACCESS_GRABBED,
+        Access::Disabled => ACCESS_DISABLED,
+    }
+}
+
+fn control_info_to_c(info: &StandardInfo) -> StyxControlInfo {
+    let mut out = StyxControlInfo {
+        access: access_to_c(info.access),
+        ..StyxControlInfo::default()
+    };
+    match info.range {
+        Some(Span::Manual { min, max }) => {
+            out.known |= KNOWN_RANGE;
+            (out.range_kind, out.min, out.max) = (RANGE_MANUAL, min, max);
+        }
+        Some(Span::Flag) => {
+            out.known |= KNOWN_RANGE;
+            (out.range_kind, out.max) = (RANGE_FLAG, 1);
+        }
+        Some(Span::Rect) => {
+            out.known |= KNOWN_RANGE;
+            out.range_kind = RANGE_RECT;
+        }
+        None => {}
+    }
+    if let Some(step) = info.step {
+        out.known |= KNOWN_STEP;
+        out.step = step;
+    }
+    // A crop default is not carried here (crops are not read through the C surface).
+    if let Some(default) = info.default.and_then(|v| value_to_c(v).ok()) {
+        out.known |= KNOWN_DEFAULT;
+        out.default_value = default;
+    }
+    if let Some((min, max)) = info.effective {
+        out.known |= KNOWN_EFFECTIVE;
+        (out.effective_min, out.effective_max) = (min, max);
+    }
+    if let Some(auto) = info.auto {
+        out.known |= KNOWN_AUTO;
+        out.auto_mode = u32::from(auto);
+    }
+    out
+}
+
+fn device_info_to_c(device: &DeviceInfo, standard: &[StandardInfo]) -> StyxDeviceInfo {
+    let mut out = StyxDeviceInfo {
+        id: device.id,
+        kind: match device.kind {
+            DeviceKind::Integer => DEVICE_INTEGER,
+            DeviceKind::Integer64 => DEVICE_INTEGER64,
+            DeviceKind::Boolean => DEVICE_BOOLEAN,
+            DeviceKind::Menu => DEVICE_MENU,
+            DeviceKind::Bitmask => DEVICE_BITMASK,
+            DeviceKind::Button => DEVICE_BUTTON,
+            DeviceKind::Other => DEVICE_OTHER,
+        },
+        access: access_to_c(device.access),
+        entries: device.menu.len() as u64,
+        ..StyxDeviceInfo::default()
+    };
+    if let (Some(min), Some(max)) = (device.min, device.max) {
+        out.known |= KNOWN_RANGE;
+        (out.min, out.max) = (min, max);
+    }
+    if let Some(step) = device.step {
+        out.known |= KNOWN_STEP;
+        out.step = step;
+    }
+    if let Some(default) = device.default {
+        out.known |= KNOWN_DEFAULT;
+        out.default_value = default;
+    }
+    if let Some((min, max)) = device.effective {
+        out.known |= KNOWN_EFFECTIVE;
+        (out.effective_min, out.effective_max) = (min, max);
+    }
+    if let Some(value) = device.value {
+        out.known |= KNOWN_VALUE;
+        out.value = value;
+    }
+    if let Some(index) = device
+        .standard
+        .and_then(|c| standard.iter().position(|s| s.control == c))
+    {
+        out.known |= KNOWN_STANDARD;
+        out.standard = index as u32;
+    }
+    out
 }
 
 /// The open options as the header's `styx_open_options`.
@@ -162,6 +330,7 @@ pub extern "C" fn styx_status_name(status: i32) -> *const c_char {
         status::E_STOPPED => b"stopped\0",
         status::E_RANGE => b"value out of range\0",
         status::E_LAYOUT => b"shared layout is another build's\0",
+        status::E_ACCESS => b"control not settable now\0",
         _ => return std::ptr::null(),
     };
     name.as_ptr().cast()
@@ -604,6 +773,327 @@ pub unsafe extern "C" fn styx_copies(copies: *mut u64, bytes: *mut u64) -> i32 {
             put(copies, n)?;
             put(bytes, total)
         }
+    })
+}
+
+// ---- Controls --------------------------------------------------------------------------------
+
+fn standard_at(controls: &Controls, index: usize) -> Res<&StandardInfo> {
+    controls
+        .info
+        .standard
+        .get(index)
+        .ok_or_else(|| Fail::new(E_NOT_FOUND, "no standard control at that index"))
+}
+
+fn device_at(controls: &Controls, index: usize) -> Res<&DeviceInfo> {
+    controls
+        .info
+        .device
+        .get(index)
+        .ok_or_else(|| Fail::new(E_NOT_FOUND, "no device control at that index"))
+}
+
+fn entry_at(controls: &Controls, device: usize, entry: usize) -> Res<&styx_select::MenuEntry> {
+    device_at(controls, device)?
+        .menu
+        .get(entry)
+        .ok_or_else(|| Fail::new(E_NOT_FOUND, "no menu entry at that index"))
+}
+
+/// The camera's controls now, as one answer to read with the `styx_controls_*` calls and free with
+/// `styx_controls_free`. Over the service this is one `controls` request.
+///
+/// # Safety
+///
+/// `camera` is a live camera, not used by another thread during the call; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_camera_controls(camera: *mut Camera, out: *mut *mut Controls) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err(Fail::invalid("NULL output handle pointer"));
+        }
+        // SAFETY: a live camera, per the contract.
+        let camera = unsafe { handle_mut(camera)? };
+        let controls = camera.controls()?;
+        // SAFETY: out is writable, per the contract.
+        unsafe { store(out, controls) }
+    })
+}
+
+/// Frees a controls answer. NULL is a no-op.
+///
+/// # Safety
+///
+/// `controls` is NULL or an answer this library returned, not yet freed.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_free(controls: *mut Controls) {
+    let _ = guard(|| {
+        if !controls.is_null() {
+            // SAFETY: made with Box::into_raw, freed once (the contract).
+            drop(unsafe { Box::from_raw(controls) });
+        }
+        Ok(())
+    });
+}
+
+/// The camera's controls count when the answer was made. Ask for a new answer when it moves.
+///
+/// # Safety
+///
+/// `controls` is a live answer; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_seq(controls: *const Controls, out: *mut u64) -> i32 {
+    guard(|| {
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        // SAFETY: out is writable, per the contract.
+        unsafe { put(out, controls.seq) }
+    })
+}
+
+/// The number of standard controls the camera has (only those; a control it lacks is not listed).
+///
+/// # Safety
+///
+/// `controls` is a live answer; `count` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_standard_count(
+    controls: *const Controls,
+    count: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        // SAFETY: count is writable, per the contract.
+        unsafe { put(count, controls.info.standard.len()) }
+    })
+}
+
+/// Standard control `index`: its range, step, default, effective range, auto and access.
+///
+/// # Safety
+///
+/// `controls` is a live answer; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_standard(
+    controls: *const Controls,
+    index: usize,
+    out: *mut StyxControlInfo,
+) -> i32 {
+    guard(|| {
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        let info = control_info_to_c(standard_at(controls, index)?);
+        // SAFETY: out is writable, per the contract.
+        unsafe { put(out, info) }
+    })
+}
+
+/// Standard control `index`'s name, as `styx_camera_set_control` takes it.
+///
+/// # Safety
+///
+/// `controls` is a live answer; `buf` has `cap` writable bytes (NULL only when `cap` is zero);
+/// `len` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_standard_name(
+    controls: *const Controls,
+    index: usize,
+    buf: *mut u8,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(|| {
+        status::check_text_out(buf, cap, len)?;
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        let name = standard_at(controls, index)?.control.name();
+        // SAFETY: buf and len are as the contract says.
+        unsafe { write_bytes(name.as_bytes(), buf, cap, len) }
+    })
+}
+
+/// The number of device controls: every control the camera has, by the backend's id.
+///
+/// # Safety
+///
+/// `controls` is a live answer; `count` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_device_count(
+    controls: *const Controls,
+    count: *mut usize,
+) -> i32 {
+    guard(|| {
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        // SAFETY: count is writable, per the contract.
+        unsafe { put(count, controls.info.device.len()) }
+    })
+}
+
+/// Device control `index`, in the device's own units.
+///
+/// # Safety
+///
+/// `controls` is a live answer; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_device(
+    controls: *const Controls,
+    index: usize,
+    out: *mut StyxDeviceInfo,
+) -> i32 {
+    guard(|| {
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        let info = device_info_to_c(device_at(controls, index)?, &controls.info.standard);
+        // SAFETY: out is writable, per the contract.
+        unsafe { put(out, info) }
+    })
+}
+
+/// Device control `index`'s name, as the device gives it.
+///
+/// # Safety
+///
+/// As `styx_controls_standard_name`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_device_name(
+    controls: *const Controls,
+    index: usize,
+    buf: *mut u8,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(|| {
+        status::check_text_out(buf, cap, len)?;
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        let name = device_at(controls, index)?.name.as_bytes();
+        // SAFETY: buf and len are as the contract says.
+        unsafe { write_bytes(name, buf, cap, len) }
+    })
+}
+
+/// Menu entry `entry` of device control `device`: the value that selects it.
+///
+/// # Safety
+///
+/// `controls` is a live answer; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_entry(
+    controls: *const Controls,
+    device: usize,
+    entry: usize,
+    out: *mut i64,
+) -> i32 {
+    guard(|| {
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        let value = entry_at(controls, device, entry)?.value;
+        // SAFETY: out is writable, per the contract.
+        unsafe { put(out, value) }
+    })
+}
+
+/// Menu entry `entry`'s label. `E_NOT_FOUND` for an entry the device gives no name (show its
+/// number).
+///
+/// # Safety
+///
+/// As `styx_controls_standard_name`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_controls_entry_label(
+    controls: *const Controls,
+    device: usize,
+    entry: usize,
+    buf: *mut u8,
+    cap: usize,
+    len: *mut usize,
+) -> i32 {
+    guard(|| {
+        status::check_text_out(buf, cap, len)?;
+        // SAFETY: a live answer, per the contract.
+        let controls = unsafe { handle(controls)? };
+        let label = entry_at(controls, device, entry)?
+            .label
+            .as_deref()
+            .ok_or_else(|| Fail::new(E_NOT_FOUND, "the device gives this entry no name"))?;
+        // SAFETY: buf and len are as the contract says.
+        unsafe { write_bytes(label.as_bytes(), buf, cap, len) }
+    })
+}
+
+/// Standard control `name` as the camera has it. `E_NOT_FOUND` when the camera does not have it.
+///
+/// # Safety
+///
+/// `camera` is a live camera, not used by another thread during the call; `name` has `len`
+/// readable bytes; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_camera_control_info(
+    camera: *mut Camera,
+    name_ptr: *const u8,
+    len: usize,
+    out: *mut StyxControlInfo,
+) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err(Fail::invalid("NULL output pointer"));
+        }
+        // SAFETY: a live camera and readable name bytes, per the contract.
+        let camera = unsafe { handle_mut(camera)? };
+        // SAFETY: name has len readable bytes, per the contract.
+        let control = control_named(unsafe { text(name_ptr, len)? })?;
+        let controls = camera.controls()?;
+        let info = controls.info.standard(control).ok_or_else(|| {
+            Fail::new(
+                E_NOT_FOUND,
+                format!("the camera has no control {}", control.name()),
+            )
+        })?;
+        // SAFETY: out is writable, per the contract.
+        unsafe { put(out, control_info_to_c(info)) }
+    })
+}
+
+/// Device control `id`'s value, in the device's units. `E_NOT_FOUND` for an id the camera does not
+/// have, or when the backend does not say the value.
+///
+/// # Safety
+///
+/// `camera` is a live camera, not used by another thread during the call; `out` is writable.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_camera_get_device(
+    camera: *mut Camera,
+    id: u32,
+    out: *mut i64,
+) -> i32 {
+    guard(|| {
+        if out.is_null() {
+            return Err(Fail::invalid("NULL output pointer"));
+        }
+        // SAFETY: a live camera, per the contract.
+        let camera = unsafe { handle_mut(camera)? };
+        let value = camera.get_device(id)?;
+        // SAFETY: out is writable, per the contract.
+        unsafe { put(out, value) }
+    })
+}
+
+/// Sets device control `id` to `value` in the device's units. `E_RANGE` outside the camera's
+/// range, between its steps or none of a menu's entries; `E_ACCESS` when the control cannot be set
+/// now; `E_INVALID` for the wrong kind of value; `E_NOT_FOUND` for an id the camera does not have.
+///
+/// # Safety
+///
+/// `camera` is a live camera, not used by another thread during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_camera_set_device(camera: *mut Camera, id: u32, value: i64) -> i32 {
+    guard(|| {
+        // SAFETY: a live camera, per the contract.
+        let camera = unsafe { handle_mut(camera)? };
+        camera.set_device(id, value)
     })
 }
 

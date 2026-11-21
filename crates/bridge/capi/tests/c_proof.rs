@@ -151,6 +151,14 @@ fn build_proof(dir: &Path, cc: &str, lib: &Path) -> PathBuf {
             "-DSTYX_EXPECT_COUNTER_SNAPSHOT={}",
             std::mem::size_of::<styx_capi::CounterSnapshot>()
         ),
+        format!(
+            "-DSTYX_EXPECT_CONTROL_INFO={}",
+            std::mem::size_of::<styx_capi::StyxControlInfo>()
+        ),
+        format!(
+            "-DSTYX_EXPECT_DEVICE_INFO={}",
+            std::mem::size_of::<styx_capi::StyxDeviceInfo>()
+        ),
     ];
     let output = Command::new(cc)
         .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-O1"])
@@ -388,6 +396,8 @@ fn deep(mode: &str, socket: &Path) {
         );
         assert_eq!((read_back.kind, read_back.value), (VALUE_MANUAL, 5_000));
 
+        controls_proof(mode, camera);
+
         // The metadata record's size is the library's, and the header states the same.
         let mut need = 0;
         ok(styx_frame_metadata_size(&mut need), "metadata size");
@@ -471,6 +481,169 @@ fn deep(mode: &str, socket: &Path) {
         );
         styx_camera_close(camera);
         styx_source_close(source);
+    }
+}
+
+/// The text a `styx_controls_*` name call writes.
+///
+/// # Safety
+///
+/// `call` writes at most `cap` bytes to the buffer and the length to `len`.
+unsafe fn name_of(call: impl Fn(*mut u8, usize, *mut usize) -> i32) -> Result<String, i32> {
+    let mut buf = [0_u8; 128];
+    let mut len = 0;
+    let status = call(buf.as_mut_ptr(), buf.len(), &mut len);
+    if status != styx_capi::OK {
+        return Err(status);
+    }
+    Ok(String::from_utf8_lossy(&buf[..len]).into_owned())
+}
+
+/// The camera's controls through the C surface, the same on both paths: the simulated sensor's own
+/// ranges, its test-pattern menu (numbered, unlabelled), a device set read back with the count
+/// moving, and refusals by status with the camera's numbers.
+fn controls_proof(mode: &str, camera: *mut styx_capi::Camera) {
+    use styx_capi::*;
+    // SAFETY: `camera` is open; every answer is freed once; buffers and out-pointers are locals.
+    unsafe {
+        let mut controls = std::ptr::null_mut();
+        ok(styx_camera_controls(camera, &mut controls), "controls");
+        let mut seq = 0;
+        ok(styx_controls_seq(controls, &mut seq), "seq");
+
+        // The standard controls are the camera's: exposure, gain and frame rate, nothing generic.
+        let mut count = 0;
+        ok(
+            styx_controls_standard_count(controls, &mut count),
+            "standard count",
+        );
+        let names: Vec<String> = (0..count)
+            .map(|i| {
+                name_of(|b, c, l| styx_controls_standard_name(controls, i, b, c, l)).expect("name")
+            })
+            .collect();
+        assert_eq!(names, ["exposure", "gain", "frame_rate"], "{mode}");
+        let gain_at = names.iter().position(|n| n == "gain").unwrap();
+        let mut gain = StyxControlInfo::default();
+        ok(
+            styx_controls_standard(controls, gain_at, &mut gain),
+            "gain info",
+        );
+        assert_eq!(gain.known & KNOWN_RANGE, KNOWN_RANGE);
+        assert_eq!(
+            (gain.range_kind, gain.min, gain.max),
+            (RANGE_MANUAL, 1_000, 15_938)
+        );
+        assert_eq!(gain.access, ACCESS_READ_WRITE);
+        let mut by_name = StyxControlInfo::default();
+        ok(
+            styx_camera_control_info(camera, b"gain".as_ptr(), 4, &mut by_name),
+            "control info",
+        );
+        assert_eq!(by_name, gain, "{mode}: by name, the same as in the answer");
+        assert_eq!(
+            styx_camera_control_info(camera, b"focus".as_ptr(), 5, &mut by_name),
+            E_NOT_FOUND,
+            "{mode}: the camera has no focus"
+        );
+        assert_eq!(
+            styx_controls_standard(controls, count, &mut by_name),
+            E_NOT_FOUND
+        );
+
+        // The test pattern: device control 1, a menu of 4 numbered entries without names.
+        let mut devices = 0;
+        ok(
+            styx_controls_device_count(controls, &mut devices),
+            "device count",
+        );
+        let mut pattern = StyxDeviceInfo::default();
+        let at = (0..devices)
+            .find(|&i| {
+                ok(styx_controls_device(controls, i, &mut pattern), "device");
+                pattern.id == 1
+            })
+            .expect("the test pattern is listed");
+        assert_eq!((pattern.kind, pattern.entries), (DEVICE_MENU, 4), "{mode}");
+        assert_eq!(pattern.known & KNOWN_VALUE, KNOWN_VALUE);
+        assert_eq!(pattern.value, 0);
+        assert_eq!(
+            name_of(|b, c, l| styx_controls_device_name(controls, at, b, c, l)).as_deref(),
+            Ok("test_pattern")
+        );
+        for k in 0..4 {
+            let mut value = -1;
+            ok(styx_controls_entry(controls, at, k, &mut value), "entry");
+            assert_eq!(value, k as i64);
+            assert_eq!(
+                name_of(|b, c, l| styx_controls_entry_label(controls, at, k, b, c, l)),
+                Err(E_NOT_FOUND),
+                "{mode}: the sensor names no test pattern"
+            );
+        }
+        let mut value = 0;
+        assert_eq!(
+            styx_controls_entry(controls, at, 4, &mut value),
+            E_NOT_FOUND
+        );
+        assert_eq!(
+            styx_controls_entry(controls, devices, 0, &mut value),
+            E_NOT_FOUND
+        );
+        styx_controls_free(controls);
+
+        // A device set reads back and moves the count.
+        ok(styx_camera_set_device(camera, 1, 2), "set the test pattern");
+        let mut read = -1;
+        ok(
+            styx_camera_get_device(camera, 1, &mut read),
+            "get the test pattern",
+        );
+        assert_eq!(read, 2, "{mode}");
+        let mut after = std::ptr::null_mut();
+        ok(styx_camera_controls(camera, &mut after), "controls again");
+        let mut moved = 0;
+        ok(styx_controls_seq(after, &mut moved), "seq again");
+        assert!(moved > seq, "{mode}: the count moved ({seq} -> {moved})");
+        styx_controls_free(after);
+        ok(
+            styx_camera_set_device(camera, 1, 0),
+            "the test pattern back off",
+        );
+
+        // Refusals, by status, with the camera's numbers.
+        assert_eq!(
+            styx_camera_set_device(camera, 1, 9),
+            E_RANGE,
+            "{mode}: no entry 9"
+        );
+        assert_eq!(styx_camera_set_device(camera, 0xdead, 0), E_NOT_FOUND);
+        assert_eq!(
+            styx_camera_get_device(camera, 0xdead, &mut read),
+            E_NOT_FOUND
+        );
+        let too_much = StyxControlValue {
+            kind: VALUE_MANUAL,
+            value: 16_000,
+        };
+        assert_eq!(
+            styx_camera_set_control(camera, b"gain".as_ptr(), 4, too_much, 0),
+            E_RANGE
+        );
+        let message = name_of(|b, c, l| styx_last_error(b, c, l)).unwrap();
+        assert!(
+            message.contains("15938"),
+            "{mode}: the camera's maximum: {message}"
+        );
+        let focus = StyxControlValue {
+            kind: VALUE_MANUAL,
+            value: 10,
+        };
+        assert_eq!(
+            styx_camera_set_control(camera, b"focus".as_ptr(), 5, focus, 0),
+            E_NOT_FOUND,
+            "{mode}: a control the camera does not have"
+        );
     }
 }
 

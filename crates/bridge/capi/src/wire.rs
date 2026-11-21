@@ -8,16 +8,19 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use styx_controls::{Control, ControlValue};
-use styx_service::control::Shown;
+use styx_select::{ControlsInfo, DeviceInfo, Refusal, StandardInfo};
+use styx_service::control::{ControlLine, DeviceLine, Shown};
 
 use crate::status::{
-    E_INVALID, E_IO, E_NOT_FOUND, E_PROTOCOL, E_STOPPED, E_UNSUPPORTED, Fail, Res,
+    E_ACCESS, E_INVALID, E_IO, E_NOT_FOUND, E_PROTOCOL, E_RANGE, E_STOPPED, E_UNSUPPORTED, Fail,
+    Res,
 };
 
 /// How long one request may take on the socket before the call fails.
 pub(crate) const IO_WAIT: Duration = Duration::from_secs(5);
-/// The most answer lines one request may have (a controls answer has one line per control).
-const MAX_ANSWER: usize = 256;
+/// The most answer lines one request may have. A `controls` answer has one line per control and per
+/// menu entry: a webcam's is some 60 lines, a libcamera camera's a few hundred.
+pub(crate) const MAX_ANSWER: usize = 4096;
 
 /// One camera as a `list` answer names it: the id, its owner and its frame socket.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,8 +78,20 @@ impl ControlLink {
 
 /// The service's refusal, as a status.
 fn service_error(why: &str) -> Fail {
-    let status = if why.starts_with("no camera") {
+    let status = if why.starts_with("no camera")
+        || why.starts_with("the camera has no control")
+        || why.starts_with("the camera has no device control")
+    {
         E_NOT_FOUND
+    } else if why.starts_with("OutOfRange")
+        || why.starts_with("NotStep")
+        || why.starts_with("NoEntry")
+    {
+        E_RANGE
+    } else if why.starts_with("the control is ") {
+        E_ACCESS
+    } else if why.starts_with("the value is the wrong kind") {
+        E_INVALID
     } else if why.contains("not streaming") || why.contains("absent") || why.contains("ended") {
         E_STOPPED
     } else if why.contains("unsupported") {
@@ -114,6 +129,65 @@ pub(crate) fn value_text(value: ControlValue) -> Res<String> {
             E_UNSUPPORTED,
             "a crop is not settable through the C surface",
         )),
+    }
+}
+
+/// A camera's refusal of a value, as a status: the same statuses the service's refusal text maps
+/// to (see `service_error`).
+pub(crate) fn refusal(refusal: Refusal) -> Fail {
+    let status = match refusal {
+        Refusal::Access(_) => E_ACCESS,
+        Refusal::OutOfRange { .. } | Refusal::NotStep { .. } | Refusal::NoEntry { .. } => E_RANGE,
+        Refusal::Kind => E_INVALID,
+    };
+    Fail::new(status, refusal.to_string())
+}
+
+/// A `controls` answer as the camera's controls: its `seq` (0 when the service gives none) and the
+/// lines read back into the types the in-process path has. A `control` line for a name this build
+/// does not know is skipped.
+pub(crate) fn controls_of(lines: &[String]) -> (u64, ControlsInfo) {
+    let answer = styx_service::control::parse_controls_answer(lines);
+    let info = ControlsInfo {
+        standard: answer.standard.iter().filter_map(standard_of).collect(),
+        device: answer.device.iter().map(device_of).collect(),
+    };
+    (answer.seq.unwrap_or(0), info)
+}
+
+fn control_of(name: &str) -> Option<Control> {
+    Control::ALL.into_iter().find(|c| c.name() == name)
+}
+
+fn standard_of(line: &ControlLine) -> Option<StandardInfo> {
+    Some(StandardInfo {
+        control: control_of(&line.name)?,
+        range: line.range,
+        step: line.step,
+        default: match line.default {
+            Some(Shown::Value(value)) => Some(value),
+            _ => None,
+        },
+        effective: line.effective,
+        auto: line.auto,
+        access: line.access,
+    })
+}
+
+fn device_of(line: &DeviceLine) -> DeviceInfo {
+    DeviceInfo {
+        id: line.id,
+        name: line.name.clone(),
+        kind: line.kind,
+        min: line.min,
+        max: line.max,
+        step: line.step,
+        default: line.default,
+        effective: line.effective,
+        value: line.value,
+        standard: line.standard.as_deref().and_then(control_of),
+        access: line.access,
+        menu: line.menu.clone(),
     }
 }
 
@@ -179,5 +253,92 @@ mod tests {
             service_error("unsupported by this backend: x").status,
             E_UNSUPPORTED
         );
+    }
+
+    /// The service's refusals come back as the same statuses the in-process check gives.
+    #[test]
+    fn the_services_refusals_map_to_the_statuses_of_the_in_process_check() {
+        use styx_select::Access;
+        for (text, refused) in [
+            (
+                "OutOfRange { min: 1000, max: 15938, value: 16000 }",
+                Refusal::OutOfRange {
+                    min: 1_000,
+                    max: 15_938,
+                    value: 16_000,
+                },
+            ),
+            (
+                "NotStep { min: 0, step: 4, value: 3 }",
+                Refusal::NotStep {
+                    min: 0,
+                    step: 4,
+                    value: 3,
+                },
+            ),
+            ("NoEntry { value: 9 }", Refusal::NoEntry { value: 9 }),
+            (
+                "the control is read_only",
+                Refusal::Access(Access::ReadOnly),
+            ),
+            (
+                "the value is the wrong kind for this control",
+                Refusal::Kind,
+            ),
+        ] {
+            assert_eq!(
+                refused.to_string(),
+                text,
+                "the service's text is the refusal's"
+            );
+            assert_eq!(
+                service_error(text).status,
+                refusal(refused).status,
+                "{text}"
+            );
+        }
+        assert_eq!(
+            service_error("the camera has no control focus").status,
+            E_NOT_FOUND
+        );
+        assert_eq!(
+            service_error("the camera has no device control 0xdead").status,
+            E_NOT_FOUND
+        );
+    }
+
+    #[test]
+    fn a_controls_answer_reads_back_into_the_in_process_types() {
+        let lines: Vec<String> = [
+            "seq 4",
+            "control gain unit=milli range=1000..15938 step=- default=1000 effective=1000..15938 auto=false access=read_write value=-",
+            "control future_control unit=- range=- value=-",
+            "device 0x00000001 kind=menu access=read_write min=0 max=3 step=1 default=0 effective=0..3 value=2 standard=- entries=4 name=test_pattern",
+            "entry 0x00000001 0",
+            "entry 0x00000001 1 Colour Bars",
+        ]
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+        let (seq, info) = controls_of(&lines);
+        assert_eq!(seq, 4);
+        assert_eq!(info.standard.len(), 1, "an unknown control name is skipped");
+        let gain = info.standard(Control::Gain).expect("gain");
+        assert_eq!(
+            gain.range,
+            Some(styx_select::Span::Manual {
+                min: 1_000,
+                max: 15_938
+            })
+        );
+        assert_eq!(gain.default, Some(ControlValue::Manual(1_000)));
+        let pattern = info.device(1).expect("the test pattern");
+        assert_eq!(
+            (pattern.value, pattern.name.as_str()),
+            (Some(2), "test_pattern")
+        );
+        assert_eq!(pattern.menu.len(), 2);
+        assert_eq!(pattern.menu[0].label, None);
+        assert_eq!(pattern.menu[1].label.as_deref(), Some("Colour Bars"));
     }
 }

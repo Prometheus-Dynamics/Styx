@@ -33,14 +33,14 @@ mod status;
 mod surface;
 mod wire;
 
-pub use camera::{Camera, OpenOptions};
+pub use camera::{Camera, Controls, OpenOptions};
 pub use counters::CounterSnapshot;
 pub use frame::{
     DmaView, Frame, FrameInfo, MEMORY_DMABUF, MEMORY_GPU, MEMORY_HOST, MEMORY_MEMFD, PlaneOut,
 };
 pub use source::Source;
 pub use status::{
-    E_BUSY, E_INVALID, E_IO, E_LAYOUT, E_NOT_FOUND, E_PANIC, E_PROTOCOL, E_RANGE, E_STOPPED,
-    E_TIMEOUT, E_UNSUPPORTED, LAYOUT_MARKS, LAYOUT_RING, OK,
+    E_ACCESS, E_BUSY, E_INVALID, E_IO, E_LAYOUT, E_NOT_FOUND, E_PANIC, E_PROTOCOL, E_RANGE,
+    E_STOPPED, E_TIMEOUT, E_UNSUPPORTED, LAYOUT_MARKS, LAYOUT_RING, OK,
 };
 pub use surface::*;

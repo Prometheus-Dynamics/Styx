@@ -32,6 +32,9 @@ pub const E_RANGE: i32 = -10;
 /// A frame socket's shared ring or marks page is another layout than this build reads. The values
 /// are in `styx_layout_refusal`.
 pub const E_LAYOUT: i32 = -11;
+/// The control cannot be set now: it is read-only, held by another user of the device, or
+/// disabled (the reason by name in the message).
+pub const E_ACCESS: i32 = -12;
 
 /// The layout values a [`E_LAYOUT`] refusal names, as the header gives them.
 pub const LAYOUT_RING: i32 = 1;
