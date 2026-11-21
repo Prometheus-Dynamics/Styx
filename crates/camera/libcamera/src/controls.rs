@@ -5,7 +5,9 @@
 //! Libcamera's controls are named (`Brightness`, `ExposureTime`, ...) and typed. Their numeric ids
 //! come from the library at run time (`styx_control_id`), so the tables here use the names.
 
-use styx_controls::{Control, DeviceKind, Rect};
+use styx_controls::{Control, ControlValue, DeviceKind, Rect};
+
+use crate::{MenuItem, StandardControl, StandardRange};
 
 /// libcamera's control types, as the C API numbers them (`libcamera_control_type`).
 pub(crate) const TYPE_BOOL: u32 = 1;
@@ -52,6 +54,219 @@ pub(crate) fn device_kind(ty: u32, menu: bool) -> DeviceKind {
         TYPE_INT64 => DeviceKind::Integer64,
         _ => DeviceKind::Other,
     }
+}
+
+/// One control of a camera's registry, as read after the camera is configured (libcamera narrows
+/// ranges to the configuration). Numbers are `f64`: a float control's range is kept whole, and an
+/// integer's is exact in it.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Listed {
+    pub(crate) id: u32,
+    pub(crate) name: String,
+    pub(crate) ty: u32,
+    /// libcamera names values for it (enumerators), or its `ControlInfo` lists the values it takes.
+    pub(crate) menu: bool,
+    /// The camera takes a value for it.
+    pub(crate) input: bool,
+    pub(crate) min: f64,
+    pub(crate) max: f64,
+    pub(crate) default: f64,
+    pub(crate) entries: Vec<MenuItem>,
+}
+
+impl Listed {
+    pub(crate) fn kind(&self) -> DeviceKind {
+        device_kind(self.ty, self.menu)
+    }
+}
+
+/// A menu's entries: `values` (what the camera's `ControlInfo` lists) when there are any, else every
+/// enumerator libcamera names; each labelled with its enumerator's name where there is one.
+pub(crate) fn menu_entries(values: &[i64], enumerators: &[(i32, String)]) -> Vec<MenuItem> {
+    let name_of = |value: i64| {
+        enumerators
+            .iter()
+            .find(|(key, _)| i64::from(*key) == value)
+            .map(|(_, name)| name.clone())
+    };
+    if values.is_empty() {
+        enumerators
+            .iter()
+            .map(|(key, name)| MenuItem {
+                value: i64::from(*key),
+                name: Some(name.clone()),
+            })
+            .collect()
+    } else {
+        values
+            .iter()
+            .map(|&value| MenuItem {
+                value,
+                name: name_of(value),
+            })
+            .collect()
+    }
+}
+
+/// `v` as a `u32`, clamped (libcamera's integers are signed).
+fn clamp_u32(v: f64) -> u32 {
+    v.round().clamp(0.0, f64::from(u32::MAX)) as u32
+}
+
+/// A libcamera float (gain, gamma) in thousandths.
+fn milli(v: f64) -> u32 {
+    clamp_u32(v * 1_000.0)
+}
+
+/// A libcamera float over `min..=max` as a normalised value from 0 to 1000 (the inverse of
+/// [`normalised_to_float`]).
+pub(crate) fn float_to_normalised(v: f64, min: f64, max: f64) -> u32 {
+    if max <= min {
+        return 0;
+    }
+    clamp_u32(((v - min) / (max - min)).clamp(0.0, 1.0) * 1_000.0)
+}
+
+/// A lens position in dioptres as a focus position from 0 (nearest) to 1000 (farthest), the inverse
+/// of [`lens_position`].
+pub(crate) fn focus_of_lens(v: f64, min: f64, max: f64) -> u32 {
+    if max <= min {
+        return 0;
+    }
+    clamp_u32(((max - v) / (max - min)).clamp(0.0, 1.0) * 1_000.0)
+}
+
+/// The Styx controls the backend sets on a camera whose registry is `listed`, in Styx units, in
+/// [`Control::ALL`] order. A control is listed when the backend's plan for it can be carried out:
+/// its libcamera controls are registered (zoom also needs the camera's `ScalerCropMaximum`,
+/// `crop_max`). Ranges are the camera's, converted: exposure is libcamera's microseconds as they are,
+/// gain and gamma floats in thousandths, normalised controls 0..1000 over the camera's float range,
+/// focus 0 (nearest) to 1000 (farthest) over its lens positions. libcamera has no step.
+pub(crate) fn standard(listed: &[Listed], crop_max: Option<Rect>) -> Vec<StandardControl> {
+    let find = |name: &str| listed.iter().find(|l| l.name == name);
+    let blank = |control: Control, read_only: bool| StandardControl {
+        control,
+        range: None,
+        default: None,
+        auto: false,
+        read_only,
+    };
+    let manual = |min: u32, max: u32| Some(StandardRange::Manual { min, max });
+    let mut out = Vec::new();
+    for control in Control::ALL {
+        let c = match control {
+            Control::Exposure => {
+                // Both of the plan's writes turn AeEnable: without it nothing is set.
+                let Some(ae) = find("AeEnable") else {
+                    continue;
+                };
+                let time = find("ExposureTime");
+                StandardControl {
+                    range: time.and_then(|t| manual(clamp_u32(t.min), clamp_u32(t.max))),
+                    default: match time {
+                        _ if ae.default != 0.0 => Some(ControlValue::Auto),
+                        Some(t) => Some(ControlValue::Manual(clamp_u32(t.default))),
+                        None => None,
+                    },
+                    auto: true,
+                    ..blank(control, !ae.input)
+                }
+            }
+            Control::Gain => {
+                let Some(gain) = find("AnalogueGain") else {
+                    continue;
+                };
+                StandardControl {
+                    range: manual(milli(gain.min), milli(gain.max)),
+                    default: Some(ControlValue::Manual(milli(gain.default))),
+                    ..blank(control, !gain.input)
+                }
+            }
+            Control::WhiteBalance => {
+                // Manual white balance is colour gains in libcamera, which Styx does not model:
+                // Auto only, no range.
+                let Some(awb) = find("AwbEnable") else {
+                    continue;
+                };
+                StandardControl {
+                    default: (awb.default != 0.0).then_some(ControlValue::Auto),
+                    auto: true,
+                    ..blank(control, !awb.input)
+                }
+            }
+            Control::Focus => {
+                let Some(af) = find("AfMode") else {
+                    continue;
+                };
+                let lens = find("LensPosition");
+                let continuous = af.default as i32 == AF_MODE_CONTINUOUS;
+                StandardControl {
+                    range: lens.and(manual(0, 1_000)),
+                    default: match lens {
+                        _ if continuous => Some(ControlValue::Auto),
+                        Some(l) => {
+                            Some(ControlValue::Manual(focus_of_lens(l.default, l.min, l.max)))
+                        }
+                        None => None,
+                    },
+                    auto: true,
+                    ..blank(control, !af.input)
+                }
+            }
+            Control::Brightness | Control::Contrast | Control::Saturation | Control::Sharpness => {
+                let name = match control {
+                    Control::Brightness => "Brightness",
+                    Control::Contrast => "Contrast",
+                    Control::Saturation => "Saturation",
+                    _ => "Sharpness",
+                };
+                let Some(l) = find(name) else { continue };
+                StandardControl {
+                    range: manual(0, 1_000),
+                    default: Some(ControlValue::Manual(float_to_normalised(
+                        l.default, l.min, l.max,
+                    ))),
+                    ..blank(control, !l.input)
+                }
+            }
+            Control::Gamma => {
+                // Styx's gamma is 1000..3000; the camera's range narrows it.
+                let Some(l) = find("Gamma") else { continue };
+                let within = |v: f64| milli(v).clamp(1_000, 3_000);
+                StandardControl {
+                    range: manual(within(l.min), within(l.max)),
+                    default: Some(ControlValue::Manual(within(l.default))),
+                    ..blank(control, !l.input)
+                }
+            }
+            Control::Crop => {
+                let Some(l) = find("ScalerCrop") else {
+                    continue;
+                };
+                StandardControl {
+                    range: Some(StandardRange::Rect),
+                    default: crop_max.map(|_| ControlValue::Crop(None)),
+                    ..blank(control, !l.input)
+                }
+            }
+            Control::Zoom => {
+                let Some(l) = find("ScalerCrop") else {
+                    continue;
+                };
+                if crop_max.is_none() {
+                    continue;
+                }
+                StandardControl {
+                    range: manual(0, 1_000),
+                    default: Some(ControlValue::Manual(0)),
+                    ..blank(control, !l.input)
+                }
+            }
+            _ => continue,
+        };
+        out.push(c);
+    }
+    out
 }
 
 /// A normalised value (0 through 1000) to a libcamera float over the camera's `min..=max`.
@@ -193,5 +408,207 @@ mod tests {
             assert!(crop.x + crop.width <= full().width);
             assert!(crop.y + crop.height <= full().height);
         }
+    }
+
+    fn listed(name: &str, ty: u32, min: f64, max: f64, default: f64) -> Listed {
+        Listed {
+            id: 0,
+            name: name.into(),
+            ty,
+            menu: false,
+            input: true,
+            min,
+            max,
+            default,
+            entries: Vec::new(),
+        }
+    }
+
+    fn of(standard: &[StandardControl], control: Control) -> Option<StandardControl> {
+        standard.iter().copied().find(|c| c.control == control)
+    }
+
+    #[test]
+    fn menu_entries_are_the_listed_values_named_by_their_enumerators() {
+        let names = [
+            (0, "Off".to_string()),
+            (1, "On".to_string()),
+            (2, "Fast".to_string()),
+        ];
+        // The camera lists two of libcamera's three values, and one libcamera has no name for.
+        let entries = menu_entries(&[0, 2, 7], &names);
+        assert_eq!(
+            entries,
+            [
+                MenuItem {
+                    value: 0,
+                    name: Some("Off".into())
+                },
+                MenuItem {
+                    value: 2,
+                    name: Some("Fast".into())
+                },
+                MenuItem {
+                    value: 7,
+                    name: None
+                },
+            ]
+        );
+        // No values listed: every enumerator.
+        let entries = menu_entries(&[], &names);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries[1],
+            MenuItem {
+                value: 1,
+                name: Some("On".into())
+            }
+        );
+        assert!(menu_entries(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn the_inverse_conversions_return_the_styx_value() {
+        for v in [0u32, 1, 250, 500, 999, 1_000] {
+            let f = f64::from(normalised_to_float(v, -1.0, 1.0));
+            assert!(float_to_normalised(f, -1.0, 1.0).abs_diff(v) <= 1, "{v}");
+            let lens = f64::from(lens_position(v, 0.0, 15.0));
+            assert!(focus_of_lens(lens, 0.0, 15.0).abs_diff(v) <= 1, "{v}");
+        }
+        assert_eq!(float_to_normalised(3.0, 1.0, 1.0), 0);
+        assert_eq!(float_to_normalised(-9.0, -1.0, 1.0), 0);
+        assert_eq!(float_to_normalised(9.0, -1.0, 1.0), 1_000);
+    }
+
+    /// The camera's configured ranges in Styx units: exposure in microseconds as libcamera has it,
+    /// gain in thousandths, normalised controls over the camera's float range, gamma within Styx's
+    /// 1000..3000, focus over the lens positions; Auto defaults where the auto control defaults on.
+    #[test]
+    fn standard_controls_are_the_cameras_ranges_in_styx_units() {
+        let list = vec![
+            listed("AeEnable", TYPE_BOOL, 0.0, 1.0, 1.0),
+            listed("ExposureTime", TYPE_INT32, 14.0, 66_666.0, 20_000.0),
+            listed("AnalogueGain", TYPE_FLOAT, 1.0, 15.875, 1.0),
+            listed("AwbEnable", TYPE_BOOL, 0.0, 1.0, 1.0),
+            listed("Brightness", TYPE_FLOAT, -1.0, 1.0, 0.0),
+            listed("Contrast", TYPE_FLOAT, 0.0, 32.0, 1.0),
+            listed("Gamma", TYPE_FLOAT, 0.5, 2.2, 2.2),
+            listed("AfMode", TYPE_INT32, 0.0, 2.0, 2.0),
+            listed("LensPosition", TYPE_FLOAT, 0.0, 15.0, 1.0),
+            listed("ScalerCrop", TYPE_RECTANGLE, 0.0, 0.0, 0.0),
+            // Listed, not mapped: no standard line.
+            listed("ColourTemperature", TYPE_INT32, 100.0, 100_000.0, 5_000.0),
+        ];
+        let standard = standard(&list, Some(full()));
+        let exposure = of(&standard, Control::Exposure).unwrap();
+        assert_eq!(
+            exposure.range,
+            Some(StandardRange::Manual {
+                min: 14,
+                max: 66_666
+            })
+        );
+        assert_eq!(exposure.default, Some(ControlValue::Auto));
+        assert!(exposure.auto && !exposure.read_only);
+
+        let gain = of(&standard, Control::Gain).unwrap();
+        assert_eq!(
+            gain.range,
+            Some(StandardRange::Manual {
+                min: 1_000,
+                max: 15_875
+            })
+        );
+        assert_eq!(gain.default, Some(ControlValue::Manual(1_000)));
+        assert!(!gain.auto);
+
+        let wb = of(&standard, Control::WhiteBalance).unwrap();
+        assert_eq!(
+            (wb.range, wb.default, wb.auto),
+            (None, Some(ControlValue::Auto), true)
+        );
+
+        let brightness = of(&standard, Control::Brightness).unwrap();
+        assert_eq!(
+            brightness.range,
+            Some(StandardRange::Manual { min: 0, max: 1_000 })
+        );
+        assert_eq!(brightness.default, Some(ControlValue::Manual(500)));
+        let contrast = of(&standard, Control::Contrast).unwrap();
+        assert_eq!(contrast.default, Some(ControlValue::Manual(31)));
+
+        let gamma = of(&standard, Control::Gamma).unwrap();
+        assert_eq!(
+            gamma.range,
+            Some(StandardRange::Manual {
+                min: 1_000,
+                max: 2_200
+            })
+        );
+        assert_eq!(gamma.default, Some(ControlValue::Manual(2_200)));
+
+        let focus = of(&standard, Control::Focus).unwrap();
+        assert_eq!(
+            focus.range,
+            Some(StandardRange::Manual { min: 0, max: 1_000 })
+        );
+        assert_eq!(focus.default, Some(ControlValue::Auto));
+
+        let crop = of(&standard, Control::Crop).unwrap();
+        assert_eq!(crop.range, Some(StandardRange::Rect));
+        assert_eq!(crop.default, Some(ControlValue::Crop(None)));
+        let zoom = of(&standard, Control::Zoom).unwrap();
+        assert_eq!(
+            zoom.range,
+            Some(StandardRange::Manual { min: 0, max: 1_000 })
+        );
+
+        // Not registered or not mapped: left out, not shown with a generic range.
+        for absent in [Control::Saturation, Control::Sharpness, Control::FrameRate] {
+            assert_eq!(of(&standard, absent), None, "{absent:?}");
+        }
+        let ordered: Vec<Control> = standard.iter().map(|c| c.control).collect();
+        let mut sorted = ordered.clone();
+        sorted.sort_by_key(|c| c.index());
+        assert_eq!(ordered, sorted);
+    }
+
+    /// A control is listed only when the backend's plan for it can run: exposure needs AeEnable,
+    /// a manual focus needs AfMode and LensPosition, zoom needs the crop maximum.
+    #[test]
+    fn a_standard_control_is_listed_only_when_it_can_be_set() {
+        let only_time = [listed("ExposureTime", TYPE_INT32, 1.0, 10.0, 5.0)];
+        assert_eq!(of(&standard(&only_time, None), Control::Exposure), None);
+
+        let manual_ae = [
+            listed("AeEnable", TYPE_BOOL, 0.0, 1.0, 0.0),
+            listed("ExposureTime", TYPE_INT32, 1.0, 10.0, 5.0),
+        ];
+        let exposure = of(&standard(&manual_ae, None), Control::Exposure).unwrap();
+        assert_eq!(exposure.default, Some(ControlValue::Manual(5)));
+
+        let af_only = [listed("AfMode", TYPE_INT32, 0.0, 2.0, 0.0)];
+        let focus = of(&standard(&af_only, None), Control::Focus).unwrap();
+        assert_eq!((focus.range, focus.default, focus.auto), (None, None, true));
+        assert_eq!(
+            of(
+                &standard(&[listed("LensPosition", TYPE_FLOAT, 0.0, 15.0, 0.0)], None),
+                Control::Focus
+            ),
+            None
+        );
+
+        let crop = [listed("ScalerCrop", TYPE_RECTANGLE, 0.0, 0.0, 0.0)];
+        let without_max = standard(&crop, None);
+        assert_eq!(of(&without_max, Control::Zoom), None);
+        assert_eq!(of(&without_max, Control::Crop).unwrap().default, None);
+
+        let mut read_only = listed("AnalogueGain", TYPE_FLOAT, 1.0, 8.0, 1.0);
+        read_only.input = false;
+        assert!(
+            of(&standard(&[read_only], None), Control::Gain)
+                .unwrap()
+                .read_only
+        );
     }
 }

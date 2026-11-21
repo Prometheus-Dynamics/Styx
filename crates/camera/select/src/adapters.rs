@@ -8,7 +8,10 @@ use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, DeviceKind, FrameMetadata, Update};
 use styx_frame::FrameLease;
-use styx_libcamera::{Capture as LibcameraStream, CaptureConfig, Error as LibcameraError};
+use styx_libcamera::{
+    Capture as LibcameraStream, CaptureConfig, DeviceEntry, Error as LibcameraError,
+    StandardControl as LibcameraStandard, StandardRange as LibcameraRange,
+};
 use styx_native_run::{Clock, Event, Ranges, Session, State};
 use styx_v4l2::{
     NodeControls, RawControl, StandardControl, StandardRange, State as V4l2State, Stream,
@@ -506,8 +509,104 @@ impl Capture for LibcameraCapture {
         }
     }
 
+    fn controls_info(&self) -> ControlsInfo {
+        match &self.camera {
+            Some(camera) => {
+                libcamera_controls(&camera.standard_controls(), &camera.device_controls())
+            }
+            None => ControlsInfo::unreported(),
+        }
+    }
+
+    fn controls_generation(&self) -> u64 {
+        self.camera
+            .as_ref()
+            .map_or(0, LibcameraStream::controls_generation)
+    }
+
+    fn set_device(&mut self, id: u32, value: i64) -> Result<(), CaptureError> {
+        let camera = self.camera.as_ref().ok_or(CaptureError::Stopped)?;
+        camera
+            .set_device_control(id, value)
+            .map_err(|e| CaptureError::Failed(e.to_string()))
+    }
+
     fn stop(&mut self) {
         self.camera = None;
+    }
+}
+
+fn libcamera_standard(c: &LibcameraStandard) -> StandardInfo {
+    let range = c.range.map(|r| match r {
+        LibcameraRange::Manual { min, max } => Span::Manual { min, max },
+        LibcameraRange::Flag => Span::Flag,
+        LibcameraRange::Rect => Span::Rect,
+    });
+    StandardInfo {
+        control: c.control,
+        range,
+        // libcamera has no step.
+        step: None,
+        default: c.default,
+        // libcamera's ranges are read once the camera is configured: the range is the one in
+        // effect.
+        effective: match range {
+            Some(Span::Manual { min, max }) => Some((min, max)),
+            _ => None,
+        },
+        auto: Some(c.auto),
+        access: if c.read_only {
+            Access::ReadOnly
+        } else {
+            Access::ReadWrite
+        },
+    }
+}
+
+fn libcamera_device(entry: &DeviceEntry) -> DeviceInfo {
+    let control = &entry.control;
+    // A float or compound control's bounds are truncated to integers in the listing: not a range
+    // a caller can use, so unknown.
+    let bounded = matches!(
+        control.kind,
+        DeviceKind::Boolean | DeviceKind::Integer | DeviceKind::Integer64 | DeviceKind::Menu
+    );
+    DeviceInfo {
+        id: control.id,
+        name: entry.name.clone(),
+        kind: control.kind,
+        min: bounded.then_some(control.min),
+        max: bounded.then_some(control.max),
+        step: None,
+        default: bounded.then_some(control.default),
+        effective: bounded.then_some((control.min, control.max)),
+        value: entry.value,
+        standard: entry.mapped,
+        access: if control.read_only {
+            Access::ReadOnly
+        } else {
+            Access::ReadWrite
+        },
+        menu: entry
+            .menu
+            .iter()
+            .map(|item| MenuEntry {
+                value: item.value,
+                label: item.name.clone(),
+            })
+            .collect(),
+    }
+}
+
+/// A libcamera camera's controls: the Styx controls the backend sets, with the camera's configured
+/// ranges in Styx units (exposure in microseconds as libcamera has it, gain and gamma floats in
+/// thousandths, normalised controls 0..1000 over the camera's float range), and every control it
+/// registers by libcamera's numeric id. A float or rectangle control's range is unknown on the
+/// device line (the standard line converts the floats it maps). libcamera has no step.
+fn libcamera_controls(standard: &[LibcameraStandard], device: &[DeviceEntry]) -> ControlsInfo {
+    ControlsInfo {
+        standard: standard.iter().map(libcamera_standard).collect(),
+        device: device.iter().map(libcamera_device).collect(),
     }
 }
 
@@ -605,5 +704,91 @@ mod tests {
         assert_eq!(stepless.step, None);
         assert_eq!(stepless.access, Access::Grabbed);
         assert_eq!(stepless.value, Some(5));
+    }
+
+    fn entry(id: u32, name: &str, kind: DeviceKind, read_only: bool) -> DeviceEntry {
+        DeviceEntry {
+            control: styx_controls::DeviceControl {
+                id,
+                name: styx_controls::DeviceName::new(name),
+                kind,
+                min: 0,
+                max: 3,
+                step: 0,
+                default: 1,
+                read_only,
+            },
+            mapped: None,
+            name: name.into(),
+            menu: Vec::new(),
+            value: None,
+        }
+    }
+
+    /// A libcamera device line keeps libcamera's full name, menu labels and the value last set; a
+    /// float control's truncated bounds are unknown, and libcamera has no step. A standard line's
+    /// range is the one in effect.
+    #[test]
+    fn a_libcamera_cameras_controls_keep_its_names_and_leave_floats_unknown() {
+        let long = "VendorControlWithANameLongerThanThirtyTwoBytes";
+        let mut menu = entry(7, long, DeviceKind::Menu, false);
+        menu.menu = vec![
+            styx_libcamera::MenuItem {
+                value: 0,
+                name: Some("Off".into()),
+            },
+            styx_libcamera::MenuItem {
+                value: 5,
+                name: None,
+            },
+        ];
+        menu.value = Some(5);
+        let mut gain = entry(8, "AnalogueGain", DeviceKind::Other, false);
+        gain.mapped = Some(Control::Gain);
+        let colour = entry(9, "ColourTemperature", DeviceKind::Integer, true);
+        let standard = [LibcameraStandard {
+            control: Control::Gain,
+            range: Some(LibcameraRange::Manual {
+                min: 1_000,
+                max: 16_000,
+            }),
+            default: Some(ControlValue::Manual(1_000)),
+            auto: false,
+            read_only: false,
+        }];
+        let info = libcamera_controls(&standard, &[menu, gain, colour]);
+
+        let menu = &info.device[0];
+        assert_eq!(menu.name, long);
+        assert_eq!((menu.min, menu.max, menu.step), (Some(0), Some(3), None));
+        assert_eq!(menu.value, Some(5));
+        assert_eq!(
+            menu.menu,
+            [
+                MenuEntry {
+                    value: 0,
+                    label: Some("Off".into())
+                },
+                MenuEntry {
+                    value: 5,
+                    label: None
+                },
+            ]
+        );
+        let gain = &info.device[1];
+        assert_eq!((gain.min, gain.max, gain.default), (None, None, None));
+        assert_eq!(gain.standard, Some(Control::Gain));
+        assert_eq!(info.device[2].access, Access::ReadOnly);
+
+        let gain = info.standard[0];
+        assert_eq!(
+            gain.range,
+            Some(Span::Manual {
+                min: 1_000,
+                max: 16_000
+            })
+        );
+        assert_eq!(gain.effective, Some((1_000, 16_000)));
+        assert_eq!((gain.step, gain.auto), (None, Some(false)));
     }
 }

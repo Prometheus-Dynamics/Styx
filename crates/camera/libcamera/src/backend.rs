@@ -21,10 +21,15 @@ use styx_frame::{
     AcquireError, BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool,
 };
 
-use crate::controls::{self as map, TYPE_BOOL, TYPE_FLOAT, TYPE_INT32, TYPE_INT64, TYPE_RECTANGLE};
+use crate::controls::{
+    self as map, Listed, TYPE_BOOL, TYPE_FLOAT, TYPE_INT32, TYPE_INT64, TYPE_RECTANGLE,
+};
 use crate::planes;
 use crate::sys;
-use crate::{CameraInfo, CaptureConfig, CaptureStats, DeviceEntry, Error, FrameSink, StreamFormat};
+use crate::{
+    CameraInfo, CaptureConfig, CaptureStats, DeviceEntry, Error, FrameSink, StandardControl,
+    StreamFormat,
+};
 use styx_controls::{DeviceControl, DeviceKind, Rect};
 
 /// Styx's control names, as [`sys::styx_control_id`] numbers them.
@@ -496,8 +501,8 @@ extern "C" fn on_request_completed(data: *mut c_void, request: *mut sys::Request
     inner.complete(request);
 }
 
-/// The public listing of one registered control.
-fn entry_of(listed: &Listed) -> DeviceEntry {
+/// The public listing of one registered control, with `value` the value last set for it.
+fn entry_of(listed: &Listed, value: Option<i64>) -> DeviceEntry {
     DeviceEntry {
         control: DeviceControl {
             id: listed.id,
@@ -510,6 +515,9 @@ fn entry_of(listed: &Listed) -> DeviceEntry {
             read_only: !listed.input,
         },
         mapped: map::mapped_control(&listed.name),
+        name: listed.name.clone(),
+        menu: listed.entries.clone(),
+        value,
     }
 }
 
@@ -521,32 +529,13 @@ pub struct Capture {
     inner: Box<Inner>,
     thread: Option<JoinHandle<()>>,
     format: MediaFormat,
-    /// Every control the camera registers, as read at open.
+    /// Every control the camera registers, as read once it is configured.
     listed: Vec<Listed>,
-    /// The same controls, as the public listing reports them.
-    entries: Vec<DeviceEntry>,
+    /// Moves on every value set, by Styx control or by id: what [`Capture::device_controls`] and
+    /// [`Capture::standard_controls`] answer is read again when it does.
+    generation: AtomicU64,
     /// The camera's maximum crop (`ScalerCropMaximum`), when it reports one: zoom is set from it.
     crop_max: Option<Rect>,
-}
-
-/// One control of the camera's registry, as read at open. Numbers are `f64`: a float control's
-/// range is kept whole, and an integer's is exact in it.
-#[derive(Debug, Clone)]
-struct Listed {
-    id: u32,
-    name: String,
-    ty: u32,
-    menu: bool,
-    input: bool,
-    min: f64,
-    max: f64,
-    default: f64,
-}
-
-impl Listed {
-    fn kind(&self) -> DeviceKind {
-        map::device_kind(self.ty, self.menu)
-    }
 }
 
 /// Reads every control of `camera`'s registry: its id, name, type, whether it is a menu, whether
@@ -580,26 +569,81 @@ fn list_controls(camera: &Camera) -> Vec<Listed> {
                 .into_owned();
             let ty = sys::libcamera_control_id_type(control);
             let input = sys::libcamera_control_id_is_input(control);
-            let enumerators = sys::libcamera_control_id_enumerators_iter_create(control);
-            let menu = !enumerators.is_null()
-                && sys::libcamera_control_id_enumerators_iter_has_next(enumerators);
-            if !enumerators.is_null() {
-                sys::libcamera_control_id_enumerators_iter_destroy(enumerators);
-            }
+            let names = enumerators_of(control);
+            let values = if ty == TYPE_INT32 {
+                values_of(info, ty)
+            } else {
+                Vec::new()
+            };
+            let entries = map::menu_entries(&values, &names);
             out.push(Listed {
                 id,
                 name,
                 ty,
-                menu,
+                menu: !entries.is_empty(),
                 input,
                 min: number(sys::libcamera_control_info_min(info), ty),
                 max: number(sys::libcamera_control_info_max(info), ty),
                 default: number(sys::libcamera_control_info_def(info), ty),
+                entries,
             });
         }
         sys::libcamera_control_info_map_iter_destroy(iter);
     }
     out
+}
+
+/// The values libcamera names for `control` (its enumerators), with their names.
+///
+/// # Safety
+/// `control` is a live control id from libcamera's registry.
+unsafe fn enumerators_of(control: *mut sys::ControlId) -> Vec<(i32, String)> {
+    let mut out = Vec::new();
+    // SAFETY: the iterator is created for the live control here and destroyed below; each name
+    // is a C string owned by libcamera's registry, copied before the iterator moves on.
+    unsafe {
+        let iter = sys::libcamera_control_id_enumerators_iter_create(control);
+        if iter.is_null() {
+            return out;
+        }
+        while sys::libcamera_control_id_enumerators_iter_has_next(iter) {
+            let key = sys::libcamera_control_id_enumerators_iter_key(iter);
+            let name = sys::libcamera_control_id_enumerators_iter_value(iter);
+            if !name.is_null() {
+                out.push((key, CStr::from_ptr(name).to_string_lossy().into_owned()));
+            }
+            sys::libcamera_control_id_enumerators_iter_next(iter);
+        }
+        sys::libcamera_control_id_enumerators_iter_destroy(iter);
+    }
+    out
+}
+
+/// The values `info` lists the control as taking (`ControlInfo::values()`), as integers.
+///
+/// # Safety
+/// `info` is a live control info of the camera, of a control of type `ty`.
+unsafe fn values_of(info: *const sys::ControlInfo, ty: u32) -> Vec<i64> {
+    let mut size = 0usize;
+    // SAFETY: the array is the info's own vector of `size` libcamera ControlValues, read while the
+    // camera lives. They are C++ objects of libcamera_control_value_size() bytes each, so each is
+    // reached by that stride from the first.
+    unsafe {
+        let first = sys::libcamera_control_info_values(info, &mut size);
+        if first.is_null() || size == 0 {
+            return Vec::new();
+        }
+        let stride = sys::libcamera_control_value_size();
+        (0..size)
+            .map(|k| {
+                let value = first
+                    .cast::<u8>()
+                    .add(k * stride)
+                    .cast::<sys::ControlValue>();
+                number(value, ty) as i64
+            })
+            .collect()
+    }
 }
 
 /// A control value's first element as a number, for the types a passthrough carries.
@@ -688,11 +732,10 @@ impl Capture {
         if unsafe { sys::libcamera_camera_acquire(camera.0.as_ptr()) } != 0 {
             return Err(Error::Camera(format!("camera {id} is busy")));
         }
-        let listed = list_controls(&camera);
         let crop_max = crop_maximum(&camera);
         let mut capture = Self::configure(camera, config, sink)?;
-        capture.entries = listed.iter().map(entry_of).collect();
-        capture.listed = listed;
+        // Read once configured: libcamera narrows ranges to the configuration.
+        capture.listed = list_controls(&capture.camera);
         capture.crop_max = crop_max;
         capture.start()?;
         Ok(capture)
@@ -882,7 +925,7 @@ impl Capture {
             thread: None,
             format,
             listed: Vec::new(),
-            entries: Vec::new(),
+            generation: AtomicU64::new(1),
             crop_max: None,
         })
     }
@@ -1031,12 +1074,40 @@ impl Capture {
         for (id, value) in writes {
             upsert(&mut requested, id, value);
         }
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
-    /// Every control the camera registers, mapped to a Styx control or a passthrough.
-    pub fn device_controls(&self) -> &[DeviceEntry] {
-        &self.entries
+    /// Every control the camera registers, mapped to a Styx control or a passthrough, with the
+    /// value last set for each. Built on each call: ask when [`Capture::controls_generation`]
+    /// moves.
+    pub fn device_controls(&self) -> Vec<DeviceEntry> {
+        let requested = self.inner.requested.lock().unwrap();
+        self.listed
+            .iter()
+            .map(|listed| {
+                let value = requested
+                    .iter()
+                    .find(|(id, _)| *id == listed.id)
+                    .and_then(|(_, v)| match *v {
+                        Value::Bool(v) => Some(i64::from(v)),
+                        Value::I32(v) => Some(i64::from(v)),
+                        Value::I64(v) => Some(v),
+                        Value::F32(_) | Value::Rect(_) => None,
+                    });
+                entry_of(listed, value)
+            })
+            .collect()
+    }
+
+    /// The Styx controls this camera can be set through, with its configured ranges in Styx units.
+    pub fn standard_controls(&self) -> Vec<StandardControl> {
+        map::standard(&self.listed, self.crop_max)
+    }
+
+    /// A count that moves on every value set on this capture, by Styx control or by id.
+    pub fn controls_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
     }
 
     /// The value of a passthrough control by its libcamera id: the last value set for it, or the
@@ -1066,15 +1137,10 @@ impl Capture {
         }
     }
 
-    /// Sets a passthrough control by its libcamera id, for the requests queued from now on.
+    /// Sets a control by its libcamera id, for the requests queued from now on. A control mapped to
+    /// a Styx control is taken too: it is the same libcamera value the Styx control sets.
     pub fn set_device_control(&self, id: u32, value: i64) -> Result<(), Error> {
         let listed = self.listed_by_id(id)?;
-        if map::mapped_control(&listed.name).is_some() {
-            return Err(Error::Refused(format!(
-                "{} is mapped to a Styx control: set that one",
-                listed.name
-            )));
-        }
         if !listed.input {
             return Err(Error::Refused(format!("{} is read-only", listed.name)));
         }
@@ -1107,6 +1173,7 @@ impl Capture {
             };
         let mut requested = self.inner.requested.lock().unwrap();
         upsert(&mut requested, id, stored);
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 

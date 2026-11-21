@@ -23,7 +23,7 @@
 
 use std::fmt;
 
-use styx_controls::{Control, DeviceControl, FrameMetadata};
+use styx_controls::{Control, ControlValue, DeviceControl, FrameMetadata};
 use styx_format::FourCc;
 use styx_frame::FrameLease;
 
@@ -105,6 +105,47 @@ pub struct DeviceEntry {
     pub control: DeviceControl,
     /// The Styx control this one is used for, when this crate maps it.
     pub mapped: Option<Control>,
+    /// libcamera's name for it in full (`control.name` is cut to its inline capacity).
+    pub name: String,
+    /// A menu's entries: the values the camera's `ControlInfo` lists (every enumerator when it
+    /// lists none), labelled with libcamera's enumerator names. Empty for other controls.
+    pub menu: Vec<MenuItem>,
+    /// The value last set for this control on this capture. `None` until one is set: libcamera
+    /// reports what a camera did in each frame's metadata, not through a read.
+    pub value: Option<i64>,
+}
+
+/// One entry of a libcamera menu control: the value that selects it and libcamera's name for it.
+/// `name` is `None` for a value the camera lists that has no enumerator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MenuItem {
+    pub value: i64,
+    pub name: Option<String>,
+}
+
+/// A Styx control as this camera has it, in Styx units, from the ranges libcamera gives after the
+/// camera is configured. Only the controls the backend can set are listed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandardControl {
+    pub control: Control,
+    /// `None` when the camera gives no range for it (white balance, which is Auto only here).
+    pub range: Option<StandardRange>,
+    pub default: Option<ControlValue>,
+    /// Whether the camera has an automatic mode for it.
+    pub auto: bool,
+    /// The camera does not take a value for it.
+    pub read_only: bool,
+}
+
+/// The values a [`StandardControl`] takes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandardRange {
+    /// From `min` to `max` in the control's Styx unit.
+    Manual { min: u32, max: u32 },
+    /// On or off.
+    Flag,
+    /// A rectangle (crop).
+    Rect,
 }
 
 /// What to capture: one format at one size, with `buffers` buffers in the pool.

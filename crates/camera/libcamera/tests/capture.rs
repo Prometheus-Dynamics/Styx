@@ -109,7 +109,7 @@ fn a_camera_lists_every_control_mapped_or_passthrough() {
         entries.len(),
         entries.len() - mapped
     );
-    for entry in entries {
+    for entry in &entries {
         eprintln!(
             "  {:<28} id={:<4} {:?} {:?} mapped={:?}",
             entry.control.name.as_str(),
@@ -120,11 +120,13 @@ fn a_camera_lists_every_control_mapped_or_passthrough() {
         );
     }
     assert!(!entries.is_empty(), "a camera registers controls");
-    for entry in entries.iter().filter(|e| e.mapped.is_some()) {
+    // Every Styx control listed is set through a registered control.
+    for standard in capture.standard_controls() {
+        eprintln!("  standard {:?}", standard);
         assert!(
-            capture.set_device_control(entry.control.id, 0).is_err(),
-            "{} is mapped, so the passthrough refuses it",
-            entry.control.name
+            entries.iter().any(|e| e.mapped == Some(standard.control)),
+            "{:?} is listed without a registered control",
+            standard.control
         );
     }
 }

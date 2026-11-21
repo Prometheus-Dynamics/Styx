@@ -24,8 +24,17 @@ impl Capture {
     }
 
     /// Every control the camera offers: none in this build.
-    pub fn device_controls(&self) -> &[crate::DeviceEntry] {
-        &[]
+    pub fn device_controls(&self) -> Vec<crate::DeviceEntry> {
+        Vec::new()
+    }
+
+    /// The Styx controls the camera can be set through: none in this build.
+    pub fn standard_controls(&self) -> Vec<crate::StandardControl> {
+        Vec::new()
+    }
+
+    pub fn controls_generation(&self) -> u64 {
+        0
     }
 
     pub fn get_device_control(&self, _id: u32) -> Result<i64, Error> {
