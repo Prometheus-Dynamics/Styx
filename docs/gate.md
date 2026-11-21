@@ -17,6 +17,9 @@ A lane name alone means all its variants; `all` means every variant. When `host:
 `host:all` both run, the default-only list check runs too. vivid, PipeWire and lavapipe cases are
 in `host:all` and `host:default`.
 
+`host:default passed` covers clippy and building every default-features test binary. It runs only
+the tests listed in `.config/default-only.txt`. That list is empty today, so the lane runs 0 tests.
+
 ## What runs by default
 
 The files changed since `git merge-base origin/next HEAD` (committed or not, untracked included)
