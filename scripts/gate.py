@@ -16,7 +16,8 @@ host:all both run, the default-only list check runs too.
 Selection. Every file changed since `git merge-base origin/next HEAD` (committed, staged,
 unstaged, untracked) selects lanes: by scripts/gate-lanes.map (first matching pattern), else a
 file of a crate selects host:all; host:default as well when it holds code compiled only without a
-feature (scripts/affected.py's rule); bare as well when the crate is no_std or a no_std crate
+feature (scripts/affected.py's rule), or when the crate or one built with it builds with a crate whose
+code or dependencies change with a feature (builds_differently_by_feature); bare as well when the crate is no_std or a no_std crate
 depends on it. Documentation that no code or script names selects host:checks; any other file
 host:all. host:checks always runs. The default also holds every variant more than DRIFT_COMMITS
 commits or DRIFT_DAYS days behind on origin/next, and every blocked variant the change selects
@@ -158,12 +159,15 @@ def scripts_hash():
 
 _meta = None
 _meta_text = None
+# Workspace crates whose build differs between default and all features: a feature of their own or
+# an optional dependency (filled by metadata()).
+_varying = set()
 
 
 def metadata():
     """Workspace crates: name -> (directory relative to ROOT, no_std, workspace deps incl. dev,
     workspace deps a library build links: normal and build)."""
-    global _meta, _meta_text
+    global _meta, _meta_text, _varying
     if _meta is None:
         # gate.py run hands its copy to the steps (STYX_GATE_META): the workspace cannot change
         # during a gate without the record being refused.
@@ -186,6 +190,9 @@ def metadata():
                 lib_deps[name] = {members[d["pkg"]]["name"] for d in ws
                                   if any(k["kind"] in (None, "build") for k in d["dep_kinds"])}
         _meta = {}
+        _varying = {p["name"] for p in members.values()
+                    if any(k != "default" for k in p.get("features") or {})
+                    or any(d.get("optional") for d in p.get("dependencies") or [])}
         for p in members.values():
             styx = (p.get("metadata") or {}).get("styx") or {}
             _meta[p["name"]] = (os.path.relpath(os.path.dirname(p["manifest_path"]), ROOT),
@@ -203,6 +210,20 @@ def closure(name, lib_only=False):
             seen.add(n)
             todo += meta[n][3 if lib_only else 2]
     return seen
+
+
+def builds_differently_by_feature(name):
+    """A crate whose default-features build the change can break while the all-features build
+    passes: NAME or a crate built with it (its dependents) reaches, in what it builds with, a crate
+    whose code or dependencies change with a feature (a stub under not(feature), an optional
+    backend). Returns that crate's name, or None."""
+    meta = metadata()
+    for user in sorted(meta):
+        if user == name or name in closure(user):
+            hit = sorted(closure(user) & _varying)
+            if hit:
+                return hit[0]
+    return None
 
 
 def owner(path):
@@ -275,6 +296,10 @@ def select_default(base):
                 full = os.path.join(ROOT, path)
                 if os.path.exists(full) and affected.behind_feature(full, os.path.join(ROOT, meta[crate][0])):
                     add(["host:default"], path + " (not(feature) code)")
+                else:
+                    varying = builds_differently_by_feature(crate)
+                    if varying:
+                        add(["host:default"], f"{path} (built with {varying}, which changes with a feature)")
                 if crate in no_std_reach:
                     add(["bare"], path + " (no_std reach)")
             elif is_text(path, code):

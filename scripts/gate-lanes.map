@@ -1,7 +1,8 @@
 # Which gate lanes a changed file selects (scripts/gate.py; the first matching pattern wins, `*`
 # matches across directories). Lanes: all, host, bare, or LANE:VARIANT (host:checks, host:all,
 # host:default, bare:thumbv7em, bare:riscv32imac). A file no pattern matches: a crate's file selects
-# host:all, plus host:default when it holds not(feature) code and bare when a no_std crate reaches
+# host:all, plus host:default when it holds not(feature) code or builds with a crate that changes
+# with a feature (scripts/gate.py builds_differently_by_feature), and bare when a no_std crate reaches
 # it; documentation no code or script names selects host:checks; anything else host:all.
 
 # What every lane builds or runs with.

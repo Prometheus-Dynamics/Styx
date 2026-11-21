@@ -25,8 +25,11 @@ pick the lanes:
 - `scripts/gate-lanes.map` first: build files, the toolchain, `.cargo/`, `.config/` and the gate's
   scripts select every lane; `data/` selects `host:all`.
 - A file of a crate selects `host:all`. It also selects `host:default` when it holds code compiled
-  only without a feature (`cfg(not(feature = ..))` in it or on a `mod` that declares it), and
-  `bare` when the crate is no_std or a no_std crate's library depends on it.
+  only without a feature (`cfg(not(feature = ..))` in it or on a `mod` that declares it), or when
+  the crate, or a crate built with it, builds with a crate whose code or dependencies change with a
+  feature (a feature of its own or an optional dependency): its default build can break while the
+  all-features build passes. It selects `bare` when the crate is no_std or a no_std crate's library
+  depends on it.
 - Documentation that no code or script names selects `host:checks`; any other file `host:all`.
 - `host:checks` always runs.
 - A variant more than 10 commits or 3 days behind on `origin/next`, and a blocked variant the
