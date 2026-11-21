@@ -8,5 +8,7 @@ mod support;
 mod ended;
 #[path = "read.rs"]
 mod read;
+#[path = "readers.rs"]
+mod readers;
 #[path = "stall.rs"]
 mod stall;

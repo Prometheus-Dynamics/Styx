@@ -1,6 +1,7 @@
 //! One reader of a camera's frame socket: connects, takes frames, decodes their metadata, runs
 //! the optional ISP, and keeps the counts. [`Session::run`] is the read loop.
 
+use std::collections::VecDeque;
 use std::fmt;
 use std::io;
 use std::os::unix::net::UnixStream;
@@ -10,6 +11,7 @@ use std::time::Duration;
 use styx_controls::FrameMetadata;
 use styx_socket::{
     Carried, Frame, Next, ProducerState, ReadError, Reader, ReaderStats, SocketError, Start,
+    StreamEnd,
 };
 
 use crate::clock::monotonic_ns;
@@ -72,6 +74,13 @@ pub struct Session {
     /// Frames this reader keeps and never gives back (`--hold N`): the first N it reads. The room is
     /// taken once by [`Session::hold_first`]. For checking the producer's reserve rule from outside.
     held: Vec<Frame>,
+    /// The newest frames this reader keeps (`--keep N`): each new frame is kept and the oldest past
+    /// `keep` is let go, so between frames it holds `keep`. Zero: none kept past the step.
+    kept: VecDeque<Frame>,
+    keep: usize,
+    /// After this many frames read (all of them kept), the reader stops reading and stays attached
+    /// (`--stall-after N`): a stalled reader, for the reserve rule. It still sees its own cut-off.
+    stall_after: Option<usize>,
     isp: Option<IspRunner>,
     /// The ring's frame counts when the session started, so the report can show this run only.
     reader_start: ReaderStats,
@@ -115,6 +124,9 @@ impl Session {
             reader,
             stats: FrameStats::new(),
             held: Vec::new(),
+            kept: VecDeque::new(),
+            keep: 0,
+            stall_after: None,
             metadata: None,
             isp,
             reader_start,
@@ -131,9 +143,22 @@ impl Session {
         self.held = Vec::with_capacity(frames);
     }
 
-    /// Frames held by [`Session::hold_first`] so far.
+    /// Keeps the newest `frames` frames: on each frame read the oldest past `frames` is let go.
+    pub fn keep_newest(&mut self, frames: usize) {
+        self.keep = frames;
+        self.kept = VecDeque::with_capacity(frames + 1);
+    }
+
+    /// Reads `frames` frames, keeps them all, then stops reading and stays attached until the run
+    /// ends or the producer cuts this reader off.
+    pub fn stall_after(&mut self, frames: usize) {
+        self.stall_after = Some(frames);
+        self.hold_first(frames);
+    }
+
+    /// Frames this reader holds now, by [`Session::hold_first`] or [`Session::keep_newest`].
     pub fn held(&self) -> usize {
-        self.held.len()
+        self.held.len() + self.kept.len()
     }
 
     pub fn socket(&self) -> &Path {
@@ -171,9 +196,17 @@ impl Session {
                     self.handle(&frame)?;
                     if self.held.len() < self.held.capacity() {
                         self.held.push(frame);
+                    } else if self.keep > 0 {
+                        self.kept.push_back(frame);
+                        if self.kept.len() > self.keep {
+                            self.kept.pop_front();
+                        }
                     }
                     if done(&self.stats) {
                         return Ok(Stop::Frames);
+                    }
+                    if self.stall_after.is_some_and(|n| self.held.len() >= n) {
+                        return self.stalled(started, time);
                     }
                 }
                 Next::Stalled(state) => self.stall_edge(state),
@@ -191,6 +224,25 @@ impl Session {
                     self.reader.wait(Some(POLL)).map_err(SessionError::Wait)?;
                 }
             }
+        }
+    }
+
+    /// The stalled reader's wait: it reads nothing more and holds its frames until the time runs
+    /// out, or until the producer cuts it off (seen through the pool page, without a read).
+    fn stalled(&mut self, started: u64, time: Option<Duration>) -> Result<Stop, SessionError> {
+        loop {
+            if self.reader.cut_reason() != 0 {
+                return Err(SessionError::Read(ReadError::Ended(
+                    StreamEnd::ConsumerFault,
+                )));
+            }
+            let now = monotonic_ns();
+            if let Some(limit) = time
+                && now.saturating_sub(started) >= limit.as_nanos() as u64
+            {
+                return Ok(Stop::Time);
+            }
+            std::thread::sleep(POLL);
         }
     }
 

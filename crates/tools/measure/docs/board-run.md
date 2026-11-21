@@ -115,6 +115,21 @@ frame is in the report (`isp.time_ns`). A transport-only figure (no ISP) is the 
 Each command prints a short table and writes the JSON report. The JSON is the record; the table is for
 the log.
 
+### Reader sets (the camera's hold)
+
+All readers of one camera together may keep `buffers - hardware_reserve - 1` frames across a publish
+(2 at 8 buffers, 3 at 9); one past that cuts off the reader holding the oldest frame, which reads a
+consumer fault, and the status's `reserve_cuts` counts it (the report's "readers cut"). Three reader
+shapes, one per reader:
+
+- `--keep N`: keeps its newest N frames and lets the older go (a reader working on the last N).
+- `--stall-after N --seconds S`: reads N frames, keeps them, then reads nothing more and stays attached
+  until S runs out (a stalled reader); a cut is still seen, through the pool page.
+- `--hold N`: keeps its first N frames and reads on; the frame in hand counts too (N + 1).
+
+Run two readers at once as two `styx-measure read` processes on the same `<CAMERA_SOCKET>`, each with
+its own `--report`; `--control` on both gives the cut count at each end.
+
 ## 6. What to record
 
 For each run (all from the files above; nothing typed from memory):

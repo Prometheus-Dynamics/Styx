@@ -18,7 +18,7 @@ usage:
   styx-measure read --socket <camera frame socket> (--frames N | --seconds S)
                     [--control <service control socket>] [--service-pid PID]
                     [--asked-fps FPS] [--soft-isp <FOURCC>[:WxH]] [--isp-variant <name>]
-                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N] [--start newest|next-new] [--hold N]
+                    [--report <file.json>] [--trace <file.csv>] [--trace-frames N] [--start newest|next-new] [--hold N | --keep N | --stall-after N]
   styx-measure status --control <service control socket>
 
 read attaches to a camera's frame socket as a reader in this process and measures what it takes
@@ -37,6 +37,10 @@ The paths in effect are printed to stderr at the first frame.
 --hold N: keep the first N frames read and never release them. The frame being read is in hand
 too, so N + 1 count against the camera's hold bound (buffers - hardware_reserve - 1, shared by
 all readers): N = bound - 1 is never cut; N = bound is cut whenever this reader lags one frame.
+--keep N: keep the newest N frames read and let the older go (a reader that works on the last N):
+between frames it holds N.
+--stall-after N: read N frames, keep them, then read nothing more and stay attached until --seconds
+runs out (a stalled reader). It needs --seconds; a cut-off is reported as for --hold.
 ";
 
 /// What `read` was asked to do.
@@ -52,6 +56,10 @@ pub struct ReadArgs {
     pub start: Start,
     /// Frames to keep and never release (the first N read). 0: release every frame at once.
     pub hold: usize,
+    /// The newest frames to keep, letting older ones go. 0: none.
+    pub keep: usize,
+    /// Frames to read and keep before the reader stops reading (stays attached).
+    pub stall_after: Option<usize>,
     pub report: Option<PathBuf>,
     /// Where to write the first frames one by one (`id,capture_ns,reader_ns`), if asked.
     pub trace: Option<PathBuf>,
@@ -113,6 +121,8 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
     let mut isp_variant = None;
     let mut start = Start::default();
     let mut hold = 0usize;
+    let mut keep = 0usize;
+    let mut stall_after = None;
     let mut report = None;
     let mut trace = None;
     let mut trace_frames = 20_000usize;
@@ -147,6 +157,20 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
                     "--hold: a count of frames to keep and never release".to_string()
                 })?;
             }
+            "--keep" => {
+                keep = text(&mut it, flag)?
+                    .parse()
+                    .map_err(|_| "--keep: a count of the newest frames to keep".to_string())?;
+            }
+            "--stall-after" => {
+                let n: usize = text(&mut it, flag)?
+                    .parse()
+                    .map_err(|_| "--stall-after: a count of frames".to_string())?;
+                if n == 0 {
+                    return Err("--stall-after must be above zero".into());
+                }
+                stall_after = Some(n);
+            }
             "--start" => {
                 start = match text(&mut it, flag)?.as_str() {
                     "newest" => Start::Newest,
@@ -180,6 +204,19 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
     if frames.is_none() && seconds.is_none() {
         return Err("read: give --frames N or --seconds S".into());
     }
+    if [hold > 0, keep > 0, stall_after.is_some()]
+        .iter()
+        .filter(|on| **on)
+        .count()
+        > 1
+    {
+        return Err("read: --hold, --keep and --stall-after are one each".into());
+    }
+    if stall_after.is_some() && seconds.is_none() {
+        return Err(
+            "read: --stall-after needs --seconds (a stalled reader reads no more frames)".into(),
+        );
+    }
     Ok(ReadArgs {
         socket,
         control,
@@ -189,6 +226,8 @@ fn parse_read(rest: &[String]) -> Result<ReadArgs, String> {
         isp_variant,
         start,
         hold,
+        keep,
+        stall_after,
         report,
         trace,
         trace_frames,
@@ -357,6 +396,7 @@ fn service_camera(cam: &CameraLine) -> ServiceCamera {
         buffers: cam.number("buffers"),
         hardware_reserve: cam.number("reserve"),
         reclaimed: cam.number("reclaimed"),
+        reserve_cuts: cam.number("reserve_cuts"),
         raw: cam.raw.clone(),
     }
 }
@@ -394,13 +434,20 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
     if args.hold > 0 {
         session.hold_first(args.hold);
     }
+    if args.keep > 0 {
+        session.keep_newest(args.keep);
+    }
+    if let Some(n) = args.stall_after {
+        session.stall_after(n);
+    }
     let reader0 = session.reader_start();
 
     let started = monotonic_ns();
     let time = args.seconds.map(Duration::from_secs_f64);
     let stop = session.run(time, wanted(args.frames)).map_err(|e| {
         // A reader cut off for holding frames: say how far it got and how many frames it held
-        // (`--hold`'s frames; the frame in hand is released before the end is read).
+        // (`--hold`'s or `--keep`'s or `--stall-after`'s frames; the frame in hand is released
+        // before the end is read).
         format!(
             "{e} (after {} frames delivered; frames held at the cut: {})",
             session.stats.delivered,

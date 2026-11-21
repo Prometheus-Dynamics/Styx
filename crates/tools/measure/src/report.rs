@@ -37,6 +37,8 @@ pub struct ServiceCamera {
     pub buffers: Option<u64>,
     pub hardware_reserve: Option<u64>,
     pub reclaimed: Option<u64>,
+    /// Readers the service cut off for the reserve, a running total (`reserve_cuts=`).
+    pub reserve_cuts: Option<u64>,
     pub raw: String,
 }
 
@@ -148,6 +150,7 @@ fn camera_json(c: &Option<ServiceCamera>) -> Json {
             ("buffers", Json::opt_int(c.buffers)),
             ("hardware_reserve", Json::opt_int(c.hardware_reserve)),
             ("reclaimed", Json::opt_int(c.reclaimed)),
+            ("reserve_cuts", Json::opt_int(c.reserve_cuts)),
         ]),
     }
 }
@@ -412,11 +415,12 @@ impl Report {
             row(
                 "service keep window",
                 format!(
-                    "keep {} of {} buffers, hardware reserve {}, reclaimed {}",
+                    "keep {} of {} buffers, hardware reserve {}, reclaimed {}, readers cut {}",
                     fmt_int(c.keep),
                     fmt_int(c.buffers),
                     fmt_int(c.hardware_reserve),
-                    fmt_int(c.reclaimed)
+                    fmt_int(c.reclaimed),
+                    fmt_int(c.reserve_cuts)
                 ),
             );
         }
