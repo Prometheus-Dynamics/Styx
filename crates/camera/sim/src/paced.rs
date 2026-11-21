@@ -926,6 +926,31 @@ pub struct Board<'a> {
     pub vary_bytes: bool,
     /// `csi0`'s `auto_off_after`: failed attempts in a row before the host turns it off for good.
     pub receiver_auto_off_after: Option<u32>,
+    /// `isp0` is the simulated PiSP back end (`crate::pisp_be`, driver `sim-pisp`, registered by
+    /// the test with feature `pisp`), its streams sized for the largest mode, instead of the
+    /// parameters-only `sim-isp`.
+    pub pisp_be: bool,
+}
+
+/// `isp0`'s device text: the simulated back end with its four streams (shared memory), sized for
+/// the largest mode (16-bit input; outputs up to 4 bytes a pixel), or the parameters-only ISP.
+fn isp_device(pisp_be: bool) -> String {
+    if !pisp_be {
+        return "[[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n".to_string();
+    }
+    let pixels = MODES
+        .iter()
+        .map(|&(w, h, _)| (w * h) as usize)
+        .max()
+        .unwrap_or(0);
+    let (input, output) = (pixels * 2, pixels * 4);
+    format!(
+        "[[devices]]\nid = \"isp0\"\ndriver = \"sim-pisp\"\n\
+         [devices.streams.config]\nbuffers = 4\nbuffer_bytes = 32768\njob_slots = 4\njob_bytes = 128\n\
+         [devices.streams.input]\nbuffers = 3\nbuffer_bytes = {input}\n\
+         [devices.streams.output0]\nbuffers = 4\nbuffer_bytes = {output}\n\
+         [devices.streams.output1]\nbuffers = 4\nbuffer_bytes = {output}\n"
+    )
 }
 
 /// A board text for `lemnosd`: an ISP `isp0`, a decoy receiver `csi-spare` with no link (listed
@@ -956,9 +981,10 @@ pub fn board_from(spec: Board<'_>) -> String {
     if let Some(after) = spec.receiver_auto_off_after {
         receiver.push_str(&format!("auto_off_after = {after}\n"));
     }
+    let isp = isp_device(spec.pisp_be);
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-camera\"\n\
-         [[devices]]\nid = \"isp0\"\ndriver = \"sim-isp\"\n\
+         {isp}\
          [[devices]]\nid = \"csi-spare\"\ndriver = \"sim-receiver\"\n\
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
          [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\

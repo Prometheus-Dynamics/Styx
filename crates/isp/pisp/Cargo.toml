@@ -16,6 +16,7 @@ styx-aaa = { path = "../../algo/aaa", default-features = false, features = ["std
 styx-lemnos = { path = "../../core/lemnos", features = ["pisp"] }
 styx-format = { path = "../../core/format" }
 styx-frame = { path = "../../core/frame" }
+styx-simd = { path = "../../core/simd" }
 lemnos-core = { workspace = true }
 lemnos-client = { workspace = true }
 lemnos-contract-camera-isp = { workspace = true }
@@ -30,10 +31,9 @@ lemnosd = { workspace = true }
 lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }
 lemnos-hal = { workspace = true, features = ["std"] }
-# The job-end reasons the simulated ISP refuses with.
-lemnos-wire = { workspace = true }
-# Stream memory for the simulated boards, and whether this host has a dma-heap.
-styx-sim = { path = "../../camera/sim" }
+# The simulated back end (`styx_sim::pisp_be`), stream memory for the simulated boards, and whether
+# this host has a dma-heap.
+styx-sim = { path = "../../camera/sim", features = ["pisp"] }
 
 [lints]
 workspace = true

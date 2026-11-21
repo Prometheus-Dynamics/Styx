@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. controls_seq=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. controls_seq=.. isp=.. isp_asked=.. isp_form=.. isp_refused=.. isp_skipped=.. isp_switches=<to_soft>/<to_pisp> isp_published=a/b isp_dropped=a/b isp_readers=a/b isp0_socket=.. isp1_socket=.. isp_3a=.. isp_reason_at=.. isp_reason=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. [bytes_read=..] site=..` line per copy site (the service's process; `bytes` is what was written, `bytes_read` is given where the copy changes the form; `site` is free text, last), then `ok` |
 //! | `controls <id>` | `seq <n>` (the camera's `controls_seq`), one `control <name> unit=.. range=.. step=.. default=.. effective=.. auto=.. access=.. value=..` line per standard control the camera has, one `device <id> kind=.. access=.. min=.. max=.. step=.. default=.. effective=.. value=.. standard=.. entries=.. name=..` line per device control (`name` is free text, last), each followed by its menu's `entry <id> <value> [<label>]` lines, then `ok` |
 //! | `getd <id> <device-id>` | that device control's `device` line and its `entry` lines, then `ok` |
 //! | `setd <id> <device-id> <value>` | `ok` once the backend took the value (the device's own units) |
@@ -513,6 +513,18 @@ fn copy_lines() -> Vec<String> {
                 c.site()
             )
         })
+        .chain(std::iter::once({
+            // The back end's input pass reads one form and writes another: both are given
+            // (`bytes` is what was written into the input buffers).
+            let input = &styx_pisp::PISP_BE_INPUT;
+            format!(
+                "copy copies={} bytes={} bytes_read={} site={}",
+                input.passes(),
+                input.bytes_written(),
+                input.bytes_read(),
+                input.site()
+            )
+        }))
         .collect()
 }
 
@@ -579,6 +591,16 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
         None => ("-".to_string(), "-".to_string(), "-".to_string()),
     };
+    let isp = &status.isp;
+    let isp_socket = |k: usize| {
+        isp.sockets[k]
+            .as_ref()
+            .map_or_else(|| "-".to_string(), |p| p.display().to_string())
+    };
+    let isp_reason = isp
+        .reason
+        .as_deref()
+        .map_or_else(|| "-".to_string(), |r| one_line(r).replace(' ', "_"));
     let (mode, format, bits, mode_reason, mode_text) = match &status.mode {
         Some(chosen) => (
             chosen.mode.to_string(),
@@ -596,7 +618,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} controls_seq={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} controls_seq={} isp={} isp_asked={} isp_form={} isp_refused={} isp_skipped={} isp_switches={} isp_published={} isp_dropped={} isp_readers={} isp0_socket={} isp1_socket={} isp_3a={} isp_reason_at={} isp_reason={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -644,6 +666,30 @@ fn camera_line(status: &CameraStatus) -> String {
         status.discontinuities,
         contract_mismatch,
         status.controls_seq,
+        isp.active.map_or("none", |a| a.name()),
+        isp.asked.name(),
+        isp.input_form.unwrap_or("-"),
+        isp.refused,
+        isp.skipped,
+        format_args!("{}/{}", isp.to_soft, isp.to_pisp),
+        format_args!("{}/{}", isp.published[0], isp.published[1]),
+        format_args!("{}/{}", isp.dropped[0], isp.dropped[1]),
+        format_args!("{}/{}", isp.readers[0], isp.readers[1]),
+        isp_socket(0),
+        isp_socket(1),
+        // The service runs no 3A: a processed stream has the configured exposure and gain and
+        // the ISP's neutral settings.
+        if isp.asked == crate::config::IspMode::None {
+            "-"
+        } else {
+            "none"
+        },
+        if isp.reason.is_some() {
+            isp.reason_at_ns.to_string()
+        } else {
+            "-".to_string()
+        },
+        isp_reason,
         error,
     )
 }
@@ -704,6 +750,31 @@ pub struct CameraLine {
     pub contract_mismatch: Option<String>,
     /// The camera's controls count (`controls_seq=`): read `controls` again when it moves.
     pub controls_seq: Option<u64>,
+    /// The ISP that made the last processed frame (`isp=`: `pisp`, `soft`, `none`).
+    pub isp: Option<String>,
+    /// The config's `isp` (`isp_asked=`).
+    pub isp_asked: Option<String>,
+    /// How raw frames go into the back end's input (`isp_form=`).
+    pub isp_form: Option<String>,
+    /// Back-end jobs refused (`isp_refused=`).
+    pub isp_refused: Option<u64>,
+    /// Raw frames the processed stream has no picture for (`isp_skipped=`).
+    pub isp_skipped: Option<u64>,
+    /// Switches to the soft ISP and back (`isp_switches=<to_soft>/<to_pisp>`).
+    pub isp_switches: Option<(u64, u64)>,
+    /// Frames published on isp0 and isp1 (`isp_published=a/b`).
+    pub isp_published: Option<(u64, u64)>,
+    /// Readers on isp0 and isp1 (`isp_readers=a/b`).
+    pub isp_readers: Option<(u64, u64)>,
+    /// The processed sockets (`isp0_socket=`, `isp1_socket=`).
+    pub isp_sockets: [Option<PathBuf>; 2],
+    /// The 3A a processed stream has (`isp_3a=`): `none` in this service.
+    pub isp_3a: Option<String>,
+    /// When the ISP reason was noted, CLOCK_MONOTONIC ns (`isp_reason_at=`).
+    pub isp_reason_at_ns: Option<u64>,
+    /// Why the ISP in force is not the one asked for, or the last refusal (`isp_reason=`, one word:
+    /// spaces are `_`).
+    pub isp_reason: Option<String>,
     /// The last failure's message: the free text at the end of the line.
     pub last_error: Option<String>,
 }
@@ -713,7 +784,11 @@ pub struct CameraLine {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CopyLine {
     pub copies: u64,
+    /// Bytes written by the copies.
     pub bytes: u64,
+    /// Bytes read, for a site whose copy changes the form (`bytes_read=`; `None` when the line
+    /// does not say: the same as `bytes`).
+    pub bytes_read: Option<u64>,
     /// The site's name (free text: it may hold spaces).
     pub site: String,
 }
@@ -793,11 +868,30 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "discontinuities" => camera.discontinuities = number,
             "contract_mismatch" => camera.contract_mismatch = text,
             "controls_seq" => camera.controls_seq = number,
+            "isp" => camera.isp = text,
+            "isp_asked" => camera.isp_asked = text,
+            "isp_form" => camera.isp_form = text,
+            "isp_refused" => camera.isp_refused = number,
+            "isp_skipped" => camera.isp_skipped = number,
+            "isp_switches" => camera.isp_switches = pair(value),
+            "isp_published" => camera.isp_published = pair(value),
+            "isp_readers" => camera.isp_readers = pair(value),
+            "isp0_socket" => camera.isp_sockets[0] = text.map(PathBuf::from),
+            "isp1_socket" => camera.isp_sockets[1] = text.map(PathBuf::from),
+            "isp_3a" => camera.isp_3a = text,
+            "isp_reason_at" => camera.isp_reason_at_ns = number,
+            "isp_reason" => camera.isp_reason = text,
             _ => {}
         }
     }
     camera.last_error = last_error.filter(|text| *text != "-").map(str::to_string);
     Some(camera)
+}
+
+/// `<a>/<b>` as two numbers.
+fn pair(value: &str) -> Option<(u64, u64)> {
+    let (a, b) = value.split_once('/')?;
+    Some((a.parse().ok()?, b.parse().ok()?))
 }
 
 /// The layout refusal as the line writes it: `ring` or `marks`, then the found and the expected
@@ -831,17 +925,19 @@ fn parse_layout(value: &str) -> Option<LayoutRefusal> {
 pub fn parse_copy_line(line: &str) -> Option<CopyLine> {
     let rest = line.strip_prefix("copy ")?;
     let (head, site) = rest.split_once(" site=")?;
-    let (mut copies, mut bytes) = (None, None);
+    let (mut copies, mut bytes, mut bytes_read) = (None, None, None);
     for word in head.split_ascii_whitespace() {
         match word.split_once('=') {
             Some(("copies", v)) => copies = v.parse().ok(),
             Some(("bytes", v)) => bytes = v.parse().ok(),
+            Some(("bytes_read", v)) => bytes_read = v.parse().ok(),
             _ => {}
         }
     }
     Some(CopyLine {
         copies: copies?,
         bytes: bytes?,
+        bytes_read,
         site: site.to_string(),
     })
 }
@@ -1184,7 +1280,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 controls_seq=0 last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
+                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- isp_reason_at=- isp_reason=- last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
             ),
             "{line}"
         );
@@ -1215,7 +1311,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- controls_seq=0 last_error=frame stream cam0: the marks page"
+                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- isp_reason_at=- isp_reason=- last_error=frame stream cam0: the marks page"
             ),
             "the fields come before the free text: {line}"
         );
@@ -1274,6 +1370,7 @@ mod tests {
             "gizmo 1 2 3",
             "copy copies=4 bytes=64 site=a site with spaces",
             "copy copies=x bytes=1 site=broken",
+            "copy copies=2 bytes=4096 bytes_read=2560 site=pisp-be-input",
             "ok",
         ];
         let listing = parse_list(&lines);
@@ -1281,11 +1378,20 @@ mod tests {
         assert_eq!(listing.cameras[0].owner.as_deref(), Some("native"));
         assert_eq!(
             listing.copies,
-            vec![CopyLine {
-                copies: 4,
-                bytes: 64,
-                site: "a site with spaces".to_string()
-            }]
+            vec![
+                CopyLine {
+                    copies: 4,
+                    bytes: 64,
+                    bytes_read: None,
+                    site: "a site with spaces".to_string()
+                },
+                CopyLine {
+                    copies: 2,
+                    bytes: 4096,
+                    bytes_read: Some(2560),
+                    site: "pisp-be-input".to_string()
+                }
+            ]
         );
     }
 

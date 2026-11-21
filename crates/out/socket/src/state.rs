@@ -10,6 +10,13 @@
 //! while running); 5 recovery, set at each edge back to running: 0 kept (the same driver instance
 //! came back), 1 lost (the device was rebound: a new instance). Other values read as lost, the
 //! conservative reading: a sequence discontinuity.
+//!
+//! Words 8 to 23 are the ISP block, for a stream of pictures an ISP makes ([`IspState`]), under
+//! their own seqlock so a change of ISP never counts as a state edge: 8 seq; 9 active (0 none: the
+//! camera's own frames, 1 the PiSP back end, 2 the soft ISP); 10 switches to the soft ISP; 11
+//! switches back; 12 jobs the back end refused; 13 the time of the last reason (CLOCK_MONOTONIC
+//! ns, 0 before one); 14 the reason's length in bytes; 16 to 23 the reason's UTF-8 bytes (at most
+//! [`ISP_REASON_BYTES`], cut at a character boundary). A stream no ISP makes keeps them all zero.
 
 use std::os::fd::OwnedFd;
 use std::sync::atomic::Ordering;
@@ -19,12 +26,22 @@ use shm_ring::{Mem, MemMut, ReadMap, WriteMap, read_only, sealed_memfd};
 use crate::SocketError;
 
 /// The state page's size in bytes. The memory is rounded up to a page.
-const PAGE_BYTES: usize = 64;
+const PAGE_BYTES: usize = 192;
 const W_SEQ: usize = 1;
 const W_EDGES: usize = 2;
 const W_STATE: usize = 3;
 const W_SINCE: usize = 4;
 const W_RECOVERY: usize = 5;
+const W_ISP_SEQ: usize = 8;
+const W_ISP_ACTIVE: usize = 9;
+const W_ISP_TO_SOFT: usize = 10;
+const W_ISP_TO_PISP: usize = 11;
+const W_ISP_REFUSED: usize = 12;
+const W_ISP_REASON_AT: usize = 13;
+const W_ISP_REASON_LEN: usize = 14;
+const W_ISP_REASON: usize = 16;
+/// The longest ISP reason the page holds, in bytes.
+pub const ISP_REASON_BYTES: usize = 64;
 /// How many times a reader retries a seqlock read the producer keeps interrupting. A producer
 /// writes for a few stores; this bound only stops a corrupt page from holding a reader forever.
 const SNAPSHOT_TRIES: usize = 64;
@@ -42,6 +59,109 @@ pub enum ProducerState {
     },
     /// Another state value, passed through and never read as running.
     Unknown(u32),
+}
+
+/// Which ISP makes a stream's pictures, as the state page says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IspActive {
+    /// No ISP: the camera's own frames.
+    None,
+    /// The PiSP back end.
+    Pisp,
+    /// The soft ISP.
+    Soft,
+    /// Another value, passed through.
+    Unknown(u64),
+}
+
+impl IspActive {
+    const fn code(self) -> u64 {
+        match self {
+            Self::None => 0,
+            Self::Pisp => 1,
+            Self::Soft => 2,
+            Self::Unknown(code) => code,
+        }
+    }
+
+    const fn from_code(code: u64) -> Self {
+        match code {
+            0 => Self::None,
+            1 => Self::Pisp,
+            2 => Self::Soft,
+            other => Self::Unknown(other),
+        }
+    }
+
+    /// The name a status gives it (`none`, `pisp`, `soft`, `unknown`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Pisp => "pisp",
+            Self::Soft => "soft",
+            Self::Unknown(_) => "unknown",
+        }
+    }
+}
+
+/// The ISP block of the state page: which ISP makes the stream's pictures, the switches between
+/// them, the back end's refusals, and the last reason with its time. Fixed size, no heap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IspState {
+    pub active: IspActive,
+    pub to_soft: u64,
+    pub to_pisp: u64,
+    pub refused: u64,
+    /// When the last reason was noted (CLOCK_MONOTONIC ns), 0 before one.
+    pub reason_at_ns: u64,
+    reason: [u8; ISP_REASON_BYTES],
+    reason_len: u8,
+}
+
+impl Default for IspState {
+    fn default() -> Self {
+        Self {
+            active: IspActive::None,
+            to_soft: 0,
+            to_pisp: 0,
+            refused: 0,
+            reason_at_ns: 0,
+            reason: [0; ISP_REASON_BYTES],
+            reason_len: 0,
+        }
+    }
+}
+
+impl IspState {
+    /// The state with `reason` (cut to [`ISP_REASON_BYTES`] at a character boundary).
+    pub fn new(
+        active: IspActive,
+        (to_soft, to_pisp): (u64, u64),
+        refused: u64,
+        reason: &str,
+        reason_at_ns: u64,
+    ) -> Self {
+        let mut state = Self {
+            active,
+            to_soft,
+            to_pisp,
+            refused,
+            reason_at_ns,
+            ..Self::default()
+        };
+        let mut end = reason.len().min(ISP_REASON_BYTES);
+        while !reason.is_char_boundary(end) {
+            end -= 1;
+        }
+        state.reason[..end].copy_from_slice(&reason.as_bytes()[..end]);
+        state.reason_len = end as u8;
+        state
+    }
+
+    /// The last reason (empty before one).
+    pub fn reason(&self) -> &str {
+        std::str::from_utf8(&self.reason[..usize::from(self.reason_len)]).unwrap_or("")
+    }
 }
 
 /// How a camera came back from a stall (I2h's `Carried`).
@@ -123,6 +243,37 @@ impl StateWriter {
         };
         self.publish(state, recovery, since);
         true
+    }
+
+    /// Writes the ISP block (its own seqlock; no state edge, no bell).
+    pub(crate) fn set_isp(&self, isp: &IspState) {
+        let seq = self.map.load(W_ISP_SEQ, Ordering::Relaxed);
+        self.map.store(W_ISP_SEQ, seq | 1, Ordering::Relaxed);
+        <WriteMap as Mem>::fence(Ordering::Release);
+        self.map
+            .store(W_ISP_ACTIVE, isp.active.code(), Ordering::Relaxed);
+        self.map
+            .store(W_ISP_TO_SOFT, isp.to_soft, Ordering::Relaxed);
+        self.map
+            .store(W_ISP_TO_PISP, isp.to_pisp, Ordering::Relaxed);
+        self.map
+            .store(W_ISP_REFUSED, isp.refused, Ordering::Relaxed);
+        self.map
+            .store(W_ISP_REASON_AT, isp.reason_at_ns, Ordering::Relaxed);
+        self.map.store(
+            W_ISP_REASON_LEN,
+            u64::from(isp.reason_len),
+            Ordering::Relaxed,
+        );
+        for (i, chunk) in isp.reason.as_chunks::<8>().0.iter().enumerate() {
+            self.map.store(
+                W_ISP_REASON + i,
+                u64::from_le_bytes(*chunk),
+                Ordering::Relaxed,
+            );
+        }
+        self.map
+            .store(W_ISP_SEQ, (seq | 1).wrapping_add(1), Ordering::Release);
     }
 
     /// The seqlock write: odd while the words change, even when stable.
@@ -209,6 +360,48 @@ impl StateReader {
     }
 }
 
+impl StateReader {
+    /// A stable reading of the ISP block (its own seqlock).
+    pub(crate) fn isp(&self) -> IspState {
+        let mut last = IspState::default();
+        for _ in 0..SNAPSHOT_TRIES {
+            let before = self.map.load(W_ISP_SEQ, Ordering::Acquire);
+            if before & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            let mut state = IspState {
+                active: IspActive::from_code(self.map.load(W_ISP_ACTIVE, Ordering::Relaxed)),
+                to_soft: self.map.load(W_ISP_TO_SOFT, Ordering::Relaxed),
+                to_pisp: self.map.load(W_ISP_TO_PISP, Ordering::Relaxed),
+                refused: self.map.load(W_ISP_REFUSED, Ordering::Relaxed),
+                reason_at_ns: self.map.load(W_ISP_REASON_AT, Ordering::Relaxed),
+                ..IspState::default()
+            };
+            let len = self.map.load(W_ISP_REASON_LEN, Ordering::Relaxed);
+            for (i, chunk) in state.reason.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                *chunk = self
+                    .map
+                    .load(W_ISP_REASON + i, Ordering::Relaxed)
+                    .to_le_bytes();
+            }
+            <ReadMap as Mem>::fence(Ordering::Acquire);
+            let after = self.map.load(W_ISP_SEQ, Ordering::Relaxed);
+            // A length past the block, or bytes that are not UTF-8, read as no reason.
+            state.reason_len = u8::try_from(len)
+                .ok()
+                .filter(|&n| usize::from(n) <= ISP_REASON_BYTES)
+                .filter(|&n| std::str::from_utf8(&state.reason[..usize::from(n)]).is_ok())
+                .unwrap_or(0);
+            last = state;
+            if before == after {
+                return last;
+            }
+        }
+        last
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +414,34 @@ mod tests {
         writer.map.store(W_STATE, 7, Ordering::Relaxed);
         assert_eq!(reader.snapshot().state, ProducerState::Unknown(7));
         assert!(!reader.snapshot().running());
+    }
+
+    #[test]
+    fn the_isp_block_round_trips_cuts_a_long_reason_at_a_character_and_counts_no_edge() {
+        let writer = StateWriter::create().expect("a state page");
+        let reader = StateReader::new(writer.reader_fd().expect("fd")).expect("map");
+        assert_eq!(reader.isp(), IspState::default());
+        let long = "é".repeat(40); // 80 bytes: cut to 64, at a boundary.
+        let isp = IspState::new(IspActive::Soft, (2, 1), 7, &long, 123);
+        assert_eq!(isp.reason().len(), 64);
+        writer.set_isp(&isp);
+        let read = reader.isp();
+        assert_eq!(read, isp);
+        assert_eq!(read.reason(), &long[..64]);
+        assert_eq!(
+            reader.snapshot().edges,
+            0,
+            "an ISP change is not a state edge"
+        );
+        let short = IspState::new(IspActive::Pisp, (2, 2), 7, "back", 456);
+        writer.set_isp(&short);
+        assert_eq!(reader.isp().reason(), "back");
+        writer.map.store(W_ISP_REASON_LEN, 200, Ordering::Relaxed);
+        assert_eq!(
+            reader.isp().reason(),
+            "",
+            "a length past the block reads as none"
+        );
     }
 
     #[test]

@@ -7,8 +7,6 @@
 //! is held after its look, the completion is taken and the next job posted, and the ISP then
 //! reads that job. Nothing here depends on timing.
 
-mod sim;
-
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -22,6 +20,7 @@ use styx_lemnos::Client;
 use styx_pisp::pisp::format::{compute_stride_align, formats};
 use styx_pisp::pisp::uapi::{BayerOrder, ImageFormatConfig};
 use styx_pisp::{Geometry, IspSettings, LiveIsp, Output};
+use styx_sim::pisp_be as sim;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;

@@ -72,7 +72,7 @@ pub use producer::{
 };
 pub use reader::{Frame, Next, ReadError, Reader, ReaderStats, Start, Torn};
 pub use shm_ring_holds::Limits;
-pub use state::{Carried, ProducerState};
+pub use state::{Carried, ISP_REASON_BYTES, IspActive, IspState, ProducerState};
 pub use wire::USER_MAX;
 /// Why a stream ended. The same four meanings as the hardware layer's stream ends (I2h), so a
 /// reader learns one thing whichever ring it reads.

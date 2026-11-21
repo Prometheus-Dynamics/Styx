@@ -20,6 +20,8 @@ mod drivers;
 pub mod job_isp;
 pub mod memory;
 pub mod paced;
+#[cfg(feature = "pisp")]
+pub mod pisp_be;
 mod rig;
 mod scene;
 mod silicon;

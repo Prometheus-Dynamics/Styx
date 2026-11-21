@@ -1,5 +1,5 @@
 //! The live job path on the simulated backend: `lemnosd` runs in this process with a simulated
-//! `camera.isp/1` + `isp.pisp/1` (see `sim/mod.rs`), and `styx_pisp::LiveIsp` drives it through the
+//! `camera.isp/1` + `isp.pisp/1` (`styx_sim::pisp_be`), and `styx_pisp::LiveIsp` drives it through the
 //! real client and streams.
 //!
 //! One test runs every case in order: the streams' copies are counted process-wide, and the
@@ -7,8 +7,6 @@
 //! twice: on streams of shared memory, then on streams of dma-bufs (`memory = "dma-buf"`), where
 //! the session maps the configuration and input buffers writable. The second run needs a dma-heap
 //! this user may allocate from (see `styx_frame::dma_case` for a host without one).
-
-mod sim;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +27,7 @@ use styx_pisp::pisp::format::{compute_stride_align, formats};
 use styx_pisp::pisp::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, Wire};
 use styx_pisp::{BackEndBuilder, Geometry, IspSettings, LiveIsp, LiveJob, Output, PispError};
 use styx_sim::memory::{Memory, dma_buf_case};
+use styx_sim::pisp_be as sim;
 
 /// Frames the first case posts, and the frames the busy case adds.
 const FRAMES: u64 = 12;

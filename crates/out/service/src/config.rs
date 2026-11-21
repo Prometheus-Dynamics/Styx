@@ -63,6 +63,16 @@
 //! buffers = 4            # V4L2 and libcamera: buffers requested
 //! hardware_reserve = 4   # optional: pool buffers the camera keeps to stream (default: half, min 2);
 //!                        # all readers together may hold buffers - hardware_reserve - 1 frames older than the newest
+//!
+//! # A processed stream beside the raw one (see `isp`). Absent or "none": raw only.
+//! [camera."lemnos:sensor1"]
+//! isp = "auto"           # auto | pisp | soft | none
+//! isp_format = "NV12"    # output 0's format (default NV12)
+//! isp_size = "1280x800"  # output 0's size (default: the raw frame's)
+//! isp_second = "NV12:640x400"   # output 1, published too (default: none published)
+//! isp_refusals = 3       # auto: back-end refusals in a row that switch to the soft ISP
+//! isp_retry_start_ms = 250      # auto: the first wait before the back end is tried again
+//! isp_retry_cap_ms = 5000       # auto: the longest wait between tries (at most 10000)
 //! ```
 //!
 //! Native cameras: `width` and `height` are the smallest mode that is acceptable, and `format` and
@@ -145,6 +155,131 @@ pub struct CameraConfig {
     /// make room and grows back when the holds are released.
     #[serde(default)]
     pub hardware_reserve: Option<u32>,
+    /// Which ISP makes a processed stream beside the raw one: `auto` (the PiSP back end when the
+    /// camera's chain has one that takes the geometry, else the soft ISP; refusals switch to the
+    /// soft ISP and the back end is tried again), `pisp` (the back end or no processed stream),
+    /// `soft`, or `none` (the default: raw only).
+    #[serde(default)]
+    pub isp: Option<IspMode>,
+    /// Output 0's format (default `NV12`).
+    #[serde(default)]
+    pub isp_format: Option<String>,
+    /// Output 0's size, `<width>x<height>` (default: the raw frame's).
+    #[serde(default)]
+    pub isp_size: Option<String>,
+    /// Output 1, `<format>:<width>x<height>`, published on its own socket. Default: none.
+    #[serde(default)]
+    pub isp_second: Option<String>,
+    /// `auto`: back-end refusals in a row that switch the camera to the soft ISP (default 3).
+    #[serde(default)]
+    pub isp_refusals: Option<u32>,
+    /// `auto`: the first wait before the back end is tried again, in ms (default 250).
+    #[serde(default)]
+    pub isp_retry_start_ms: Option<u64>,
+    /// `auto`: the longest wait between tries, in ms (default 5000, at most 10000).
+    #[serde(default)]
+    pub isp_retry_cap_ms: Option<u64>,
+}
+
+/// Which ISP makes a camera's processed stream (`isp`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum IspMode {
+    /// Raw only.
+    #[default]
+    None,
+    /// The PiSP back end when the chain has one, else the soft ISP; see [`CameraConfig::isp`].
+    Auto,
+    /// The PiSP back end or nothing.
+    Pisp,
+    /// The soft ISP.
+    Soft,
+}
+
+impl IspMode {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Auto => "auto",
+            Self::Pisp => "pisp",
+            Self::Soft => "soft",
+        }
+    }
+}
+
+/// One ISP output as the config names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IspOutputSpec {
+    pub code: styx_format::FourCc,
+    /// `None`: the raw frame's size.
+    pub size: Option<(u32, u32)>,
+}
+
+/// A camera's processed stream, checked: the outputs and the switch policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IspPlan {
+    pub mode: IspMode,
+    pub output0: IspOutputSpec,
+    pub output1: Option<IspOutputSpec>,
+    pub policy: crate::isp_switch::SwitchPolicy,
+}
+
+fn parse_size(text: &str) -> Option<(u32, u32)> {
+    let (w, h) = text.split_once('x')?;
+    let (w, h) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+    (w > 0 && h > 0).then_some((w, h))
+}
+
+impl CameraConfig {
+    /// The processed stream this camera asks for, `None` for raw only, or why the keys cannot be
+    /// used (by key name).
+    pub fn isp_plan(&self) -> Result<Option<IspPlan>, String> {
+        let mode = self.isp.unwrap_or_default();
+        if mode == IspMode::None {
+            return Ok(None);
+        }
+        let code = |text: &str, key: &str| {
+            text.parse::<styx_format::FourCc>()
+                .map_err(|_| format!("{key}: {text:?} is not a four-character code"))
+        };
+        let output0 = IspOutputSpec {
+            code: code(self.isp_format.as_deref().unwrap_or("NV12"), "isp_format")?,
+            size: match &self.isp_size {
+                Some(text) => Some(
+                    parse_size(text)
+                        .ok_or_else(|| format!("isp_size: {text:?} is not <width>x<height>"))?,
+                ),
+                None => None,
+            },
+        };
+        let output1 = match &self.isp_second {
+            Some(text) => {
+                let (fmt, size) = text.split_once(':').ok_or_else(|| {
+                    format!("isp_second: {text:?} is not <format>:<width>x<height>")
+                })?;
+                Some(IspOutputSpec {
+                    code: code(fmt, "isp_second")?,
+                    size: Some(parse_size(size).ok_or_else(|| {
+                        format!("isp_second: {text:?} is not <format>:<width>x<height>")
+                    })?),
+                })
+            }
+            None => None,
+        };
+        let defaults = crate::isp_switch::SwitchPolicy::default();
+        let ms = std::time::Duration::from_millis;
+        let policy = crate::isp_switch::SwitchPolicy::new(
+            self.isp_refusals.unwrap_or(defaults.refusals),
+            self.isp_retry_start_ms.map_or(defaults.retry_start, ms),
+            self.isp_retry_cap_ms.map_or(defaults.retry_cap, ms),
+        )?;
+        Ok(Some(IspPlan {
+            mode,
+            output0,
+            output1,
+            policy,
+        }))
+    }
 }
 
 /// A socket group as the config names it: a number (`socket_group = 1001`), or a name looked up
@@ -228,6 +363,8 @@ pub enum ConfigError {
     Format { camera: String, format: String },
     /// A socket setting (`socket_group` or `socket_mode`) cannot be used.
     Socket { key: &'static str, message: String },
+    /// A camera's `isp` keys cannot be used.
+    Isp { camera: String, message: String },
 }
 
 impl std::fmt::Display for ConfigError {
@@ -241,6 +378,7 @@ impl std::fmt::Display for ConfigError {
                 "camera {camera}: format {format:?} is not a four-character code"
             ),
             ConfigError::Socket { key, message } => write!(f, "config {key}: {message}"),
+            ConfigError::Isp { camera, message } => write!(f, "camera {camera}: {message}"),
         }
     }
 }
@@ -280,6 +418,10 @@ impl Config {
                     format: format.clone(),
                 });
             }
+            settings.isp_plan().map_err(|message| ConfigError::Isp {
+                camera: camera.clone(),
+                message,
+            })?;
         }
         Ok(())
     }
@@ -340,5 +482,50 @@ mod tests {
         assert_eq!(cam.width, Some(320));
         assert_eq!(cam.fps_milli, Some(60_000));
         assert_eq!(config.force, Some(Force::V4l2));
+    }
+
+    #[test]
+    fn isp_keys_parse_to_a_plan_and_bad_ones_are_refused_by_name() {
+        let config = Config::parse(
+            "socket_dir = \"/x\"\n[camera.\"a\"]\nisp = \"auto\"\nisp_size = \"320x40\"\nisp_second = \"RGB3:160x20\"\nisp_refusals = 2\nisp_retry_start_ms = 50\nisp_retry_cap_ms = 400\n",
+        )
+        .expect("parses");
+        let plan = config.camera["a"]
+            .isp_plan()
+            .expect("valid")
+            .expect("a plan");
+        assert_eq!(plan.mode, IspMode::Auto);
+        assert_eq!(plan.output0.code, styx_format::FourCc::NV12);
+        assert_eq!(plan.output0.size, Some((320, 40)));
+        assert_eq!(
+            plan.output1,
+            Some(IspOutputSpec {
+                code: styx_format::FourCc::RGB3,
+                size: Some((160, 20))
+            })
+        );
+        assert_eq!(plan.policy.refusals, 2);
+        assert_eq!(
+            Config::parse("socket_dir = \"/x\"\n[camera.\"a\"]\n")
+                .expect("parses")
+                .camera["a"]
+                .isp_plan(),
+            Ok(None),
+            "absent is none: raw only"
+        );
+        for (keys, named) in [
+            ("isp = \"auto\"\nisp_size = \"320\"\n", "isp_size"),
+            ("isp = \"soft\"\nisp_second = \"NV12\"\n", "isp_second"),
+            (
+                "isp = \"auto\"\nisp_retry_cap_ms = 20000\n",
+                "isp_retry_cap_ms",
+            ),
+            ("isp = \"auto\"\nisp_refusals = 0\n", "isp_refusals"),
+        ] {
+            let err = Config::parse(&format!("socket_dir = \"/x\"\n[camera.\"a\"]\n{keys}"))
+                .expect_err(keys);
+            assert!(err.to_string().contains(named), "{err}");
+        }
+        assert!(Config::parse("socket_dir = \"/x\"\n[camera.\"a\"]\nisp = \"gpu\"\n").is_err());
     }
 }

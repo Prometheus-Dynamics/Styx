@@ -37,12 +37,13 @@ use lemnos_contract_camera_receiver::BayerOrder as ContractBayer;
 use lemnos_contract_isp_pisp::{IspPisp, LAYOUT_BACK_END, OUTPUT_BACK_END_0, OUTPUT_BACK_END_1};
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, FrameLease, FramePool, Layouts, PlaneLayout};
-use styx_lemnos::pisp::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, Wire};
+use styx_lemnos::pisp::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, Wire, image_format};
 use styx_lemnos::{Client, Completion, DeviceEntry, HeldFrame, JobStream, open_job_stream};
 use styx_settings::IspSettings;
 
 use crate::PispError;
 use crate::back_end::{BackEndBuilder, Geometry, image_layouts};
+use crate::input::InputForm;
 use crate::job::{JOB_CAPACITY, back_end_job, encode_job};
 
 /// The ISP's output numbers for the two back-end outputs (`camera.isp/1`).
@@ -63,6 +64,22 @@ pub struct LiveJob {
     /// Output 0 (full size) and output 1, as leases over their buffers. Dropping a lease gives
     /// its buffer back for a later job.
     pub outputs: [FrameLease<()>; 2],
+}
+
+/// How a posted job ended ([`LiveIsp::wait_any`]).
+#[derive(Debug)]
+pub enum Ended {
+    /// It completed on both outputs.
+    Done(LiveJob),
+    /// The ISP refused it or its time ran out, for `reason` (Lemnos's word for it). `input` is the
+    /// raw frame as it was put into the input buffer (see [`LiveIsp::set_input_form`]), held until
+    /// dropped, so the caller can make the frame another way; `None` when no input form is set.
+    Refused {
+        identity: u64,
+        timestamp_ns: u64,
+        reason: String,
+        input: Option<FrameLease<()>>,
+    },
 }
 
 /// A job posted and not yet complete.
@@ -110,6 +127,13 @@ pub struct LiveIsp<M = ()> {
     upstream: Option<FramePool<M>>,
     lent: u64,
     lend_fallbacks: u64,
+    /// How raw frames go into the input buffer ([`LiveIsp::set_input_form`]); `None`: the raw is
+    /// already the input's 16-bit form and is copied as it is.
+    form: Option<InputForm>,
+    /// What the input buffer holds after the pass, for a refused job's input lease.
+    input_media: Option<MediaFormat>,
+    /// One row of unpacked samples, sized once by `set_input_form`.
+    row: Vec<u16>,
 }
 
 impl<M> std::fmt::Debug for LiveIsp<M> {
@@ -142,7 +166,11 @@ impl<M> LiveIsp<M> {
         isp.set_input(IspInput {
             width: u32::from(input.width),
             height: u32::from(input.height),
-            bit_depth: 16,
+            bit_depth: if input.format & image_format::BPS_MASK == image_format::BPS_8 {
+                8
+            } else {
+                16
+            },
             bayer: contract_bayer(geometry.bayer)?,
         })
         .map_err(|e| setup(format!("set_input: {e:?}")))?;
@@ -247,7 +275,55 @@ impl<M> LiveIsp<M> {
             upstream: None,
             lent: 0,
             lend_fallbacks: 0,
+            form: None,
+            input_media: None,
+            row: Vec::new(),
         })
+    }
+
+    /// Output `k`'s pool (0 or 1): the buffers the back end writes that output into, for a caller
+    /// that hands them on without a copy (a producer that publishes them by descriptor). A
+    /// completed job's output lease is one of these buffers.
+    pub fn output_pool(&self, k: usize) -> Option<FramePool<()>> {
+        self.outputs.get(k).map(|stream| stream.pool().clone())
+    }
+
+    /// Takes receiver frames of `raw`'s format: each is put into the input buffer in one pass
+    /// ([`crate::input`]: an 8-bit or 16-bit Bayer row copy, or CSI-2 RAW10 unpacked to 16-bit),
+    /// counted in [`crate::PISP_BE_INPUT`]. The geometry's input must be the form's image (see
+    /// [`InputForm::image`]). Allocates the scratch row once.
+    pub fn set_input_form(&mut self, raw: &MediaFormat) -> Result<InputForm, PispError> {
+        let form = InputForm::of(raw)?;
+        let want = form.image(raw)?;
+        let have = self.input_layouts;
+        let want_layouts = image_layouts(&want)?;
+        if want_layouts != have {
+            return Err(setup(format!(
+                "the geometry's input is not {} for {} frames of {}x{}",
+                form.name(),
+                raw.code,
+                raw.resolution.width,
+                raw.resolution.height
+            )));
+        }
+        let content = match form {
+            InputForm::Bayer8 => raw.code,
+            InputForm::Bayer16 | InputForm::Raw10Unpacked => match InputForm::bayer(raw)? {
+                BayerOrder::Rggb => FourCc::RG16,
+                BayerOrder::Grbg => FourCc::GR16,
+                BayerOrder::Gbrg => FourCc::GB16,
+                _ => FourCc::BG16,
+            },
+        };
+        self.input_media = Some(MediaFormat::with_defaults(content, raw.resolution));
+        self.row = vec![0; raw.resolution.width.get() as usize];
+        self.form = Some(form);
+        Ok(form)
+    }
+
+    /// The input form set, if any.
+    pub const fn input_form(&self) -> Option<InputForm> {
+        self.form
     }
 
     /// Lends raw frames from `upstream` (the output-0 pool of the device this ISP is linked
@@ -417,7 +493,7 @@ impl<M> LiveIsp<M> {
         &mut self,
         identity: u64,
         reason: styx_lemnos::JobReason,
-    ) -> Result<(), PispError> {
+    ) -> Result<Option<Ended>, PispError> {
         let Some(at) = self.flights.iter().position(|f| f.identity == identity) else {
             return Err(setup(format!(
                 "output 0: job {identity} ended ({reason}) and no job in flight has that identity"
@@ -426,14 +502,27 @@ impl<M> LiveIsp<M> {
         if self.flights[at].lent.is_some() {
             self.lend_fallbacks += 1;
             self.flights[at].copy_owed = true;
-            return self.post_owed_copies();
+            self.post_owed_copies()?;
+            return Ok(None);
         }
         let flight = self.flights.swap_remove(at);
+        // The raw frame as the pass left it in the input buffer, held by the lease so no job
+        // names the buffer until the caller drops it.
+        let input = match self.input_media {
+            Some(media) => {
+                let entry =
+                    FrameEntry::new(identity, flight.timestamp_ns, media, self.input_layouts);
+                self.input.pool().acquire_at(flight.input, entry).ok()
+            }
+            None => None,
+        };
         self.free(&flight);
-        Err(PispError::JobEnded {
+        Ok(Some(Ended::Refused {
             identity,
+            timestamp_ns: flight.timestamp_ns,
             reason: reason.to_string(),
-        })
+            input,
+        }))
     }
 
     /// Posts the copy of each refused lend whose copy is owed, while the job ring takes them.
@@ -478,13 +567,25 @@ impl<M> LiveIsp<M> {
     /// [`PispError::Stalled`], with the flights and the device's counters: a completion that
     /// never comes is never reported as "none yet".
     pub fn wait(&mut self) -> Result<Option<LiveJob>, PispError> {
+        match self.wait_any()? {
+            None => Ok(None),
+            Some(Ended::Done(job)) => Ok(Some(job)),
+            Some(Ended::Refused {
+                identity, reason, ..
+            }) => Err(PispError::JobEnded { identity, reason }),
+        }
+    }
+
+    /// As [`Self::wait`], but a refused job is returned as [`Ended::Refused`] with its input, not
+    /// as an error, so the caller can make that frame another way.
+    pub fn wait_any(&mut self) -> Result<Option<Ended>, PispError> {
         if self.flights.is_empty() {
             return Ok(None);
         }
         let deadline = Instant::now() + self.timeout;
         loop {
             if let Some(done) = self.take_done() {
-                return Ok(Some(done));
+                return Ok(Some(Ended::Done(done)));
             }
             if Instant::now() >= deadline {
                 return Err(self.stalled());
@@ -496,7 +597,9 @@ impl<M> LiveIsp<M> {
             {
                 Some(Completion::Frame(held)) => self.complete(0, held)?,
                 Some(Completion::JobEnded { identity, reason }) => {
-                    self.job_ended(identity, reason)?;
+                    if let Some(refused) = self.job_ended(identity, reason)? {
+                        return Ok(Some(refused));
+                    }
                 }
                 None => {}
             }
@@ -649,6 +752,17 @@ impl<M> LiveIsp<M> {
             *raw.format(),
             self.input_layouts,
         );
+        if let (Some(form), Some(media)) = (self.form, self.input_media) {
+            let entry = FrameEntry::new(identity, raw.timestamp_ns(), media, self.input_layouts);
+            let mut dst = self
+                .input
+                .pool()
+                .acquire_at(input, entry)
+                .map_err(|e| setup(format!("input buffer {input}: {e}")))?;
+            crate::input::fill(form, raw, &mut dst, &mut self.row)?;
+            self.input_copies += 1;
+            return Ok(());
+        }
         let mut dst = self
             .input
             .pool()

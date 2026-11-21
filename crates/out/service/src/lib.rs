@@ -54,14 +54,18 @@
 pub mod access;
 pub mod config;
 pub mod control;
+mod isp;
+pub mod isp_switch;
 pub mod outlet;
 pub mod service;
 pub mod slot;
 pub mod worker;
 
 pub use access::Access;
-pub use config::{CameraConfig, Config, ConfigError, Force, GroupSpec};
+pub use config::{
+    CameraConfig, Config, ConfigError, Force, GroupSpec, IspMode, IspOutputSpec, IspPlan,
+};
 pub use outlet::{Discard, Outlet, Outlets};
-pub use service::camera_socket;
 pub use service::{Daemon, Deps, Error, Listers, Nothing, Service};
-pub use slot::{CameraStatus, FrameSummary, Health, Publish, State};
+pub use service::{camera_socket, isp_socket};
+pub use slot::{CameraStatus, FrameSummary, Health, IspStatus, Publish, State};

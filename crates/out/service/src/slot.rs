@@ -14,7 +14,41 @@ use styx_native_run::{ExposureReport, Selection};
 use styx_select::{Backend, ControlsInfo, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
 
-use crate::config::CameraConfig;
+use crate::config::{CameraConfig, IspMode};
+use crate::isp::IspSocket;
+
+/// A camera's processed stream, as the status shows it (see `isp`).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct IspStatus {
+    /// The config's `isp` (`none` when absent: no processed stream).
+    pub asked: IspMode,
+    /// The ISP that made the last processed frame (`none` before one, and while the processed
+    /// stream is down).
+    pub active: Option<styx_socket::IspActive>,
+    /// Why the ISP in force is not the one asked for, or the last refusal; `None` before any.
+    pub reason: Option<String>,
+    /// When `reason` was noted, CLOCK_MONOTONIC nanoseconds.
+    pub reason_at_ns: u64,
+    /// Back-end jobs refused (or that ended for a reason), since the service started.
+    pub refused: u64,
+    /// Raw frames the processed stream has no picture for: the hand-off was full, or no ISP made
+    /// the frame (no free buffer, or a refusal with no soft fallback).
+    pub skipped: u64,
+    /// Switches to the soft ISP, and back to the back end, this attempt.
+    pub to_soft: u64,
+    pub to_pisp: u64,
+    /// Frames published on each processed socket, and those dropped (no free ring entry or
+    /// buffer).
+    pub published: [u64; 2],
+    pub dropped: [u64; 2],
+    /// Readers on each processed socket now.
+    pub readers: [usize; 2],
+    /// Each processed socket, once made.
+    pub sockets: [Option<PathBuf>; 2],
+    /// How raw frames go into the back end's input (`raw10-unpack-to-bayer16`, ...), while the
+    /// back end is open.
+    pub input_form: Option<&'static str>,
+}
 
 /// Whether a camera's frames go to readers in other processes, and why not when they don't.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -278,6 +312,8 @@ pub struct CameraStatus {
     /// Moves on every change to the controls: a value any client set (one move per set), a range that
     /// changed, the camera opened again. A client reads `controls` only when it moves.
     pub controls_seq: u64,
+    /// The processed stream (`isp`), when the config asks for one.
+    pub isp: IspStatus,
 }
 
 impl CameraStatus {
@@ -311,6 +347,8 @@ pub struct Slot {
     pub commands: Sender<Command>,
     /// Set to end a backoff wait early (a control request, or shutdown).
     pub wake: AtomicBool,
+    /// The camera's ISP thread, while one runs: where its processed sockets send their readers.
+    pub(crate) isp_route: Mutex<Option<Sender<IspSocket>>>,
 }
 
 /// A request to a camera's worker thread.
@@ -346,6 +384,17 @@ pub enum Command {
     /// A reader answered its handshake: attach it to the publisher of the generation it was
     /// planned on. Any other generation is closed.
     Attach(u64, Accepted),
+}
+
+/// Writes `text` into `slot`, reusing its buffer.
+fn set_text(slot: &mut Option<String>, text: &str) {
+    match slot {
+        Some(have) => {
+            have.clear();
+            have.push_str(text);
+        }
+        None => *slot = Some(text.to_string()),
+    }
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -393,6 +442,10 @@ impl Slot {
             exposure: None,
             controls: Arc::new(ControlsInfo::unreported()),
             controls_seq: 0,
+            isp: IspStatus {
+                asked: settings.isp.unwrap_or_default(),
+                ..IspStatus::default()
+            },
         };
         Self {
             id,
@@ -401,6 +454,7 @@ impl Slot {
             status: Mutex::new(status),
             commands,
             wake: AtomicBool::new(false),
+            isp_route: Mutex::new(None),
         }
     }
 
@@ -642,6 +696,97 @@ impl Slot {
         });
         if status.state != State::Streaming && status.state != State::Retrying {
             status.state = State::Streaming;
+        }
+    }
+
+    pub(crate) fn set_isp_route(&self, route: Option<Sender<IspSocket>>) {
+        *lock(&self.isp_route) = route;
+    }
+
+    /// Sends a processed socket's reader to the ISP thread. `false` when none runs.
+    pub(crate) fn route_isp(&self, message: IspSocket) -> bool {
+        lock(&self.isp_route)
+            .as_ref()
+            .is_some_and(|tx| tx.send(message).is_ok())
+    }
+
+    pub(crate) fn set_isp_socket(&self, k: usize, socket: Option<PathBuf>) {
+        if let Some(slot) = lock(&self.status).isp.sockets.get_mut(k) {
+            *slot = socket;
+        }
+    }
+
+    /// An attempt's ISP thread starts: this attempt's switches start from zero.
+    pub(crate) fn isp_starting(&self, asked: IspMode) {
+        let mut status = lock(&self.status);
+        status.isp.asked = asked;
+        status.isp.active = None;
+        status.isp.to_soft = 0;
+        status.isp.to_pisp = 0;
+        status.isp.input_form = None;
+    }
+
+    /// No processed stream this attempt, for `reason`.
+    pub(crate) fn isp_down(&self, reason: &str, at_ns: u64) {
+        let mut status = lock(&self.status);
+        status.isp.active = None;
+        set_text(&mut status.isp.reason, reason);
+        status.isp.reason_at_ns = at_ns;
+    }
+
+    pub(crate) fn isp_stopped(&self) {
+        let mut status = lock(&self.status);
+        status.isp.active = None;
+        status.isp.readers = [0; 2];
+        status.isp.input_form = None;
+    }
+
+    pub(crate) fn isp_skipped(&self) {
+        lock(&self.status).isp.skipped += 1;
+    }
+
+    pub(crate) fn isp_refused(&self) {
+        lock(&self.status).isp.refused += 1;
+    }
+
+    pub(crate) fn isp_form(&self, form: &'static str) {
+        lock(&self.status).isp.input_form = Some(form);
+    }
+
+    pub(crate) fn isp_published(&self, k: usize, dropped: bool, readers: usize) {
+        let mut status = lock(&self.status);
+        let isp = &mut status.isp;
+        if let (Some(published), Some(lost), Some(now)) = (
+            isp.published.get_mut(k),
+            isp.dropped.get_mut(k),
+            isp.readers.get_mut(k),
+        ) {
+            if dropped {
+                *lost += 1;
+            } else {
+                *published += 1;
+            }
+            *now = readers;
+        }
+    }
+
+    /// The ISP in force, the switches and the last reason (refusals are counted by
+    /// [`Self::isp_refused`]). Nothing is allocated once the reason has grown to its longest.
+    pub(crate) fn isp_state(
+        &self,
+        active: styx_socket::IspActive,
+        (to_soft, to_pisp): (u64, u64),
+        _refused: u64,
+        reason: &str,
+        reason_at_ns: u64,
+    ) {
+        let mut status = lock(&self.status);
+        status.isp.active = Some(active);
+        status.isp.to_soft = to_soft;
+        status.isp.to_pisp = to_pisp;
+        if !reason.is_empty() {
+            set_text(&mut status.isp.reason, reason);
+            status.isp.reason_at_ns = reason_at_ns;
         }
     }
 

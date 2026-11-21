@@ -14,6 +14,64 @@ pub const WIRE_BYTES_V1: usize = 32 + Control::COUNT * VALUE_BYTES;
 /// Bytes of [`FrameMetadata::to_bytes`]'s output, and the length of a version 2 blob.
 pub const WIRE_BYTES: usize = WIRE_BYTES_V1 + 4;
 
+/// What made a frame's pixels, as wire byte 1 of the metadata says ([`MadeBy::of`]): the camera's
+/// own frame (0), or a picture an ISP made from it. Written over a blob from
+/// [`FrameMetadata::to_bytes`] with [`MadeBy::mark`]; [`FrameMetadata::from_bytes`] reads any of
+/// these and leaves the byte out of the struct, so a processed frame carries its raw frame's
+/// metadata unchanged.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MadeBy {
+    /// The camera's frame as it came (byte 0, what every blob carried before).
+    Camera,
+    /// The PiSP back end made the picture.
+    Pisp,
+    /// The soft ISP made the picture.
+    Soft,
+}
+
+impl MadeBy {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Camera => 0,
+            Self::Pisp => 1,
+            Self::Soft => 2,
+        }
+    }
+
+    const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            0 => Some(Self::Camera),
+            1 => Some(Self::Pisp),
+            2 => Some(Self::Soft),
+            _ => None,
+        }
+    }
+
+    /// The name a status or tool gives it (`camera`, `pisp`, `soft`).
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Camera => "camera",
+            Self::Pisp => "pisp",
+            Self::Soft => "soft",
+        }
+    }
+
+    /// Marks `blob` (a [`FrameMetadata::to_bytes`] output) as made by `self`. Does nothing to a
+    /// blob too short to be one.
+    pub fn mark(self, blob: &mut [u8]) {
+        if let Some(byte) = blob.get_mut(1) {
+            *byte = self.code();
+        }
+    }
+
+    /// What made the frame `blob` describes; `None` when it is not a metadata blob this version
+    /// reads.
+    pub fn of(blob: &[u8]) -> Option<Self> {
+        FrameMetadata::from_bytes(blob)?;
+        Self::from_code(blob[1])
+    }
+}
+
 /// Metadata of one frame. Fixed size, plain data, no heap: it is the `M` of a
 /// `styx_frame::FramePool<M>`, so writing it for every frame allocates nothing.
 ///
@@ -53,7 +111,7 @@ impl FrameMetadata {
     /// and returns [`WIRE_BYTES`]. Returns 0, writing nothing, when `out` is shorter than that.
     /// No heap is used.
     ///
-    /// Layout: version (1), reserved (1, zero), sensor timestamp (u64), exposure (u32), analogue
+    /// Layout: version (1), made by (1, [`MadeBy`]; zero here), sensor timestamp (u64), exposure (u32), analogue
     /// gain (u32), digital gain (u32), lux (present byte, then f32 bits), colour temperature
     /// (present byte, then u32), then each control in [`Control::index`] order as a tag (0 auto,
     /// 1 manual, 2 flag, 3 crop) and 17 bytes of payload (a u32, a flag byte, or a crop's present
@@ -107,7 +165,8 @@ impl FrameMetadata {
 
     /// Reads metadata written by [`FrameMetadata::to_bytes`], version 2, or version 1 (whose frames
     /// have no achieved rate: `achieved_fps_milli` is 0). `None` for another length, another
-    /// version, a reserved byte that is not zero, or a tag or flag this version does not know.
+    /// version, a made-by byte this version does not know ([`MadeBy`]), or a tag or flag this
+    /// version does not know.
     pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
         let achieved_fps_milli = match (bytes.len(), bytes.first()) {
             (WIRE_BYTES, Some(&WIRE_VERSION)) => {
@@ -116,9 +175,7 @@ impl FrameMetadata {
             (WIRE_BYTES_V1, Some(&1)) => 0,
             _ => return None,
         };
-        if bytes[1] != 0 {
-            return None;
-        }
+        MadeBy::from_code(bytes[1])?;
         let u32_at = |at: usize| Some(u32::from_le_bytes(bytes.get(at..at + 4)?.try_into().ok()?));
         let u64_at = |at: usize| Some(u64::from_le_bytes(bytes.get(at..at + 8)?.try_into().ok()?));
         let lux = match bytes[22] {
@@ -246,5 +303,28 @@ mod wire_tests {
         let mut bad_tag = out;
         bad_tag[32] = 9;
         assert_eq!(FrameMetadata::from_bytes(&bad_tag), None);
+    }
+
+    #[test]
+    fn the_made_by_byte_marks_a_processed_frame_and_leaves_its_metadata_as_it_was() {
+        let meta = sample();
+        let mut out = [0_u8; WIRE_BYTES];
+        meta.to_bytes(&mut out);
+        assert_eq!(MadeBy::of(&out), Some(MadeBy::Camera));
+        for made in [MadeBy::Pisp, MadeBy::Soft, MadeBy::Camera] {
+            made.mark(&mut out);
+            assert_eq!(MadeBy::of(&out), Some(made));
+            assert_eq!(
+                FrameMetadata::from_bytes(&out),
+                Some(meta),
+                "{}",
+                made.name()
+            );
+        }
+        let mut unknown = out;
+        unknown[1] = 3;
+        assert_eq!(FrameMetadata::from_bytes(&unknown), None);
+        assert_eq!(MadeBy::of(&unknown), None);
+        MadeBy::Pisp.mark(&mut []);
     }
 }

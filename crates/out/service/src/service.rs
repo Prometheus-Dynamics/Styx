@@ -18,6 +18,7 @@ use styx_socket::{HANDSHAKE_TIMEOUT, Limits};
 
 use crate::access::{self, Access};
 use crate::config::{CameraConfig, Config, ConfigError};
+use crate::isp::IspSocket;
 use crate::outlet::Outlets;
 use crate::slot::{CameraStatus, Command, Publish, Slot};
 
@@ -338,6 +339,23 @@ fn ensure_slot(shared: &Arc<Shared>, id: &str) -> std::io::Result<Arc<Slot>> {
         .spawn(move || {
             serve_camera_socket(&socket_path, &socket_slot, &socket_tx, &socket_shared);
         })?;
+    // A processed stream's sockets, when the config asks for one (`isp`): output 0, and output 1
+    // with `isp_second`.
+    let outputs = match slot.settings.isp_plan() {
+        Ok(Some(plan)) => 1 + usize::from(plan.output1.is_some()),
+        _ => 0,
+    };
+    let mut isp_handles = Vec::new();
+    for k in 0..outputs {
+        let path = isp_socket(&shared.config.socket_dir, id, k);
+        let isp_slot = Arc::clone(&slot);
+        let isp_shared = Arc::clone(shared);
+        isp_handles.push(
+            std::thread::Builder::new()
+                .name(format!("styx-isp{k}-socket:{id}"))
+                .spawn(move || serve_isp_socket(&path, &isp_slot, k, &isp_shared))?,
+        );
+    }
     let worker_slot = Arc::clone(&slot);
     let worker_shared = Arc::clone(shared);
     let handle = std::thread::Builder::new()
@@ -345,6 +363,7 @@ fn ensure_slot(shared: &Arc<Shared>, id: &str) -> std::io::Result<Arc<Slot>> {
         .spawn(move || crate::worker::run(&worker_slot, &rx, &worker_shared))?;
     let mut workers = lock(&shared.workers);
     workers.push(socket_handle);
+    workers.extend(isp_handles);
     workers.push(handle);
     drop(workers);
     slots.insert(id.to_string(), Arc::clone(&slot));
@@ -377,6 +396,12 @@ pub fn camera_socket(socket_dir: &Path, id: &str) -> PathBuf {
         .join(format!("{name}-{hash:016x}.sock"))
 }
 
+/// Processed socket `k` of a camera (see `isp`): the camera's socket path with `.isp<k>.sock` in
+/// place of `.sock`.
+pub fn isp_socket(socket_dir: &Path, id: &str, k: usize) -> PathBuf {
+    camera_socket(socket_dir, id).with_extension(format!("isp{k}.sock"))
+}
+
 /// Accepts readers on a camera's socket until shutdown. Each reader's handshake runs here, on the
 /// socket's thread, never on the camera's: the camera's worker only makes the plan and attaches
 /// the finished reader, both quick. A reader that does not answer within the handshake timeout is
@@ -399,24 +424,88 @@ fn listen(path: &Path, shared: &Shared) -> Result<std::os::unix::net::UnixListen
 }
 
 fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, shared: &Shared) {
-    // A socket that cannot be made is tried again, with the reason in the status meanwhile: the
-    // wait doubles up to five seconds and never ends by itself.
+    let Some(listener) = bind_retrying(path, shared, |why| {
+        slot.set_socket(None, Publish::NotPublishable(why));
+    }) else {
+        return;
+    };
+    slot.set_socket(Some(path.to_path_buf()), Publish::Waiting);
+    accept_readers(
+        &listener,
+        shared,
+        |reply| tx.send(Command::Handshake(reply)).is_ok(),
+        |planned, accepted| tx.send(Command::Attach(planned, accepted)).is_ok(),
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// Accepts readers on processed socket `k` of a camera (see `isp`) until shutdown, as
+/// [`serve_camera_socket`] does for the raw one. A reader that connects while no ISP thread runs
+/// is closed, and connects again.
+fn serve_isp_socket(path: &Path, slot: &Slot, k: usize, shared: &Shared) {
+    let Some(listener) = bind_retrying(path, shared, |why| {
+        slot.set_isp_socket(k, None);
+        slot.isp_down(&format!("isp{k} socket: {why}"), styx_socket::clock_ns());
+    }) else {
+        return;
+    };
+    slot.set_isp_socket(k, Some(path.to_path_buf()));
+    accept_readers(
+        &listener,
+        shared,
+        |reply| {
+            // No ISP thread: answered `None` at once, and the reader connects again.
+            let unanswered = reply.clone();
+            if !slot.route_isp(IspSocket::Handshake { output: k, reply }) {
+                let _ = unanswered.send(None);
+            }
+            true
+        },
+        |planned, accepted| {
+            slot.route_isp(IspSocket::Attach {
+                output: k,
+                planned,
+                accepted,
+            });
+            true
+        },
+    );
+    let _ = std::fs::remove_file(path);
+}
+
+/// Makes the socket at `path`, trying again while it cannot be made (the reason goes to `failed`
+/// meanwhile): the wait doubles up to five seconds and never ends by itself. `None` at shutdown.
+fn bind_retrying(
+    path: &Path,
+    shared: &Shared,
+    failed: impl Fn(String),
+) -> Option<std::os::unix::net::UnixListener> {
     let mut delay = Duration::from_millis(250);
-    let listener = loop {
+    loop {
         match listen(path, shared) {
-            Ok(listener) => break listener,
-            Err(why) => slot.set_socket(None, Publish::NotPublishable(why)),
+            Ok(listener) => return Some(listener),
+            Err(why) => failed(why),
         }
         let until = std::time::Instant::now() + delay;
         while std::time::Instant::now() < until {
             if shared.shutdown.load(Ordering::Acquire) {
-                return;
+                return None;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
         delay = (delay * 2).min(Duration::from_secs(5));
-    };
-    slot.set_socket(Some(path.to_path_buf()), Publish::Waiting);
+    }
+}
+
+/// The accept loop: each reader's plan is asked of the producer's thread (`ask`), the handshake
+/// runs here, and the answered reader is sent back to be attached (`attach`). Either returning
+/// `false` ends the loop (the camera's thread is gone).
+fn accept_readers(
+    listener: &std::os::unix::net::UnixListener,
+    shared: &Shared,
+    ask: impl Fn(mpsc::Sender<Option<(u64, styx_socket::HandshakePlan)>>) -> bool,
+    attach: impl Fn(u64, styx_socket::Accepted) -> bool,
+) {
     while !shared.shutdown.load(Ordering::Acquire) {
         let stream = match listener.accept() {
             Ok((stream, _)) => stream,
@@ -429,19 +518,18 @@ fn serve_camera_socket(path: &Path, slot: &Slot, tx: &mpsc::Sender<Command>, sha
             continue;
         }
         let (reply_tx, reply_rx) = mpsc::channel();
-        if tx.send(Command::Handshake(reply_tx)).is_err() {
+        if !ask(reply_tx) {
             break;
         }
         let Ok(Some((planned, plan))) = reply_rx.recv_timeout(Duration::from_secs(2)) else {
             continue;
         };
         if let Ok(accepted) = plan.run(stream, READER_LIMITS, HANDSHAKE_TIMEOUT)
-            && tx.send(Command::Attach(planned, accepted)).is_err()
+            && !attach(planned, accepted)
         {
             break;
         }
     }
-    let _ = std::fs::remove_file(path);
 }
 
 /// What each reader may hold of a camera's buffers at once. A reader over this is cut off by the

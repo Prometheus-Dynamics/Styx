@@ -656,6 +656,12 @@ impl Reader {
         self.producer.snapshot().state
     }
 
+    /// Which ISP makes the stream's pictures, as the producer's state page says now (all zero for
+    /// a stream of the camera's own frames).
+    pub fn isp(&self) -> crate::IspState {
+        self.producer.isp()
+    }
+
     /// The next thing this reader has: a frame, a change in the producer's state it is owed, or
     /// nothing new. The plain frame loop ([`Reader::next_frame`]) ignores stalls and keeps waiting
     /// through them; a reader that wants to show them calls this instead.

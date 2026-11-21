@@ -777,6 +777,13 @@ impl<M> Producer<M> {
         }
     }
 
+    /// Writes which ISP makes this stream's pictures, its switches and refusals, and the last
+    /// reason with its time, to the state page every reader maps (see [`crate::IspState`]). No
+    /// bell is rung: it is read when wanted, and each frame says what made it in its own metadata.
+    pub fn set_isp(&mut self, isp: &crate::IspState) {
+        self.state.set_isp(isp);
+    }
+
     /// The producer's state now: running, or retrying since when.
     pub fn producer_state(&self) -> ProducerState {
         self.state.state()

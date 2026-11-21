@@ -48,6 +48,12 @@ static GENERATION: AtomicU64 = AtomicU64::new(0);
 /// The ring's history, in entries, for each camera's socket.
 const HISTORY: u32 = 8;
 
+/// A new publisher generation, unique in this process: a reader's plan names the producer it was
+/// made by.
+pub(crate) fn next_generation() -> u64 {
+    GENERATION.fetch_add(1, Ordering::Relaxed) + 1
+}
+
 /// The camera's producer, held across attempts. While the camera retries it stays attached, so its
 /// readers stay linked and are told of the stall. The pool changes when the camera reopens (its
 /// buffers are made at open), so the held producer ends (`Closed`) at the first frame of the next
@@ -430,6 +436,7 @@ fn open<R>(
             let reports = Reports {
                 modes: chosen,
                 exposures,
+                isps: camera.isps().to_vec(),
             };
             Ok(run(&mut capture, Some(&reports)))
         }
@@ -557,6 +564,8 @@ fn size_of(selection: &Selected, settings: &CameraConfig) -> Result<(u32, u32), 
 pub(crate) struct Reports {
     modes: Receiver<Selection>,
     exposures: Receiver<ExposureReport>,
+    /// The camera's ISP devices, in link order, for the processed stream.
+    isps: Vec<styx_lemnos::DeviceEntry>,
 }
 
 /// Records a frame-rate control the camera accepted as the rate asked for, so the status shows it.
@@ -576,6 +585,9 @@ fn note_requested(slot: &Slot, updates: &[Update]) {
 /// camera whose frames are not fd-backed cannot be published without a copy; it says so in the
 /// status and publishes nothing. A reader that connects before the first frame is closed (it
 /// connects again). The producer, and so every reader's connection, ends with this attempt.
+///
+/// With a processed stream asked for (`isp`), the camera's ISP thread runs beside this loop for the
+/// attempt and is offered each frame (see `isp`); it ends with the attempt.
 fn pump(
     capture: &mut dyn Capture,
     slot: &Slot,
@@ -584,6 +596,58 @@ fn pump(
     outlet: &mut dyn Outlet,
     reports: Option<&Reports>,
     publisher: &mut Publisher,
+) -> Ended {
+    // The config was checked at start: a plan that does not parse here is no processed stream.
+    let Ok(Some(plan)) = slot.settings.isp_plan() else {
+        return pump_frames(
+            capture, slot, commands, shared, outlet, reports, publisher, None,
+        );
+    };
+    let (feed, frames) = crate::isp::handoff();
+    let clock = &shared.clock;
+    let now = move || clock.now();
+    let ctx = crate::isp::Context {
+        plan,
+        slot,
+        lemnos_socket: shared.lemnos_socket.clone(),
+        isps: reports.map(|r| r.isps.clone()).unwrap_or_default(),
+        now: &now,
+    };
+    let ctx = &ctx;
+    std::thread::scope(|scope| {
+        let isp = std::thread::Builder::new()
+            .name(format!("styx-isp:{}", slot.id))
+            .spawn_scoped(scope, move || crate::isp::run(ctx, &frames));
+        if let Err(e) = &isp {
+            slot.isp_down(&format!("isp thread: {e}"), styx_socket::clock_ns());
+        }
+        let ended = pump_frames(
+            capture,
+            slot,
+            commands,
+            shared,
+            outlet,
+            reports,
+            publisher,
+            isp.is_ok().then_some(&feed),
+        );
+        // The feed goes first, so the ISP thread ends and gives its raw frames back before the
+        // capture stops.
+        drop(feed);
+        ended
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn pump_frames(
+    capture: &mut dyn Capture,
+    slot: &Slot,
+    commands: &Receiver<Command>,
+    shared: &Shared,
+    outlet: &mut dyn Outlet,
+    reports: Option<&Reports>,
+    publisher: &mut Publisher,
+    isp: Option<&crate::isp::Feed>,
 ) -> Ended {
     slot.started();
     // The camera opened (again): its controls are read now, and the count moves.
@@ -628,8 +692,16 @@ fn pump(
                                 .settings
                                 .hardware_reserve
                                 .map_or(default_reserve(buffers), |r| (r as usize).min(buffers));
-                            let reserve =
-                                producer.set_reserve(reserve_for(buffers, asked, capture.hold()));
+                            // The ISP thread holds up to `RAW_HOLD` raw frames of its own.
+                            let isp_hold = if isp.is_some() {
+                                crate::isp::RAW_HOLD
+                            } else {
+                                0
+                            };
+                            let reserve = producer.set_reserve(
+                                (reserve_for(buffers, asked, capture.hold()) + isp_hold)
+                                    .min(buffers),
+                            );
                             let keep = producer.set_keep(keep_for(buffers, reserve));
                             window = KeepWindow {
                                 keep,
@@ -641,7 +713,7 @@ fn pump(
                                 bound_unmet: 0,
                             };
                             slot.set_keep(window);
-                            let generation = GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+                            let generation = next_generation();
                             *publisher = Some(Held {
                                 producer,
                                 generation,
@@ -656,6 +728,9 @@ fn pump(
                 }
                 slot.frame(&lease);
                 outlet.frame(&slot.id, &lease);
+                if let Some(isp) = isp {
+                    isp.offer(&lease, slot);
+                }
                 if let Some(held) = publisher.as_mut() {
                     let producer = &mut held.producer;
                     let mut blob = [0_u8; WIRE_BYTES];

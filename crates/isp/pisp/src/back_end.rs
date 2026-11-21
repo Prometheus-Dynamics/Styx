@@ -111,6 +111,8 @@ pub struct BackEndBuilder {
     tdn_on: bool,
     /// Exposure of the last frame that read temporal denoise (`None`: the next starts over).
     tdn_last: Option<f64>,
+    /// The tone curve's points, rebuilt into the same buffer for every frame.
+    gamma: Vec<(u32, u32)>,
 }
 
 impl BackEndBuilder {
@@ -183,6 +185,7 @@ impl BackEndBuilder {
             outputs: [o0.media, o1.media],
             tdn_on: geometry.tdn.is_some(),
             tdn_last: None,
+            gamma: Vec::with_capacity(65),
         })
     }
 
@@ -227,7 +230,7 @@ impl BackEndBuilder {
             }
         }
         let mut be = self.template.clone();
-        apply(&mut be, settings)?;
+        apply(&mut be, settings, &mut self.gamma)?;
         // Temporal denoise's state moves only for a frame that is made: a refusal below restores it.
         let before = self.tdn_last;
         let tdn = self.tdn_for(settings, exposure);
@@ -288,7 +291,7 @@ fn prepare_error(e: styx_lemnos::pisp::be::PrepareError) -> PispError {
 
 /// Applies `s` to `be`: the blocks the algorithms move, in the order that makes the black level
 /// the denoise blocks read.
-fn apply(be: &mut BackEnd, s: &IspSettings) -> Result<(), PispError> {
+fn apply(be: &mut BackEnd, s: &IspSettings, gamma: &mut Vec<(u32, u32)>) -> Result<(), PispError> {
     be.set_black_levels(s.black_cfa().map(level16));
     let d = &s.denoise;
     if d.dpc != 0 {
@@ -331,7 +334,8 @@ fn apply(be: &mut BackEnd, s: &IspSettings) -> Result<(), PispError> {
     let g = s.channel_gains();
     be.set_wb_gains(g[0], g[1], g[2]);
     be.set_ccm(s.ccm);
-    be.set_gamma_curve(&gamma_points(s.gamma.as_ref()));
+    fill_gamma_points(s.gamma.as_ref(), gamma);
+    be.set_gamma_curve(gamma);
     // The tone curve is always on: the library's template leaves its block enable off.
     let rgb = be.config().global.rgb_enables | rgb_enable::GAMMA;
     be.config_mut().global.rgb_enables = rgb;
@@ -426,24 +430,29 @@ fn field(v: f64, bits: u32, frac: u32) -> u16 {
 
 /// The tone curve as `(x, y)` points on 16-bit scales; the sRGB curve (65 points) when `None`.
 pub fn gamma_points(curve: Option<&Pwl>) -> Vec<(u32, u32)> {
+    let mut points = Vec::new();
+    fill_gamma_points(curve, &mut points);
+    points
+}
+
+/// [`gamma_points`] into `points`, which is cleared first: no allocation once it has held the
+/// longest curve (the builder keeps one for every frame's configuration).
+pub fn fill_gamma_points(curve: Option<&Pwl>, points: &mut Vec<(u32, u32)>) {
     let to16 = |v: f64| (v.clamp(0.0, 1.0) * 65535.0).round() as u32;
+    points.clear();
     match curve {
-        Some(p) if p.points().len() >= 2 => p
-            .points()
-            .iter()
-            .map(|&(x, y)| (to16(x), to16(y)))
-            .collect(),
-        _ => (0..=64)
-            .map(|i| {
-                let x = (f64::from(i) / 64.0).powi(2);
-                let y = if x <= 0.003_130_8 {
-                    12.92 * x
-                } else {
-                    1.055 * x.powf(1.0 / 2.4) - 0.055
-                };
-                (to16(x), to16(y))
-            })
-            .collect(),
+        Some(p) if p.points().len() >= 2 => {
+            points.extend(p.points().iter().map(|&(x, y)| (to16(x), to16(y))));
+        }
+        _ => points.extend((0..=64).map(|i| {
+            let x = (f64::from(i) / 64.0).powi(2);
+            let y = if x <= 0.003_130_8 {
+                12.92 * x
+            } else {
+                1.055 * x.powf(1.0 / 2.4) - 0.055
+            };
+            (to16(x), to16(y))
+        })),
     }
 }
 

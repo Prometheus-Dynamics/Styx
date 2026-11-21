@@ -25,14 +25,16 @@
 pub mod back_end;
 pub mod format;
 pub mod front_end;
+pub mod input;
 pub mod job;
 pub mod live;
 pub mod stats;
 
 pub use back_end::{BackEndBuilder, Geometry, Output};
 pub use front_end::FrontEndBuilder;
+pub use input::{InputForm, PISP_BE_INPUT};
 pub use job::JobSink;
-pub use live::{LiveIsp, LiveJob};
+pub use live::{Ended, LiveIsp, LiveJob};
 pub use styx_settings::IspSettings;
 
 /// The library's PiSP layouts and tiling, re-exported for callers that need them.

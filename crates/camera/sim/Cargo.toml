@@ -25,6 +25,13 @@ lemnos-sim = { workspace = true }
 lemnos-linux-sys = { workspace = true }
 lemnos-core = { workspace = true, features = ["std"] }
 lemnos-hal = { workspace = true, features = ["std"] }
+# The simulated PiSP back end (`pisp_be`, feature `pisp`).
+styx-pisp = { path = "../../isp/pisp", optional = true }
+lemnos-contract-isp-pisp = { workspace = true, optional = true }
+lemnos-wire = { workspace = true, optional = true }
+
+[features]
+pisp = ["dep:styx-pisp", "dep:lemnos-contract-isp-pisp", "dep:lemnos-wire", "styx-lemnos/pisp"]
 
 [lints]
 workspace = true

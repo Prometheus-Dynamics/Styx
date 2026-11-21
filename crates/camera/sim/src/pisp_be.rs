@@ -1,7 +1,8 @@
-//! A simulated `camera.isp/1` + `isp.pisp/1` back end on `lemnos-sim`, for the live job path.
+//! A simulated `camera.isp/1` + `isp.pisp/1` back end on `lemnos-sim`, for the live job path
+//! (feature `pisp`). Register it with `entry::<SimPisp>()`; [`board`] gives a board with one, and
+//! [`crate::paced::Board::pisp_be`] puts one after the paced receiver.
 //!
-//! Copied in shape from Lemnos's simulated camera (`crates/core/lemnos/tests/sim/mod.rs`, a test
-//! module there) and extended to the PiSP back end's streams: `config` and `input` are consumer
+//! Copied in shape from Lemnos's simulated camera and extended to the PiSP back end's streams: `config` and `input` are consumer
 //! filled, `output0` and `output1` are filled here. Each tick the simulated ISP takes every buffer
 //! the consumer has returned, reads each posted job with the contract's own codec
 //! ([`IspJob::decode`]), reads the job's configuration and its input once into its own memory,
@@ -18,12 +19,11 @@
 //! after the ISP last looked, in the same serve. `pause_after_take` holds one serve between its
 //! look and its jobs, so a test can put that ordering in place.
 
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
+use crate::memory::Memory;
 use lemnos_contract_camera_isp::{
     CameraIsp, ConfigLayout, Counters as IspCounters, IspInfo, IspInput, IspJob, IspOutput,
     NO_BUFFER, OutputLayout,
@@ -36,7 +36,6 @@ use styx_lemnos::pisp::format::compute_stride_align;
 use styx_lemnos::pisp::uapi::{BeTilesConfig, ImageFormatConfig, Wire};
 use styx_pisp::back_end::image_layouts;
 use styx_pisp::format::pisp_format;
-use styx_sim::memory::Memory;
 
 /// What the test expects of one job, by its identity.
 #[derive(Clone, Debug)]
@@ -73,6 +72,8 @@ static PAUSED: AtomicBool = AtomicBool::new(false);
 static LEND: AtomicBool = AtomicBool::new(false);
 static REFUSE_LENDS: AtomicBool = AtomicBool::new(false);
 static REFUSE: AtomicU64 = AtomicU64::new(u64::MAX);
+static REFUSE_NEXT: AtomicU64 = AtomicU64::new(0);
+static REFUSE_OUTPUTS: AtomicBool = AtomicBool::new(false);
 
 /// Whether the simulated ISP says it takes a lent input (`IspInfo::input_lend`), from its next
 /// `info` on.
@@ -90,6 +91,22 @@ pub fn refuse_lends(on: bool) {
 /// cannot run; `None` refuses none.
 pub fn refuse(identity: Option<u64>) {
     REFUSE.store(identity.unwrap_or(u64::MAX), Ordering::SeqCst);
+}
+
+/// Refuses the next `jobs` jobs posted, whatever their identity (`bad-config` on output 0).
+pub fn refuse_next(jobs: u64) {
+    REFUSE_NEXT.store(jobs, Ordering::SeqCst);
+}
+
+/// Jobs [`refuse_next`] has yet to refuse.
+pub fn refusals_left() -> u64 {
+    REFUSE_NEXT.load(Ordering::SeqCst)
+}
+
+/// Refuses every output image (`set_output` answers `INVALID_ARGUMENT`), as the block refuses a
+/// geometry it cannot make, from the next `set_output` on.
+pub fn refuse_outputs(on: bool) {
+    REFUSE_OUTPUTS.store(on, Ordering::SeqCst);
 }
 
 /// Expectations for the jobs the test will post, by identity.
@@ -209,7 +226,12 @@ impl SimPisp {
                 return Ok(());
             }
         };
-        let refused = if REFUSE.load(Ordering::SeqCst) == job.identity {
+        let take_one = |n: u64| n.checked_sub(1);
+        let refused = if REFUSE.load(Ordering::SeqCst) == job.identity
+            || REFUSE_NEXT
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, take_one)
+                .is_ok()
+        {
             Some(lemnos_wire::ring::reason::BAD_CONFIG)
         } else if job.input_lent && REFUSE_LENDS.load(Ordering::SeqCst) {
             Some(lemnos_wire::ring::reason::NOT_LENT)
@@ -315,7 +337,11 @@ impl SimPisp {
         let mut image = ImageFormatConfig {
             width: u16::try_from(input.width).ok()?,
             height: u16::try_from(input.height).ok()?,
-            format: styx_pisp::pisp::format::formats::BAYER16,
+            format: if input.bit_depth == 8 {
+                styx_lemnos::pisp::uapi::image_format::BPS_8
+            } else {
+                styx_lemnos::pisp::format::formats::BAYER16
+            },
             stride: 0,
             stride2: 0,
         };
@@ -426,6 +452,9 @@ impl CameraIsp for SimPisp {
         if self.running {
             return Err(Status::BUSY);
         }
+        if REFUSE_OUTPUTS.load(Ordering::SeqCst) {
+            return Err(Status::INVALID_ARGUMENT);
+        }
         let config = output_image(&image).ok_or(Status::INVALID_ARGUMENT)?;
         let layout = image_layouts(&config).map_err(|_| Status::INVALID_ARGUMENT)?;
         let size = layout.span().unwrap_or(0) as u32;
@@ -512,6 +541,12 @@ impl IspPisp for SimPisp {
 
     fn set_line_event(&mut self, _line: u32) -> Result<()> {
         Err(Status::NOT_SUPPORTED)
+    }
+}
+
+impl std::fmt::Debug for SimPisp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SimPisp").finish_non_exhaustive()
     }
 }
 

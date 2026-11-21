@@ -34,5 +34,5 @@ pub use control::{
     Control, ControlValue, FrameId, PowerLineFrequency, Range, Rect, Spec, Update, ValueError,
 };
 pub use device::{DEVICE_NAME_CAPACITY, DeviceControl, DeviceKind, DeviceName};
-pub use meta::FrameMetadata;
+pub use meta::{FrameMetadata, MadeBy};
 pub use meta::{WIRE_BYTES, WIRE_BYTES_V1, WIRE_VERSION};
