@@ -2,8 +2,9 @@
 //!
 //! With `isp` set in a camera's config (see [`crate::config::CameraConfig::isp`]), each attempt at
 //! the camera runs one more thread, the camera's ISP thread. The capture thread offers it each raw
-//! frame through a hand-off of [`HANDOFF`] frames; a frame that finds the hand-off full is skipped
-//! for the ISP and counted (`isp_skipped`), and the raw socket still publishes it. The ISP thread
+//! frame through a hand-off of at most [`HANDOFF`] frames (see [`hold_for`]: fewer when the
+//! camera's pool is small); a frame that finds the hand-off full is skipped for the ISP and counted
+//! (`isp_skipped`), and the raw socket still publishes it. The ISP thread
 //! makes pictures with the PiSP back end ([`styx_pisp::LiveIsp`]) or the soft ISP
 //! ([`styx_soft::SoftIspStage`]) and publishes output 0 on `<camera socket>.isp0.sock` and, when
 //! `isp_second` is set, output 1 on `.isp1.sock`.
@@ -28,7 +29,9 @@
 
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvError, TrySendError};
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
 use styx_controls::{FrameMetadata, MadeBy, WIRE_BYTES};
@@ -49,9 +52,47 @@ use crate::slot::Slot;
 
 /// Raw frames waiting for the ISP thread at most.
 pub(crate) const HANDOFF: usize = 2;
-/// Raw buffers the ISP may hold at once: the hand-off and the frame it works on. The camera's
-/// reserve is raised by this much while the ISP runs, so the camera always has its own.
-pub(crate) const RAW_HOLD: usize = HANDOFF + 1;
+/// The fewest frames older than the newest that readers of the raw socket must be able to hold
+/// while the ISP runs; a pool that cannot leave them that many refuses `isp`.
+pub(crate) const RAW_READERS_MIN: usize = 1;
+
+/// The ISP's share of a camera's pool: the hand-off depth, the reserve the raw producer keeps with
+/// the ISP's frames in it, and what that leaves raw readers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct IspHold {
+    /// Raw frames that may wait for the ISP (1 or 2).
+    pub depth: usize,
+    /// The raw producer's reserve: the camera's own (`base`) plus the ISP's raw frames (the
+    /// hand-off and the one it works on).
+    pub reserve: usize,
+    /// Frames older than the newest that raw readers together may hold
+    /// (`buffers - reserve - 1`).
+    pub readers: usize,
+}
+
+/// The ISP's share for a pool of `buffers` whose camera keeps `base` (the reserve without the ISP,
+/// `worker::reserve_for`): the deepest hand-off, up to [`HANDOFF`], that still leaves raw readers
+/// [`RAW_READERS_MIN`] frames. `Err` names `isp` and the numbers when even a hand-off of one
+/// leaves them fewer: the service refuses the processed stream rather than starve the raw one.
+pub(crate) fn hold_for(buffers: usize, base: usize) -> Result<IspHold, String> {
+    // readers = buffers - (base + depth + 1) - 1 >= RAW_READERS_MIN
+    let room = buffers.saturating_sub(base + 2 + RAW_READERS_MIN);
+    let depth = room.min(HANDOFF);
+    if depth == 0 {
+        return Err(format!(
+            "isp refused: the camera's pool has {buffers} buffers and keeps {base}; the ISP needs \
+             2 more (a hand-off of 1 and the frame in hand), which would leave raw readers \
+             {} frames, fewer than {RAW_READERS_MIN}",
+            buffers.saturating_sub(base + 3)
+        ));
+    }
+    let reserve = base + depth + 1;
+    Ok(IspHold {
+        depth,
+        reserve,
+        readers: buffers - reserve - 1,
+    })
+}
 /// The soft ISP's buffers per output.
 const SOFT_BUFFERS: usize = 4;
 /// How long a back-end job may take before the back end is counted as stalled.
@@ -85,22 +126,99 @@ pub(crate) enum IspSocket {
 #[derive(Debug)]
 pub(crate) struct Feed {
     frames: SyncSender<FrameLease<FrameMetadata>>,
+    /// Raw frames the ISP holds now: waiting in the hand-off or in hand.
+    outstanding: Arc<AtomicUsize>,
+    /// The hand-off depth for this attempt ([`hold_for`]); 0 until set, and while refused.
+    depth: AtomicUsize,
+    /// Why `isp` is refused for this attempt ([`Feed::refuse`]); the ISP thread reports it and ends.
+    refused: Arc<Mutex<Option<String>>>,
 }
 
 impl Feed {
-    /// Offers `raw` to the ISP. A full hand-off skips it for the ISP (counted).
+    /// Refuses `isp` for this attempt: nothing is offered, and the ISP thread puts `why` in the
+    /// status and ends. The raw stream is unaffected.
+    pub(crate) fn refuse(&self, why: String) {
+        self.depth.store(0, Ordering::Release);
+        *self.refused.lock().unwrap_or_else(PoisonError::into_inner) = Some(why);
+    }
+
+    /// Sets the hand-off depth once the pool is known; 0 sends the ISP nothing.
+    pub(crate) fn set_depth(&self, depth: usize) {
+        self.depth.store(depth.min(HANDOFF), Ordering::Release);
+    }
+
+    /// Offers `raw` to the ISP. A full hand-off (the depth waiting, plus the frame in hand) skips
+    /// it for the ISP (counted). Nothing is offered while the depth is 0.
     pub(crate) fn offer(&self, raw: &FrameLease<FrameMetadata>, slot: &Slot) {
+        let depth = self.depth.load(Ordering::Acquire);
+        if depth == 0 {
+            return;
+        }
+        if self.outstanding.load(Ordering::Acquire) > depth {
+            slot.isp_skipped();
+            return;
+        }
+        self.outstanding.fetch_add(1, Ordering::AcqRel);
         match self.frames.try_send(raw.share()) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
-            Err(TrySendError::Full(_)) => slot.isp_skipped(),
+            Ok(()) => {}
+            Err(TrySendError::Disconnected(_)) => {
+                self.outstanding.fetch_sub(1, Ordering::AcqRel);
+            }
+            Err(TrySendError::Full(_)) => {
+                self.outstanding.fetch_sub(1, Ordering::AcqRel);
+                slot.isp_skipped();
+            }
         }
     }
 }
 
 /// The hand-off between the capture thread and the ISP thread.
-pub(crate) fn handoff() -> (Feed, Receiver<FrameLease<FrameMetadata>>) {
+pub(crate) fn handoff() -> (Feed, Frames) {
     let (frames, rx) = std::sync::mpsc::sync_channel(HANDOFF);
-    (Feed { frames }, rx)
+    let outstanding = Arc::new(AtomicUsize::new(0));
+    let refused = Arc::new(Mutex::new(None));
+    (
+        Feed {
+            frames,
+            outstanding: Arc::clone(&outstanding),
+            depth: AtomicUsize::new(0),
+            refused: Arc::clone(&refused),
+        },
+        Frames {
+            rx,
+            outstanding,
+            refused,
+        },
+    )
+}
+
+/// The ISP thread's side of the hand-off. Each raw frame taken counts as held until it is let go
+/// ([`Frames::done`]).
+#[derive(Debug)]
+pub(crate) struct Frames {
+    rx: Receiver<FrameLease<FrameMetadata>>,
+    outstanding: Arc<AtomicUsize>,
+    refused: Arc<Mutex<Option<String>>>,
+}
+
+impl Frames {
+    /// Why `isp` was refused for this attempt, once.
+    fn refused(&self) -> Option<String> {
+        self.refused
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
+    fn recv_timeout(&self, wait: Duration) -> Result<FrameLease<FrameMetadata>, RecvTimeoutError> {
+        self.rx.recv_timeout(wait)
+    }
+
+    /// The ISP let a raw frame go.
+    fn done(&self, raw: FrameLease<FrameMetadata>) {
+        drop(raw);
+        self.outstanding.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// What the ISP thread needs from its camera.
@@ -115,13 +233,17 @@ pub(crate) struct Context<'a> {
 }
 
 /// The ISP thread: runs until the capture thread drops its [`Feed`].
-pub(crate) fn run(ctx: &Context<'_>, frames: &Receiver<FrameLease<FrameMetadata>>) {
+pub(crate) fn run(ctx: &Context<'_>, frames: &Frames) {
     let (tx, sockets) = std::sync::mpsc::channel();
     ctx.slot.set_isp_route(Some(tx));
     ctx.slot.isp_starting(ctx.plan.mode);
     let mut stage: Option<Stage> = None;
     let mut down = false;
     loop {
+        if let Some(why) = frames.refused() {
+            ctx.slot.isp_down(&why, styx_socket::clock_ns());
+            break;
+        }
         serve_readers(&sockets, stage.as_mut());
         match frames.recv_timeout(FRAME_WAIT) {
             Ok(raw) => {
@@ -138,6 +260,7 @@ pub(crate) fn run(ctx: &Context<'_>, frames: &Receiver<FrameLease<FrameMetadata>
                 if let Some(stage) = stage.as_mut() {
                     stage.frame(ctx, &raw);
                 }
+                frames.done(raw);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -719,4 +842,63 @@ fn open_back_end(
 
 fn nanos(d: Duration) -> u64 {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod hold_tests {
+    use super::*;
+    use crate::worker::{default_reserve, reserve_for};
+
+    /// The camera's own reserve for a native stream of `buffers`: the declared hold is Lemnos's
+    /// `consumer_hold` (the producer keeps half, at least 2).
+    fn native_base(buffers: usize) -> usize {
+        let hold = styx_lemnos::consumer_hold(buffers as u32);
+        reserve_for(buffers, default_reserve(buffers), Some(hold))
+    }
+
+    #[test]
+    fn the_raze_receivers_nine_buffers_take_a_hand_off_of_one_and_leave_raw_readers_one_frame() {
+        // B = 9: Lemnos's producer keeps 4, Styx may hold 5; the camera keeps 9 - 5 + 1 = 5.
+        assert_eq!(native_base(9), 5);
+        let hold = hold_for(9, 5).expect("fits");
+        assert_eq!(
+            hold,
+            IspHold {
+                depth: 1,
+                reserve: 7,
+                readers: 1
+            }
+        );
+        // Everything Styx holds stays within the declared 5: the frame in hand, the ISP's 2,
+        // the ring and its readers' 2 (the newest and one older).
+        assert_eq!(1 + (hold.depth + 1) + (9 - hold.reserve), 5);
+    }
+
+    #[test]
+    fn a_pool_too_small_for_a_raw_reader_refuses_isp_by_name_and_a_large_one_takes_the_full_hand_off()
+     {
+        // B = 8 (native): the camera keeps 5; the ISP's 2 would leave raw readers 0.
+        let base = native_base(8);
+        assert_eq!(base, 5);
+        let err = hold_for(8, base).expect_err("too small");
+        assert!(err.starts_with("isp refused"), "{err}");
+        assert!(
+            err.contains("8 buffers") && err.contains("keeps 5"),
+            "{err}"
+        );
+        // B = 12: the camera keeps 7; a hand-off of 2, raw readers keep 1.
+        assert_eq!(
+            hold_for(12, native_base(12)),
+            Ok(IspHold {
+                depth: 2,
+                reserve: 10,
+                readers: 1
+            })
+        );
+        // B = 16: the hand-off stays at 2 and raw readers keep the rest.
+        assert_eq!(
+            hold_for(16, native_base(16)).map(|h| (h.depth, h.readers)),
+            Ok((2, 3))
+        );
+    }
 }

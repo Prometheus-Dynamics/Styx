@@ -153,7 +153,13 @@ struct Rig {
 }
 
 impl Rig {
+    /// The rig with a receiver pool roomy enough for the ISP's share at a hand-off of 2.
     fn start(camera_keys: &str) -> Self {
+        Self::start_with(camera_keys, 12)
+    }
+
+    /// The rig with `buffers` in the receiver's pool.
+    fn start_with(camera_keys: &str, buffers: u32) -> Self {
         let dir = tempfile::Builder::new()
             .prefix("styx-isp-")
             .tempdir()
@@ -162,6 +168,7 @@ impl Rig {
         let board = sim::board_from(sim::Board {
             sensor_link: Some("csi0"),
             pisp_be: true,
+            receiver_buffers: Some(buffers),
             ..sim::Board::default()
         });
         let daemon = LemnosDaemon::start(DaemonConfig {
@@ -373,6 +380,10 @@ fn the_processed_stream_on_the_simulated_back_end() {
     a_geometry_the_back_end_refuses_starts_on_soft_and_pisp_alone_has_no_stream();
     reset_back_end();
     readers_on_both_sockets_and_raw_each_keep_their_own_reserve();
+    reset_back_end();
+    nine_buffers_run_the_isp_at_a_hand_off_of_one_and_leave_raw_readers_a_frame();
+    reset_back_end();
+    eight_buffers_refuse_the_isp_by_name_and_the_raw_stream_runs();
 }
 
 /// Case 1: `auto` with a back end. Frames on isp0 are the back end's, in output 0's format and
@@ -662,4 +673,63 @@ fn readers_on_both_sockets_and_raw_each_keep_their_own_reserve() {
     let line = rig.line();
     assert_eq!(field(&line, "isp_readers"), Some("2/1"), "{line}");
     println!("proof: case 6 {line}");
+}
+
+/// Case 7: nine receiver buffers. The native hold keeps 5, so the ISP runs at a hand-off of 1
+/// (2 raw frames), the raw producer's reserve is 7, and a raw reader may hold 1 older frame while
+/// it takes the next.
+fn nine_buffers_run_the_isp_at_a_hand_off_of_one_and_leave_raw_readers_a_frame() {
+    let rig = Rig::start_with("isp = \"auto\"\n", 9);
+    rig.wait_for("isp=pisp", |l| field(l, "isp") == Some("pisp"));
+    let line = rig.wait_for("buffers=9", |l| field(l, "buffers") == Some("9"));
+    assert_eq!(field(&line, "reserve"), Some("7"), "{line}");
+    let mut isp = rig.isp_reader(0);
+    let mut raw = rig.raw_reader();
+    let held = next_raw(&mut raw);
+    for _ in 0..30 {
+        let newer = next_raw(&mut raw);
+        assert!(newer.lease().id() > held.lease().id());
+        drop(newer);
+        assert_eq!(take(&mut isp).expect("isp0 keeps up").made_by, MadeBy::Pisp);
+    }
+    drop(held);
+    let line = rig.line();
+    assert_eq!(
+        field(&line, "reserve_cuts"),
+        Some("0"),
+        "the held frame was never cut: {line}"
+    );
+    println!("proof: case 7 {line}");
+}
+
+/// Case 8: eight receiver buffers. The native hold keeps 5; the ISP's 2 would leave raw readers
+/// nothing, so `isp` is refused by name and the raw stream runs at its own reserve.
+fn eight_buffers_refuse_the_isp_by_name_and_the_raw_stream_runs() {
+    let rig = Rig::start_with("isp = \"auto\"\n", 8);
+    let line = rig.wait_for("isp refused", |l| {
+        field(l, "isp_reason")
+            .is_some_and(|r| r.starts_with("isp_refused:_the_camera's_pool_has_8_buffers"))
+    });
+    assert_eq!(field(&line, "isp"), Some("none"), "{line}");
+    let mut raw = rig.raw_reader();
+    for _ in 0..20 {
+        next_raw(&mut raw);
+    }
+    let line = rig.line();
+    assert_eq!(field(&line, "buffers"), Some("8"), "{line}");
+    assert_eq!(field(&line, "reserve"), Some("5"), "{line}");
+    assert_eq!(field(&line, "isp_published"), Some("0/0"), "{line}");
+    println!("proof: case 8 {line}");
+}
+
+/// The next raw frame, held, waiting up to five seconds.
+fn next_raw(reader: &mut Reader) -> styx_socket::Frame {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(frame) = reader.next_frame().expect("the raw stream stays up") {
+            return frame;
+        }
+        assert!(Instant::now() < deadline, "no raw frame within 5 s");
+        std::thread::sleep(Duration::from_millis(2));
+    }
 }

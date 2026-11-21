@@ -930,6 +930,8 @@ pub struct Board<'a> {
     /// the test with feature `pisp`), its streams sized for the largest mode, instead of the
     /// parameters-only `sim-isp`.
     pub pisp_be: bool,
+    /// `csi0`'s frame buffers (default 8).
+    pub receiver_buffers: Option<u32>,
 }
 
 /// `isp0`'s device text: the simulated back end with its four streams (shared memory), sized for
@@ -982,6 +984,7 @@ pub fn board_from(spec: Board<'_>) -> String {
         receiver.push_str(&format!("auto_off_after = {after}\n"));
     }
     let isp = isp_device(spec.pisp_be);
+    let csi0_buffers = spec.receiver_buffers.unwrap_or(8);
     format!(
         "format = \"lemnos.board\"\nschema_version = 1\n[board]\nid = \"sim-camera\"\n\
          {isp}\
@@ -989,7 +992,7 @@ pub fn board_from(spec: Board<'_>) -> String {
          [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
          [[devices]]\nid = \"csi0\"\ndriver = \"sim-receiver\"\nlink = \"isp0\"\n\
          {receiver}\
-         [devices.streams.frames]\nbuffers = 8\nbuffer_bytes = 32000\n\
+         [devices.streams.frames]\nbuffers = {csi0_buffers}\nbuffer_bytes = 32000\n\
          [[devices]]\nid = \"cam0-sensor\"\ndriver = \"sim-sensor\"\n{link}{identity}"
     )
 }

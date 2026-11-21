@@ -692,16 +692,22 @@ fn pump_frames(
                                 .settings
                                 .hardware_reserve
                                 .map_or(default_reserve(buffers), |r| (r as usize).min(buffers));
-                            // The ISP thread holds up to `RAW_HOLD` raw frames of its own.
-                            let isp_hold = if isp.is_some() {
-                                crate::isp::RAW_HOLD
-                            } else {
-                                0
-                            };
-                            let reserve = producer.set_reserve(
-                                (reserve_for(buffers, asked, capture.hold()) + isp_hold)
-                                    .min(buffers),
-                            );
+                            let base = reserve_for(buffers, asked, capture.hold());
+                            // The ISP's raw frames come out of the pool too: its share is
+                            // added to the reserve, or `isp` is refused when it would leave raw
+                            // readers too few frames.
+                            let with_isp =
+                                isp.map(|feed| match crate::isp::hold_for(buffers, base) {
+                                    Ok(hold) => {
+                                        feed.set_depth(hold.depth);
+                                        hold.reserve
+                                    }
+                                    Err(why) => {
+                                        feed.refuse(why);
+                                        base
+                                    }
+                                });
+                            let reserve = producer.set_reserve(with_isp.unwrap_or(base));
                             let keep = producer.set_keep(keep_for(buffers, reserve));
                             window = KeepWindow {
                                 keep,
