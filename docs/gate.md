@@ -18,7 +18,17 @@ A lane name alone means all its variants; `all` means every variant. When `host:
 in `host:all` and `host:default`.
 
 `host:default passed` covers clippy and building every default-features test binary. It runs only
-the tests listed in `.config/default-only.txt`. That list is empty today, so the lane runs 0 tests.
+the tests listed in `.config/default-only.txt`. That list is empty today, so the gate line records
+`host:default/default-only-tests=not-run(list_empty)` beside it.
+
+## Nothing to run is not passed
+
+A step meant to run something that matches nothing fails: a test-group filter term that names no
+test, a `.config/default-only.txt` line that names no default-features test, a nextest run whose
+expression matches no test (`--no-tests=fail`), a bare lane that finds no no_std crate. A step that
+was selected and had nothing to run by design is recorded on the gate line as
+`<variant>/<step>=not-run(<reason>)`, never as passed: `host:default/default-only-tests` when the
+list is empty, `host:all/tests` when every crate reused a green run.
 
 ## What runs by default
 
@@ -54,7 +64,13 @@ byte-identical.
 
 A crate whose sources declare an outside need (`styx_frame::not_run` or `dma_case`: a device, a
 daemon, a GPU) always runs, and so does a crate that gets no key; each is printed with the reason.
-Keys are recorded only after a green run, and match only within one worktree path. The doctests,
+Keys are recorded only after a green run, and match only within one worktree path.
+
+A change to what measures or selects reuses nothing: the map's `no-reuse` lines (the gate's
+scripts, the lane map, the reuse key code, `.config/` with the filter lists, `data/`, the
+simulated camera in `crates/camera/sim`, and the case declarations in `styx_frame::not_run`).
+The gate prints `reuse off` with the files, and every crate's tests run. The gate's own files are
+also in every key, so a key made under other gate rules never matches. The doctests,
 clippy, the default-features pass and the no_std checks always run (cargo's own freshness makes
 the unchanged ones cheap).
 

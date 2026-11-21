@@ -237,14 +237,23 @@ def owner(path):
 # --- selection ---------------------------------------------------------------------
 
 def read_map():
+    """(pattern, lanes, no_reuse) per line of the map. A line with no lanes only marks no-reuse."""
     rules = []
     with open(os.path.join(ROOT, "scripts", "gate-lanes.map")) as f:
         for line in f:
             line = line.split("#", 1)[0].strip()
             if line:
                 pattern, *lanes = line.split()
-                rules.append((pattern, lanes))
+                no_reuse = "no-reuse" in lanes
+                rules.append((pattern, [x for x in lanes if x != "no-reuse"], no_reuse))
     return rules
+
+
+def no_reuse_files(base):
+    """The changed files that measure or select (the map's no-reuse lines): any of them in the
+    change turns reuse off, so every crate's tests run."""
+    rules = [p for p, _, n in read_map() if n]
+    return [f for f in changed_files(base) if any(fnmatch.fnmatchcase(f, p) for p in rules)]
 
 
 def changed_files(base):
@@ -286,8 +295,8 @@ def select_default(base):
         crate = owner(path)
         if crate:
             crates.add(crate)
-        for pattern, lanes in rules:
-            if fnmatch.fnmatchcase(path, pattern):
+        for pattern, lanes, _ in rules:
+            if fnmatch.fnmatchcase(path, pattern) and lanes:
                 add(lanes, path)
                 break
         else:
@@ -393,7 +402,7 @@ def worktree_tree():
         return git("write-tree", env=env).strip()
 
 
-def run_gate(selected, tree, narrow=None, doctests=True):
+def run_gate(selected, tree, narrow=None, doctests=True, no_reuse=()):
     """Run scripts/gate.sh's steps for the selected variants; {variant: status}."""
     results = tempfile.NamedTemporaryFile(prefix="styx-gate-lanes.", delete=False)
     results.close()
@@ -409,15 +418,21 @@ def run_gate(selected, tree, narrow=None, doctests=True):
         env["STYX_GATE_NARROW"] = " ".join(narrow)
     if not doctests:
         env["STYX_CHECK_DOCTESTS"] = "0"
+    if no_reuse:
+        env["STYX_GATE_NO_REUSE"] = " ".join(no_reuse)
     sys.stdout.flush()
     rc = subprocess.run([os.path.join(ROOT, "scripts", "gate.sh")], cwd=ROOT, env=env).returncode
-    started, passed, counted = set(), set(), set()
+    started, passed, counted, notes = set(), set(), set(), {}
     with open(results.name) as f:
         for line in f:
             v, _, what = line.strip().partition(" ")
             if what.startswith("reuse "):
                 print(f"gate: {v} {what}")
                 counted.add(v)
+            elif what.startswith("note "):
+                # A step that had nothing to run: <variant>/<step>=not-run(<reason>) on the gate line.
+                _, step, state = what.split(" ", 2)
+                notes[f"{v}/{step}"] = state
             else:
                 (passed if what == "passed" else started).add(v)
     os.unlink(results.name)
@@ -437,11 +452,17 @@ def run_gate(selected, tree, narrow=None, doctests=True):
         # A step outside every lane (the lock check, the seed, the supervisor) failed.
         for v in selected:
             status[v] = "failed"
+    for key, state in notes.items():
+        if key.split("/")[0] in selected:
+            status[key] = state
     return status, rc
 
 
 def trailer_of(status):
-    return "Gate-Lanes: " + " ".join(f"{v}={status.get(v, 'not-run')}" for v in ALL)
+    """The variants' statuses, then each step that had nothing to run (variant/step=not-run(why))."""
+    steps = sorted(k for k in status if "/" in k)
+    return "Gate-Lanes: " + " ".join([f"{v}={status.get(v, 'not-run')}" for v in ALL]
+                                     + [f"{k}={status[k]}" for k in steps])
 
 
 def write_record(tree, base, trailer, green):
@@ -557,20 +578,25 @@ def cmd_run(a):
             print(f"  {v:18} not run  (not selected; {behind_now[v][1]} commits behind)")
     if narrow:
         print(f"  tests narrowed to the crates that reach {' '.join(narrow)}: NOT THE GATE")
+    no_reuse = no_reuse_files(base)
+    if no_reuse:
+        print(f"  reuse off: the change measures or selects ({' '.join(no_reuse[:5])}"
+              f"{' ...' if len(no_reuse) > 5 else ''})")
     if a.dry_run:
         return 0
     doctests = True
     if narrow is not None:
         doctests = any(affected.holds_doctest(os.path.join(ROOT, p)) for p in changed_files(base))
     tree = worktree_tree()
-    status, rc = run_gate(selected, tree, narrow, doctests)
+    status, rc = run_gate(selected, tree, narrow, doctests, no_reuse)
     for v, reason in dropped.items():
         status[v] = "not-run(dropped:" + re.sub(r"[^A-Za-z0-9_.,/-]+", "_", reason) + ")"
     for v in ALL:
         status.setdefault(v, "not-run(behind)")
     green = rc == 0 and all(status[v] in STATUS_OK for v in selected)
     partial = len(selected) < len(ALL)
-    summary = ", ".join(f"{v} {status[v]}" for v in ALL)
+    summary = ", ".join([f"{v} {status[v]}" for v in ALL]
+                        + [f"{k} {status[k]}" for k in sorted(k for k in status if "/" in k)])
     if narrow is not None:
         print(f"CHECK {'green' if green else 'RED'} (not the gate): {summary}")
         return 0 if green else 1
@@ -837,11 +863,16 @@ def cmd_reuse_plan(a):
     if not CI:
         save_digests(cache, set(binaries))
     common = "\0".join([a.variant, ROOT, scripts_hash(), *versions]).encode()
-    records = {} if CI else key_records()
+    # A change to what measures or selects (STYX_GATE_NO_REUSE, from the map's no-reuse lines)
+    # reuses nothing: every crate runs, and its new key is recorded after a green run.
+    off = os.environ.get("STYX_GATE_NO_REUSE", "").split()
+    records = {} if CI or off else key_records()
     plan, run, reused, outside, unkeyed = {}, [], [], [], []
 
     def say(text):
         print(text, file=sys.stderr)
+    if off and not CI:
+        say(f"    reuse off: the change measures or selects ({' '.join(off[:5])}{' ...' if len(off) > 5 else ''})")
     for crate in sorted(per_crate):
         if crate not in reach:
             continue

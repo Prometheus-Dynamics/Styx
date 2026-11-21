@@ -17,6 +17,9 @@ or a module of one (a `#[path = "x.rs"]` or `mod x;` in a test file).
                                             unless .config/shared-state.txt says why it is safe
        test-layout.py default-only-filter   the filterset that runs .config/default-only.txt
                                             (empty output: none)
+       test-layout.py default-only-present <default list>
+                                            every line of .config/default-only.txt names a test
+                                            the default build has
 
 default-only: tests run in the all-features pass only. A test that exists only under default
 features (cfg(not(feature = ...))) would then never run unless the default pass runs it, so the
@@ -287,6 +290,14 @@ def default_only(default_list, all_list):
     print(f"default-only tests: {len(only)}, all in .config/default-only.txt")
 
 
+def default_only_present(default_list):
+    missing = sorted(default_only_entries() - listed(default_list))
+    for binary, test in missing:
+        print(f"{binary} {test}: in .config/default-only.txt but no default-features test has that name")
+    if missing:
+        sys.exit(1)
+
+
 def default_only_filter():
     terms = [f"(binary_id(={b}) & test(={t}))" for b, t in sorted(default_only_entries())]
     print(" | ".join(terms))
@@ -301,6 +312,8 @@ if __name__ == "__main__":
         default_only(sys.argv[2], sys.argv[3])
     elif sys.argv[1:2] == ["shared-state"]:
         shared_state()
+    elif sys.argv[1:2] == ["default-only-present"] and len(sys.argv) == 3:
+        default_only_present(sys.argv[2])
     elif sys.argv[1:2] == ["default-only-filter"]:
         default_only_filter()
     else:

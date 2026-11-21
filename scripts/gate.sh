@@ -19,6 +19,13 @@ selected() {
 lane_mark() {
   [ -z "${STYX_GATE_RESULTS:-}" ] || echo "$1 $2" >> "$STYX_GATE_RESULTS"
 }
+# A step of a lane that had nothing to run, and why: printed, and recorded on the gate line as
+# <variant>/<step>=not-run(<reason>), never as passed. A step that was meant to run something and
+# matched nothing fails instead (nextest's --no-tests=fail, an empty crate list).
+step_not_run() {
+  echo "    NOT RUN: $1/$2 ($3)"
+  [ -z "${STYX_GATE_RESULTS:-}" ] || echo "$1 note $2 not-run($3)" >> "$STYX_GATE_RESULTS"
+}
 # The gate runs under scripts/gate-supervise.py: whatever a step leaves running is stopped when the
 # gate ends and fails it, and the gate's output can't be held open by a process that outlives it.
 if [ -z "${STYX_GATE_SUPERVISOR:-}" ]; then
@@ -255,14 +262,18 @@ default_tests() {
     return
   fi
   cargo nextest list --locked --workspace --message-format json > "$lists/default.json"
-  local expr
+  # Every line of the list names a test this build has: a renamed test would otherwise leave its
+  # term matching nothing, hidden behind the others (the comparison below runs only beside host:all).
+  python3 scripts/test-layout.py default-only-present "$lists/default.json"
+  local expr no_tests=fail
   expr=$(python3 scripts/test-layout.py default-only-filter)
   if [ -z "$expr" ]; then
-    echo "default-only tests: none"
+    step_not_run host:default default-only-tests list_empty
     return
   fi
-  [ -z "${STYX_GATE_NARROW+set}" ] || expr="($expr) & (${narrow_expr:-none()})"
-  cargo nextest run --locked --workspace --no-fail-fast --no-tests=pass -E "$expr"
+  # A narrowed check may leave none of them (it is not the gate); the gate runs them all.
+  [ -z "${STYX_GATE_NARROW+set}" ] || { expr="($expr) & (${narrow_expr:-none()})"; no_tests=pass; }
+  cargo nextest run --locked --workspace --no-fail-fast --no-tests="$no_tests" -E "$expr"
 }
 all_tests() {
   if [ "$nextest" = 0 ]; then
@@ -273,10 +284,13 @@ all_tests() {
   cargo nextest list --locked --workspace --all-features --message-format json > "$lists/all.json"
   local expr
   expr=$(python3 scripts/gate.py reuse-plan --list "$lists/all.json" --plan "$lists/plan.json")
+  # The expression names only crates with a test that is not #[ignore]: matching nothing is a fault.
   if [ -n "$expr" ]; then
-    cargo nextest run --locked --workspace --no-fail-fast --all-features -E "$expr"
+    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail --all-features -E "$expr"
+  elif [ -n "${STYX_GATE_NARROW+set}" ]; then
+    echo "no crate's tests to run (narrowed)"
   else
-    echo "no crate's tests to run"
+    step_not_run host:all tests every_crate_reused
   fi
   # Only after a green run (set -e ends the step on a red one).
   python3 scripts/gate.py reuse-record --plan "$lists/plan.json"
@@ -297,6 +311,11 @@ no_std_checks() {
   local target="$1" no_std_out no_std_pids=() no_std_labels=() no_std_failed=0 crate i
   local no_std_crates
   mapfile -t no_std_crates < <(grep -l '^no_std = true' crates/*/*/Cargo.toml | xargs -r -n1 dirname | xargs -r -n1 basename)
+  # A lane that checks nothing is not a passed lane: no crate found means the marker moved.
+  if [ "${#no_std_crates[@]}" = 0 ]; then
+    echo "gate: no crate says no_std = true under [package.metadata.styx]: the no_std check matched nothing" >&2
+    return 1
+  fi
   no_std_out=$(mktemp -d)
   for crate in "${no_std_crates[@]}"; do
     cargo check -q --locked -p "styx-$crate" --no-default-features --target "$target" \

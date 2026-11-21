@@ -4,23 +4,31 @@
 # host:all, plus host:default when it holds not(feature) code or builds with a crate that changes
 # with a feature (scripts/gate.py builds_differently_by_feature), and bare when a no_std crate reaches
 # it; documentation no code or script names selects host:checks; anything else host:all.
+#
+# `no-reuse` after the lanes: the file measures or selects (the gate's rules, the lane map, the
+# reuse key code, the filter lists, shared test fixtures), so a change to it reuses no crate's
+# green run. A line with `no-reuse` and no lanes only marks that; its lanes come from the rules.
 
 # What every lane builds or runs with.
 Cargo.toml                  all
 Cargo.lock                  all
 rust-toolchain.toml         all
 .cargo/*                    all
-.config/*                   all
+.config/*                   all no-reuse
 crates/*/Cargo.toml         all
 crates/*/build.rs           all
-scripts/gate*               all
-scripts/affected.py         all
-scripts/test-layout.py      all
+scripts/gate*               all no-reuse
+scripts/affected.py         all no-reuse
+scripts/test-layout.py      all no-reuse
 scripts/one-shm.py          all
 scripts/cargo-seed.sh       all
 scripts/lanes-behind.sh     all
 scripts/release-check.sh    all
 scripts/land.sh             all
 scripts/check.sh            all
-# Test data any crate's tests may read (content keys rerun only the crates whose runs read it).
-data/*                      host:all
+# Test data any crate's tests may read.
+data/*                      host:all no-reuse
+# Shared test fixtures: the one simulated camera every camera test runs, and the case declarations
+# (not_run, dma_case) that decide whether a case runs or is reported as not run.
+crates/camera/sim/*         no-reuse
+crates/core/frame/src/not_run.rs no-reuse
