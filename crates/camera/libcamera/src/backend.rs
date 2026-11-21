@@ -272,6 +272,8 @@ enum Value {
     F32(f32),
     /// `libcamera::Rectangle`: x, y, width, height.
     Rect([i32; 4]),
+    /// Two `Int64`s as one array control (`FrameDurationLimits`).
+    I64Pair([i64; 2]),
 }
 
 /// The values requested from now on: one entry per control id, replaced when set again.
@@ -413,6 +415,9 @@ fn set_controls(list: *mut sys::ControlList, requested: &[(u32, Value)]) {
             Value::I64(v) => set_value(list, id, TYPE_INT64, &v as *const i64 as *const c_void),
             Value::F32(v) => set_value(list, id, TYPE_FLOAT, &v as *const f32 as *const c_void),
             Value::Rect(v) => set_value(list, id, TYPE_RECTANGLE, v.as_ptr() as *const c_void),
+            Value::I64Pair(v) => {
+                set_array(list, id, TYPE_INT64, v.as_ptr() as *const c_void, v.len())
+            }
         }
     }
 }
@@ -423,6 +428,17 @@ fn set_value(list: *mut sys::ControlList, id: u32, kind: u32, data: *const c_voi
     unsafe {
         let value = sys::libcamera_control_value_create();
         sys::libcamera_control_value_set(value, kind, data, false, 1);
+        sys::libcamera_control_list_set(list, id, value);
+        sys::libcamera_control_value_destroy(value);
+    }
+}
+
+/// As [`set_value`], for an array control of `len` elements of `kind` at `data`.
+fn set_array(list: *mut sys::ControlList, id: u32, kind: u32, data: *const c_void, len: usize) {
+    // SAFETY: as in `set_value`; `data` holds `len` elements of `kind`.
+    unsafe {
+        let value = sys::libcamera_control_value_create();
+        sys::libcamera_control_value_set(value, kind, data, true, len);
         sys::libcamera_control_list_set(list, id, value);
         sys::libcamera_control_value_destroy(value);
     }
@@ -1042,6 +1058,13 @@ impl Capture {
             (Control::Gamma, ControlValue::Manual(v)) => {
                 vec![(self.id_of("Gamma")?, Value::F32(map::gamma_to_float(v)))]
             }
+            (Control::FrameRate, ControlValue::Manual(milli)) => {
+                let duration = map::duration_of_rate(milli);
+                vec![(
+                    self.id_of("FrameDurationLimits")?,
+                    Value::I64Pair([duration, duration]),
+                )]
+            }
             (Control::Crop, ControlValue::Crop(Some(rect))) => {
                 vec![(self.id_of("ScalerCrop")?, Value::Rect(rect_raw(rect)))]
             }
@@ -1093,7 +1116,7 @@ impl Capture {
                         Value::Bool(v) => Some(i64::from(v)),
                         Value::I32(v) => Some(i64::from(v)),
                         Value::I64(v) => Some(v),
-                        Value::F32(_) | Value::Rect(_) => None,
+                        Value::F32(_) | Value::Rect(_) | Value::I64Pair(_) => None,
                     });
                 entry_of(listed, value)
             })

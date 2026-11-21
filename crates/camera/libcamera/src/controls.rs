@@ -35,6 +35,7 @@ pub(crate) const MAPPED: &[(&str, Control)] = &[
     ("LensPosition", Control::Focus),
     ("AfMode", Control::Focus),
     ("ScalerCrop", Control::Crop),
+    ("FrameDurationLimits", Control::FrameRate),
 ];
 
 /// The Styx control a libcamera control is mapped to, by its name.
@@ -106,6 +107,18 @@ pub(crate) fn menu_entries(values: &[i64], enumerators: &[(i32, String)]) -> Vec
             })
             .collect()
     }
+}
+
+/// A frame duration in microseconds (libcamera's `FrameDurationLimits` unit) as a frame rate in
+/// thousandths of a frame per second, rounded; `None` for a duration that is not positive.
+pub(crate) fn rate_of_duration(us: f64) -> Option<u32> {
+    (us > 0.0).then(|| clamp_u32(1e9 / us))
+}
+
+/// A frame rate in thousandths of a frame per second as a frame duration in microseconds,
+/// rounded; at least 1.
+pub(crate) fn duration_of_rate(milli: u32) -> i64 {
+    (1e9 / f64::from(milli.max(1))).round().max(1.0) as i64
 }
 
 /// `v` as a `u32`, clamped (libcamera's integers are signed).
@@ -236,6 +249,21 @@ pub(crate) fn standard(listed: &[Listed], crop_max: Option<Rect>) -> Vec<Standar
                 StandardControl {
                     range: manual(within(l.min), within(l.max)),
                     default: Some(ControlValue::Manual(within(l.default))),
+                    ..blank(control, !l.input)
+                }
+            }
+            Control::FrameRate => {
+                // FrameDurationLimits is the shortest and longest frame duration in microseconds:
+                // the longest is the slowest rate. A set asks for one duration as both limits.
+                let Some(l) = find("FrameDurationLimits") else {
+                    continue;
+                };
+                StandardControl {
+                    range: match (rate_of_duration(l.max), rate_of_duration(l.min)) {
+                        (Some(min), Some(max)) => manual(min, max),
+                        _ => None,
+                    },
+                    default: rate_of_duration(l.default).map(ControlValue::Manual),
                     ..blank(control, !l.input)
                 }
             }
@@ -610,5 +638,43 @@ mod tests {
                 .unwrap()
                 .read_only
         );
+    }
+
+    /// Frame rate from FrameDurationLimits: the longest duration is the slowest rate. 33333 us is
+    /// 30.000 fps, 1000000 us is 1 fps.
+    #[test]
+    fn the_frame_rate_is_the_frame_duration_limits_as_rates() {
+        let limits = [listed(
+            "FrameDurationLimits",
+            TYPE_INT64,
+            33_333.0,
+            1_000_000.0,
+            33_333.0,
+        )];
+        let rate = of(&standard(&limits, None), Control::FrameRate).unwrap();
+        assert_eq!(
+            rate.range,
+            Some(StandardRange::Manual {
+                min: 1_000,
+                max: 30_000
+            })
+        );
+        assert_eq!(rate.default, Some(ControlValue::Manual(30_000)));
+        assert!(!rate.auto);
+        assert_eq!(duration_of_rate(30_000), 33_333);
+        assert_eq!(duration_of_rate(60_000), 16_667);
+        assert_eq!(duration_of_rate(0), 1_000_000_000);
+        assert_eq!(rate_of_duration(0.0), None);
+        for milli in [1_000u32, 15_000, 29_970, 30_000, 120_000] {
+            let back = rate_of_duration(duration_of_rate(milli) as f64).unwrap();
+            assert!(
+                back.abs_diff(milli) <= milli / 10_000 + 1,
+                "{milli} came back as {back}"
+            );
+        }
+        // A camera that gives no positive limit: no range, nothing made up.
+        let zero = [listed("FrameDurationLimits", TYPE_INT64, 0.0, 0.0, 0.0)];
+        let rate = of(&standard(&zero, None), Control::FrameRate).unwrap();
+        assert_eq!((rate.range, rate.default), (None, None));
     }
 }
