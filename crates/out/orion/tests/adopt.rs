@@ -1,7 +1,9 @@
 //! Proof: a producer's own ring and pool, adopted as an Orion buffer topic, serve an Orion
 //! subscriber and a direct socket reader from the same ring, in order, bytes equal, with no copy.
 //! The subscriber wakes on its doorbell (`Published::wake`), not on a timer. A ring whose shape is
-//! not its declaration is refused as malformed, and a withdrawal is seen by the subscriber.
+//! not its declaration is refused as malformed, and a withdrawal is seen by the subscriber. An
+//! Orion subscriber holding a frame the producer's reserve needs is cut off, is told on its next
+//! read, and a read of the frame it held comes back torn once the buffer is reused.
 
 #![cfg(all(target_os = "linux", feature = "orion"))]
 
@@ -16,7 +18,7 @@ use orion::{Address, Orion};
 use shm_ring_buffers::entry;
 use std::os::fd::AsFd;
 use styx_frame::{BufferMemory, BufferSize, FdMemory, FramePool, copy_counters};
-use styx_orion::{Published, Subscription, publish, subscribe};
+use styx_orion::{OrionError, Published, Subscription, publish, subscribe};
 use styx_socket::{BeginError, Limits, Producer, ProducerConfig, Reader};
 
 use common::{PAYLOAD, comm_core, dir, entry as frame_entry};
@@ -360,5 +362,92 @@ fn another_program_cannot_adopt_a_name_already_adopted() {
         refused.is_err(),
         "a second program adopted a name that was taken"
     );
+    let _ = stop_comm.send(());
+}
+
+#[test]
+fn a_subscriber_holding_a_frame_the_reserve_needs_is_cut_off_told_and_its_read_torn() {
+    let dir = dir("cut");
+    let orion_socket = dir.path().join("orion.sock");
+    let (started, stop_comm) = comm_core(orion_socket.clone());
+    started.recv().expect("the comm core starts");
+    let camera_orion =
+        Orion::connect(&Address::Local(orion_socket.clone()), "camera").expect("camera");
+    let viewer = Orion::connect(&Address::Local(orion_socket), "viewer").expect("viewer");
+
+    let mut camera = producer(8);
+    // Only the newest frame may be out of the camera's hands: a frame held past it is cut.
+    camera.set_reserve(BUFFERS - 1);
+    camera.set_keep(1);
+    let mut published =
+        publish(&camera_orion, TOPIC, &camera, ORION_SLOTS).expect("the ring is adopted");
+    let mut sub = subscribe(&viewer, TOPIC, 2).expect("the subscriber attaches");
+    await_pool(&mut published, &mut camera, &mut sub);
+
+    assert!(publish_frame(&mut camera, &mut published, 1));
+    camera.reclaim();
+    let started = Instant::now();
+    let held = loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "frame 1 never came"
+        );
+        let _ = sub.wait(Duration::from_millis(20));
+        if let Some(frame) = sub.next_frame().expect("frame 1 reads") {
+            break frame;
+        }
+    };
+    assert_eq!(held.lease().id(), 1);
+    assert!(held.check().is_ok(), "frame 1 is good while held");
+    let before = held
+        .read(|lease| lease.read().expect("mapped").plane(0).expect("plane").data[0])
+        .expect("an untouched read");
+    assert_eq!(before, 1);
+
+    // Frame 2 puts frame 1 past the reserve, held by the subscriber alone: its slot is cut.
+    assert!(publish_frame(&mut camera, &mut published, 2));
+    camera.reclaim();
+    let stats = camera.stats();
+    assert_eq!((stats.adopter_cuts, stats.bound_unmet), (1, 0), "{stats:?}");
+
+    // The subscriber is told on its next read.
+    let started = Instant::now();
+    loop {
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "the cut was never seen"
+        );
+        match sub.next_frame() {
+            Err(OrionError::CutOff) => break,
+            Ok(_) => {
+                let _ = sub.wait(Duration::from_millis(20));
+            }
+            Err(other) => panic!("cut off, not {other}"),
+        }
+    }
+
+    // The camera runs on and reuses frame 1's buffer; the frame still in the subscriber's hands
+    // reads torn, the bytes never handed over as frame 1's.
+    for id in 3..3 + 2 * BUFFERS as u64 {
+        assert!(
+            publish_frame(&mut camera, &mut published, id),
+            "the camera starved at {id}"
+        );
+        camera.reclaim();
+    }
+    let torn = held.read(|lease| lease.read().expect("mapped").plane(0).expect("plane").data[0]);
+    assert!(torn.is_err(), "a reused buffer reads torn: {torn:?}");
+    assert!(held.check().is_err(), "and checks torn");
+    let stats = camera.stats();
+    assert_eq!(
+        (stats.adopter_cuts, stats.bound_unmet),
+        (1, 0),
+        "no second cut: {stats:?}"
+    );
+    println!(
+        "orion cut: adopter_cuts={} bound_unmet={} subscriber told CutOff; held frame 1 read {torn:?}",
+        stats.adopter_cuts, stats.bound_unmet
+    );
+    drop(held);
     let _ = stop_comm.send(());
 }

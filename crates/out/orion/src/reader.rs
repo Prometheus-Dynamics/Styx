@@ -19,6 +19,7 @@ use shm_ring_holds::Marks;
 use styx_frame::{
     BufferMemory, BufferSize, FdMemory, FrameEntry, FrameLease, FramePool, MemoryKind,
 };
+use styx_socket::Torn;
 
 use crate::meta;
 use crate::topic::OrionError;
@@ -70,6 +71,47 @@ impl OrionFrame {
     #[must_use]
     pub fn is_held(&self) -> bool {
         self.held.len() == 1
+    }
+
+    /// Runs `read` on the frame, then checks that its buffer still held this frame for the whole
+    /// read. A subscriber the publisher cut off (for the reserve, see
+    /// [`styx_socket::Producer::reclaim`]) may be in the middle of a read when its buffer is
+    /// reused: the value is dropped and [`Torn`] comes back instead. As
+    /// [`styx_socket::Frame::read`] for a socket reader.
+    ///
+    /// # Errors
+    ///
+    /// [`Torn`] when the buffer was reused before the read ended.
+    pub fn read<T>(&self, read: impl FnOnce(&FrameLease<()>) -> T) -> Result<T, Torn> {
+        let mut read = Some(read);
+        let lease = &self.lease;
+        match self.held.read(0, |_| read.take().map(|read| read(lease))) {
+            Some(Ok(Some(value))) => Ok(value),
+            Some(Err(torn)) => Err(Torn {
+                buffer: torn.buffer.0 as usize,
+            }),
+            // The view maps no bytes (the subscription maps every buffer from its descriptor, so
+            // it does not happen here); nothing to check the use against, and `read` has not run.
+            Some(Ok(None)) | None => read.take().map(|read| read(lease)).ok_or(Torn {
+                buffer: self.lease.buffer_index(),
+            }),
+        }
+    }
+
+    /// Whether the frame's buffer still holds this frame, checked now. For a hand-off of the
+    /// buffer (a descriptor or a pointer to another component): the frame is good when handed
+    /// on; what happens after is the hold's protection alone.
+    ///
+    /// # Errors
+    ///
+    /// [`Torn`] when the buffer was already reused.
+    pub fn check(&self) -> Result<(), Torn> {
+        match self.held.current(0) {
+            Some(Err(torn)) => Err(Torn {
+                buffer: torn.buffer.0 as usize,
+            }),
+            _ => Ok(()),
+        }
     }
 }
 
@@ -128,7 +170,8 @@ impl Subscription {
     ///
     /// # Errors
     ///
-    /// [`OrionError::Frames`] when the pool cannot be mapped, or the publisher replaced its pool.
+    /// [`OrionError::Frames`] when the pool cannot be mapped, or the publisher replaced its pool;
+    /// [`OrionError::CutOff`] once the publisher has cut this subscriber off.
     pub fn next_frame(&mut self) -> Result<Option<OrionFrame>, OrionError> {
         if self.frames.is_none()
             && let Some(view) = self.subscriber.pool()
@@ -149,7 +192,7 @@ impl Subscription {
                 NextBatch::NoBuffers(_) => self.no_buffers += 1,
                 NextBatch::Skipped(_) => {}
                 NextBatch::Empty | NextBatch::Limited => return Ok(None),
-                NextBatch::CutOff => return Err(OrionError::Frames("cut off by the publisher")),
+                NextBatch::CutOff => return Err(OrionError::CutOff),
                 NextBatch::PoolChanged { .. } => {
                     return Err(OrionError::Frames("the publisher replaced its pool"));
                 }

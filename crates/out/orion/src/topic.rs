@@ -35,8 +35,12 @@ pub enum OrionError {
     /// declared over this ring.
     Shape,
     /// The frames of a buffer topic cannot be read: its pool cannot be mapped, or the publisher
-    /// cut this subscriber off or replaced its pool.
+    /// replaced its pool.
     Frames(&'static str),
+    /// The publisher cut this subscriber off: it held a frame the publisher's reserve needed, or
+    /// went over its limits. What it held may be reused; a read through [`crate::OrionFrame::read`]
+    /// in the middle of it comes back [`styx_socket::Torn`]. Subscribe again to go on.
+    CutOff,
     /// A frame pool refused its buffers.
     Pool(styx_frame::PoolError),
 }
@@ -52,6 +56,7 @@ impl fmt::Display for OrionError {
                 f.write_str("the ring's entries are too small for an Orion buffer topic")
             }
             Self::Frames(why) => write!(f, "frames: {why}"),
+            Self::CutOff => f.write_str("frames: cut off by the publisher"),
             Self::Pool(err) => write!(f, "{err}"),
         }
     }
