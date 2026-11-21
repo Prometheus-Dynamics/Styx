@@ -13,6 +13,15 @@
 //! - Plugin: with the feature on, the crate also builds as a shared object GStreamer loads by
 //!   `GST_PLUGIN_PATH=<dir> gst-launch-1.0 styxsrc socket=<path> ! ...`.
 //!
+//! **GPU readers downstream.** The frame goes back to the producer when GStreamer frees its memory,
+//! and Styx cannot see a downstream element's GPU work. A GL or Vulkan element that imports the
+//! dma-buf must keep the buffer until its GPU read has finished (its own fence or a completed wait),
+//! not free it right after submitting. On some drivers nothing waits for the GPU on a shared buffer:
+//! V3D (the v3dv Vulkan driver) does not put its job on an imported dma-buf's
+//! implicit fence, so a buffer freed early can be rewritten by the producer while the GPU still reads
+//! it, and nothing stops that. Waiting on the dma-buf's fence before the frame goes back is queued
+//! (GST-RELEASE-FENCE), for when writers attach their fences to the buffer.
+//!
 //! Frames the element cannot name (H.264, say, which GStreamer has no caps name for here; or memory
 //! that is neither mapped nor a descriptor) are dropped and counted. MJPG frames are `image/jpeg`.
 //! Linux only: the ring is a Linux layout.

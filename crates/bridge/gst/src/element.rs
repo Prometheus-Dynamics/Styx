@@ -4,6 +4,10 @@
 //! Mapped frames are wrapped read-only, and frames with a descriptor are exported as dma-buf
 //! memory. Nothing is copied. A frame is given back to the producer when GStreamer frees the memory
 //! that holds it.
+//!
+//! A downstream element that reads the dma-buf on a GPU must keep the buffer until that read has
+//! finished: Styx cannot see it, and on V3D nothing waits implicitly (see the crate's docs, "GPU
+//! readers downstream").
 
 use std::ffi::CStr;
 use std::os::fd::{BorrowedFd, OwnedFd};
@@ -98,7 +102,11 @@ mod imp {
                 vec![
                     glib::ParamSpecString::builder("socket")
                         .nick("Socket")
-                        .blurb("Unix socket of the Styx producer (the shared ring)")
+                        .blurb(
+                            "Unix socket of the Styx producer (the shared ring). Each frame is the \
+                             producer's own buffer, given back when GStreamer frees it: a downstream \
+                             GPU element must keep a buffer until its GPU read has finished.",
+                        )
                         .mutable_ready()
                         .build(),
                 ]
@@ -133,7 +141,10 @@ mod imp {
                 gst::subclass::ElementMetadata::new(
                     "Styx frame source",
                     "Source/Video",
-                    "Frames from a Styx camera over the shared ring, without copying",
+                    "Frames from a Styx camera over the shared ring, without copying. A frame goes \
+                     back to the camera when its buffer is freed: a downstream GPU (GL, Vulkan) \
+                     element must keep the buffer until its GPU read has finished (on V3D nothing \
+                     waits for it implicitly).",
                     "Styx",
                 )
             });
