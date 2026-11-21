@@ -343,7 +343,8 @@ fn status_of(control: Option<&Path>, socket: &Path) -> Result<StatusOf, String> 
     Ok((Some(control.display().to_string()), cam, copies))
 }
 
-/// The service's copy-site lines (`copy site=.. copies=.. bytes=..`) of a `list` answer.
+/// The service's copy-site lines (`copy copies=.. bytes=.. [bytes_read=..] site=..`) of a `list`
+/// answer.
 fn copy_sites(lines: &[String]) -> Vec<CopySite> {
     lines
         .iter()
@@ -351,11 +352,12 @@ fn copy_sites(lines: &[String]) -> Vec<CopySite> {
             // `copy copies=N bytes=N site=<free text>`: the site is everything after ` site=`.
             let rest = line.strip_prefix("copy ")?;
             let (head, site) = rest.split_once(" site=")?;
-            let (mut copies, mut bytes) = (None, None);
+            let (mut copies, mut bytes, mut bytes_read) = (None, None, None);
             for word in head.split_ascii_whitespace() {
                 match word.split_once('=')? {
                     ("copies", v) => copies = v.parse().ok(),
                     ("bytes", v) => bytes = v.parse().ok(),
+                    ("bytes_read", v) => bytes_read = v.parse().ok(),
                     _ => {}
                 }
             }
@@ -363,6 +365,7 @@ fn copy_sites(lines: &[String]) -> Vec<CopySite> {
                 site: site.to_string(),
                 copies: copies?,
                 bytes: bytes?,
+                bytes_read,
             })
         })
         .collect()
@@ -472,6 +475,7 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
             site: c.site().to_string(),
             copies: c.copies(),
             bytes: c.bytes(),
+            bytes_read: None,
         })
         .collect();
 
@@ -531,4 +535,26 @@ pub fn read_run(args: &ReadArgs) -> Result<Report, String> {
         isp: session.isp_stats(),
         last_metadata: session.metadata.map(|m| format!("{m:?}")),
     })
+}
+
+#[cfg(test)]
+mod copy_site_tests {
+    use super::copy_sites;
+
+    #[test]
+    fn a_copy_line_reads_with_and_without_bytes_read() {
+        let lines = [
+            "copy copies=60 bytes=1536000 bytes_read=960000 site=pisp-be-input".to_string(),
+            "copy copies=2 bytes=10 site=some site with spaces".to_string(),
+        ];
+        let sites = copy_sites(&lines);
+        assert_eq!(sites.len(), 2);
+        assert_eq!(sites[0].site, "pisp-be-input");
+        assert_eq!(
+            (sites[0].copies, sites[0].bytes, sites[0].bytes_read),
+            (60, 1_536_000, Some(960_000))
+        );
+        assert_eq!(sites[1].site, "some site with spaces");
+        assert_eq!(sites[1].bytes_read, None);
+    }
 }

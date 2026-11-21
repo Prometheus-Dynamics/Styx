@@ -82,11 +82,43 @@ pub fn daemon(socket: &Path) -> LemnosDaemon {
     LemnosDaemon::start(config).expect("start lemnosd")
 }
 
+/// lemnosd in this process on the one-camera simulated board with the simulated PiSP back end,
+/// and a receiver of 12 buffers (room for the ISP's share at a hand-off of 2).
+pub fn daemon_with_back_end(socket: &Path) -> LemnosDaemon {
+    let config = DaemonConfig {
+        socket: socket.to_path_buf(),
+        name: "styx-measure-test".to_string(),
+        board: parse(&sim::board_from(sim::Board {
+            sensor_link: Some("csi0"),
+            pisp_be: true,
+            receiver_buffers: Some(12),
+            ..sim::Board::default()
+        }))
+        .expect("board"),
+        drivers: vec![
+            entry::<sim::SimSensor>(),
+            entry::<sim::SimReceiver>(),
+            entry::<styx_sim::pisp_be::SimPisp>(),
+        ],
+        backend: Box::new(SimBoard::new()),
+        options: Options {
+            call_deadline: Duration::from_millis(200),
+            ..Options::default()
+        },
+    };
+    LemnosDaemon::start(config).expect("start lemnosd")
+}
+
 /// The service on the simulated camera at 120 fps (mode 0, 320 x 40), served from `dir`.
 pub fn start_service(dir: &Path, lemnos_socket: &Path) -> Service {
+    start_service_with(dir, lemnos_socket, "")
+}
+
+/// As [`start_service`], with `camera_keys` added to the camera's table.
+pub fn start_service_with(dir: &Path, lemnos_socket: &Path, camera_keys: &str) -> Service {
     let text = format!(
         "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
-         [camera.\"{CAMERA}\"]\nwidth = 320\nheight = 40\nfps_milli = 120000\nexposure_us = 4000\n",
+         [camera.\"{CAMERA}\"]\nwidth = 320\nheight = 40\nfps_milli = 120000\nexposure_us = 4000\n{camera_keys}",
         dir.display(),
         lemnos_socket.display()
     );

@@ -78,11 +78,30 @@ impl CameraLine {
     }
 }
 
-/// The camera line of the `list` answer whose `socket=` is `socket`, if the service lists one.
+/// The camera line of the `list` answer whose `socket=` (or a processed `isp0_socket=` /
+/// `isp1_socket=`) is `socket`, if the service lists one.
 pub fn camera_for_socket(lines: &[String], socket: &Path) -> Option<CameraLine> {
     let wanted = socket.display().to_string();
     lines
         .iter()
         .filter_map(|line| CameraLine::parse(line))
-        .find(|cam| cam.get("socket") == Some(wanted.as_str()))
+        .find(|cam| {
+            ["socket", "isp0_socket", "isp1_socket"]
+                .iter()
+                .any(|key| cam.get(key) == Some(wanted.as_str()))
+        })
+}
+
+#[cfg(test)]
+mod socket_tests {
+    use super::camera_for_socket;
+    use std::path::Path;
+
+    #[test]
+    fn a_processed_socket_finds_its_camera() {
+        let lines = ["camera c0 state=streaming socket=/s/c0.sock isp0_socket=/s/c0.isp0.sock isp1_socket=- last_error=-".to_string()];
+        assert!(camera_for_socket(&lines, Path::new("/s/c0.sock")).is_some());
+        assert!(camera_for_socket(&lines, Path::new("/s/c0.isp0.sock")).is_some());
+        assert!(camera_for_socket(&lines, Path::new("/s/c1.sock")).is_none());
+    }
 }

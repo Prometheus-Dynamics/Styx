@@ -3,6 +3,7 @@
 //! operations and a histogram bump; nothing allocates per frame.
 
 use crate::hist::Histogram;
+use styx_controls::MadeBy;
 
 /// Counts and times over the frames one reader took.
 #[derive(Debug, Clone)]
@@ -42,6 +43,30 @@ pub struct FrameStats {
     /// The first frames one by one, `[id, capture time, time the reader had it]` in ns, up to
     /// the room reserved by [`FrameStats::keep_trace`]. Empty unless asked for.
     pub trace: Vec<[u64; 3]>,
+    /// Frames and capture-to-reader latency by what made each frame (the metadata's made-by
+    /// byte): the camera itself (a raw socket), or an ISP on a processed socket, back end or soft.
+    /// The latency is the same clock as `latency`: the sensor's capture time to the reader.
+    pub made_by: [MadeByStats; 3],
+    /// Frames whose metadata named no maker this build reads.
+    pub made_by_unknown: u64,
+}
+
+/// One maker's frames and their capture-to-reader latency (see [`FrameStats::made_by`]).
+#[derive(Debug, Clone, Default)]
+pub struct MadeByStats {
+    pub delivered: u64,
+    pub latency: Histogram,
+}
+
+/// The makers in [`FrameStats::made_by`]'s order.
+pub const MAKERS: [MadeBy; 3] = [MadeBy::Camera, MadeBy::Pisp, MadeBy::Soft];
+
+const fn maker_index(made_by: MadeBy) -> usize {
+    match made_by {
+        MadeBy::Camera => 0,
+        MadeBy::Pisp => 1,
+        MadeBy::Soft => 2,
+    }
 }
 
 impl Default for FrameStats {
@@ -71,6 +96,8 @@ impl FrameStats {
             latency: Histogram::new(),
             negative_latency: 0,
             trace: Vec::new(),
+            made_by: Default::default(),
+            made_by_unknown: 0,
         }
     }
 
@@ -125,6 +152,20 @@ impl FrameStats {
         }
     }
 
+    /// Records what made the frame just recorded, with its capture-to-reader latency. `None`
+    /// when the metadata named no maker this build reads.
+    pub fn record_made_by(&mut self, made_by: Option<MadeBy>, capture_ns: u64, now_ns: u64) {
+        let Some(made_by) = made_by else {
+            self.made_by_unknown += 1;
+            return;
+        };
+        let stats = &mut self.made_by[maker_index(made_by)];
+        stats.delivered += 1;
+        if let Some(latency) = now_ns.checked_sub(capture_ns) {
+            stats.latency.record(latency);
+        }
+    }
+
     /// The camera stalled and came back: the next frame's id is not compared with the last one (a
     /// sequence that goes on and one that restarts are both fine here), and its time gap is the
     /// stall's.
@@ -169,7 +210,27 @@ pub struct IspStats {
 
 #[cfg(test)]
 mod tests {
-    use super::FrameStats;
+    use super::{FrameStats, MadeBy};
+
+    #[test]
+    fn frames_are_counted_by_maker_with_their_latency() {
+        let mut s = FrameStats::new();
+        s.record_made_by(Some(MadeBy::Pisp), 100, 400);
+        s.record_made_by(Some(MadeBy::Pisp), 200, 400);
+        s.record_made_by(Some(MadeBy::Soft), 300, 1300);
+        s.record_made_by(None, 0, 1);
+        let [camera, pisp, soft] = &s.made_by;
+        assert_eq!(
+            (camera.delivered, pisp.delivered, soft.delivered),
+            (0, 2, 1)
+        );
+        assert_eq!(
+            (pisp.latency.min(), pisp.latency.max()),
+            (Some(200), Some(300))
+        );
+        assert_eq!(soft.latency.min(), Some(1000));
+        assert_eq!(s.made_by_unknown, 1);
+    }
 
     #[test]
     fn the_trace_keeps_the_first_frames_and_never_grows() {

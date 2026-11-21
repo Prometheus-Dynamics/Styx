@@ -8,7 +8,7 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use styx_controls::FrameMetadata;
+use styx_controls::{FrameMetadata, MadeBy};
 use styx_socket::{
     Carried, Frame, Next, ProducerState, ReadError, Reader, ReaderStats, SocketError, Start,
     StreamEnd,
@@ -302,6 +302,8 @@ impl Session {
         }
         self.stats
             .record(lease.id(), lease.timestamp_ns(), now, metadata_ok);
+        self.stats
+            .record_made_by(MadeBy::of(frame.user()), lease.timestamp_ns(), now);
         if let Some(isp) = self.isp.as_mut() {
             // A stage error is counted by the ISP; the frame is not processed and the run goes on.
             if let Err(e) = isp.process(lease)

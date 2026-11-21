@@ -47,7 +47,11 @@ pub struct ServiceCamera {
 pub struct CopySite {
     pub site: String,
     pub copies: usize,
+    /// Bytes written.
     pub bytes: usize,
+    /// Bytes read, where the copy changes the form (the service's `bytes_read=`; for example the
+    /// back end's input pass reads packed RAW10 and writes 16-bit samples).
+    pub bytes_read: Option<usize>,
 }
 
 /// CPU time and memory of the two processes over the run.
@@ -256,18 +260,29 @@ impl Report {
                 ("negative_samples", Json::Int(f.negative_latency)),
                 ("note", Json::Str("median and p99 are bucket midpoints (within 3 %); min and max are exact".into())),
             ])),
+            ("made_by", Json::Object(
+                crate::stats::MAKERS.iter().zip(&f.made_by).map(|(maker, m)| (maker.name(), Json::Object(vec![
+                    ("frames", Json::Int(m.delivered)),
+                    ("latency_min_ns", Json::opt_int(m.latency.min())),
+                    ("latency_median_ns", Json::opt_int(m.latency.median())),
+                    ("latency_p99_ns", Json::opt_int(m.latency.quantile(0.99))),
+                    ("latency_max_ns", Json::opt_int(m.latency.max())),
+                ]))).chain(std::iter::once(("unknown", Json::Int(f.made_by_unknown)))).collect(),
+            )),
             ("copies", Json::Object(vec![
                 ("this_process_total", Json::Int(copies_total as u64)),
                 ("sites", Json::Array(self.copies.iter().map(|c| Json::Object(vec![
                     ("site", Json::Str(c.site.clone())),
                     ("copies", Json::Int(c.copies as u64)),
                     ("bytes", Json::Int(c.bytes as u64)),
+                    ("bytes_read", Json::opt_int(c.bytes_read.map(|b| b as u64))),
                 ])).collect())),
                 ("service_total", Json::Int(self.service_copies.iter().map(|c| c.copies as u64).sum())),
                 ("service", Json::Array(self.service_copies.iter().map(|c| Json::Object(vec![
                     ("site", Json::Str(c.site.clone())),
                     ("copies", Json::Int(c.copies as u64)),
                     ("bytes", Json::Int(c.bytes as u64)),
+                    ("bytes_read", Json::opt_int(c.bytes_read.map(|b| b as u64))),
                 ])).collect())),
             ])),
             ("cpu", Json::Object(vec![
@@ -380,6 +395,19 @@ impl Report {
                 fmt_int(f.latency.max())
             ),
         );
+        for (maker, m) in crate::stats::MAKERS.iter().zip(&f.made_by) {
+            if m.delivered > 0 {
+                row(
+                    &format!("made by {} (frames, latency median/p99 ns)", maker.name()),
+                    format!(
+                        "{} ({} / {})",
+                        m.delivered,
+                        fmt_int(m.latency.median()),
+                        fmt_int(m.latency.quantile(0.99))
+                    ),
+                );
+            }
+        }
         let copies: usize = self.copies.iter().map(|c| c.copies).sum();
         row("copies (this process)", copies.to_string());
         let service_copies: usize = self.service_copies.iter().map(|c| c.copies).sum();
