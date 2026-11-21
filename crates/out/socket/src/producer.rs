@@ -244,9 +244,14 @@ pub struct ProducerStats {
     /// Buffers out of the camera's hands now: the frames the ring still holds, in the keep window
     /// or held by readers past it. The invariant is `outstanding <= buffers - reserve`.
     pub outstanding: usize,
-    /// Publishes after which the reserve could not be kept: a frame past the window was held by a
-    /// mark the producer cannot cut off (one an adopter put in the hold table). Zero otherwise.
+    /// Publishes after which the reserve could not be kept even after cutting off every holder of
+    /// the oldest frame past the window, adopters' included. Zero on a working ring: each holder is
+    /// in the hold table, and a cut-off holder's marks stop counting at once.
     pub bound_unmet: u64,
+    /// Adopters' hold-table slots (Orion's subscribers, say: marks added through
+    /// [`Producer::holds_mut`]) cut off for the reserve, in total. Each is told through the pool
+    /// page, as a reader is; the adopter frees the slot when it hears.
+    pub adopter_cuts: u64,
     /// Frames that left the keep window and were given back to the pool by [`Producer::reclaim`].
     /// Whether a reader read each one first is not visible here: the reader counts its own skips.
     pub reclaimed: u64,
@@ -301,6 +306,8 @@ pub struct Producer<M = ()> {
     cut_for_reserve: u64,
     /// Publishes after which the reserve could not be kept (see [`ProducerStats::bound_unmet`]).
     bound_unmet: u64,
+    /// Adopters' slots cut off for the reserve (see [`ProducerStats::adopter_cuts`]).
+    adopter_cuts: u64,
     /// For each buffer, the publish count (1-based) of the frame it holds: the frame's age is
     /// `published - seq_of[buffer]`.
     seq_of: Vec<u64>,
@@ -427,6 +434,7 @@ impl<M> Producer<M> {
             taken: [false; MAX_READERS as usize],
             cut_for_reserve: 0,
             bound_unmet: 0,
+            adopter_cuts: 0,
             seq_of: vec![0; geometry.buffers()],
             kinds,
             state: StateWriter::create()?,
@@ -802,13 +810,17 @@ impl<M> Producer<M> {
     /// [`StreamEnd::ConsumerFault`]. So a reader may hold up to `buffers - reserve - 1` frames
     /// older than the newest, and holding more cuts it off.
     ///
-    /// Known residuals (limits of the ring crate at this revision):
-    /// - a mark an adopter writes directly into the hold table ([`Producer::holds_mut`]) is
-    ///   invisible to the producer and cannot be cut off here; then the bound is unmet and
-    ///   [`ProducerStats::bound_unmet`] counts the publishes on which that happened;
-    /// - a cut reader may still be reading the frame it held when its buffer is reused. It must
-    ///   drop every frame it holds on [`crate::ReadError::Ended`], and the content of its last frame
-    ///   is not guaranteed.
+    /// A mark an adopter wrote straight into the hold table ([`Producer::holds_mut`]) has no link
+    /// here, so if the frame is still held after the readers holding it are cut, the hold table's
+    /// own holder list names the adopter's slot and that slot is cut off
+    /// ([`ProducerStats::adopter_cuts`]). [`ProducerStats::bound_unmet`] counts a publish on which
+    /// even that left the frame held.
+    ///
+    /// A cut reader may still be using the bytes of a frame it held when its buffer is reused.
+    /// [`crate::Frame::read`] checks the buffer after the use and reports
+    /// [`crate::Torn`] instead of the value; [`crate::Frame::check`] checks at a
+    /// hand-off. Bytes handed on without a check (a descriptor, a pointer) carry no such guarantee
+    /// past the hand-off.
     ///
     /// No frame is copied and nothing waits.
     pub fn reclaim(&mut self) -> usize {
@@ -831,7 +843,13 @@ impl<M> Producer<M> {
             self.cut_off_holders(index);
             given += self.release_unheld_from(window);
             if self.in_flight[index].is_some() {
-                // A mark the producer cannot see (an adopter's): the bound stays unmet.
+                // Still held: by an adopter's mark, which the producer has no link for. The hold
+                // table names its slot, and cutting it off there stops its marks counting.
+                self.cut_off_adopters(index);
+                given += self.release_unheld_from(window);
+            }
+            if self.in_flight[index].is_some() {
+                // Every holder in the table is cut off and the buffer is still not back.
                 self.bound_unmet += 1;
                 break;
             }
@@ -924,6 +942,21 @@ impl<M> Producer<M> {
         }
     }
 
+    /// Cuts off every hold-table slot still holding buffer `index` that is not one of this
+    /// producer's links: an adopter's (see [`Producer::holds_mut`]). Allocates the list of
+    /// holders, on the cut path only: steady publishing never comes here.
+    fn cut_off_adopters(&mut self, index: usize) {
+        let buffer = BufferIndex(index as u32);
+        for slot in self.holds.holders_of(buffer) {
+            if self.links.iter().any(|link| link.slot == slot) {
+                continue;
+            }
+            if self.holds.cut_off(slot, self.writer.pool().page()) {
+                self.adopter_cuts += 1;
+            }
+        }
+    }
+
     /// Whether `link` has been cut off, for its limits or for the reserve.
     fn is_cut(&self, link: &Link) -> bool {
         link.reserve_cut || self.holds.is_cut_off(link.slot)
@@ -972,6 +1005,7 @@ impl<M> Producer<M> {
             reserve: self.reserve,
             outstanding: self.outstanding(),
             bound_unmet: self.bound_unmet,
+            adopter_cuts: self.adopter_cuts,
             reclaimed: self.reclaimed,
             cut_off: self.links.iter().filter(|link| self.is_cut(link)).count(),
             cut_off_for_reserve: self.cut_for_reserve,

@@ -291,7 +291,7 @@ fn every_entry_point_survives_null_and_garbage_arguments() {
 #[test]
 fn the_header_and_the_library_agree_on_statuses_and_enum_values() {
     let header = read("include/styx.h");
-    let table: [(&str, i32); 15] = [
+    let table: [(&str, i32); 16] = [
         ("STYX_OK", OK),
         ("STYX_E_INVALID", E_INVALID),
         ("STYX_E_NOT_FOUND", E_NOT_FOUND),
@@ -305,6 +305,7 @@ fn the_header_and_the_library_agree_on_statuses_and_enum_values() {
         ("STYX_E_RANGE", E_RANGE),
         ("STYX_E_LAYOUT", E_LAYOUT),
         ("STYX_E_ACCESS", E_ACCESS),
+        ("STYX_E_TORN", E_TORN),
         ("STYX_LAYOUT_RING", LAYOUT_RING),
         ("STYX_LAYOUT_MARKS", LAYOUT_MARKS),
     ];

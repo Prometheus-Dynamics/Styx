@@ -101,6 +101,9 @@ pub struct NodeStats {
     /// consumer, left the producer no buffer to write to, so the node sent the oldest again
     /// instead of stopping.
     pub resent: u64,
+    /// Frames dropped because their buffer was already reused when they were taken (this node's
+    /// reader was cut off by the producer): the bytes were a newer frame's.
+    pub torn: u64,
 }
 
 /// A snapshot of a node: its link to the producer, and its counts.
@@ -413,6 +416,11 @@ impl Pump {
         let index = frame.buffer();
         if index >= self.slots.len() {
             self.stats.unknown += 1;
+            return None;
+        }
+        // Checked at the hand-off to PipeWire; after it, the hold alone protects the buffer.
+        if frame.check().is_err() {
+            self.stats.torn += 1;
             return None;
         }
         let lease = frame.lease();

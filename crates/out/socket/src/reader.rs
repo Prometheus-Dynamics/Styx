@@ -84,6 +84,27 @@ impl core::fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
+/// A frame's buffer was reused while its bytes were used: the producer cut this reader off and
+/// wrote a newer frame into the buffer. The value read from it is dropped, not returned as the
+/// frame's ([`Frame::read`], [`Frame::check`]); [`ReaderStats::torn`] counts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Torn {
+    /// Which buffer of the pool was reused.
+    pub buffer: usize,
+}
+
+impl core::fmt::Display for Torn {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "buffer {} was reused while the frame was read (this reader was cut off); the value is dropped",
+            self.buffer
+        )
+    }
+}
+
+impl std::error::Error for Torn {}
+
 /// One frame, held. The buffer stays with the producer's ring until this is dropped; its bytes
 /// are read where the producer wrote them.
 #[derive(Debug)]
@@ -143,6 +164,50 @@ impl Frame {
         self.lease.buffer_index()
     }
 
+    /// Uses the frame, then checks that its buffer was not reused meanwhile. `read` gets the lease
+    /// and returns a value of its own (it cannot keep a borrow of the bytes); after it returns, the
+    /// buffer's use counter is compared with the one the frame was taken in. A value read while the
+    /// buffer was reused under a cut-off reader is dropped and [`Torn`] returned instead.
+    ///
+    /// Use this for anything kept from the bytes (a copy, a statistic, an encoded file). A hand-off
+    /// of the buffer itself (a descriptor or a pointer) is checked at the hand-off by
+    /// [`Frame::check`], and nothing checks it after.
+    ///
+    /// # Errors
+    ///
+    /// [`Torn`] when the buffer was reused while `read` ran.
+    pub fn read<T>(&self, read: impl FnOnce(&FrameLease<()>) -> T) -> Result<T, Torn> {
+        let mut read = Some(read);
+        let lease = &self.lease;
+        match self.held.read(0, |_| read.take().map(|read| read(lease))) {
+            Some(Ok(Some(value))) => Ok(value),
+            Some(Err(torn)) => Err(Torn {
+                buffer: torn.buffer.0 as usize,
+            }),
+            // The view maps no bytes (this reader maps every buffer at connect, so it does not
+            // happen here); nothing to check the use against, and `read` has not run.
+            Some(Ok(None)) | None => read.take().map(|read| read(lease)).ok_or(Torn {
+                buffer: self.buffer(),
+            }),
+        }
+    }
+
+    /// Whether the frame's buffer still holds this frame, checked now. For a hand-off of the
+    /// buffer (a descriptor or a pointer to another component): the frame is good when handed on;
+    /// what happens after is the hold's protection alone.
+    ///
+    /// # Errors
+    ///
+    /// [`Torn`] when the buffer was already reused (this reader was cut off).
+    pub fn check(&self) -> Result<(), Torn> {
+        match self.held.current(0) {
+            Some(Err(torn)) => Err(Torn {
+                buffer: torn.buffer.0 as usize,
+            }),
+            _ => Ok(()),
+        }
+    }
+
     /// Whether the frame's ring entry names exactly one buffer, as every frame this crate
     /// publishes does.
     pub fn is_held(&self) -> bool {
@@ -171,6 +236,9 @@ pub struct ReaderStats {
     pub held: u32,
     /// Entries published that this reader has not looked at yet: its queue depth.
     pub queued: u64,
+    /// Frame reads dropped because the buffer was reused under them ([`Frame::read`],
+    /// [`Frame::check`]): only a reader that was cut off sees one.
+    pub torn: u64,
     /// Dma-buf CPU sync brackets this reader has made (a start and an end each), for the
     /// buffers it maps as dma-bufs.
     pub dma_brackets: u64,
@@ -681,6 +749,7 @@ impl Reader {
             no_buffers: counters.no_buffers,
             held: self.marks.held(),
             queued: self.buffers.pending(),
+            torn: self.buffers.torn(),
             dma_brackets: self.tally.brackets.load(Ordering::Relaxed),
             dma_sync_errors: self.tally.errors.load(Ordering::Relaxed),
             age_last_ns: counters.age_last,

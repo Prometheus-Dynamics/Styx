@@ -35,6 +35,9 @@ pub const E_LAYOUT: i32 = -11;
 /// The control cannot be set now: it is read-only, held by another user of the device, or
 /// disabled (the reason by name in the message).
 pub const E_ACCESS: i32 = -12;
+/// A frame's buffer was already reused when its plane was asked for: this reader was cut off by
+/// the producer, and the bytes there are a newer frame's. Release the frame; the stream says why.
+pub const E_TORN: i32 = -13;
 
 /// The layout values a [`E_LAYOUT`] refusal names, as the header gives them.
 pub const LAYOUT_RING: i32 = 1;

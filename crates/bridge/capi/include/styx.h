@@ -55,6 +55,8 @@ typedef int32_t styx_status;
 #define STYX_E_LAYOUT (-11)     /* a frame socket's shared ring or marks page is another layout:
                                    styx_layout_refusal gives which, found and expected */
 #define STYX_E_ACCESS (-12)     /* the control cannot be set now: read-only, grabbed or disabled */
+/* A frame's buffer was already reused when its plane was asked for (the reader was cut off). */
+#define STYX_E_TORN (-13)
 
 /* The structure a STYX_E_LAYOUT refusal names (styx_layout_refusal's first value). */
 #define STYX_LAYOUT_RING 1  /* the frame ring's header */

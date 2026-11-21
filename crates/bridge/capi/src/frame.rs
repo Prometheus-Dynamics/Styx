@@ -168,7 +168,14 @@ impl Frame {
         }
         let view = match &self.body {
             Body::Local(lease) => lease.read().and_then(|read| view(&read, index)),
-            Body::Remote(frame) => frame.lease().read().and_then(|read| view(&read, index)),
+            Body::Remote(frame) => {
+                // Checked at the hand-off: the pointer is good now. After it, only the hold
+                // protects it (a reader cut off may see the buffer reused under it).
+                if let Err(torn) = frame.check() {
+                    return Err(Fail::new(crate::status::E_TORN, torn.to_string()));
+                }
+                frame.lease().read().and_then(|read| view(&read, index))
+            }
         };
         view.ok_or_else(|| {
             Fail::new(

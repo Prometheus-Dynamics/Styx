@@ -160,8 +160,8 @@ pub struct KeepWindow {
     pub reserve_cuts: u64,
     /// The keep window in force now: at most `keep`, smaller while readers hold older frames.
     pub kept: usize,
-    /// Publishes on which the reserve could not be kept, for a mark the producer cannot see (an
-    /// adopter's). Zero otherwise.
+    /// Publishes on which the reserve could not be kept even after every holder of the frame was
+    /// cut off, adopters included (`styx_socket::ProducerStats::bound_unmet`). Zero on a working ring.
     pub bound_unmet: u64,
 }
 

@@ -4,6 +4,8 @@
 
 #[path = "attach.rs"]
 mod attach;
+#[path = "cut.rs"]
+mod cut;
 #[path = "dmabuf.rs"]
 mod dmabuf;
 #[path = "ended.rs"]

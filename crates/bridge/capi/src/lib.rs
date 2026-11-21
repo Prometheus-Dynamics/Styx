@@ -41,6 +41,6 @@ pub use frame::{
 pub use source::Source;
 pub use status::{
     E_ACCESS, E_BUSY, E_INVALID, E_IO, E_LAYOUT, E_NOT_FOUND, E_PANIC, E_PROTOCOL, E_RANGE,
-    E_STOPPED, E_TIMEOUT, E_UNSUPPORTED, LAYOUT_MARKS, LAYOUT_RING, OK,
+    E_STOPPED, E_TIMEOUT, E_TORN, E_UNSUPPORTED, LAYOUT_MARKS, LAYOUT_RING, OK,
 };
 pub use surface::*;

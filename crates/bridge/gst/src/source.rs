@@ -52,6 +52,9 @@ pub struct SourceStats {
     pub unsupported: u64,
     /// Frames dropped because the memory is neither mapped nor a descriptor.
     pub unmapped: u64,
+    /// Frames dropped because their buffer was already reused when they were handed on (this
+    /// source's reader was cut off by the producer): the bytes were a newer frame's.
+    pub torn: u64,
 }
 
 /// One frame, held: the element hands it to GStreamer and releases it when GStreamer frees the
@@ -299,6 +302,11 @@ impl Source {
         };
         if lease.memory().cpu_ptr().is_none() && lease.memory().fd().is_none() {
             self.stats.unmapped += 1;
+            return None;
+        }
+        // Checked at the hand-off to GStreamer; after it, the hold alone protects the buffer.
+        if frame.check().is_err() {
+            self.stats.torn += 1;
             return None;
         }
         let stamp = lease.timestamp_ns();

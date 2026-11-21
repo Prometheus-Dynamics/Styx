@@ -42,11 +42,12 @@
 //!   still not met, the one holding the oldest frame past the window ([`Producer::set_reserve`],
 //!   [`Producer::reclaim`]). A reader may hold up to `buffers - reserve - 1` frames older than the
 //!   newest.
-//! - **Known residuals** (limits of the ring crate at this revision): a mark an adopter writes
-//!   directly into the hold table is invisible to the producer and cannot be cut off
-//!   ([`ProducerStats::bound_unmet`] counts it); and a cut reader may still be reading the frame it
-//!   held when its buffer is reused, so on [`ReadError::Ended`] it must drop every frame it holds,
-//!   and the content of its last frame is not guaranteed.
+//! - **Cut while reading**: an adopter's mark (written straight into the hold table) is cut off
+//!   through the hold table when the reserve needs its frame ([`ProducerStats::adopter_cuts`]). A
+//!   reader cut off while it uses a frame's bytes may see the buffer reused under it:
+//!   [`Frame::read`] re-checks the buffer after the use and reports [`Torn`] instead
+//!   of the value ([`ReaderStats::torn`] counts them), and [`Frame::check`] checks at a hand-off.
+//!   On [`ReadError::Ended`] a reader drops every frame it holds.
 //! - **Death**: a reader whose socket closes (the process exits, or the reader is dropped) loses
 //!   its marks at once. Its buffers come back on the next [`Producer::begin`].
 //!
@@ -69,7 +70,7 @@ pub use producer::{
     Accepted, BeginError, BellId, HANDSHAKE_TIMEOUT, HandshakePlan, OUTSIDE_BELLS, Producer,
     ProducerConfig, ProducerStats, ReaderInfo,
 };
-pub use reader::{Frame, Next, ReadError, Reader, ReaderStats, Start};
+pub use reader::{Frame, Next, ReadError, Reader, ReaderStats, Start, Torn};
 pub use shm_ring_holds::Limits;
 pub use state::{Carried, ProducerState};
 pub use wire::USER_MAX;

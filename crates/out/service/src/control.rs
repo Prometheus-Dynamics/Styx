@@ -694,8 +694,8 @@ pub struct CameraLine {
     pub kept: Option<u64>,
     /// Readers cut off for the reserve (`reserve_cuts=`).
     pub reserve_cuts: Option<u64>,
-    /// Publishes on which the reserve could not be kept (`bound_unmet=`); non-zero means a mark the
-    /// producer cannot see holds frames past the window (an adopter's).
+    /// Publishes on which the reserve could not be kept (`bound_unmet=`) even after every holder of
+    /// the frame was cut off, adopters included. Zero on a working ring.
     pub bound_unmet: Option<u64>,
     /// Frame-stream discontinuities: each lost resume (the camera was bound again and the sequence
     /// restarts). Not gaps: `skipped` does not count them.

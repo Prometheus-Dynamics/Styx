@@ -420,6 +420,7 @@ pub extern "C" fn styx_status_name(status: i32) -> *const c_char {
         status::E_RANGE => b"value out of range\0",
         status::E_LAYOUT => b"shared layout is another build's\0",
         status::E_ACCESS => b"control not settable now\0",
+        status::E_TORN => b"frame buffer reused (reader cut off)\0",
         _ => return std::ptr::null(),
     };
     name.as_ptr().cast()
