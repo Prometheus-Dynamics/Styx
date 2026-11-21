@@ -7,7 +7,7 @@
 
 use styx_controls::{Control, ControlValue, DeviceKind, Rect};
 
-use crate::{MenuItem, StandardControl, StandardRange};
+use crate::{FloatValues, MenuItem, RectValues, StandardControl, StandardRange};
 
 /// libcamera's control types, as the C API numbers them (`libcamera_control_type`).
 pub(crate) const TYPE_BOOL: u32 = 1;
@@ -53,6 +53,8 @@ pub(crate) fn device_kind(ty: u32, menu: bool) -> DeviceKind {
         TYPE_INT32 if menu => DeviceKind::Menu,
         TYPE_INT32 => DeviceKind::Integer,
         TYPE_INT64 => DeviceKind::Integer64,
+        TYPE_FLOAT => DeviceKind::Float,
+        TYPE_RECTANGLE => DeviceKind::Rect,
         _ => DeviceKind::Other,
     }
 }
@@ -73,12 +75,21 @@ pub(crate) struct Listed {
     pub(crate) max: f64,
     pub(crate) default: f64,
     pub(crate) entries: Vec<MenuItem>,
+    /// A float control's bounds at their own type (`value` is never set here).
+    pub(crate) real: Option<FloatValues>,
+    /// A rectangle control's bounds (`value` is never set here).
+    pub(crate) rect: Option<RectValues>,
 }
 
 impl Listed {
     pub(crate) fn kind(&self) -> DeviceKind {
         device_kind(self.ty, self.menu)
     }
+}
+
+/// A float bound as libcamera gives it, kept only when finite: a slider is not built from infinity.
+pub(crate) fn finite(v: f32) -> Option<f32> {
+    v.is_finite().then_some(v)
 }
 
 /// A menu's entries: `values` (what the camera's `ControlInfo` lists) when there are any, else every
@@ -384,8 +395,9 @@ mod tests {
         assert_eq!(device_kind(TYPE_INT32, false), DeviceKind::Integer);
         assert_eq!(device_kind(TYPE_INT32, true), DeviceKind::Menu);
         assert_eq!(device_kind(TYPE_INT64, false), DeviceKind::Integer64);
-        assert_eq!(device_kind(TYPE_FLOAT, false), DeviceKind::Other);
-        assert_eq!(device_kind(TYPE_RECTANGLE, false), DeviceKind::Other);
+        assert_eq!(device_kind(TYPE_FLOAT, false), DeviceKind::Float);
+        assert_eq!(device_kind(TYPE_RECTANGLE, false), DeviceKind::Rect);
+        assert_eq!(device_kind(9_999, false), DeviceKind::Other);
     }
 
     #[test]
@@ -449,6 +461,8 @@ mod tests {
             max,
             default,
             entries: Vec::new(),
+            real: None,
+            rect: None,
         }
     }
 
@@ -676,5 +690,13 @@ mod tests {
         let zero = [listed("FrameDurationLimits", TYPE_INT64, 0.0, 0.0, 0.0)];
         let rate = of(&standard(&zero, None), Control::FrameRate).unwrap();
         assert_eq!((rate.range, rate.default), (None, None));
+    }
+
+    #[test]
+    fn a_bound_that_is_not_finite_is_unknown() {
+        assert_eq!(finite(1.5), Some(1.5));
+        assert_eq!(finite(f32::INFINITY), None);
+        assert_eq!(finite(f32::NEG_INFINITY), None);
+        assert_eq!(finite(f32::NAN), None);
     }
 }

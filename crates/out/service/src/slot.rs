@@ -332,6 +332,13 @@ pub enum Command {
         value: i64,
         reply: Sender<Result<(), String>>,
     },
+    /// Set real (`DeviceKind::Float`) device control `id` to `value`. The reply is the backend's
+    /// answer.
+    SetDeviceReal {
+        id: u32,
+        value: f32,
+        reply: Sender<Result<(), String>>,
+    },
     /// A reader connected to the camera's socket asks for its handshake plan. The reply is the
     /// publisher's generation and the plan, or `None` when the camera is not publishing right now
     /// (the reader is closed, and connects again).

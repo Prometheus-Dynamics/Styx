@@ -33,6 +33,10 @@ impl Capture {
         Vec::new()
     }
 
+    pub fn set_device_real(&self, _id: u32, _value: f32) -> Result<(), Error> {
+        Err(Error::Unavailable(REASON))
+    }
+
     pub fn controls_generation(&self) -> u64 {
         0
     }

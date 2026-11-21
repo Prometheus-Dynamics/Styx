@@ -19,6 +19,7 @@ pub mod real;
 pub use capture::{Capture, CaptureError, Edge, RateReport, Status};
 pub use choose::{Config, Plan, Reason, Scope, SelectError, Selected, Skip, Skipped, plan, select};
 pub use controls::{
-    Access, ControlsInfo, DeviceInfo, MenuEntry, NATIVE_TEST_PATTERN, Refusal, Span, StandardInfo,
+    Access, ControlsInfo, DeviceInfo, MenuEntry, NATIVE_TEST_PATTERN, Real, RealValues, RectValues,
+    Refusal, Span, StandardInfo, parse_real, real_text,
 };
 pub use listing::{Anchor, Backend, LibcameraLister, ListError, Listed, NativeLister, V4l2Lister};

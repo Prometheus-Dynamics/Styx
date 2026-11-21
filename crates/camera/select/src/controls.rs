@@ -17,7 +17,7 @@
 //!
 //! [`Capture::controls_info`]: crate::Capture::controls_info
 
-use styx_controls::{Control, ControlValue, DeviceKind};
+use styx_controls::{Control, ControlValue, DeviceKind, Rect};
 
 /// The device control id of a native sensor's test pattern (the sensor contract's
 /// `set_test_pattern`): a menu whose entry 0 is no pattern.
@@ -126,6 +126,75 @@ pub struct MenuEntry {
     pub label: Option<String>,
 }
 
+/// A real as the control socket writes it: the shortest text that reads back as the same `f32`,
+/// always with a `.` or an exponent (`1.0`, `-0.5`, `1e-7`).
+pub fn real_text(value: f32) -> String {
+    format!("{value:?}")
+}
+
+/// A real as the control socket takes it: a decimal with a `.` or an exponent (so an integer is
+/// never taken for a real by accident), finite. `None` otherwise.
+pub fn parse_real(text: &str) -> Option<f32> {
+    if !text.contains(['.', 'e', 'E']) {
+        return None;
+    }
+    text.parse::<f32>().ok().filter(|v| v.is_finite())
+}
+
+/// A real number as the device gives it: libcamera's floats are `f32`, and nothing here claims more
+/// precision than that. Compared by its bits, so a camera's controls stay `Eq`; a bound that is not
+/// finite is never stored (it is unknown).
+#[derive(Debug, Clone, Copy)]
+pub struct Real(pub f32);
+
+impl PartialEq for Real {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+
+impl Eq for Real {}
+
+/// A [`DeviceKind::Float`] control's numbers. `None`: not given (or not finite).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RealValues {
+    pub min: Option<Real>,
+    pub max: Option<Real>,
+    pub default: Option<Real>,
+    /// The range it takes now.
+    pub effective: Option<(Real, Real)>,
+    /// The value as last read or set.
+    pub value: Option<Real>,
+}
+
+impl RealValues {
+    /// Checks a real set: finite, and within `min..max` where the device gives them.
+    pub fn check(&self, value: f32) -> Result<(), Refusal> {
+        if !value.is_finite() {
+            return Err(Refusal::Kind);
+        }
+        let below = self.min.is_some_and(|m| value < m.0);
+        let above = self.max.is_some_and(|m| value > m.0);
+        if below || above {
+            return Err(Refusal::RealOutOfRange {
+                min: self.min,
+                max: self.max,
+                value: Real(value),
+            });
+        }
+        Ok(())
+    }
+}
+
+/// A [`DeviceKind::Rect`] control's rectangles. `None`: not given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RectValues {
+    pub min: Option<Rect>,
+    pub max: Option<Rect>,
+    pub default: Option<Rect>,
+    pub value: Option<Rect>,
+}
+
 /// One control the camera has, in the device's own units.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceInfo {
@@ -148,6 +217,10 @@ pub struct DeviceInfo {
     pub access: Access,
     /// A menu's entries, in order; empty for other kinds.
     pub menu: Vec<MenuEntry>,
+    /// A [`DeviceKind::Float`] control's numbers (its integer fields are `None`).
+    pub real: Option<RealValues>,
+    /// A [`DeviceKind::Rect`] control's rectangles (its integer fields are `None`).
+    pub rect: Option<RectValues>,
 }
 
 /// A camera's controls: the standard ones it has and every device control.
@@ -196,8 +269,15 @@ pub enum Refusal {
     NotStep { min: i64, step: u64, value: i64 },
     /// A menu value that is none of its entries.
     NoEntry { value: i64 },
-    /// The wrong kind of value: a number for a flag, a flag for a number, a value for a button.
+    /// The wrong kind of value: a number for a flag, a flag for a number, a value for a button, an
+    /// integer for a real, a real that is not finite.
     Kind,
+    /// A real outside the device's `min..max` (a bound it does not give is `None`).
+    RealOutOfRange {
+        min: Option<Real>,
+        max: Option<Real>,
+        value: Real,
+    },
 }
 
 impl std::fmt::Display for Refusal {
@@ -212,6 +292,17 @@ impl std::fmt::Display for Refusal {
             }
             Refusal::NoEntry { value } => write!(f, "NoEntry {{ value: {value} }}"),
             Refusal::Kind => f.write_str("the value is the wrong kind for this control"),
+            Refusal::RealOutOfRange { min, max, value } => {
+                let bound =
+                    |b: &Option<Real>| b.map_or_else(|| "unknown".into(), |r| real_text(r.0));
+                write!(
+                    f,
+                    "OutOfRange {{ min: {}, max: {}, value: {} }}",
+                    bound(min),
+                    bound(max),
+                    real_text(value.0)
+                )
+            }
         }
     }
 }
@@ -283,7 +374,7 @@ impl DeviceInfo {
                 }
             }
             DeviceKind::Boolean if value != 0 && value != 1 => Err(Refusal::Kind),
-            DeviceKind::Other => Err(Refusal::Kind),
+            DeviceKind::Other | DeviceKind::Float | DeviceKind::Rect => Err(Refusal::Kind),
             DeviceKind::Bitmask | DeviceKind::Button => Ok(()),
             _ => {
                 let bounds = match (self.min, self.max) {
@@ -325,6 +416,8 @@ mod tests {
             value: Some(1),
             standard: Some(Control::PowerLineFrequency),
             access: Access::ReadWrite,
+            real: None,
+            rect: None,
             menu: vec![
                 MenuEntry {
                     value: 0,
@@ -452,5 +545,45 @@ mod tests {
                 .all(|s| *s == StandardInfo::unknown(s.control))
         );
         assert!(info.device.is_empty());
+    }
+
+    /// A real is written as the shortest text that reads back as the same f32, always with a `.`
+    /// or an exponent; reading takes only that form, finite.
+    #[test]
+    fn reals_round_trip_through_their_text_and_integers_are_not_reals() {
+        for v in [0.0_f32, -1.0, 0.5, 1e-7, 3.4e38, -0.0, 0.1, 15.875] {
+            let text = real_text(v);
+            assert!(text.contains(['.', 'e']), "{text}");
+            assert_eq!(
+                parse_real(&text).map(f32::to_bits),
+                Some(v.to_bits()),
+                "{text}"
+            );
+        }
+        for wrong in ["1", "-3", "NaN", "inf", "-inf", "1e39", "", "0x1.0", "1,5"] {
+            assert_eq!(parse_real(wrong), None, "{wrong}");
+        }
+        let values = RealValues {
+            min: Some(Real(-1.0)),
+            max: Some(Real(1.0)),
+            ..RealValues::default()
+        };
+        assert_eq!(values.check(1.0), Ok(()));
+        assert_eq!(values.check(f32::NAN), Err(Refusal::Kind));
+        assert_eq!(
+            values.check(1.5).map_err(|r| r.to_string()),
+            Err("OutOfRange { min: -1.0, max: 1.0, value: 1.5 }".to_string())
+        );
+        let open = RealValues {
+            min: Some(Real(0.0)),
+            ..RealValues::default()
+        };
+        assert_eq!(open.check(1e30), Ok(()), "an absent max is not checked");
+        assert_eq!(
+            open.check(-0.5).map_err(|r| r.to_string()),
+            Err("OutOfRange { min: 0.0, max: unknown, value: -0.5 }".to_string())
+        );
+        assert_eq!(Real(0.0), Real(0.0));
+        assert_ne!(Real(0.0), Real(-0.0), "compared by bits");
     }
 }

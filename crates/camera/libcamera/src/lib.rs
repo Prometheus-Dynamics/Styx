@@ -23,7 +23,7 @@
 
 use std::fmt;
 
-use styx_controls::{Control, ControlValue, DeviceControl, FrameMetadata};
+use styx_controls::{Control, ControlValue, DeviceControl, FrameMetadata, Rect};
 use styx_format::FourCc;
 use styx_frame::FrameLease;
 
@@ -113,6 +113,30 @@ pub struct DeviceEntry {
     /// The value last set for this control on this capture. `None` until one is set: libcamera
     /// reports what a camera did in each frame's metadata, not through a read.
     pub value: Option<i64>,
+    /// A float control's numbers, read at their own type (`f32`). Its integer bounds in `control`
+    /// are not meaningful.
+    pub real: Option<FloatValues>,
+    /// A rectangle control's rectangles.
+    pub rect: Option<RectValues>,
+}
+
+/// A float control's numbers as libcamera gives them. A bound libcamera does not give, or gives as
+/// infinity or NaN, is `None`: no slider is built from infinity. `value` is the one last set.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct FloatValues {
+    pub min: Option<f32>,
+    pub max: Option<f32>,
+    pub default: Option<f32>,
+    pub value: Option<f32>,
+}
+
+/// A rectangle control's rectangles as libcamera gives them. `value` is the one last set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RectValues {
+    pub min: Option<Rect>,
+    pub max: Option<Rect>,
+    pub default: Option<Rect>,
+    pub value: Option<Rect>,
 }
 
 /// One entry of a libcamera menu control: the value that selects it and libcamera's name for it.

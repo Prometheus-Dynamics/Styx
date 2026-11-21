@@ -137,7 +137,10 @@ pub(crate) fn value_text(value: ControlValue) -> Res<String> {
 pub(crate) fn refusal(refusal: Refusal) -> Fail {
     let status = match refusal {
         Refusal::Access(_) => E_ACCESS,
-        Refusal::OutOfRange { .. } | Refusal::NotStep { .. } | Refusal::NoEntry { .. } => E_RANGE,
+        Refusal::OutOfRange { .. }
+        | Refusal::NotStep { .. }
+        | Refusal::NoEntry { .. }
+        | Refusal::RealOutOfRange { .. } => E_RANGE,
         Refusal::Kind => E_INVALID,
     };
     Fail::new(status, refusal.to_string())
@@ -188,6 +191,8 @@ fn device_of(line: &DeviceLine) -> DeviceInfo {
         standard: line.standard.as_deref().and_then(control_of),
         access: line.access,
         menu: line.menu.clone(),
+        real: line.real,
+        rect: line.rect,
     }
 }
 

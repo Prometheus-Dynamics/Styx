@@ -51,6 +51,10 @@ pub const KNOWN_EFFECTIVE: u32 = 1 << 3;
 pub const KNOWN_AUTO: u32 = 1 << 4;
 pub const KNOWN_VALUE: u32 = 1 << 5;
 pub const KNOWN_STANDARD: u32 = 1 << 6;
+/// A device control's `min` alone (its real or rectangle `min` for those kinds).
+pub const KNOWN_MIN: u32 = 1 << 7;
+/// A device control's `max` alone.
+pub const KNOWN_MAX: u32 = 1 << 8;
 
 /// A standard control's range kinds, as `StyxControlInfo.range_kind`.
 pub const RANGE_MANUAL: u32 = 0;
@@ -72,6 +76,29 @@ pub const DEVICE_MENU: u32 = 3;
 pub const DEVICE_BITMASK: u32 = 4;
 pub const DEVICE_BUTTON: u32 = 5;
 pub const DEVICE_OTHER: u32 = 6;
+pub const DEVICE_FLOAT: u32 = 7;
+pub const DEVICE_RECT: u32 = 8;
+
+/// A rectangle as the header's `styx_rect`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(C)]
+pub struct StyxRect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<styx_controls::Rect> for StyxRect {
+    fn from(r: styx_controls::Rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        }
+    }
+}
 
 /// One standard control as the camera has it, as the header's `styx_control_info`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -89,8 +116,10 @@ pub struct StyxControlInfo {
     pub default_value: StyxControlValue,
 }
 
-/// One device control, as the header's `styx_device_info`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// One device control, as the header's `styx_device_info`. An integer kind's numbers are in the
+/// `int64_t` fields, a float's in the `real_*` fields (the camera's `f32`, widened), a rectangle's in
+/// the `rect_*` fields; the same `known` bits say which are given.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
 #[repr(C)]
 pub struct StyxDeviceInfo {
     pub id: u32,
@@ -109,6 +138,16 @@ pub struct StyxDeviceInfo {
     /// (with `KNOWN_STANDARD`).
     pub standard: u32,
     pub reserved: u32,
+    pub real_min: f64,
+    pub real_max: f64,
+    pub real_default: f64,
+    pub real_effective_min: f64,
+    pub real_effective_max: f64,
+    pub real_value: f64,
+    pub rect_min: StyxRect,
+    pub rect_max: StyxRect,
+    pub rect_default: StyxRect,
+    pub rect_value: StyxRect,
 }
 
 fn access_to_c(access: Access) -> u32 {
@@ -172,14 +211,64 @@ fn device_info_to_c(device: &DeviceInfo, standard: &[StandardInfo]) -> StyxDevic
             DeviceKind::Bitmask => DEVICE_BITMASK,
             DeviceKind::Button => DEVICE_BUTTON,
             DeviceKind::Other => DEVICE_OTHER,
+            DeviceKind::Float => DEVICE_FLOAT,
+            DeviceKind::Rect => DEVICE_RECT,
         },
         access: access_to_c(device.access),
         entries: device.menu.len() as u64,
         ..StyxDeviceInfo::default()
     };
-    if let (Some(min), Some(max)) = (device.min, device.max) {
+    if let Some(min) = device.min {
+        out.known |= KNOWN_MIN;
+        out.min = min;
+    }
+    if let Some(max) = device.max {
+        out.known |= KNOWN_MAX;
+        out.max = max;
+    }
+    if let Some(real) = device.real {
+        let wide = |r: styx_select::Real| f64::from(r.0);
+        if let Some(min) = real.min {
+            out.known |= KNOWN_MIN;
+            out.real_min = wide(min);
+        }
+        if let Some(max) = real.max {
+            out.known |= KNOWN_MAX;
+            out.real_max = wide(max);
+        }
+        if let Some(default) = real.default {
+            out.known |= KNOWN_DEFAULT;
+            out.real_default = wide(default);
+        }
+        if let Some((lo, hi)) = real.effective {
+            out.known |= KNOWN_EFFECTIVE;
+            (out.real_effective_min, out.real_effective_max) = (wide(lo), wide(hi));
+        }
+        if let Some(value) = real.value {
+            out.known |= KNOWN_VALUE;
+            out.real_value = wide(value);
+        }
+    }
+    if let Some(rect) = device.rect {
+        if let Some(min) = rect.min {
+            out.known |= KNOWN_MIN;
+            out.rect_min = min.into();
+        }
+        if let Some(max) = rect.max {
+            out.known |= KNOWN_MAX;
+            out.rect_max = max.into();
+        }
+        if let Some(default) = rect.default {
+            out.known |= KNOWN_DEFAULT;
+            out.rect_default = default.into();
+        }
+        if let Some(value) = rect.value {
+            out.known |= KNOWN_VALUE;
+            out.rect_value = value.into();
+        }
+    }
+    if out.known & (KNOWN_MIN | KNOWN_MAX) == KNOWN_MIN | KNOWN_MAX {
         out.known |= KNOWN_RANGE;
-        (out.min, out.max) = (min, max);
     }
     if let Some(step) = device.step {
         out.known |= KNOWN_STEP;
@@ -1078,6 +1167,33 @@ pub unsafe extern "C" fn styx_camera_get_device(
         let value = camera.get_device(id)?;
         // SAFETY: out is writable, per the contract.
         unsafe { put(out, value) }
+    })
+}
+
+/// Sets float device control `id` (`STYX_DEVICE_FLOAT`) to `value`. The camera's floats are
+/// `f32`: the value is rounded to the nearest one. `E_INVALID` for a control that is not a float or
+/// a value that is not finite (or does not fit an `f32`); `E_RANGE` outside the camera's bounds;
+/// `E_ACCESS` when it cannot be set now; `E_NOT_FOUND` for an id the camera does not have.
+///
+/// # Safety
+///
+/// `camera` is a live camera, not used by another thread during the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn styx_camera_set_device_real(
+    camera: *mut Camera,
+    id: u32,
+    value: f64,
+) -> i32 {
+    guard(|| {
+        // SAFETY: a live camera, per the contract.
+        let camera = unsafe { handle_mut(camera)? };
+        let narrow = value as f32;
+        if !value.is_finite() || !narrow.is_finite() {
+            return Err(Fail::invalid(
+                "a real device value is finite and fits an f32",
+            ));
+        }
+        camera.set_device_real(id, narrow)
     })
 }
 

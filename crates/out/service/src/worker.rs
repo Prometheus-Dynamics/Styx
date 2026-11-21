@@ -149,7 +149,11 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     slot.reset_failures();
                 }
                 Ok(Command::Stop) => {}
-                Ok(Command::Set { reply, .. } | Command::SetDevice { reply, .. }) => {
+                Ok(
+                    Command::Set { reply, .. }
+                    | Command::SetDevice { reply, .. }
+                    | Command::SetDeviceReal { reply, .. },
+                ) => {
                     let _ = reply.send(Err(format!("camera is {state}, not streaming")));
                 }
                 // Not publishing: the reader is closed and connects again later.
@@ -186,7 +190,11 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     slot.set_state(State::Stopped);
                 }
                 Ok(Command::Start) => {}
-                Ok(Command::Set { reply, .. } | Command::SetDevice { reply, .. }) => {
+                Ok(
+                    Command::Set { reply, .. }
+                    | Command::SetDevice { reply, .. }
+                    | Command::SetDeviceReal { reply, .. },
+                ) => {
                     let _ = reply.send(Err("camera is absent, not streaming".to_string()));
                 }
                 Ok(Command::Handshake(reply)) => {
@@ -278,7 +286,11 @@ fn drain(commands: &Receiver<Command>, slot: &Slot, publisher: &mut Publisher) -
         match commands.try_recv() {
             Ok(Command::Stop) => return Drained::Stop,
             Ok(Command::Start) => {}
-            Ok(Command::Set { reply, .. } | Command::SetDevice { reply, .. }) => {
+            Ok(
+                Command::Set { reply, .. }
+                | Command::SetDevice { reply, .. }
+                | Command::SetDeviceReal { reply, .. },
+            ) => {
                 let _ = reply.send(Err(format!(
                     "camera is {}, not streaming",
                     slot.snapshot().state
@@ -736,6 +748,13 @@ fn pump(
                 }
                 Ok(Command::SetDevice { id, value, reply }) => {
                     let result = capture.set_device(id, value).map_err(|e| describe(&e));
+                    if result.is_ok() {
+                        controls_moved(capture, slot, &mut controls_generation);
+                    }
+                    let _ = reply.send(result);
+                }
+                Ok(Command::SetDeviceReal { id, value, reply }) => {
+                    let result = capture.set_device_real(id, value).map_err(|e| describe(&e));
                     if result.is_ok() {
                         controls_moved(capture, slot, &mut controls_generation);
                     }

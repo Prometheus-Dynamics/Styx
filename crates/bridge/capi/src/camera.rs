@@ -18,13 +18,13 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use styx_controls::{Control, ControlValue, FrameMetadata, Update, ValueError};
+use styx_controls::{Control, ControlValue, DeviceKind, FrameMetadata, Update, ValueError};
 use styx_frame::FrameLease;
 use styx_lemnos::Client;
 use styx_native::discover;
 use styx_native_run::{AutoOff, Initial, Policy, Request, Session, SystemClock};
 use styx_select::adapters::NativeCapture;
-use styx_select::{Backend, Capture, CaptureError, ControlsInfo, DeviceInfo, Selected};
+use styx_select::{Backend, Capture, CaptureError, ControlsInfo, DeviceInfo, Refusal, Selected};
 use styx_socket::{Reader, SharedLayout, SocketError};
 
 use crate::frame::Frame;
@@ -231,6 +231,40 @@ impl Camera {
         }
     }
 
+    /// Sets float device control `id` to `value`, checked against what the camera says of it: a
+    /// control that is not a float, or a value that is not finite, is the wrong kind.
+    pub(crate) fn set_device_real(&mut self, id: u32, value: f32) -> Res<()> {
+        if !value.is_finite() {
+            return Err(wire::refusal(Refusal::Kind));
+        }
+        match &mut self.link {
+            Link::Local(link) => {
+                let controls = link.controls()?;
+                let device: &DeviceInfo = controls.info.device(id).ok_or_else(|| no_device(id))?;
+                if device.kind != DeviceKind::Float {
+                    return Err(wire::refusal(Refusal::Kind));
+                }
+                if device.access.refuses_set() {
+                    return Err(wire::refusal(Refusal::Access(device.access)));
+                }
+                device
+                    .real
+                    .unwrap_or_default()
+                    .check(value)
+                    .map_err(wire::refusal)?;
+                link.set_device_real(id, value)
+            }
+            Link::Remote(link) => link
+                .control
+                .ask(&format!(
+                    "setd {} {id:#x} {}",
+                    self.name,
+                    styx_select::real_text(value)
+                ))
+                .map(|_| ()),
+        }
+    }
+
     /// The next frame, or `None` when none came within `timeout`.
     pub(crate) fn next_frame(&mut self, timeout: Duration) -> Res<Option<Frame>> {
         let frame = match &mut self.link {
@@ -289,6 +323,11 @@ enum Command {
     SetDevice {
         id: u32,
         value: i64,
+        reply: Sender<Result<(), CaptureError>>,
+    },
+    SetDeviceReal {
+        id: u32,
+        value: f32,
         reply: Sender<Result<(), CaptureError>>,
     },
     Controls {
@@ -373,6 +412,15 @@ impl LocalLink {
     fn set_device(&mut self, id: u32, value: i64) -> Res<()> {
         let (reply, answer) = mpsc::channel();
         self.send(Command::SetDevice { id, value, reply })?;
+        answer
+            .recv_timeout(IO_WAIT)
+            .map_err(|_| Fail::new(E_IO, "the camera did not answer"))?
+            .map_err(set_error)
+    }
+
+    fn set_device_real(&mut self, id: u32, value: f32) -> Res<()> {
+        let (reply, answer) = mpsc::channel();
+        self.send(Command::SetDeviceReal { id, value, reply })?;
         answer
             .recv_timeout(IO_WAIT)
             .map_err(|_| Fail::new(E_IO, "the camera did not answer"))?
@@ -488,6 +536,9 @@ fn work(
             }
             Command::SetDevice { id, value, reply } => {
                 let _ = reply.send(capture.set_device(id, value));
+            }
+            Command::SetDeviceReal { id, value, reply } => {
+                let _ = reply.send(capture.set_device_real(id, value));
             }
             Command::Controls { reply } => {
                 let seq = capture.controls_generation();

@@ -75,8 +75,9 @@ impl<'de> serde::Deserialize<'de> for DeviceName {
     }
 }
 
-/// The kind of a device control's value. Every value is an `i64` on the passthrough: a boolean
-/// is 0 or 1, a menu or bitmask is its index or bits, a button takes no value.
+/// The kind of a device control's value. An integer kind's value is an `i64` on the passthrough: a
+/// boolean is 0 or 1, a menu or bitmask is its index or bits, a button takes no value. `Float` and
+/// `Rect` carry their own values.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "snake_case"))]
@@ -95,6 +96,11 @@ pub enum DeviceKind {
     Button,
     /// Anything else (strings, arrays, compound values, class headings). Listed, not settable.
     Other,
+    /// A real number (libcamera's float controls): listed with its range as the device gives it,
+    /// set by id as a real, never through the integer passthrough.
+    Float,
+    /// A rectangle (libcamera's rectangle controls): listed with its bounds, not set by id.
+    Rect,
 }
 
 /// One control a device offers, as described: its id, name, kind and bounds. The value is read

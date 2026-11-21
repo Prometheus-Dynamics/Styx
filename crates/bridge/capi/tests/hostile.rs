@@ -349,6 +349,10 @@ fn the_header_and_the_library_agree_on_statuses_and_enum_values() {
         ("STYX_KNOWN_AUTO", KNOWN_AUTO),
         ("STYX_KNOWN_VALUE", KNOWN_VALUE),
         ("STYX_KNOWN_STANDARD", KNOWN_STANDARD),
+        ("STYX_KNOWN_MIN", KNOWN_MIN),
+        ("STYX_KNOWN_MAX", KNOWN_MAX),
+        ("STYX_DEVICE_FLOAT", DEVICE_FLOAT),
+        ("STYX_DEVICE_RECT", DEVICE_RECT),
         ("STYX_RANGE_MANUAL", RANGE_MANUAL),
         ("STYX_RANGE_FLAG", RANGE_FLAG),
         ("STYX_RANGE_RECT", RANGE_RECT),
@@ -421,8 +425,8 @@ fn the_header_declares_exactly_the_functions_the_library_exports() {
     }
     assert_eq!(
         declared.len(),
-        36,
-        "the header declares 36 functions: {declared:?}"
+        37,
+        "the header declares 37 functions: {declared:?}"
     );
     assert_eq!(declared, exported, "the header and the exports agree");
 }
@@ -450,7 +454,9 @@ fn strip_comments(text: &str) -> String {
 fn the_controls_calls_survive_null_handles_short_buffers_and_long_menus() {
     use std::sync::Arc;
     use styx_controls::{Control, DeviceKind};
-    use styx_select::{Access, ControlsInfo, DeviceInfo, MenuEntry, Span, StandardInfo};
+    use styx_select::{
+        Access, ControlsInfo, DeviceInfo, MenuEntry, Real, RealValues, Span, StandardInfo,
+    };
 
     let long_name = "a device control name longer than eight bytes";
     let info = ControlsInfo {
@@ -463,25 +469,51 @@ fn the_controls_calls_survive_null_handles_short_buffers_and_long_menus() {
             auto: None,
             access: Access::Grabbed,
         }],
-        device: vec![DeviceInfo {
-            id: 0x0098_0900,
-            name: long_name.to_string(),
-            kind: DeviceKind::Menu,
-            min: Some(0),
-            max: Some(9_999),
-            step: Some(1),
-            default: Some(0),
-            effective: Some((0, 9_999)),
-            value: None,
-            standard: Some(Control::Gain),
-            access: Access::ReadWrite,
-            menu: (0..10_000)
-                .map(|value| MenuEntry {
-                    value,
-                    label: (value % 2 == 0).then(|| format!("entry {value}")),
-                })
-                .collect(),
-        }],
+        device: vec![
+            DeviceInfo {
+                id: 0x0098_0900,
+                name: long_name.to_string(),
+                kind: DeviceKind::Menu,
+                min: Some(0),
+                max: Some(9_999),
+                step: Some(1),
+                default: Some(0),
+                effective: Some((0, 9_999)),
+                value: None,
+                standard: Some(Control::Gain),
+                access: Access::ReadWrite,
+                menu: (0..10_000)
+                    .map(|value| MenuEntry {
+                        value,
+                        label: (value % 2 == 0).then(|| format!("entry {value}")),
+                    })
+                    .collect(),
+                real: None,
+                rect: None,
+            },
+            DeviceInfo {
+                id: 3,
+                name: "Brightness".to_string(),
+                kind: DeviceKind::Float,
+                min: None,
+                max: None,
+                step: None,
+                default: None,
+                effective: None,
+                value: None,
+                standard: None,
+                access: Access::ReadWrite,
+                menu: Vec::new(),
+                real: Some(RealValues {
+                    min: Some(Real(-1.0)),
+                    max: None,
+                    default: Some(Real(0.1)),
+                    effective: None,
+                    value: None,
+                }),
+                rect: None,
+            },
+        ],
     };
     let controls = Controls {
         seq: 7,
@@ -523,7 +555,20 @@ fn the_controls_calls_survive_null_handles_short_buffers_and_long_menus() {
         assert_eq!(styx_controls_standard(handle, 0, &mut standard), OK);
         assert_eq!(standard.access, ACCESS_GRABBED);
         assert_eq!(standard.known, KNOWN_RANGE, "only the range is known");
-        assert_eq!(styx_controls_device(handle, 1, &mut device), E_NOT_FOUND);
+        assert_eq!(styx_controls_device(handle, 2, &mut device), E_NOT_FOUND);
+        // A float: its real numbers, only the bounds it gives, f32 widened (0.1 is not 0.1_f64).
+        assert_eq!(styx_controls_device(handle, 1, &mut device), OK);
+        assert_eq!(device.kind, DEVICE_FLOAT);
+        assert_eq!(device.known, KNOWN_MIN | KNOWN_DEFAULT, "max is not given");
+        assert_eq!(
+            (device.real_min, device.real_default),
+            (-1.0, f64::from(0.1_f32))
+        );
+        assert_eq!(
+            (device.min, device.max),
+            (0, 0),
+            "the integer fields stay 0"
+        );
         assert_eq!(styx_controls_device(handle, 0, &mut device), OK);
         assert_eq!(device.entries, 10_000);
         assert_eq!(
@@ -592,6 +637,8 @@ fn the_controls_calls_survive_null_handles_short_buffers_and_long_menus() {
         );
         assert_eq!(styx_camera_get_device(camera, 1, &mut value), E_INVALID);
         assert_eq!(styx_camera_set_device(camera, 1, 0), E_INVALID);
+        assert_eq!(styx_camera_set_device_real(camera, 3, 0.5), E_INVALID);
+        assert_eq!(styx_camera_set_device_real(camera, 3, f64::NAN), E_INVALID);
         styx_controls_free(std::ptr::null_mut());
     }
 }

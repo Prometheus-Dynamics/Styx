@@ -20,7 +20,8 @@ use styx_v4l2::{
 
 use crate::capture::{Capture, CaptureError, Edge, RateReport, Status};
 use crate::controls::{
-    Access, ControlsInfo, DeviceInfo, MenuEntry, NATIVE_TEST_PATTERN, Span, StandardInfo,
+    Access, ControlsInfo, DeviceInfo, MenuEntry, NATIVE_TEST_PATTERN, Real, RealValues, RectValues,
+    Span, StandardInfo,
 };
 
 impl<C: Clock> std::fmt::Debug for NativeCapture<'_, C> {
@@ -136,6 +137,8 @@ fn native_controls(ranges: Option<Ranges>, patterns: Option<u16>, pattern: u16) 
             value: Some(i64::from(pattern)),
             standard: None,
             access: Access::ReadWrite,
+            real: None,
+            rect: None,
             menu: (0..=i64::from(count))
                 .map(|value| MenuEntry { value, label: None })
                 .collect(),
@@ -414,6 +417,8 @@ fn v4l2_device(raw: &RawControl) -> DeviceInfo {
         standard: raw.mapped,
         access: v4l2_access(raw.read_only, raw.inactive, raw.grabbed, raw.disabled),
         menu,
+        real: None,
+        rect: None,
     }
 }
 
@@ -531,6 +536,13 @@ impl Capture for LibcameraCapture {
             .map_err(|e| CaptureError::Failed(e.to_string()))
     }
 
+    fn set_device_real(&mut self, id: u32, value: f32) -> Result<(), CaptureError> {
+        let camera = self.camera.as_ref().ok_or(CaptureError::Stopped)?;
+        camera
+            .set_device_real(id, value)
+            .map_err(|e| CaptureError::Failed(e.to_string()))
+    }
+
     fn stop(&mut self) {
         self.camera = None;
     }
@@ -565,8 +577,8 @@ fn libcamera_standard(c: &LibcameraStandard) -> StandardInfo {
 
 fn libcamera_device(entry: &DeviceEntry) -> DeviceInfo {
     let control = &entry.control;
-    // A float or compound control's bounds are truncated to integers in the listing: not a range
-    // a caller can use, so unknown.
+    // The integer fields are for the integer kinds; a float or rectangle control's numbers are in
+    // `real` or `rect`, read at their own type.
     let bounded = matches!(
         control.kind,
         DeviceKind::Boolean | DeviceKind::Integer | DeviceKind::Integer64 | DeviceKind::Menu
@@ -595,6 +607,23 @@ fn libcamera_device(entry: &DeviceEntry) -> DeviceInfo {
                 label: item.name.clone(),
             })
             .collect(),
+        real: entry.real.map(|r| {
+            let real = |v: Option<f32>| v.filter(|v| v.is_finite()).map(Real);
+            RealValues {
+                min: real(r.min),
+                max: real(r.max),
+                default: real(r.default),
+                // libcamera's ranges are read once the camera is configured: in effect now.
+                effective: real(r.min).zip(real(r.max)),
+                value: real(r.value),
+            }
+        }),
+        rect: entry.rect.map(|r| RectValues {
+            min: r.min,
+            max: r.max,
+            default: r.default,
+            value: r.value,
+        }),
     }
 }
 
@@ -722,6 +751,8 @@ mod tests {
             name: name.into(),
             menu: Vec::new(),
             value: None,
+            real: None,
+            rect: None,
         }
     }
 
@@ -743,7 +774,13 @@ mod tests {
             },
         ];
         menu.value = Some(5);
-        let mut gain = entry(8, "AnalogueGain", DeviceKind::Other, false);
+        let mut gain = entry(8, "AnalogueGain", DeviceKind::Float, false);
+        gain.real = Some(styx_libcamera::FloatValues {
+            min: Some(1.0),
+            max: Some(f32::INFINITY),
+            default: Some(1.0),
+            value: Some(2.5),
+        });
         gain.mapped = Some(Control::Gain);
         let colour = entry(9, "ColourTemperature", DeviceKind::Integer, true);
         let standard = [LibcameraStandard {
@@ -777,6 +814,14 @@ mod tests {
         );
         let gain = &info.device[1];
         assert_eq!((gain.min, gain.max, gain.default), (None, None, None));
+        let real = gain.real.expect("a float's numbers");
+        assert_eq!(real.min, Some(Real(1.0)));
+        assert_eq!(real.max, None, "an infinite bound is unknown");
+        assert_eq!(
+            real.effective, None,
+            "no range in effect without both bounds"
+        );
+        assert_eq!(real.value, Some(Real(2.5)));
         assert_eq!(gain.standard, Some(Control::Gain));
         assert_eq!(info.device[2].access, Access::ReadOnly);
 

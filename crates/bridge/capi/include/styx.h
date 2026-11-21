@@ -87,6 +87,9 @@ typedef struct styx_control_value {
 #define STYX_KNOWN_AUTO 16
 #define STYX_KNOWN_VALUE 32
 #define STYX_KNOWN_STANDARD 64
+/* A device control's min and max alone; RANGE is set when both are. */
+#define STYX_KNOWN_MIN 128
+#define STYX_KNOWN_MAX 256
 
 /* A standard control's range: min..max in its unit, a flag (0..1), or a rectangle (crop). */
 #define STYX_RANGE_MANUAL 0
@@ -109,6 +112,17 @@ typedef struct styx_control_value {
 #define STYX_DEVICE_BITMASK 4
 #define STYX_DEVICE_BUTTON 5
 #define STYX_DEVICE_OTHER 6
+/* A float: numbers in the real_* fields, set with styx_camera_set_device_real. A rectangle: in the
+ * rect_* fields, not set by id. */
+#define STYX_DEVICE_FLOAT 7
+#define STYX_DEVICE_RECT 8
+
+typedef struct styx_rect {
+    uint32_t x;
+    uint32_t y;
+    uint32_t width;
+    uint32_t height;
+} styx_rect;
 
 /* A standard control as this camera has it, in the control's documented unit (a backend converts).
  * effective_min..effective_max is the range it takes now (a frame rate moves exposure's ceiling).
@@ -126,7 +140,11 @@ typedef struct styx_control_info {
     styx_control_value default_value;
 } styx_control_info;
 
-/* A device control, in the device's own units, by the backend's id (a V4L2 V4L2_CID_*, a libcamera
+/* A device control, in the device's own units, by the backend's id. An integer kind's numbers are in
+ * the int64_t fields; a STYX_DEVICE_FLOAT control's in the real_* fields; a STYX_DEVICE_RECT control's
+ * in the rect_* fields. The same known bits say which are given. Floats are the camera's f32 widened
+ * to double: no more precision than the camera gave (0.1f is not 0.1). A bound the camera gives as
+ * infinity or NaN is unknown. The id is the backend's (a V4L2 V4L2_CID_*, a libcamera
  * control id, or 1 for a native sensor's test pattern menu). entries is the menu's entry count.
  * With STYX_KNOWN_STANDARD it is the standard control at index `standard` of the same answer: setting
  * either moves the same value. A libcamera `value` is the value last set, not read back (what the
@@ -146,6 +164,16 @@ typedef struct styx_device_info {
     uint64_t entries;
     uint32_t standard;
     uint32_t reserved;
+    double real_min;
+    double real_max;
+    double real_default;
+    double real_effective_min;
+    double real_effective_max;
+    double real_value;
+    styx_rect rect_min;
+    styx_rect rect_max;
+    styx_rect rect_default;
+    styx_rect rect_value;
 } styx_device_info;
 
 /* Open options. Zero means the default (exposure 10000 us, gain 1000). The in-process path needs
@@ -310,6 +338,12 @@ styx_status styx_camera_get_device(styx_camera *camera, uint32_t id, int64_t *ou
  * STYX_E_INVALID for the wrong kind of value; STYX_E_NOT_FOUND for an id it does not have. Not
  * thread-safe with other calls on the same camera. */
 styx_status styx_camera_set_device(styx_camera *camera, uint32_t id, int64_t value);
+
+/* Sets STYX_DEVICE_FLOAT control `id` to `value`, rounded to the camera's f32. STYX_E_INVALID for a
+ * control that is not a float or a value that is not finite or does not fit an f32; STYX_E_RANGE
+ * outside the camera's bounds; STYX_E_ACCESS and STYX_E_NOT_FOUND as for styx_camera_set_device.
+ * Not thread-safe with other calls on the same camera. */
+styx_status styx_camera_set_device_real(styx_camera *camera, uint32_t id, double value);
 
 /* Waits up to timeout_ms for the next frame. On STYX_OK, *out is a frame to release. Returns
  * STYX_E_TIMEOUT when none came. Not thread-safe with other calls on the same camera. */

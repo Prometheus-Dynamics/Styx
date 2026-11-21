@@ -27,8 +27,8 @@ use crate::controls::{
 use crate::planes;
 use crate::sys;
 use crate::{
-    CameraInfo, CaptureConfig, CaptureStats, DeviceEntry, Error, FrameSink, StandardControl,
-    StreamFormat,
+    CameraInfo, CaptureConfig, CaptureStats, DeviceEntry, Error, FloatValues, FrameSink,
+    RectValues, StandardControl, StreamFormat,
 };
 use styx_controls::{DeviceControl, DeviceKind, Rect};
 
@@ -518,7 +518,32 @@ extern "C" fn on_request_completed(data: *mut c_void, request: *mut sys::Request
 }
 
 /// The public listing of one registered control, with `value` the value last set for it.
-fn entry_of(listed: &Listed, value: Option<i64>) -> DeviceEntry {
+fn entry_of(listed: &Listed, set: Option<Value>) -> DeviceEntry {
+    let value = set.and_then(|v| match v {
+        Value::Bool(v) => Some(i64::from(v)),
+        Value::I32(v) => Some(i64::from(v)),
+        Value::I64(v) => Some(v),
+        Value::F32(_) | Value::Rect(_) | Value::I64Pair(_) => None,
+    });
+    let real = listed.real.map(|r| FloatValues {
+        value: match set {
+            Some(Value::F32(v)) => Some(v),
+            _ => None,
+        },
+        ..r
+    });
+    let rect = listed.rect.map(|r| RectValues {
+        value: match set {
+            Some(Value::Rect([x, y, w, h])) => Some(Rect {
+                x: x.max(0) as u32,
+                y: y.max(0) as u32,
+                width: w.max(0) as u32,
+                height: h.max(0) as u32,
+            }),
+            _ => None,
+        },
+        ..r
+    });
     DeviceEntry {
         control: DeviceControl {
             id: listed.id,
@@ -534,6 +559,8 @@ fn entry_of(listed: &Listed, value: Option<i64>) -> DeviceEntry {
         name: listed.name.clone(),
         menu: listed.entries.clone(),
         value,
+        real,
+        rect,
     }
 }
 
@@ -592,6 +619,23 @@ fn list_controls(camera: &Camera) -> Vec<Listed> {
                 Vec::new()
             };
             let entries = map::menu_entries(&values, &names);
+            let (min_v, max_v, def_v) = (
+                sys::libcamera_control_info_min(info),
+                sys::libcamera_control_info_max(info),
+                sys::libcamera_control_info_def(info),
+            );
+            let real = (ty == TYPE_FLOAT).then(|| FloatValues {
+                min: real_of(min_v).and_then(map::finite),
+                max: real_of(max_v).and_then(map::finite),
+                default: real_of(def_v).and_then(map::finite),
+                value: None,
+            });
+            let rect = (ty == TYPE_RECTANGLE).then(|| RectValues {
+                min: rect_of(min_v),
+                max: rect_of(max_v),
+                default: rect_of(def_v),
+                value: None,
+            });
             out.push(Listed {
                 id,
                 name,
@@ -602,6 +646,8 @@ fn list_controls(camera: &Camera) -> Vec<Listed> {
                 max: number(sys::libcamera_control_info_max(info), ty),
                 default: number(sys::libcamera_control_info_def(info), ty),
                 entries,
+                real,
+                rect,
             });
         }
         sys::libcamera_control_info_map_iter_destroy(iter);
@@ -660,6 +706,48 @@ unsafe fn values_of(info: *const sys::ControlInfo, ty: u32) -> Vec<i64> {
             })
             .collect()
     }
+}
+
+/// A float control value's first element, at its own type. `None` for a value with no element.
+fn real_of(value: *const sys::ControlValue) -> Option<f32> {
+    if value.is_null() {
+        return None;
+    }
+    // SAFETY: a live control value of a float control; its first element is read only when it
+    // has one.
+    unsafe {
+        if sys::libcamera_control_value_num_elements(value) == 0 {
+            return None;
+        }
+        let data = sys::libcamera_control_value_get(value);
+        (!data.is_null()).then(|| *(data as *const f32))
+    }
+}
+
+/// A rectangle control value's first element (`libcamera::Rectangle`: x, y, width, height).
+/// `None` for a value with no element or a negative position or size.
+fn rect_of(value: *const sys::ControlValue) -> Option<Rect> {
+    if value.is_null() {
+        return None;
+    }
+    // SAFETY: a live control value of a rectangle control; its first element is read only when it
+    // has one, as four i32s.
+    let [x, y, width, height] = unsafe {
+        if sys::libcamera_control_value_num_elements(value) == 0 {
+            return None;
+        }
+        let data = sys::libcamera_control_value_get(value);
+        if data.is_null() {
+            return None;
+        }
+        *(data as *const [i32; 4])
+    };
+    Some(Rect {
+        x: u32::try_from(x).ok()?,
+        y: u32::try_from(y).ok()?,
+        width: u32::try_from(width).ok()?,
+        height: u32::try_from(height).ok()?,
+    })
 }
 
 /// A control value's first element as a number, for the types a passthrough carries.
@@ -1109,16 +1197,11 @@ impl Capture {
         self.listed
             .iter()
             .map(|listed| {
-                let value = requested
+                let set = requested
                     .iter()
                     .find(|(id, _)| *id == listed.id)
-                    .and_then(|(_, v)| match *v {
-                        Value::Bool(v) => Some(i64::from(v)),
-                        Value::I32(v) => Some(i64::from(v)),
-                        Value::I64(v) => Some(v),
-                        Value::F32(_) | Value::Rect(_) | Value::I64Pair(_) => None,
-                    });
-                entry_of(listed, value)
+                    .map(|(_, v)| *v);
+                entry_of(listed, set)
             })
             .collect()
     }
@@ -1196,6 +1279,38 @@ impl Capture {
             };
         let mut requested = self.inner.requested.lock().unwrap();
         upsert(&mut requested, id, stored);
+        self.generation.fetch_add(1, Ordering::Release);
+        Ok(())
+    }
+
+    /// Sets a float control by its libcamera id, for the requests queued from now on. The value must
+    /// be finite and within the camera's bounds where it gives them. A control mapped to a Styx
+    /// control is taken too.
+    pub fn set_device_real(&self, id: u32, value: f32) -> Result<(), Error> {
+        let listed = self.listed_by_id(id)?;
+        if !listed.input {
+            return Err(Error::Refused(format!("{} is read-only", listed.name)));
+        }
+        let Some(real) = listed.real else {
+            return Err(Error::Refused(format!(
+                "{} is not a float control",
+                listed.name
+            )));
+        };
+        if !value.is_finite() {
+            return Err(Error::Refused(format!(
+                "{} takes a finite value",
+                listed.name
+            )));
+        }
+        if real.min.is_some_and(|m| value < m) || real.max.is_some_and(|m| value > m) {
+            return Err(Error::Refused(format!(
+                "{} takes {:?}..={:?}, not {value:?}",
+                listed.name, real.min, real.max
+            )));
+        }
+        let mut requested = self.inner.requested.lock().unwrap();
+        upsert(&mut requested, id, Value::F32(value));
         self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }

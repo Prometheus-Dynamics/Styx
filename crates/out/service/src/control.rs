@@ -37,12 +37,21 @@
 //!   id (`0x` hex): a V4L2 `V4L2_CID_*`, a libcamera control id, or for a native sensor
 //!   `styx_select::NATIVE_TEST_PATTERN`. The id is stable for a camera and per backend;
 //!   `standard=<name>` (or `-`) names the standard control it is, the portable handle. Setting either
-//!   moves the same value. `kind` is `integer`, `integer64`, `boolean`, `menu`, `bitmask`, `button`
-//!   or `other`; `entries` is the count of `entry` lines that follow. An entry without a label is
-//!   numbered only (the device names none).
+//!   moves the same value. `kind` is `integer`, `integer64`, `boolean`, `menu`, `bitmask`, `button`,
+//!   `float`, `rect` or `other`; `entries` is the count of `entry` lines that follow. An entry without
+//!   a label is numbered only (the device names none).
+//! - A `float` line's `min`, `max`, `default`, `effective` and `value` are reals, written as the
+//!   shortest text that reads back as the same `f32` and always with a `.` or an exponent (`-1.0`,
+//!   `0.5`, `1e-7`). They are `f32` as the camera gives them (libcamera): no more precision is
+//!   claimed. A bound the camera gives as infinity or NaN is `unknown`. A `rect` line's are
+//!   rectangles, `x,y,WxH` (`0,0,4056x3040`). Every other kind's are integers.
 //! - `access` is `read_write`, `read_only`, `inactive`, `grabbed` or `disabled`. A set of a
 //!   read-only, grabbed or disabled control is refused with that word; an inactive one is shown
 //!   greyed and still taken.
+//! - `setd` on a `float` control takes a real in the same form; a value without a `.` or an exponent
+//!   (an integer), NaN or an infinity is `err the value is the wrong kind for this control`, so an
+//!   integer is never taken for a real by accident. A `rect` control is not set by id (crop has its
+//!   standard control).
 //! - `set` and `setd` check only what the camera says: a value outside its range (`min..max`) is
 //!   `err OutOfRange { min: .., max: .., value: .. }` with the camera's numbers, off its step
 //!   `err NotStep { .. }`, a menu value with no entry `err NoEntry { .. }`. A value inside the range
@@ -60,9 +69,12 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use styx_controls::{Control, ControlValue, DeviceKind, Update};
+use styx_controls::{Control, ControlValue, DeviceKind, Rect, Update};
 use styx_lemnos::{LayoutRefusal, SharedLayout};
-use styx_select::{Access, DeviceInfo, MenuEntry, Span, StandardInfo};
+use styx_select::{
+    Access, DeviceInfo, MenuEntry, Real, RealValues, RectValues, Refusal, Span, StandardInfo,
+    parse_real, real_text,
+};
 
 use crate::service::Shared;
 use crate::slot::{CameraStatus, Command, Slot};
@@ -168,22 +180,26 @@ pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
             let Some(device) = parse_device_id(device) else {
                 return vec!["err a device control id is a number (0x for hex)".to_string()];
             };
-            let Some(value) = value.parse::<i64>().ok() else {
-                return vec!["err the value must be a number".to_string()];
-            };
             with_slot(shared, id, |slot| {
                 let (info, _) = slot.controls_info();
                 let Some(control) = info.device(device) else {
                     return vec![format!("err the camera has no device control {device:#x}")];
                 };
-                if let Err(refusal) = control.check(value) {
-                    return vec![format!("err {refusal}")];
+                match device_set(control, value) {
+                    Ok(DeviceSet::Integer(value)) => ask_worker(slot, |reply| Command::SetDevice {
+                        id: device,
+                        value,
+                        reply,
+                    }),
+                    Ok(DeviceSet::Real(value)) => {
+                        ask_worker(slot, |reply| Command::SetDeviceReal {
+                            id: device,
+                            value,
+                            reply,
+                        })
+                    }
+                    Err(why) => vec![format!("err {why}")],
                 }
-                ask_worker(slot, |reply| Command::SetDevice {
-                    id: device,
-                    value,
-                    reply,
-                })
             })
         }
         ("frame", [id]) => with_slot(shared, id, frame),
@@ -311,20 +327,74 @@ fn standard_line(info: &StandardInfo, value: &str) -> String {
     )
 }
 
+/// A rectangle as a device line writes it: `x,y,WxH`.
+fn rect_text(rect: Rect) -> String {
+    format!("{},{},{}x{}", rect.x, rect.y, rect.width, rect.height)
+}
+
+fn parse_rect(text: &str) -> Option<Rect> {
+    let (x, rest) = text.split_once(',')?;
+    let (y, size) = rest.split_once(',')?;
+    let (width, height) = size.split_once('x')?;
+    Some(Rect {
+        x: x.parse().ok()?,
+        y: y.parse().ok()?,
+        width: width.parse().ok()?,
+        height: height.parse().ok()?,
+    })
+}
+
+/// A device line's min, max, default, effective and value as text, in the control's own form: an
+/// integer, a real (`real_text`), or a rectangle (`rect_text`).
+fn device_numbers(info: &DeviceInfo) -> [String; 5] {
+    let text = |v: Option<String>| v.unwrap_or_else(|| "unknown".to_string());
+    if let Some(real) = info.real {
+        let r = |v: Option<Real>| text(v.map(|v| real_text(v.0)));
+        return [
+            r(real.min),
+            r(real.max),
+            r(real.default),
+            text(
+                real.effective
+                    .map(|(lo, hi)| format!("{}..{}", real_text(lo.0), real_text(hi.0))),
+            ),
+            r(real.value),
+        ];
+    }
+    if let Some(rect) = info.rect {
+        let r = |v: Option<Rect>| text(v.map(rect_text));
+        return [
+            r(rect.min),
+            r(rect.max),
+            r(rect.default),
+            "unknown".to_string(),
+            r(rect.value),
+        ];
+    }
+    [
+        unknown(info.min),
+        unknown(info.max),
+        unknown(info.default),
+        unknown(info.effective.map(|(lo, hi)| format!("{lo}..{hi}"))),
+        unknown(info.value),
+    ]
+}
+
 /// A device control's line and its menu's entry lines.
 fn device_lines(info: &DeviceInfo) -> Vec<String> {
     let mut out = Vec::with_capacity(1 + info.menu.len());
+    let [min, max, default, effective, value] = device_numbers(info);
     out.push(format!(
         "device {:#010x} kind={} access={} min={} max={} step={} default={} effective={} value={} standard={} entries={} name={}",
         info.id,
         kind_name(info.kind),
         info.access.name(),
-        unknown(info.min),
-        unknown(info.max),
+        min,
+        max,
         unknown(info.step),
-        unknown(info.default),
-        unknown(info.effective.map(|(lo, hi)| format!("{lo}..{hi}"))),
-        unknown(info.value),
+        default,
+        effective,
+        value,
         info.standard.map_or("-", Control::name),
         info.menu.len(),
         one_line(&info.name),
@@ -343,7 +413,7 @@ fn device_lines(info: &DeviceInfo) -> Vec<String> {
     out
 }
 
-const KINDS: [(DeviceKind, &str); 7] = [
+const KINDS: [(DeviceKind, &str); 9] = [
     (DeviceKind::Integer, "integer"),
     (DeviceKind::Integer64, "integer64"),
     (DeviceKind::Boolean, "boolean"),
@@ -351,6 +421,8 @@ const KINDS: [(DeviceKind, &str); 7] = [
     (DeviceKind::Bitmask, "bitmask"),
     (DeviceKind::Button, "button"),
     (DeviceKind::Other, "other"),
+    (DeviceKind::Float, "float"),
+    (DeviceKind::Rect, "rect"),
 ];
 
 fn kind_name(kind: DeviceKind) -> &'static str {
@@ -362,6 +434,36 @@ fn kind_name(kind: DeviceKind) -> &'static str {
 
 fn kind_named(name: &str) -> Option<DeviceKind> {
     KINDS.iter().find(|(_, n)| *n == name).map(|(k, _)| *k)
+}
+
+/// A `setd` value as the control takes it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum DeviceSet {
+    Integer(i64),
+    Real(f32),
+}
+
+/// Reads and checks a `setd` value against what the camera says of `control`: a real for a
+/// `float` control (a decimal with a `.` or an exponent; an integer is the wrong kind, as are NaN
+/// and the infinities), an integer for the others. The error is the `err` text.
+fn device_set(control: &DeviceInfo, text: &str) -> Result<DeviceSet, String> {
+    if control.kind == DeviceKind::Float {
+        if control.access.refuses_set() {
+            return Err(Refusal::Access(control.access).to_string());
+        }
+        let value = parse_real(text).ok_or_else(|| Refusal::Kind.to_string())?;
+        control
+            .real
+            .unwrap_or_default()
+            .check(value)
+            .map_err(|r| r.to_string())?;
+        return Ok(DeviceSet::Real(value));
+    }
+    let value = text
+        .parse::<i64>()
+        .map_err(|_| "the value must be a number".to_string())?;
+    control.check(value).map_err(|r| r.to_string())?;
+    Ok(DeviceSet::Integer(value))
 }
 
 /// A device control id: decimal, or hex with `0x`.
@@ -788,6 +890,10 @@ pub struct DeviceLine {
     /// The standard control's name, when the device control is one.
     pub standard: Option<String>,
     pub menu: Vec<MenuEntry>,
+    /// A `kind=float` line's numbers (its integer fields are `None`).
+    pub real: Option<RealValues>,
+    /// A `kind=rect` line's rectangles (its integer fields are `None`).
+    pub rect: Option<RectValues>,
 }
 
 /// A whole `controls` answer: its count, the standard controls and the device controls.
@@ -899,7 +1005,11 @@ fn parse_device_line(line: &str) -> Option<DeviceLine> {
         value: None,
         standard: None,
         menu: Vec::new(),
+        real: None,
+        rect: None,
     };
+    // The numbers are read once the kind is known: an integer, a real or a rectangle.
+    let [mut min, mut max, mut default, mut effective, mut value] = [""; 5];
     for word in words {
         let Some((key, text)) = word.split_once('=') else {
             continue;
@@ -907,14 +1017,43 @@ fn parse_device_line(line: &str) -> Option<DeviceLine> {
         match key {
             "kind" => parsed.kind = kind_named(text).unwrap_or(DeviceKind::Other),
             "access" => parsed.access = Access::from_name(text).unwrap_or_default(),
-            "min" => parsed.min = known(text),
-            "max" => parsed.max = known(text),
+            "min" => min = text,
+            "max" => max = text,
             "step" => parsed.step = known(text),
-            "default" => parsed.default = known(text),
-            "effective" => parsed.effective = parse_pair(text),
-            "value" => parsed.value = known(text),
+            "default" => default = text,
+            "effective" => effective = text,
+            "value" => value = text,
             "standard" => parsed.standard = (text != "-").then(|| text.to_string()),
             _ => {}
+        }
+    }
+    match parsed.kind {
+        DeviceKind::Float => {
+            let real = |t: &str| known::<f32>(t).filter(|v| v.is_finite()).map(Real);
+            parsed.real = Some(RealValues {
+                min: real(min),
+                max: real(max),
+                default: real(default),
+                effective: effective
+                    .split_once("..")
+                    .and_then(|(lo, hi)| real(lo).zip(real(hi))),
+                value: real(value),
+            });
+        }
+        DeviceKind::Rect => {
+            parsed.rect = Some(RectValues {
+                min: parse_rect(min),
+                max: parse_rect(max),
+                default: parse_rect(default),
+                value: parse_rect(value),
+            });
+        }
+        _ => {
+            parsed.min = known(min);
+            parsed.max = known(max);
+            parsed.default = known(default);
+            parsed.effective = parse_pair(effective);
+            parsed.value = known(value);
         }
     }
     Some(parsed)
@@ -1225,6 +1364,8 @@ mod tests {
                             label: None,
                         },
                     ],
+                    real: None,
+                    rect: None,
                 },
                 DeviceInfo {
                     id: 1,
@@ -1239,6 +1380,61 @@ mod tests {
                     standard: None,
                     access: Access::ReadOnly,
                     menu: Vec::new(),
+                    real: None,
+                    rect: None,
+                },
+                DeviceInfo {
+                    id: 0x0000_0003,
+                    name: "Brightness".to_string(),
+                    kind: DeviceKind::Float,
+                    min: None,
+                    max: None,
+                    step: None,
+                    default: None,
+                    effective: None,
+                    value: None,
+                    standard: Some(Control::Brightness),
+                    access: Access::ReadWrite,
+                    menu: Vec::new(),
+                    real: Some(RealValues {
+                        min: Some(Real(-1.0)),
+                        max: Some(Real(1.0)),
+                        default: Some(Real(0.0)),
+                        effective: Some((Real(-1.0), Real(1.0))),
+                        value: Some(Real(1e-7)),
+                    }),
+                    rect: None,
+                },
+                DeviceInfo {
+                    id: 0x0000_0004,
+                    name: "ScalerCrop".to_string(),
+                    kind: DeviceKind::Rect,
+                    min: None,
+                    max: None,
+                    step: None,
+                    default: None,
+                    effective: None,
+                    value: None,
+                    standard: Some(Control::Crop),
+                    access: Access::ReadWrite,
+                    menu: Vec::new(),
+                    real: None,
+                    rect: Some(RectValues {
+                        min: Some(Rect {
+                            x: 0,
+                            y: 0,
+                            width: 64,
+                            height: 48,
+                        }),
+                        max: Some(Rect {
+                            x: 0,
+                            y: 0,
+                            width: 4056,
+                            height: 3040,
+                        }),
+                        default: None,
+                        value: None,
+                    }),
                 },
             ],
         };
@@ -1259,7 +1455,7 @@ mod tests {
             assert_eq!(line.value, Shown::NoFrame);
         }
         assert_eq!(answer.standard[1].unit, None, "a flag has no unit");
-        assert_eq!(answer.device.len(), 2);
+        assert_eq!(answer.device.len(), 4);
         for (line, info) in answer.device.iter().zip(&info.device) {
             assert_eq!(line.id, info.id);
             assert_eq!(line.name, info.name, "free text keeps its spaces");
@@ -1285,7 +1481,22 @@ mod tests {
             );
             assert_eq!(line.standard.as_deref(), info.standard.map(Control::name));
             assert_eq!(line.menu, info.menu);
+            assert_eq!((line.real, line.rect), (info.real, info.rect));
         }
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("device 0x00000003 kind=float")
+                    && l.contains(" min=-1.0 max=1.0 ")
+                    && l.contains(" default=0.0 effective=-1.0..1.0 value=1e-7 ")),
+            "{lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("kind=rect") && l.contains(" min=0,0,64x48 max=0,0,4056x3040 ")),
+            "{lines:?}"
+        );
         assert!(
             lines.contains(&"entry 0x00980918 3".to_string()),
             "{lines:?}"
@@ -1313,5 +1524,71 @@ mod tests {
         assert_eq!(parsed.len(), Control::COUNT);
         assert!(parsed.iter().all(|c| c.value == Shown::NoFrame));
         assert!(parsed.iter().any(|c| c.name == "exposure"));
+    }
+
+    /// `setd` on a float takes a decimal with a `.` or an exponent, inside the camera's bounds; an
+    /// integer, NaN and the infinities are the wrong kind. An integer control keeps its integers.
+    #[test]
+    fn a_float_device_control_is_set_by_a_real_inside_its_bounds() {
+        let float = DeviceInfo {
+            id: 3,
+            name: "Brightness".to_string(),
+            kind: DeviceKind::Float,
+            min: None,
+            max: None,
+            step: None,
+            default: None,
+            effective: None,
+            value: None,
+            standard: None,
+            access: Access::ReadWrite,
+            menu: Vec::new(),
+            real: Some(RealValues {
+                min: Some(Real(-1.0)),
+                max: Some(Real(1.0)),
+                ..RealValues::default()
+            }),
+            rect: None,
+        };
+        assert_eq!(device_set(&float, "0.5"), Ok(DeviceSet::Real(0.5)));
+        assert_eq!(device_set(&float, "-1e-3"), Ok(DeviceSet::Real(-1e-3)));
+        assert_eq!(device_set(&float, "1.0"), Ok(DeviceSet::Real(1.0)));
+        let kind = Refusal::Kind.to_string();
+        for wrong in ["1", "0", "NaN", "inf", "-inf", "1e40", "x"] {
+            assert_eq!(device_set(&float, wrong), Err(kind.clone()), "{wrong}");
+        }
+        assert_eq!(
+            device_set(&float, "1.5"),
+            Err("OutOfRange { min: -1.0, max: 1.0, value: 1.5 }".to_string())
+        );
+        // A bound the camera does not give is not checked.
+        let open = DeviceInfo {
+            real: Some(RealValues::default()),
+            ..float.clone()
+        };
+        assert_eq!(device_set(&open, "1000.0"), Ok(DeviceSet::Real(1000.0)));
+        let read_only = DeviceInfo {
+            access: Access::ReadOnly,
+            ..float.clone()
+        };
+        assert_eq!(
+            device_set(&read_only, "0.5"),
+            Err("the control is read_only".to_string())
+        );
+        let integer = DeviceInfo {
+            kind: DeviceKind::Integer,
+            min: Some(0),
+            max: Some(10),
+            real: None,
+            ..float
+        };
+        assert_eq!(device_set(&integer, "4"), Ok(DeviceSet::Integer(4)));
+        assert!(device_set(&integer, "0.5").is_err());
+        let rect = DeviceInfo {
+            kind: DeviceKind::Rect,
+            real: None,
+            ..integer
+        };
+        assert_eq!(device_set(&rect, "1"), Err(kind));
     }
 }

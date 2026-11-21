@@ -152,6 +152,13 @@ pub trait Capture {
         Err(CaptureError::Unsupported("device controls"))
     }
 
+    /// Sets [`styx_controls::DeviceKind::Float`] device control `id` to `value`. The default is a
+    /// backend without real device controls.
+    fn set_device_real(&mut self, id: u32, value: f32) -> Result<(), CaptureError> {
+        let _ = (id, value);
+        Err(CaptureError::Unsupported("real device controls"))
+    }
+
     /// Stops the camera. Idempotent.
     fn stop(&mut self);
 }
