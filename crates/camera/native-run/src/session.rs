@@ -15,7 +15,7 @@ use styx_lemnos::{
     Carried, Event as FrameEvent, Geometry, LayoutRefusal, StreamEnd, open_frames_at,
 };
 use styx_native::Camera;
-use styx_native_controls::{ExposureReport, FrameRate, Initial, Landings, NativeControls};
+use styx_native_controls::{ExposureReport, FrameRate, Initial, Landings, NativeControls, Ranges};
 
 use crate::backoff::{AutoOff, Policy};
 use crate::clock::Clock;
@@ -134,6 +134,8 @@ pub enum Error {
     /// The native controls refused: the mode cannot take them (for example a gain range with no
     /// unity code), or a request was refused (see `styx_native_controls::Error`).
     Controls(styx_native_controls::Error),
+    /// A device refused a call: the call and the device's status.
+    Refused(String),
 }
 
 impl fmt::Display for Error {
@@ -156,6 +158,7 @@ impl fmt::Display for Error {
                 "no controls configured: call with_controls with the sensor's initial values"
             ),
             Self::Controls(e) => write!(f, "controls: {e}"),
+            Self::Refused(text) => write!(f, "{text}"),
         }
     }
 }
@@ -251,6 +254,8 @@ struct Running {
     mode: u16,
     selection: Selection,
     controls: NativeControls,
+    /// The sensor's test pattern codes (`SensorInfo::test_patterns`; 0 is no pattern).
+    test_patterns: u16,
 }
 
 impl Running {
@@ -354,6 +359,8 @@ pub struct Session<'a, C: Clock> {
     exposures: Option<Sender<ExposureReport>>,
     /// The exposure last sent, so a change alone is sent.
     exposure_sent: Option<ExposureReport>,
+    /// The test pattern asked for (0: none), written at each start.
+    test_pattern: u16,
 }
 
 /// A dropped session stops its devices. Its frames are released with the stream.
@@ -402,6 +409,7 @@ impl<'a, C: Clock> Session<'a, C> {
             selections: None,
             exposures: None,
             exposure_sent: None,
+            test_pattern: 0,
         }
     }
 
@@ -486,6 +494,36 @@ impl<'a, C: Clock> Session<'a, C> {
         self.running
             .as_ref()
             .map(|running| running.controls.initial_rate())
+    }
+
+    /// The ranges the running camera's mode gives exposure, gain and frame rate
+    /// (`styx_native_controls::Ranges`). `None` while the session is not running.
+    pub fn ranges(&self) -> Option<Ranges> {
+        self.running
+            .as_ref()
+            .map(|running| running.controls.ranges())
+    }
+
+    /// The running sensor's test pattern codes, numbered from 1 (0 is no pattern). `None` while the
+    /// session is not running.
+    pub fn test_patterns(&self) -> Option<u16> {
+        self.running.as_ref().map(|running| running.test_patterns)
+    }
+
+    /// The test pattern asked for (0: none).
+    pub fn test_pattern(&self) -> u16 {
+        self.test_pattern
+    }
+
+    /// Asks the sensor for test pattern `code` (0 turns it off). Written now, and again at each
+    /// start. A code past the sensor's patterns is refused by the sensor, and nothing is kept.
+    pub fn set_test_pattern(&mut self, code: u16) -> Result<(), Error> {
+        let running = self.running.as_mut().ok_or(Error::NotStreaming)?;
+        running.sensor.set_test_pattern(code).map_err(|status| {
+            Error::Refused(format!("sensor.set_test_pattern refused: {status:?}"))
+        })?;
+        self.test_pattern = code;
+        Ok(())
     }
 
     /// What the session is doing, and the backoff if it is waiting.
@@ -730,6 +768,7 @@ impl<'a, C: Clock> Session<'a, C> {
     fn restart_same_stream(&mut self) -> Result<(), Restart> {
         let sensor_name = self.camera.sensor().name.clone();
         let client = self.client;
+        let test_pattern = self.test_pattern;
         let running = self
             .running
             .as_mut()
@@ -759,6 +798,12 @@ impl<'a, C: Clock> Session<'a, C> {
             .sensor
             .select_mode(index)
             .map_err(|status| restart_status(status, "sensor.select_mode"))?;
+        if test_pattern != 0 {
+            running
+                .sensor
+                .set_test_pattern(test_pattern)
+                .map_err(|status| restart_status(status, "sensor.set_test_pattern"))?;
+        }
         running
             .receiver
             .configure(mode.link, Packing::Packed)
@@ -947,6 +992,12 @@ impl<'a, C: Clock> Session<'a, C> {
             NativeControls::new(&mode, initial).map_err(|e| Fault::Config(Error::Controls(e)))?;
 
         refused(sensor.select_mode(index), "sensor.select_mode")?;
+        if self.test_pattern != 0 {
+            refused(
+                sensor.set_test_pattern(self.test_pattern),
+                "sensor.set_test_pattern",
+            )?;
+        }
         let layout = refused(
             receiver.configure(mode.link, Packing::Packed),
             "receiver.configure",
@@ -974,6 +1025,7 @@ impl<'a, C: Clock> Session<'a, C> {
             mode: index,
             selection,
             controls,
+            test_patterns: info.test_patterns,
         };
         match running.start(mode.drop_frames, self.policy.frame_timeout) {
             Ok(()) => Ok(running),

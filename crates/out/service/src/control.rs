@@ -7,8 +7,10 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
-//! | `controls <id>` | one `control <name> unit=.. range=.. default=.. auto=.. value=..` line per control (`value` is the last frame's), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. controls_seq=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. site=..` line per copy site (the service's process; `site` is free text, last), then `ok` |
+//! | `controls <id>` | `seq <n>` (the camera's `controls_seq`), one `control <name> unit=.. range=.. step=.. default=.. effective=.. auto=.. access=.. value=..` line per standard control the camera has, one `device <id> kind=.. access=.. min=.. max=.. step=.. default=.. effective=.. value=.. standard=.. entries=.. name=..` line per device control (`name` is free text, last), each followed by its menu's `entry <id> <value> [<label>]` lines, then `ok` |
+//! | `getd <id> <device-id>` | that device control's `device` line and its `entry` lines, then `ok` |
+//! | `setd <id> <device-id> <value>` | `ok` once the backend took the value (the device's own units) |
 //! | `frame <id>` | `frame id=.. timestamp_ns=.. exposure_us=.. gain_milli=..` for the last frame, then `ok` (`err` before any frame) |
 //! | `set <id> <control> <value> <frame>` | `ok` once the backend took the update. `<value>` is a number, `auto`, `on` or `off`. The update applies from `<frame>` |
 //! | `start <id>` / `stop <id>` | `ok`. Starts or stops the camera by hand |
@@ -21,6 +23,34 @@
 //! sensor's clamp in a sentence when it moved the exposure to the nearest one it takes (`-` when it
 //! did not). `last_error` and the other free text come
 //! last on their line; `mode_text`, `exposure_clamp` and `rate_reason` are one word (spaces are `_`).
+//!
+//! Controls are the camera's own (`styx_select::ControlsInfo`), never a generic table:
+//!
+//! - A `control` line is a standard control the camera has, in its documented styx-controls unit
+//!   (`unit=`: exposure `us`, gain `milli`, white balance `K`, frame rate `mHz`, ...) whatever unit the
+//!   device uses: a backend converts (V4L2's exposure in 100 us steps is shown in microseconds). A
+//!   standard control the camera does not have has no line. `range` is `<min>..<max>`, `flag` or
+//!   `rect`; `effective` is the range it takes now (exposure under the frame length in force). What
+//!   the backend cannot say is `unknown`: no range is made up. `value` is the last frame's (`-`
+//!   before a frame).
+//! - A `device` line is one control the camera has, in the device's own units, by the backend's own
+//!   id (`0x` hex): a V4L2 `V4L2_CID_*`, a libcamera control id, or for a native sensor
+//!   `styx_select::NATIVE_TEST_PATTERN`. The id is stable for a camera and per backend;
+//!   `standard=<name>` (or `-`) names the standard control it is, the portable handle. Setting either
+//!   moves the same value. `kind` is `integer`, `integer64`, `boolean`, `menu`, `bitmask`, `button`
+//!   or `other`; `entries` is the count of `entry` lines that follow. An entry without a label is
+//!   numbered only (the device names none).
+//! - `access` is `read_write`, `read_only`, `inactive`, `grabbed` or `disabled`. A set of a
+//!   read-only, grabbed or disabled control is refused with that word; an inactive one is shown
+//!   greyed and still taken.
+//! - `set` and `setd` check only what the camera says: a value outside its range (`min..max`) is
+//!   `err OutOfRange { min: .., max: .., value: .. }` with the camera's numbers, off its step
+//!   `err NotStep { .. }`, a menu value with no entry `err NoEntry { .. }`. A value inside the range
+//!   but past the effective one is taken: the camera clamps it and the status says why (for exposure,
+//!   `exposure_clamp`). A bound the camera does not give is not checked here: the backend clamps, and
+//!   the next `controls` shows what it applied.
+//! - `controls_seq=` on the camera's `list` line moves on every change: one move for each value any
+//!   client sets (by either name), a range that moved, the camera opened again.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -30,8 +60,9 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::time::Duration;
 
-use styx_controls::{Control, ControlValue, Range, Update};
+use styx_controls::{Control, ControlValue, DeviceKind, Update};
 use styx_lemnos::{LayoutRefusal, SharedLayout};
+use styx_select::{Access, DeviceInfo, MenuEntry, Span, StandardInfo};
 
 use crate::service::Shared;
 use crate::slot::{CameraStatus, Command, Slot};
@@ -117,6 +148,44 @@ pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
             out
         }
         ("controls", [id]) => with_slot(shared, id, controls),
+        ("getd", [id, device]) => {
+            let Some(device) = parse_device_id(device) else {
+                return vec!["err a device control id is a number (0x for hex)".to_string()];
+            };
+            with_slot(shared, id, |slot| {
+                let (info, _) = slot.controls_info();
+                match info.device(device) {
+                    Some(control) => {
+                        let mut out = device_lines(control);
+                        out.push("ok".to_string());
+                        out
+                    }
+                    None => vec![format!("err the camera has no device control {device:#x}")],
+                }
+            })
+        }
+        ("setd", [id, device, value]) => {
+            let Some(device) = parse_device_id(device) else {
+                return vec!["err a device control id is a number (0x for hex)".to_string()];
+            };
+            let Some(value) = value.parse::<i64>().ok() else {
+                return vec!["err the value must be a number".to_string()];
+            };
+            with_slot(shared, id, |slot| {
+                let (info, _) = slot.controls_info();
+                let Some(control) = info.device(device) else {
+                    return vec![format!("err the camera has no device control {device:#x}")];
+                };
+                if let Err(refusal) = control.check(value) {
+                    return vec![format!("err {refusal}")];
+                }
+                ask_worker(slot, |reply| Command::SetDevice {
+                    id: device,
+                    value,
+                    reply,
+                })
+            })
+        }
         ("frame", [id]) => with_slot(shared, id, frame),
         ("start", [id]) => with_slot(shared, id, |slot| {
             slot.wake.store(true, Ordering::Release);
@@ -143,13 +212,19 @@ pub(crate) fn dispatch(line: &str, shared: &Arc<Shared>) -> Vec<String> {
                 value,
                 frame,
             };
-            if let Err(e) = control.validate(value) {
-                return vec![format!("err {e:?}")];
-            }
-            with_slot(shared, id, |slot| set(slot, update))
+            with_slot(shared, id, |slot| {
+                let (info, _) = slot.controls_info();
+                let Some(standard) = info.standard(control) else {
+                    return vec![format!("err the camera has no control {}", control.name())];
+                };
+                if let Err(refusal) = standard.check(value) {
+                    return vec![format!("err {refusal}")];
+                }
+                set(slot, update)
+            })
         }
         ("help", []) => vec![
-            "list | controls <id> | frame <id> | set <id> <control> <value> <frame> | start <id> | stop <id>"
+            "list | controls <id> | frame <id> | set <id> <control> <value> <frame> | getd <id> <device-id> | setd <id> <device-id> <value> | start <id> | stop <id>"
                 .to_string(),
             "ok".to_string(),
         ],
@@ -174,15 +249,19 @@ fn with_slot(shared: &Arc<Shared>, id: &str, f: impl FnOnce(&Slot) -> Vec<String
 }
 
 fn set(slot: &Slot, update: Update) -> Vec<String> {
+    ask_worker(slot, |reply| Command::Set {
+        updates: vec![update],
+        reply,
+    })
+}
+
+/// Sends a command that answers, and waits for the answer.
+fn ask_worker(
+    slot: &Slot,
+    command: impl FnOnce(mpsc::Sender<Result<(), String>>) -> Command,
+) -> Vec<String> {
     let (tx, rx) = mpsc::channel();
-    if slot
-        .commands
-        .send(Command::Set {
-            updates: vec![update],
-            reply: tx,
-        })
-        .is_err()
-    {
+    if slot.commands.send(command(tx)).is_err() {
         return vec!["err the camera's worker has ended".to_string()];
     }
     match rx.recv_timeout(ANSWER) {
@@ -194,25 +273,103 @@ fn set(slot: &Slot, update: Update) -> Vec<String> {
 
 fn controls(slot: &Slot) -> Vec<String> {
     let current = slot.current_controls();
-    let mut out = Vec::with_capacity(Control::COUNT + 1);
-    for control in Control::ALL {
-        let spec = control.spec();
+    let (info, seq) = slot.controls_info();
+    let mut out = Vec::with_capacity(info.standard.len() + info.device.len() + 2);
+    out.push(format!("seq {seq}"));
+    for standard in &info.standard {
         let value = match current {
-            Some(values) => show(values[control.index()]),
+            Some(values) => show(values[standard.control.index()]),
             None => "-".to_string(),
         };
-        out.push(format!(
-            "control {} unit={} range={} default={} auto={} value={}",
-            control.name(),
-            if spec.unit.is_empty() { "-" } else { spec.unit },
-            range(spec.range),
-            show(spec.default),
-            spec.auto,
-            value,
-        ));
+        out.push(standard_line(standard, &value));
+    }
+    for device in &info.device {
+        out.extend(device_lines(device));
     }
     out.push("ok".to_string());
     out
+}
+
+fn unknown<T: ToString>(value: Option<T>) -> String {
+    value.map_or_else(|| "unknown".to_string(), |v| v.to_string())
+}
+
+fn standard_line(info: &StandardInfo, value: &str) -> String {
+    let unit = info.control.spec().unit;
+    format!(
+        "control {} unit={} range={} step={} default={} effective={} auto={} access={} value={}",
+        info.control.name(),
+        if unit.is_empty() { "-" } else { unit },
+        info.range.map_or_else(|| "unknown".to_string(), span),
+        unknown(info.step),
+        info.default.map_or_else(|| "unknown".to_string(), show),
+        info.effective
+            .map_or_else(|| "unknown".to_string(), |(lo, hi)| format!("{lo}..{hi}")),
+        unknown(info.auto),
+        info.access.name(),
+        value,
+    )
+}
+
+/// A device control's line and its menu's entry lines.
+fn device_lines(info: &DeviceInfo) -> Vec<String> {
+    let mut out = Vec::with_capacity(1 + info.menu.len());
+    out.push(format!(
+        "device {:#010x} kind={} access={} min={} max={} step={} default={} effective={} value={} standard={} entries={} name={}",
+        info.id,
+        kind_name(info.kind),
+        info.access.name(),
+        unknown(info.min),
+        unknown(info.max),
+        unknown(info.step),
+        unknown(info.default),
+        unknown(info.effective.map(|(lo, hi)| format!("{lo}..{hi}"))),
+        unknown(info.value),
+        info.standard.map_or("-", Control::name),
+        info.menu.len(),
+        one_line(&info.name),
+    ));
+    for entry in &info.menu {
+        out.push(match &entry.label {
+            Some(label) => format!(
+                "entry {:#010x} {} {}",
+                info.id,
+                entry.value,
+                one_line(label)
+            ),
+            None => format!("entry {:#010x} {}", info.id, entry.value),
+        });
+    }
+    out
+}
+
+const KINDS: [(DeviceKind, &str); 7] = [
+    (DeviceKind::Integer, "integer"),
+    (DeviceKind::Integer64, "integer64"),
+    (DeviceKind::Boolean, "boolean"),
+    (DeviceKind::Menu, "menu"),
+    (DeviceKind::Bitmask, "bitmask"),
+    (DeviceKind::Button, "button"),
+    (DeviceKind::Other, "other"),
+];
+
+fn kind_name(kind: DeviceKind) -> &'static str {
+    KINDS
+        .iter()
+        .find(|(k, _)| *k == kind)
+        .map_or("other", |(_, name)| name)
+}
+
+fn kind_named(name: &str) -> Option<DeviceKind> {
+    KINDS.iter().find(|(_, n)| *n == name).map(|(k, _)| *k)
+}
+
+/// A device control id: decimal, or hex with `0x`.
+fn parse_device_id(text: &str) -> Option<u32> {
+    match text.strip_prefix("0x") {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => text.parse().ok(),
+    }
 }
 
 fn frame(slot: &Slot) -> Vec<String> {
@@ -337,7 +494,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} controls_seq={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -384,6 +541,7 @@ fn camera_line(status: &CameraStatus) -> String {
         keep.bound_unmet,
         status.discontinuities,
         contract_mismatch,
+        status.controls_seq,
         error,
     )
 }
@@ -442,6 +600,8 @@ pub struct CameraLine {
     pub discontinuities: Option<u64>,
     /// The device contract another build's that refuses the camera, by name (`contract_mismatch=`).
     pub contract_mismatch: Option<String>,
+    /// The camera's controls count (`controls_seq=`): read `controls` again when it moves.
+    pub controls_seq: Option<u64>,
     /// The last failure's message: the free text at the end of the line.
     pub last_error: Option<String>,
 }
@@ -530,6 +690,7 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "bound_unmet" => camera.bound_unmet = number,
             "discontinuities" => camera.discontinuities = number,
             "contract_mismatch" => camera.contract_mismatch = text,
+            "controls_seq" => camera.controls_seq = number,
             _ => {}
         }
     }
@@ -583,12 +744,21 @@ pub fn parse_copy_line(line: &str) -> Option<CopyLine> {
     })
 }
 
-/// One control's line of a `controls` answer.
+/// One `control` line of a `controls` answer: a standard control as this camera has it. A field
+/// shown as `unknown` (the backend cannot say) is `None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlLine {
     /// The control's name, as `Control::name` gives it.
     pub name: String,
     pub value: Shown,
+    /// The control's documented unit (`-` for none).
+    pub unit: Option<String>,
+    pub range: Option<Span>,
+    pub step: Option<u32>,
+    pub default: Option<Shown>,
+    pub effective: Option<(u32, u32)>,
+    pub auto: Option<bool>,
+    pub access: Access,
 }
 
 /// A control's value as the `controls` answer shows it.
@@ -601,22 +771,153 @@ pub enum Shown {
     Value(ControlValue),
 }
 
-/// Reads a `controls` answer (its lines, with or without the closing `ok`).
+/// One `device` line of a `controls` (or `getd`) answer with its `entry` lines: a control the camera
+/// has, in the device's own units, by the backend's id. A field shown as `unknown` is `None`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceLine {
+    pub id: u32,
+    pub name: String,
+    pub kind: DeviceKind,
+    pub access: Access,
+    pub min: Option<i64>,
+    pub max: Option<i64>,
+    pub step: Option<u64>,
+    pub default: Option<i64>,
+    pub effective: Option<(i64, i64)>,
+    pub value: Option<i64>,
+    /// The standard control's name, when the device control is one.
+    pub standard: Option<String>,
+    pub menu: Vec<MenuEntry>,
+}
+
+/// A whole `controls` answer: its count, the standard controls and the device controls.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ControlsAnswer {
+    /// The `seq` line: the camera's `controls_seq` when the answer was made.
+    pub seq: Option<u64>,
+    pub standard: Vec<ControlLine>,
+    pub device: Vec<DeviceLine>,
+}
+
+/// Reads a `controls` answer (its lines, with or without the closing `ok`): the `control` lines.
 pub fn parse_controls<S: AsRef<str>>(lines: &[S]) -> Vec<ControlLine> {
-    lines
-        .iter()
-        .filter_map(|line| {
-            let mut words = line.as_ref().split_ascii_whitespace();
-            if words.next()? != "control" {
-                return None;
+    parse_controls_answer(lines).standard
+}
+
+/// Reads a whole `controls` or `getd` answer. Unknown line kinds and fields are skipped; an `entry`
+/// line belongs to the `device` line before it with the same id.
+pub fn parse_controls_answer<S: AsRef<str>>(lines: &[S]) -> ControlsAnswer {
+    let mut answer = ControlsAnswer::default();
+    for line in lines {
+        let line = line.as_ref();
+        let mut words = line.split_ascii_whitespace();
+        match words.next() {
+            Some("seq") => answer.seq = words.next().and_then(|n| n.parse().ok()),
+            Some("control") => answer.standard.extend(parse_control_line(line)),
+            Some("device") => answer.device.extend(parse_device_line(line)),
+            Some("entry") => {
+                let (Some(id), Some(value)) = (
+                    words.next().and_then(parse_device_id),
+                    words.next().and_then(|v| v.parse::<i64>().ok()),
+                ) else {
+                    continue;
+                };
+                let label = words.collect::<Vec<_>>().join(" ");
+                if let Some(device) = answer.device.last_mut().filter(|d| d.id == id) {
+                    device.menu.push(MenuEntry {
+                        value,
+                        label: (!label.is_empty()).then_some(label),
+                    });
+                }
             }
-            let name = words.next()?.to_string();
-            let value = words
-                .find_map(|word| word.strip_prefix("value="))
-                .and_then(parse_shown)?;
-            Some(ControlLine { name, value })
-        })
-        .collect()
+            _ => {}
+        }
+    }
+    answer
+}
+
+fn known<T: std::str::FromStr>(text: &str) -> Option<T> {
+    (text != "unknown").then(|| text.parse().ok()).flatten()
+}
+
+fn parse_control_line(line: &str) -> Option<ControlLine> {
+    let mut words = line.split_ascii_whitespace();
+    if words.next()? != "control" {
+        return None;
+    }
+    let mut parsed = ControlLine {
+        name: words.next()?.to_string(),
+        value: Shown::NoFrame,
+        unit: None,
+        range: None,
+        step: None,
+        default: None,
+        effective: None,
+        auto: None,
+        access: Access::ReadWrite,
+    };
+    let mut value = None;
+    for word in words {
+        let Some((key, text)) = word.split_once('=') else {
+            continue;
+        };
+        match key {
+            "value" => value = parse_shown(text),
+            "unit" => parsed.unit = (text != "-").then(|| text.to_string()),
+            "range" => parsed.range = parse_span(text),
+            "step" => parsed.step = known(text),
+            "default" => parsed.default = (text != "unknown").then(|| parse_shown(text)).flatten(),
+            "effective" => parsed.effective = parse_pair(text),
+            "auto" => parsed.auto = known(text),
+            "access" => parsed.access = Access::from_name(text).unwrap_or_default(),
+            _ => {}
+        }
+    }
+    parsed.value = value?;
+    Some(parsed)
+}
+
+fn parse_device_line(line: &str) -> Option<DeviceLine> {
+    let (head, name) = match line.find(" name=") {
+        Some(at) => (&line[..at], line[at + " name=".len()..].to_string()),
+        None => (line, String::new()),
+    };
+    let mut words = head.split_ascii_whitespace();
+    if words.next()? != "device" {
+        return None;
+    }
+    let mut parsed = DeviceLine {
+        id: parse_device_id(words.next()?)?,
+        name,
+        kind: DeviceKind::Other,
+        access: Access::ReadWrite,
+        min: None,
+        max: None,
+        step: None,
+        default: None,
+        effective: None,
+        value: None,
+        standard: None,
+        menu: Vec::new(),
+    };
+    for word in words {
+        let Some((key, text)) = word.split_once('=') else {
+            continue;
+        };
+        match key {
+            "kind" => parsed.kind = kind_named(text).unwrap_or(DeviceKind::Other),
+            "access" => parsed.access = Access::from_name(text).unwrap_or_default(),
+            "min" => parsed.min = known(text),
+            "max" => parsed.max = known(text),
+            "step" => parsed.step = known(text),
+            "default" => parsed.default = known(text),
+            "effective" => parsed.effective = parse_pair(text),
+            "value" => parsed.value = known(text),
+            "standard" => parsed.standard = (text != "-").then(|| text.to_string()),
+            _ => {}
+        }
+    }
+    Some(parsed)
 }
 
 /// The `value=` word of a `controls` line, as `show` writes it.
@@ -654,12 +955,31 @@ fn show(value: ControlValue) -> String {
     }
 }
 
-fn range(range: Range) -> String {
-    match range {
-        Range::Manual { min, max } => format!("{min}..{max}"),
-        Range::Flag => "flag".to_string(),
-        Range::Rect => "rect".to_string(),
+fn span(span: Span) -> String {
+    match span {
+        Span::Manual { min, max } => format!("{min}..{max}"),
+        Span::Flag => "flag".to_string(),
+        Span::Rect => "rect".to_string(),
     }
+}
+
+fn parse_span(text: &str) -> Option<Span> {
+    match text {
+        "flag" => Some(Span::Flag),
+        "rect" => Some(Span::Rect),
+        _ => {
+            let (min, max) = text.split_once("..")?;
+            Some(Span::Manual {
+                min: min.parse().ok()?,
+                max: max.parse().ok()?,
+            })
+        }
+    }
+}
+
+fn parse_pair<T: std::str::FromStr>(text: &str) -> Option<(T, T)> {
+    let (lo, hi) = text.split_once("..")?;
+    Some((lo.parse().ok()?, hi.parse().ok()?))
 }
 
 /// Free text as one line, cut to a sane length.
@@ -725,7 +1045,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
+                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 controls_seq=0 last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
             ),
             "{line}"
         );
@@ -756,7 +1076,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- last_error=frame stream cam0: the marks page"
+                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- controls_seq=0 last_error=frame stream cam0: the marks page"
             ),
             "the fields come before the free text: {line}"
         );
@@ -853,6 +1173,135 @@ mod tests {
         assert_eq!(parse_shown("-"), Some(Shown::NoFrame));
         assert_eq!(parse_shown("rect"), Some(Shown::Rect));
         assert_eq!(parse_shown("banana"), None);
+    }
+
+    #[test]
+    fn a_cameras_controls_read_back_field_for_field_with_menus_and_unknowns() {
+        use styx_select::ControlsInfo;
+        let slot = slot("cam");
+        let info = ControlsInfo {
+            standard: vec![
+                StandardInfo {
+                    control: Control::Exposure,
+                    range: Some(Span::Manual {
+                        min: 9,
+                        max: 472_973,
+                    }),
+                    step: None,
+                    default: Some(ControlValue::Manual(10_000)),
+                    effective: Some((9, 151_437)),
+                    auto: Some(false),
+                    access: Access::ReadWrite,
+                },
+                StandardInfo {
+                    access: Access::Inactive,
+                    ..StandardInfo::unknown(Control::HFlip)
+                },
+            ],
+            device: vec![
+                DeviceInfo {
+                    id: 0x0098_0918,
+                    name: "Power Line Frequency".to_string(),
+                    kind: DeviceKind::Menu,
+                    min: Some(0),
+                    max: Some(3),
+                    step: Some(1),
+                    default: Some(1),
+                    effective: Some((0, 3)),
+                    value: Some(2),
+                    standard: Some(Control::PowerLineFrequency),
+                    access: Access::ReadWrite,
+                    menu: vec![
+                        MenuEntry {
+                            value: 0,
+                            label: Some("Disabled".to_string()),
+                        },
+                        MenuEntry {
+                            value: 2,
+                            label: Some("60 Hz".to_string()),
+                        },
+                        MenuEntry {
+                            value: 3,
+                            label: None,
+                        },
+                    ],
+                },
+                DeviceInfo {
+                    id: 1,
+                    name: "Exposure, Dynamic Framerate".to_string(),
+                    kind: DeviceKind::Boolean,
+                    min: None,
+                    max: None,
+                    step: None,
+                    default: None,
+                    effective: None,
+                    value: None,
+                    standard: None,
+                    access: Access::ReadOnly,
+                    menu: Vec::new(),
+                },
+            ],
+        };
+        slot.set_controls_info(info.clone());
+        let lines = controls(&slot);
+        assert_eq!(lines[0], "seq 1");
+        let answer = parse_controls_answer(&lines);
+        assert_eq!(answer.seq, Some(1));
+        assert_eq!(answer.standard.len(), 2);
+        for (line, info) in answer.standard.iter().zip(&info.standard) {
+            assert_eq!(line.name, info.control.name());
+            assert_eq!(line.range, info.range);
+            assert_eq!(line.step, info.step);
+            assert_eq!(line.default, info.default.map(Shown::Value));
+            assert_eq!(line.effective, info.effective);
+            assert_eq!(line.auto, info.auto);
+            assert_eq!(line.access, info.access);
+            assert_eq!(line.value, Shown::NoFrame);
+        }
+        assert_eq!(answer.standard[1].unit, None, "a flag has no unit");
+        assert_eq!(answer.device.len(), 2);
+        for (line, info) in answer.device.iter().zip(&info.device) {
+            assert_eq!(line.id, info.id);
+            assert_eq!(line.name, info.name, "free text keeps its spaces");
+            assert_eq!(line.kind, info.kind);
+            assert_eq!(line.access, info.access);
+            assert_eq!(
+                (
+                    line.min,
+                    line.max,
+                    line.step,
+                    line.default,
+                    line.effective,
+                    line.value
+                ),
+                (
+                    info.min,
+                    info.max,
+                    info.step,
+                    info.default,
+                    info.effective,
+                    info.value
+                )
+            );
+            assert_eq!(line.standard.as_deref(), info.standard.map(Control::name));
+            assert_eq!(line.menu, info.menu);
+        }
+        assert!(
+            lines.contains(&"entry 0x00980918 3".to_string()),
+            "{lines:?}"
+        );
+        // The count shows on the camera's list line too, and moves once per change.
+        slot.controls_changed();
+        let camera = parse_camera_line(&camera_line(&slot.snapshot())).expect("a camera line");
+        assert_eq!(camera.controls_seq, Some(2));
+    }
+
+    #[test]
+    fn device_ids_read_in_decimal_or_hex() {
+        assert_eq!(parse_device_id("0x00980918"), Some(0x0098_0918));
+        assert_eq!(parse_device_id("1"), Some(1));
+        assert_eq!(parse_device_id("0xzz"), None);
+        assert_eq!(parse_device_id("-1"), None);
     }
 
     #[test]

@@ -149,7 +149,7 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     slot.reset_failures();
                 }
                 Ok(Command::Stop) => {}
-                Ok(Command::Set { reply, .. }) => {
+                Ok(Command::Set { reply, .. } | Command::SetDevice { reply, .. }) => {
                     let _ = reply.send(Err(format!("camera is {state}, not streaming")));
                 }
                 // Not publishing: the reader is closed and connects again later.
@@ -186,7 +186,7 @@ pub(crate) fn run(slot: &Slot, commands: &Receiver<Command>, shared: &Shared) {
                     slot.set_state(State::Stopped);
                 }
                 Ok(Command::Start) => {}
-                Ok(Command::Set { reply, .. }) => {
+                Ok(Command::Set { reply, .. } | Command::SetDevice { reply, .. }) => {
                     let _ = reply.send(Err("camera is absent, not streaming".to_string()));
                 }
                 Ok(Command::Handshake(reply)) => {
@@ -278,7 +278,7 @@ fn drain(commands: &Receiver<Command>, slot: &Slot, publisher: &mut Publisher) -
         match commands.try_recv() {
             Ok(Command::Stop) => return Drained::Stop,
             Ok(Command::Start) => {}
-            Ok(Command::Set { reply, .. }) => {
+            Ok(Command::Set { reply, .. } | Command::SetDevice { reply, .. }) => {
                 let _ = reply.send(Err(format!(
                     "camera is {}, not streaming",
                     slot.snapshot().state
@@ -574,6 +574,9 @@ fn pump(
     publisher: &mut Publisher,
 ) -> Ended {
     slot.started();
+    // The camera opened (again): its controls are read now, and the count moves.
+    let mut controls_generation = capture.controls_generation();
+    slot.set_controls_info(capture.controls_info());
     let mut delivered = false;
     // A producer held over from an earlier attempt belongs to the buffers that attempt had; the
     // first frame of this one ends it and publishes from a new pool.
@@ -675,6 +678,12 @@ fn pump(
         if let Some(edge) = capture.take_edge() {
             apply_edge(publisher, slot, edge);
         }
+        // A range that moved (a frame rate changing exposure's ceiling, a restart): read again.
+        let generation = capture.controls_generation();
+        if generation != controls_generation {
+            controls_generation = generation;
+            slot.set_controls_info(capture.controls_info());
+        }
         match capture.status() {
             Status::Streaming => {
                 slot.layout_refused(None);
@@ -721,6 +730,14 @@ fn pump(
                     let result = set(capture, &updates);
                     if result.is_ok() {
                         note_requested(slot, &updates);
+                        controls_moved(capture, slot, &mut controls_generation);
+                    }
+                    let _ = reply.send(result);
+                }
+                Ok(Command::SetDevice { id, value, reply }) => {
+                    let result = capture.set_device(id, value).map_err(|e| describe(&e));
+                    if result.is_ok() {
+                        controls_moved(capture, slot, &mut controls_generation);
                     }
                     let _ = reply.send(result);
                 }
@@ -791,6 +808,17 @@ fn apply_edge(publisher: &mut Publisher, slot: &Slot, edge: Edge) {
                 slot.discontinuity();
             }
         }
+    }
+}
+
+/// A set was applied: the controls count moves once, with the backend's new report when it has one.
+fn controls_moved(capture: &dyn Capture, slot: &Slot, seen: &mut u64) {
+    let generation = capture.controls_generation();
+    if generation == *seen {
+        slot.controls_changed();
+    } else {
+        *seen = generation;
+        slot.set_controls_info(capture.controls_info());
     }
 }
 

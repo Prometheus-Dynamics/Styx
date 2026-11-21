@@ -11,6 +11,8 @@ use styx_controls::{FrameMetadata, Update};
 use styx_frame::FrameLease;
 use styx_lemnos::{Carried, LayoutRefusal};
 
+use crate::controls::ControlsInfo;
+
 /// What an opened camera is doing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Status {
@@ -126,6 +128,28 @@ pub trait Capture {
     /// (which then returned no frame). A backend without stalls says nothing.
     fn take_edge(&mut self) -> Option<Edge> {
         None
+    }
+
+    /// The camera's controls as it has them: the standard ones with this camera's ranges, and every
+    /// device control ([`ControlsInfo`]). Built on each call, so a caller asks when
+    /// [`Capture::controls_generation`] moves, not per frame. The default is a backend that does not
+    /// report its controls: every standard control, nothing known.
+    fn controls_info(&self) -> ControlsInfo {
+        ControlsInfo::unreported()
+    }
+
+    /// A count that moves whenever [`Capture::controls_info`] would answer differently: a range that
+    /// changed (a frame rate moving exposure's ceiling), a value set by id. Cheap: a caller may read
+    /// it every frame. The default never moves.
+    fn controls_generation(&self) -> u64 {
+        0
+    }
+
+    /// Sets device control `id` ([`crate::DeviceInfo::id`]) to `value`, in the device's own units.
+    /// The default is a backend without device controls.
+    fn set_device(&mut self, id: u32, value: i64) -> Result<(), CaptureError> {
+        let _ = (id, value);
+        Err(CaptureError::Unsupported("device controls"))
     }
 
     /// Stops the camera. Idempotent.

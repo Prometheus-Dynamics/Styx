@@ -4,14 +4,14 @@ use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::Sender;
-use std::sync::{Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use styx_controls::{Control, ControlValue, FrameMetadata, Update};
 use styx_frame::FrameLease;
 use styx_lemnos::LayoutRefusal;
 use styx_native_run::{ExposureReport, Selection};
-use styx_select::{Backend, RateReport, Selected};
+use styx_select::{Backend, ControlsInfo, RateReport, Selected};
 use styx_socket::{Accepted, HandshakePlan};
 
 use crate::config::CameraConfig;
@@ -271,6 +271,13 @@ pub struct CameraStatus {
     /// The exposure a native camera has: asked, applied, and the clamp with its reason (`None` for
     /// the other backends, and before a native camera starts).
     pub exposure: Option<ExposureReport>,
+    /// The camera's controls as its backend reports them (`styx_select::ControlsInfo`): the
+    /// standard ones with this camera's ranges, and every device control. Before a camera opens, a
+    /// backend that reports nothing: every standard control, nothing known.
+    pub controls: Arc<ControlsInfo>,
+    /// Moves on every change to the controls: a value any client set (one move per set), a range that
+    /// changed, the camera opened again. A client reads `controls` only when it moves.
+    pub controls_seq: u64,
 }
 
 impl CameraStatus {
@@ -316,6 +323,13 @@ pub enum Command {
     /// Post controls to the running camera. The reply is the backend's answer.
     Set {
         updates: Vec<Update>,
+        reply: Sender<Result<(), String>>,
+    },
+    /// Set device control `id` to `value`, in the device's own units. The reply is the backend's
+    /// answer.
+    SetDevice {
+        id: u32,
+        value: i64,
         reply: Sender<Result<(), String>>,
     },
     /// A reader connected to the camera's socket asks for its handshake plan. The reply is the
@@ -370,6 +384,8 @@ impl Slot {
             mode: None,
             empty_frames: 0,
             exposure: None,
+            controls: Arc::new(ControlsInfo::unreported()),
+            controls_seq: 0,
         };
         Self {
             id,
@@ -620,6 +636,25 @@ impl Slot {
         if status.state != State::Streaming && status.state != State::Retrying {
             status.state = State::Streaming;
         }
+    }
+
+    /// The camera's controls as last reported, and the count that moves with them.
+    pub fn controls_info(&self) -> (Arc<ControlsInfo>, u64) {
+        let status = lock(&self.status);
+        (Arc::clone(&status.controls), status.controls_seq)
+    }
+
+    /// Records the controls the backend reports now, and moves the count once.
+    pub fn set_controls_info(&self, info: ControlsInfo) {
+        let mut status = lock(&self.status);
+        status.controls = Arc::new(info);
+        status.controls_seq += 1;
+    }
+
+    /// A value was set and the backend's report did not change with it (a standard value is in
+    /// the frames' metadata): the count moves once.
+    pub fn controls_changed(&self) {
+        lock(&self.status).controls_seq += 1;
     }
 
     /// The last frame's control values, for `controls`.

@@ -6,13 +6,16 @@
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::time::Duration;
 
-use styx_controls::{FrameMetadata, Update};
+use styx_controls::{Control, ControlValue, DeviceKind, FrameMetadata, Update};
 use styx_frame::FrameLease;
 use styx_libcamera::{Capture as LibcameraStream, CaptureConfig, Error as LibcameraError};
-use styx_native_run::{Clock, Event, Session, State};
+use styx_native_run::{Clock, Event, Ranges, Session, State};
 use styx_v4l2::{State as V4l2State, Stream, StreamConfig};
 
 use crate::capture::{Capture, CaptureError, Edge, RateReport, Status};
+use crate::controls::{
+    Access, ControlsInfo, DeviceInfo, MenuEntry, NATIVE_TEST_PATTERN, Span, StandardInfo,
+};
 
 impl<C: Clock> std::fmt::Debug for NativeCapture<'_, C> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -33,6 +36,9 @@ pub struct NativeCapture<'a, C: Clock> {
     achieved_milli: u32,
     /// The stall or return the last wait found, for the caller to take ([`Capture::take_edge`]).
     edge: Option<Edge>,
+    /// What the controls answer was built from last, and the count that moves when it changes.
+    controls_seen: (Option<Ranges>, Option<u16>, u16),
+    controls_generation: u64,
 }
 
 impl<'a, C: Clock> NativeCapture<'a, C> {
@@ -48,12 +54,88 @@ impl<'a, C: Clock> NativeCapture<'a, C> {
                 None => CaptureError::Failed(e.to_string()),
             });
         }
-        Ok(Self {
+        let mut capture = Self {
             session,
             achieved_milli: 0,
             edge: None,
-        })
+            controls_seen: (None, None, 0),
+            controls_generation: 1,
+        };
+        capture.track_controls();
+        Ok(capture)
     }
+
+    /// Moves the controls count when the mode's ranges, the frame length in force or the test
+    /// pattern changed. Plain values compared: nothing allocated.
+    fn track_controls(&mut self) {
+        let seen = (
+            self.session.ranges(),
+            self.session.test_patterns(),
+            self.session.test_pattern(),
+        );
+        if seen != self.controls_seen {
+            self.controls_seen = seen;
+            self.controls_generation += 1;
+        }
+    }
+}
+
+/// A native camera's controls: exposure, gain and frame rate with the ranges the selected mode gives
+/// (the sensor contract's `Mode`), and the sensor's test patterns as a numbered menu (the contract
+/// names none). Nothing else is settable on this path, so nothing else is listed.
+fn native_controls(ranges: Option<Ranges>, patterns: Option<u16>, pattern: u16) -> ControlsInfo {
+    let mut info = ControlsInfo::default();
+    if let Some(r) = ranges {
+        let manual = |(min, max): (u32, u32)| Span::Manual { min, max };
+        info.standard.push(StandardInfo {
+            control: Control::Exposure,
+            range: Some(manual(r.exposure_us)),
+            // The sensor moves in exposure codes (a fraction of its line time), not whole
+            // microseconds: no even step in this unit.
+            step: None,
+            default: Some(ControlValue::Manual(r.initial.exposure_us)),
+            effective: Some((r.exposure_us.0, r.exposure_effective_max_us)),
+            auto: Some(false),
+            access: Access::ReadWrite,
+        });
+        info.standard.push(StandardInfo {
+            control: Control::Gain,
+            range: r.gain_milli.map(manual),
+            step: r.gain_step_milli,
+            default: Some(ControlValue::Manual(r.initial.gain_milli)),
+            effective: r.gain_milli,
+            auto: Some(false),
+            access: Access::ReadWrite,
+        });
+        info.standard.push(StandardInfo {
+            control: Control::FrameRate,
+            range: r.frame_rate_milli.map(manual),
+            step: None,
+            default: Some(ControlValue::Manual(r.initial.frame_rate_milli)),
+            effective: r.frame_rate_milli,
+            auto: Some(false),
+            access: Access::ReadWrite,
+        });
+    }
+    if let Some(count) = patterns.filter(|n| *n > 0) {
+        info.device.push(DeviceInfo {
+            id: NATIVE_TEST_PATTERN,
+            name: "test_pattern".to_string(),
+            kind: DeviceKind::Menu,
+            min: Some(0),
+            max: Some(i64::from(count)),
+            step: Some(1),
+            default: Some(0),
+            effective: Some((0, i64::from(count))),
+            value: Some(i64::from(pattern)),
+            standard: None,
+            access: Access::ReadWrite,
+            menu: (0..=i64::from(count))
+                .map(|value| MenuEntry { value, label: None })
+                .collect(),
+        });
+    }
+    info
 }
 
 impl<C: Clock> Capture for NativeCapture<'_, C> {
@@ -73,6 +155,7 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
             styx_native_run::Error::Stopped => CaptureError::Stopped,
             other => CaptureError::Failed(other.to_string()),
         })?;
+        self.track_controls();
         match event {
             Event::Frame(lease) => {
                 if lease.meta().achieved_fps_milli != 0 {
@@ -101,6 +184,31 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
             .request_controls(updates)
             .map(|_| ())
             .map_err(|e| CaptureError::Failed(e.to_string()))
+    }
+
+    fn controls_info(&self) -> ControlsInfo {
+        native_controls(
+            self.session.ranges(),
+            self.session.test_patterns(),
+            self.session.test_pattern(),
+        )
+    }
+
+    fn controls_generation(&self) -> u64 {
+        self.controls_generation
+    }
+
+    fn set_device(&mut self, id: u32, value: i64) -> Result<(), CaptureError> {
+        if id != NATIVE_TEST_PATTERN {
+            return Err(CaptureError::Failed(format!("no device control {id:#x}")));
+        }
+        let code = u16::try_from(value)
+            .map_err(|_| CaptureError::Failed(format!("no test pattern {value}")))?;
+        self.session
+            .set_test_pattern(code)
+            .map_err(|e| CaptureError::Failed(e.to_string()))?;
+        self.track_controls();
+        Ok(())
     }
 
     fn status(&self) -> Status {

@@ -28,5 +28,5 @@ pub use modes::{ModeError, Reason, Request, Selection, fourcc_for, frame_end_ns,
 pub use session::{Error, Event, Session, State, Status, StopHandle};
 pub use styx_lemnos::{LayoutRefusal, SharedLayout};
 pub use styx_native_controls::{
-    Clamp, ClampReason, ExposureReport, FrameRate, Initial, Landing, Landings,
+    Clamp, ClampReason, ExposureReport, FrameRate, Initial, Landing, Landings, Ranges,
 };

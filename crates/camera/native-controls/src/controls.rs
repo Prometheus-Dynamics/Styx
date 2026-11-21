@@ -121,6 +121,31 @@ pub struct NativeControls {
     /// Set when the sensor refused a post's landing (`post_values_at`: `NOT_SUPPORTED`), so its
     /// posts were made without a landing from the sensor. Then no report can be tied to a frame.
     landings_refused: bool,
+    /// The values the camera started with: its defaults.
+    initial: Initial,
+}
+
+/// The ranges this camera's mode gives its controls, in styx-controls units: read off the mode the
+/// session selected, never a generic table. `None` where the mode does not say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ranges {
+    /// Exposure, in microseconds: the mode's smallest exposure code, up to the longest frame less
+    /// the margin.
+    pub exposure_us: (u32, u32),
+    /// The longest exposure the frame length in force allows (that frame less the margin). It moves
+    /// with the frame rate.
+    pub exposure_effective_max_us: u32,
+    /// Analogue gain, in thousandths: the mode's lowest and highest codes under its gain law.
+    /// `None` when the law gives no gain for a bound code.
+    pub gain_milli: Option<(u32, u32)>,
+    /// One gain code's step in thousandths, when the law is linear and the step is a whole number of
+    /// thousandths. `None` otherwise (the steps are not even in thousandths).
+    pub gain_step_milli: Option<u32>,
+    /// Frame rate, in millihertz: the longest frame's rate up to the shortest frame's. `None` when the
+    /// mode names no frame lengths.
+    pub frame_rate_milli: Option<(u32, u32)>,
+    /// The values the camera started with.
+    pub initial: Initial,
 }
 
 /// Frames whose reports are kept for their metadata.
@@ -141,6 +166,10 @@ struct Limits {
     gain: GainRange,
     fl_min: u32,
     fl_max: u32,
+    /// The smallest exposure code, and the lines a frame keeps beyond the exposure (the contract's
+    /// `exposure_min` and `exposure_margin`).
+    exposure_min: u32,
+    exposure_margin: u32,
 }
 
 fn lane_of(control: Control) -> Option<usize> {
@@ -280,6 +309,8 @@ impl NativeControls {
             gain: mode.analogue_gain,
             fl_min: mode.frame_length_min,
             fl_max: mode.frame_length_max,
+            exposure_min: mode.exposure_min,
+            exposure_margin: mode.exposure_margin,
         };
         for (control, value) in [
             (Control::Exposure, initial.exposure_us),
@@ -306,8 +337,49 @@ impl NativeControls {
             gain_clamp: None,
             reports: VecDeque::with_capacity(REPORTS),
             landings_refused: false,
+            initial,
             limits,
         })
+    }
+
+    /// The ranges this camera's mode gives exposure, gain and frame rate, with the frame length in
+    /// force for exposure's effective maximum. Plain numbers: no allocation, so a caller may compare
+    /// it every frame.
+    pub fn ranges(&self) -> Ranges {
+        let l = &self.limits;
+        let exposure_max_code = |lines: u32| -> u32 {
+            let code = u64::from(lines.saturating_sub(l.exposure_margin)) << l.fraction_bits;
+            u32::try_from(code).unwrap_or(u32::MAX).max(l.exposure_min)
+        };
+        let gain_milli = match (
+            gain::code_to_gain(&l.gain, l.gain.min),
+            gain::code_to_gain(&l.gain, l.gain.max),
+        ) {
+            (Ok(min), Ok(max)) if min > 0 && max >= min => Some((min, max)),
+            _ => None,
+        };
+        let gain_step_milli = match l.gain.law {
+            lemnos_contract_camera_sensor::GainLaw::Linear
+                if l.gain.step != 0
+                    && (u64::from(l.gain.step) * 1000) % u64::from(l.gain.unity) == 0 =>
+            {
+                u32::try_from(u64::from(l.gain.step) * 1000 / u64::from(l.gain.unity)).ok()
+            }
+            _ => None,
+        };
+        let frame_rate_milli = (l.fl_min != 0 && l.fl_max >= l.fl_min)
+            .then(|| (l.rate_of(l.fl_max), l.rate_of(l.fl_min)));
+        Ranges {
+            exposure_us: (
+                l.exposure_us(l.exposure_min),
+                l.exposure_us(exposure_max_code(l.fl_max)),
+            ),
+            exposure_effective_max_us: l.exposure_us(exposure_max_code(self.rate.lines)),
+            gain_milli,
+            gain_step_milli,
+            frame_rate_milli,
+            initial: self.initial,
+        }
     }
 
     /// Exposure as it stands: the value asked for last, the value the driver reports in force (`None`

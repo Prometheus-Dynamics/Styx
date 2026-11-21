@@ -1350,3 +1350,162 @@ fn own_test(name: &str) -> String {
         None => name.to_string(),
     }
 }
+
+/// The controls answer, read back with the client's parser.
+fn controls_of(control: &Path, id: &str) -> styx_service::control::ControlsAnswer {
+    let lines = ask(control, &format!("controls {id}"));
+    assert_eq!(lines.last().map(String::as_str), Some("ok"), "{lines:?}");
+    styx_service::control::parse_controls_answer(&lines)
+}
+
+fn controls_seq_of(control: &Path, id: &str) -> u64 {
+    line_of(control, id)
+        .and_then(|l| field(&l, "controls_seq").and_then(|v| v.parse().ok()))
+        .expect("controls_seq")
+}
+
+#[test]
+fn a_native_cameras_controls_are_its_modes_ranges_with_its_test_patterns_and_a_count() {
+    use lemnos_contract_camera_sensor::fps_milli_of;
+    use styx_select::{Access, Span};
+
+    let dir = test_dir();
+    let lemnos_socket = dir.path().join("lemnos.sock");
+    let _lemnos = daemon(&lemnos_socket, &two_cameras());
+    let text = format!(
+        "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\nscan_ms = 100\n\
+         [camera.\"lemnos:cam0-sensor\"]\nfps_milli = 60000\nexposure_us = 10000\n",
+        dir.path().display(),
+        lemnos_socket.display()
+    );
+    let service = start_service(&text, Arc::new(Recorder::default()), &lemnos_socket);
+    let control = service.control_socket().to_path_buf();
+    let cam = "lemnos:cam0-sensor";
+    wait_until("camera 0 streaming", Duration::from_secs(20), || {
+        state_of(&control, cam) == "streaming" && frames_of(&control, cam) > 10
+    });
+
+    // The double's modes: a 9.1 us line, exposure codes in sixteenths of a line from 16, frames up
+    // to 52000 lines less a margin of 25, gain codes 16 (unity) to 255, linear.
+    let us = |code: u64| u32::try_from((code * 9_100_000 + 8_000_000) / 16_000_000).expect("us");
+    let lines_at = |milli: u32| {
+        frame_length_for_fps_milli(9_100_000, 0, 1, u32::MAX, milli)
+            .expect("a frame")
+            .0
+    };
+    let exposure_max = |lines: u32| us(u64::from(lines - 25) << 4);
+
+    let answer = controls_of(&control, cam);
+    let names: Vec<&str> = answer.standard.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["exposure", "gain", "frame_rate"],
+        "only what the camera has"
+    );
+    let exposure = &answer.standard[0];
+    assert_eq!(exposure.unit.as_deref(), Some("us"));
+    assert_eq!(
+        exposure.range,
+        Some(Span::Manual {
+            min: us(16),
+            max: exposure_max(52_000)
+        })
+    );
+    assert_eq!(
+        exposure.effective,
+        Some((us(16), exposure_max(lines_at(60_000)))),
+        "the ceiling of the frame in force"
+    );
+    assert_eq!(
+        exposure.step, None,
+        "the sensor steps in codes, not whole microseconds"
+    );
+    assert_eq!(exposure.auto, Some(false));
+    assert_eq!(exposure.access, Access::ReadWrite);
+    let gain = &answer.standard[1];
+    assert_eq!(
+        gain.range,
+        Some(Span::Manual {
+            min: 1000,
+            max: 15_938
+        })
+    );
+    assert_eq!(gain.step, None, "a code is 62.5 thousandths: no whole step");
+    let rate = &answer.standard[2];
+    let Some(Span::Manual { min, max }) = rate.range else {
+        panic!("a frame-rate range: {rate:?}")
+    };
+    assert_eq!(min, fps_milli_of(9_100_000, 0, 52_000).expect("rate"));
+    assert!(max >= 60_000, "the mode runs at 60 fps: {rate:?}");
+
+    // The test patterns: a numbered menu (the contract names none), entry 0 no pattern.
+    assert_eq!(answer.device.len(), 1, "{:?}", answer.device);
+    let pattern = &answer.device[0];
+    assert_eq!(pattern.id, styx_select::NATIVE_TEST_PATTERN);
+    assert_eq!(pattern.name, "test_pattern");
+    assert_eq!(pattern.standard, None);
+    assert_eq!(pattern.value, Some(0));
+    assert_eq!(
+        pattern
+            .menu
+            .iter()
+            .map(|e| (e.value, e.label.clone()))
+            .collect::<Vec<_>>(),
+        (0..=i64::from(sim::TEST_PATTERNS))
+            .map(|v| (v, None))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(answer.seq, Some(controls_seq_of(&control, cam)));
+
+    // A device set: one move of the count, and the new value on the next answer.
+    let seq = controls_seq_of(&control, cam);
+    assert_eq!(ask(&control, &format!("setd {cam} 0x1 2")), vec!["ok"]);
+    assert_eq!(controls_seq_of(&control, cam), seq + 1, "one move per set");
+    let got = ask(&control, &format!("getd {cam} 1"));
+    let parsed = styx_service::control::parse_controls_answer(&got);
+    assert_eq!(parsed.device[0].value, Some(2), "{got:?}");
+    let refused = ask(&control, &format!("setd {cam} 0x1 9"));
+    assert_eq!(refused, vec!["err NoEntry { value: 9 }"]);
+    assert!(
+        ask(&control, &format!("setd {cam} 0x77 1"))[0]
+            .starts_with("err the camera has no device control")
+    );
+
+    // Refusals carry the camera's own numbers, and a control it does not have is named. Past the
+    // frame's ceiling but inside the camera's range is taken (the sensor clamps it, and says so).
+    let ceiling = exposure_max(52_000);
+    assert_eq!(
+        ask(&control, &format!("set {cam} exposure {} 0", ceiling + 1)),
+        vec![format!(
+            "err OutOfRange {{ min: {}, max: {ceiling}, value: {} }}",
+            us(16),
+            ceiling + 1
+        )]
+    );
+    assert_eq!(
+        ask(&control, &format!("set {cam} gain 16000 0")),
+        vec!["err OutOfRange { min: 1000, max: 15938, value: 16000 }"],
+        "the sensor's top code, not the generic 16x"
+    );
+    assert_eq!(
+        ask(&control, &format!("set {cam} brightness 500 0")),
+        vec!["err the camera has no control brightness"]
+    );
+
+    // A slower frame rate moves exposure's ceiling, and the count with it.
+    let seq = controls_seq_of(&control, cam);
+    assert_eq!(
+        ask(&control, &format!("set {cam} frame_rate 30000 0")),
+        vec!["ok"]
+    );
+    wait_until(
+        "exposure's ceiling at 30 fps",
+        Duration::from_secs(20),
+        || {
+            controls_of(&control, cam).standard[0].effective
+                == Some((us(16), exposure_max(lines_at(30_000))))
+        },
+    );
+    assert!(controls_seq_of(&control, cam) > seq);
+    service.shutdown();
+}

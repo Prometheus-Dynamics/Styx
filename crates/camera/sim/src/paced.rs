@@ -259,6 +259,10 @@ fn frame_interval_ns(link: &LinkConfig) -> u64 {
         .max(1)
 }
 
+/// The double's test pattern codes, numbered from 1 (0 is no pattern), so a caller sees a sensor
+/// with patterns. The frames do not change with them.
+pub const TEST_PATTERNS: u16 = 3;
+
 #[driver("sim-sensor", provides = [CameraSensor])]
 pub struct SimSensor {
     selected: Option<u16>,
@@ -454,7 +458,7 @@ impl CameraSensor for SimSensor {
             modes: MODES.len() as u16,
             array_width: 1280,
             array_height: 800,
-            test_patterns: 0,
+            test_patterns: TEST_PATTERNS,
             embedded_data: lemnos_contract_camera_sensor::EmbeddedData::None,
         })
     }
@@ -535,7 +539,7 @@ impl CameraSensor for SimSensor {
     }
 
     fn set_test_pattern(&mut self, code: u16) -> Result<()> {
-        if code == 0 {
+        if code <= TEST_PATTERNS {
             Ok(())
         } else {
             Err(Status::INVALID_ARGUMENT)
