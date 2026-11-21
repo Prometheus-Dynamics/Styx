@@ -144,10 +144,22 @@ fn a_mapped_control_reaches_the_device_and_the_frame_metadata() {
     println!("brightness: styx 750 -> device {raw} (0..=255)");
     assert_eq!(raw, 191);
 
-    // A mapped control is refused on the passthrough: its Styx control keeps the metadata true.
-    let refused = stream.set_device_control(BRIGHTNESS, 10).unwrap_err();
-    println!("set_device_control(brightness): {refused}");
-    assert!(matches!(refused, styx_v4l2::Error::DeviceValue(_)));
+    // A mapped control set by its driver id moves its Styx control too: 10 of 255 is 39 of 1000,
+    // read back into the frame metadata.
+    stream
+        .set_device_control(BRIGHTNESS, 10)
+        .expect("set brightness by id");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let frame = stream
+            .frames()
+            .recv_timeout(Duration::from_secs(3))
+            .expect("a frame");
+        if frame.meta().control(Control::Brightness) == ControlValue::Manual(39) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the metadata never showed 39");
+    }
 
     // A passthrough control is set and read back by id.
     stream
@@ -380,4 +392,167 @@ fn a_stream_on_a_selected_input_delivers_frames() {
         frame.format().resolution.height
     );
     assert_eq!(stream.status().state, State::Streaming);
+}
+
+/// The stream's controls are the node's own: every control as `VIDIOC_QUERYCTRL` and
+/// `VIDIOC_QUERYMENU` give it on a second handle, the Styx controls in their units over the
+/// driver's range, and a change another user of the node makes is read again (a control event).
+#[test]
+fn the_streams_controls_are_the_nodes_own_and_follow_another_users_change() {
+    use styx_lemnos::v4l2::v4l2::{ControlValue as Raw, Controls, MenuValue};
+    use styx_v4l2::StandardRange;
+
+    let _guard = serial();
+    let Some(device) = vivid() else {
+        return skip("controls answer", "no vivid capture node on this machine");
+    };
+    let config = yuyv_config(&device).expect("vivid's webcam input lists a discrete YUYV size");
+    let (width, height) = (config.width, config.height);
+    let stream = Stream::start(&device.path, config).expect("start");
+    let (generation, controls) = stream.controls();
+    let other = VideoDevice::open(&device.path).expect("a second handle on the node");
+    other
+        .set_control(BRIGHTNESS, Raw::Integer(128))
+        .expect("brightness back to its default");
+
+    // Every control the driver describes, field for field, with its menu's labels.
+    let infos = other.query_controls().expect("query the controls");
+    assert_eq!(controls.devices.len(), infos.len());
+    for info in &infos {
+        let ours = controls
+            .devices
+            .iter()
+            .find(|c| c.id == info.id)
+            .unwrap_or_else(|| panic!("{} is listed", info.name));
+        assert_eq!(
+            (
+                ours.name.as_str(),
+                ours.min,
+                ours.max,
+                ours.step,
+                ours.default
+            ),
+            (
+                info.name.as_str(),
+                info.minimum,
+                info.maximum,
+                info.step,
+                info.default
+            ),
+            "{}",
+            info.name
+        );
+        assert_eq!(
+            (ours.read_only, ours.inactive, ours.grabbed, ours.disabled),
+            (
+                info.flags
+                    .contains(styx_lemnos::v4l2::v4l2::ControlFlags::READ_ONLY),
+                info.flags
+                    .contains(styx_lemnos::v4l2::v4l2::ControlFlags::INACTIVE),
+                info.flags
+                    .contains(styx_lemnos::v4l2::v4l2::ControlFlags::GRABBED),
+                info.flags
+                    .contains(styx_lemnos::v4l2::v4l2::ControlFlags::DISABLED),
+            ),
+            "{}",
+            info.name
+        );
+        if info.is_menu() {
+            let labels: Vec<(i64, String)> = other
+                .query_menu(info)
+                .expect("query the menu")
+                .into_iter()
+                .map(|item| {
+                    let label = match item.value {
+                        MenuValue::Name(name) => name,
+                        MenuValue::Integer(value) => value.to_string(),
+                    };
+                    (i64::from(item.index), label)
+                })
+                .collect();
+            let ours: Vec<(i64, String)> = ours
+                .menu
+                .iter()
+                .map(|item| (item.value, item.name.clone()))
+                .collect();
+            assert_eq!(ours, labels, "{}", info.name);
+        }
+    }
+
+    // A standard control in its unit: brightness is 0..1000 over the driver's 0..255, its default
+    // converted the same way.
+    let brightness_info = infos
+        .iter()
+        .find(|i| i.id == BRIGHTNESS)
+        .expect("brightness");
+    let span = brightness_info.maximum - brightness_info.minimum;
+    let normalised = |raw: i64| {
+        u32::try_from(((raw - brightness_info.minimum) * 1000 + span / 2) / span).expect("u32")
+    };
+    let brightness = controls
+        .standard
+        .iter()
+        .find(|c| c.control == Control::Brightness)
+        .expect("brightness is a standard control here");
+    assert_eq!(
+        brightness.range,
+        Some(StandardRange::Manual { min: 0, max: 1000 })
+    );
+    assert_eq!(
+        brightness.default,
+        Some(ControlValue::Manual(normalised(brightness_info.default)))
+    );
+    assert_eq!(
+        brightness.step, None,
+        "one driver step is 1000/255: no whole step"
+    );
+    // The frame rate from the intervals the format lists.
+    let rate = controls
+        .standard
+        .iter()
+        .find(|c| c.control == Control::FrameRate)
+        .expect("vivid takes a frame interval");
+    let intervals = other
+        .frame_intervals(styx_lemnos::v4l2::FourCc::new(b"YUYV"), width, height)
+        .expect("intervals");
+    let styx_lemnos::v4l2::v4l2::FrameIntervals::Discrete(list) = intervals else {
+        panic!("vivid's webcam lists discrete intervals")
+    };
+    let rates: Vec<u32> = list
+        .iter()
+        .map(|f| u32::try_from(u64::from(f.denominator) * 1000 / u64::from(f.numerator)).unwrap())
+        .collect();
+    assert_eq!(
+        rate.range,
+        Some(StandardRange::Manual {
+            min: *rates.iter().min().unwrap(),
+            max: *rates.iter().max().unwrap()
+        })
+    );
+
+    // Another user of the node sets brightness: the stream reads its controls again.
+    other
+        .set_control(BRIGHTNESS, Raw::Integer(200))
+        .expect("set brightness on the second handle");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let (now, controls) = stream.controls();
+        let value = controls
+            .devices
+            .iter()
+            .find(|c| c.id == BRIGHTNESS)
+            .and_then(|c| c.value);
+        if now > generation && value == Some(200) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the change on the other handle was not read (generation {now}, value {value:?})"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    other
+        .set_control(BRIGHTNESS, Raw::Integer(128))
+        .expect("brightness back to its default");
+    stream.stop();
 }

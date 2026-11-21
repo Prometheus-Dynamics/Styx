@@ -21,12 +21,15 @@ mod layout;
 mod probe;
 mod stream;
 
+pub use controls::{StandardControl, StandardRange};
 pub use error::Error;
 pub use probe::{
     Device, DeviceMenuItem, Format, Intervals, Listing, Node, Opener, Prober, Queue, RawControl,
     Size, SizeRange, Sizes, System, probe, probe_card, probe_input, probe_node,
 };
-pub use stream::{Delivery, State, Status, Stream, StreamConfig};
+pub use stream::{Delivery, NodeControls, State, Status, Stream, StreamConfig};
+/// A driver control's type, as [`RawControl::control_type`] gives it.
+pub use styx_lemnos::v4l2::v4l2::ControlType;
 
 use styx_frame::CopyCounter;
 

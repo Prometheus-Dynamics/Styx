@@ -14,6 +14,35 @@ use styx_lemnos::v4l2::v4l2::{
 };
 
 use crate::Error;
+use crate::RawControl;
+
+/// A Styx control as this node has it, in the control's styx-controls unit: the driver's range,
+/// step and default converted (exposure from 100 us units to microseconds; a normalised control's
+/// driver range is 0..1000 here). The device's own numbers are on its [`RawControl`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StandardControl {
+    pub control: Control,
+    /// `None` when the node does not say (a frame rate with no interval list).
+    pub range: Option<StandardRange>,
+    /// Between valid values in the control's unit; `None` when the driver's step is not a whole
+    /// number of units (a normalised control over an uneven driver range) or not given.
+    pub step: Option<u32>,
+    pub default: Option<ControlValue>,
+    /// Whether the node has an automatic mode for it.
+    pub auto: bool,
+    /// The driver control's flags, for the value's own control.
+    pub read_only: bool,
+    pub inactive: bool,
+    pub grabbed: bool,
+    pub disabled: bool,
+}
+
+/// A standard control's range on a node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StandardRange {
+    Manual { min: u32, max: u32 },
+    Flag,
+}
 
 /// The centre of the arc-second scale for pan and tilt: 0 degrees.
 const ARC_CENTRE: i64 = 648_000;
@@ -314,6 +343,125 @@ impl Table {
         Ok(())
     }
 
+    /// Every Styx control this node maps, as the node has it now: `devices` is the node's controls
+    /// as just read, `rate_milli` the frame rates its interval list allows.
+    pub(crate) fn standard(
+        &self,
+        devices: &[RawControl],
+        rate_milli: Option<(u32, u32)>,
+    ) -> Vec<StandardControl> {
+        let find = |id: u32| devices.iter().find(|d| d.id == id);
+        let flags = |raw: Option<&RawControl>, mut c: StandardControl| {
+            if let Some(raw) = raw {
+                c.read_only = raw.read_only;
+                c.inactive = raw.inactive;
+                c.grabbed = raw.grabbed;
+                c.disabled = raw.disabled;
+            }
+            c
+        };
+        let blank = |control: Control| StandardControl {
+            control,
+            range: None,
+            step: None,
+            default: None,
+            auto: false,
+            read_only: false,
+            inactive: false,
+            grabbed: false,
+            disabled: false,
+        };
+        let auto_on = |id: Option<u32>| id.and_then(find).map(|raw| raw.default != 0);
+        let mut out = Vec::new();
+        for control in self.supported() {
+            let c = match control {
+                Control::Exposure => {
+                    let Some(span) = self.exposure else { continue };
+                    let raw = find(span.id);
+                    let auto_default = self.exposure_mode.and_then(|mode| {
+                        find(mode.id).map(|m| m.default != i64::from(mode.manual))
+                    });
+                    flags(
+                        raw,
+                        StandardControl {
+                            range: Some(StandardRange::Manual {
+                                min: raw_to_exposure(span.min),
+                                max: raw_to_exposure(span.max),
+                            }),
+                            step: raw
+                                .and_then(|r| u32::try_from(r.step.saturating_mul(100)).ok())
+                                .filter(|s| *s > 0),
+                            default: match auto_default {
+                                Some(true) => Some(ControlValue::Auto),
+                                _ => raw.map(|r| ControlValue::Manual(raw_to_exposure(r.default))),
+                            },
+                            auto: self.exposure_mode.is_some(),
+                            ..blank(control)
+                        },
+                    )
+                }
+                Control::FrameRate => StandardControl {
+                    range: rate_milli.map(|(min, max)| StandardRange::Manual { min, max }),
+                    ..blank(control)
+                },
+                other => {
+                    let Some(slot) = self.slots[other.index()] else {
+                        continue;
+                    };
+                    let raw = find(slot.span.id);
+                    let auto_id = match other {
+                        Control::WhiteBalance => self.white_balance_auto,
+                        Control::Focus => self.focus_auto,
+                        _ => None,
+                    };
+                    let (range, step, default) = match slot.shape {
+                        Shape::Flag => (
+                            StandardRange::Flag,
+                            None,
+                            raw.map(|r| ControlValue::Flag(r.default != 0)),
+                        ),
+                        Shape::Integer | Shape::Menu => {
+                            let (min, max) = match slot.scale {
+                                Scale::Linear { lo, hi } => (lo, hi),
+                                _ => (styx_of(slot, slot.span.min), styx_of(slot, slot.span.max)),
+                            };
+                            let step = raw.map(|r| r.step).filter(|s| *s > 0).and_then(|s| {
+                                match slot.scale {
+                                    Scale::Direct | Scale::Centred => u32::try_from(s).ok(),
+                                    Scale::Linear { lo, hi } => {
+                                        let driver =
+                                            u64::try_from(slot.span.max - slot.span.min).ok()?;
+                                        let styx = u64::from(hi - lo) * s;
+                                        (driver > 0 && styx % driver == 0)
+                                            .then(|| u32::try_from(styx / driver).ok())
+                                            .flatten()
+                                    }
+                                }
+                            });
+                            let default = match auto_on(auto_id) {
+                                Some(true) => Some(ControlValue::Auto),
+                                _ => raw.map(|r| ControlValue::Manual(styx_of(slot, r.default))),
+                            };
+                            (StandardRange::Manual { min, max }, step, default)
+                        }
+                    };
+                    flags(
+                        raw,
+                        StandardControl {
+                            range: Some(range),
+                            step,
+                            default,
+                            auto: auto_id.is_some(),
+                            ..blank(control)
+                        },
+                    )
+                }
+            };
+            out.push(c);
+        }
+        out
+    }
+
     fn slot(&self, control: Control) -> Result<Slot, Error> {
         self.slots[control.index()].ok_or(Error::NoControl(control))
     }
@@ -539,6 +687,75 @@ mod tests {
         assert_eq!(exposure_to_raw(1, SPAN), 3);
         assert_eq!(exposure_to_raw(1_000_000, SPAN), 2500);
         assert_eq!(raw_to_exposure(100), 10_000);
+    }
+
+    fn raw(id: u32, min: i64, max: i64, step: u64, default: i64) -> RawControl {
+        RawControl {
+            id,
+            name: String::new(),
+            control_type: ControlType::Integer,
+            min,
+            max,
+            step,
+            default,
+            read_only: false,
+            inactive: false,
+            grabbed: false,
+            disabled: false,
+            value: Some(default),
+            menu: Vec::new(),
+            mapped: None,
+        }
+    }
+
+    /// The standard exposure line is in microseconds while the device line stays in V4L2's 100 µs
+    /// units: range and step times 100, and the default is `Auto` when the exposure mode defaults
+    /// to automatic, the manual default otherwise. The device's flags carry over.
+    #[test]
+    fn the_standard_exposure_is_the_devices_range_in_microseconds() {
+        let span = Span {
+            id: cid::EXPOSURE_ABSOLUTE,
+            min: 3,
+            max: 2047,
+        };
+        let mode = ExposureMode {
+            id: cid::EXPOSURE_AUTO,
+            manual: 1,
+            auto: 3,
+        };
+        let table = Table {
+            exposure: Some(span),
+            exposure_mode: Some(mode),
+            ..Table::default()
+        };
+        let mut absolute = raw(cid::EXPOSURE_ABSOLUTE, 3, 2047, 2, 156);
+        absolute.inactive = true;
+        let auto_default = raw(cid::EXPOSURE_AUTO, 0, 3, 1, 3);
+        let standard = table.standard(&[absolute.clone(), auto_default], None);
+        let exposure = standard
+            .iter()
+            .find(|c| c.control == Control::Exposure)
+            .expect("exposure is reported");
+        assert_eq!(
+            exposure.range,
+            Some(StandardRange::Manual {
+                min: 300,
+                max: 204_700
+            })
+        );
+        assert_eq!(exposure.step, Some(200));
+        assert_eq!(exposure.default, Some(ControlValue::Auto));
+        assert!(exposure.auto);
+        assert!(exposure.inactive && !exposure.read_only);
+
+        // Manual by default: the default is the device's, in microseconds.
+        let manual_default = raw(cid::EXPOSURE_AUTO, 0, 3, 1, 1);
+        let standard = table.standard(&[absolute, manual_default], None);
+        let exposure = standard
+            .iter()
+            .find(|c| c.control == Control::Exposure)
+            .expect("exposure is reported");
+        assert_eq!(exposure.default, Some(ControlValue::Manual(15_600)));
     }
 
     #[test]

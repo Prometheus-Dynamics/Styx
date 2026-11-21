@@ -24,9 +24,9 @@ use styx_lemnos::v4l2::v4l2::{
     BufType, ControlType, ControlValue as Raw, Controls, DequeuedBuffer, DmaBufAccess, Format,
     Memory, QueueBuffer, VideoDevice,
 };
-use styx_lemnos::v4l2::{Fraction, Mapping, monotonic_now};
+use styx_lemnos::v4l2::{Events, Fraction, Mapping, monotonic_now};
 
-use crate::controls::Table;
+use crate::controls::{StandardControl, Table};
 use crate::{Error, RawControl, layout, probe, record_mmap_copy};
 
 /// How long the worker waits for a frame before it looks at its commands again.
@@ -165,7 +165,12 @@ impl Stream {
         let devices = session.devices.clone();
         let (frames_tx, frames_rx) = mpsc::sync_channel(session.queued.len().max(1));
         let (commands_tx, commands_rx) = mpsc::channel();
-        let shared = Arc::new(Shared::new(session.delivery, session.note.clone()));
+        let (_, controls) = session.read_controls();
+        let shared = Arc::new(Shared::new(
+            session.delivery,
+            session.note.clone(),
+            controls,
+        ));
         let env = Env {
             path,
             config,
@@ -235,6 +240,25 @@ impl Stream {
         answer.recv().map_err(|_| Error::Stopped)?
     }
 
+    /// The node's controls as last read ([`NodeControls`]), and the count that moves whenever they
+    /// change (a set through this stream, a change by another user of the node, a reconnect).
+    pub fn controls(&self) -> (u64, Arc<NodeControls>) {
+        let held = self
+            .shared
+            .controls
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        (
+            self.shared.controls_generation.load(Ordering::Acquire),
+            Arc::clone(&held),
+        )
+    }
+
+    /// The count [`Stream::controls`] gives, alone: cheap enough to read every frame.
+    pub fn controls_generation(&self) -> u64 {
+        self.shared.controls_generation.load(Ordering::Acquire)
+    }
+
     /// Every control the node offers, as probed when the stream started: mapped to a Styx control
     /// or not. Nothing is left out; see [`RawControl::mapped`].
     pub fn device_controls(&self) -> &[RawControl] {
@@ -260,9 +284,10 @@ impl Stream {
         answer.recv().map_err(|_| Error::Stopped)?
     }
 
-    /// Sets a passthrough control by its id on the device now. Mapped controls are set with
-    /// [`Stream::set_control`] instead, so that the frame metadata stays true. Passthrough values
-    /// are not replayed after a reconnect: the caller sets them again if the device forgot them.
+    /// Sets a control by its id on the device now, in the driver's units. A mapped control set this
+    /// way moves its Styx control too: the value is read back into the frame metadata. Passthrough
+    /// values are not replayed after a reconnect: the caller sets them again if the device forgot
+    /// them.
     pub fn set_device_control(&self, id: u32, value: i64) -> Result<(), Error> {
         let (reply, answer) = mpsc::sync_channel(1);
         self.commands
@@ -322,6 +347,15 @@ enum Command {
     Stop,
 }
 
+/// A node's controls as last read: every driver control (with its flags and value) and the Styx
+/// controls it maps, in their units. Read again after a set through the stream, a change by another
+/// user of the node (a V4L2 control event), and a reconnect.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NodeControls {
+    pub devices: Vec<RawControl>,
+    pub standard: Vec<StandardControl>,
+}
+
 /// What the stream's consumers and the worker share.
 #[derive(Debug)]
 struct Shared {
@@ -331,6 +365,9 @@ struct Shared {
     reconnects: AtomicU32,
     control_errors: AtomicU32,
     live: Mutex<Live>,
+    /// The node's controls as last read, and the count that moves each time they are read again.
+    controls: Mutex<Arc<NodeControls>>,
+    controls_generation: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -341,7 +378,7 @@ struct Live {
 }
 
 impl Shared {
-    fn new(delivery: Delivery, note: String) -> Self {
+    fn new(delivery: Delivery, note: String, controls: NodeControls) -> Self {
         Self {
             frames: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
@@ -353,6 +390,17 @@ impl Shared {
                 delivery,
                 note,
             }),
+            controls: Mutex::new(Arc::new(controls)),
+            controls_generation: AtomicU64::new(1),
+        }
+    }
+
+    /// Records the controls read now; the count moves when they differ from the last read.
+    fn set_controls(&self, controls: NodeControls) {
+        let mut held = self.controls.lock().unwrap_or_else(PoisonError::into_inner);
+        if **held != controls {
+            *held = Arc::new(controls);
+            self.controls_generation.fetch_add(1, Ordering::AcqRel);
         }
     }
 
@@ -451,6 +499,26 @@ impl Shape {
 }
 
 impl Session {
+    /// The node's controls now: the driver's descriptions, flags and values, the table of the Styx
+    /// controls it maps, and those in their units with the frame rates the current format allows.
+    fn read_controls(&self) -> (Table, NodeControls) {
+        let infos = self.dev.query_controls().unwrap_or_default();
+        let table = Table::from_infos(&self.dev, &infos, self.buf_type);
+        let devices = infos
+            .iter()
+            .map(|info| RawControl::from_info(&self.dev, info))
+            .collect::<Vec<_>>();
+        let fourcc = styx_lemnos::v4l2::FourCc::new(&self.media.code.bytes());
+        let rate = probe::rate_range_milli(&probe::intervals_of(
+            &self.dev,
+            fourcc,
+            self.media.resolution.width.get(),
+            self.media.resolution.height.get(),
+        ));
+        let standard = table.standard(&devices, rate);
+        (table, NodeControls { devices, standard })
+    }
+
     fn open(path: &Path, config: &StreamConfig) -> Result<Session, Error> {
         let dev = VideoDevice::open(path)?;
         let (_queue, buf_type) = probe::queue_of(&dev)
@@ -467,6 +535,11 @@ impl Session {
             )?;
         }
         let infos = dev.query_controls().unwrap_or_default();
+        // A change another user of the node makes (a value, a range, a flag) comes as an event; a
+        // driver without control events still has its controls read after each set here.
+        for info in &infos {
+            let _ = dev.subscribe_control(info.id, false);
+        }
         let table = Table::from_infos(&dev, &infos, buf_type);
         let devices = infos
             .iter()
@@ -819,6 +892,7 @@ impl Env {
                     self.table = session.table;
                     self.devices = session.devices.clone();
                     self.reapply(&session);
+                    self.read_controls(&session);
                     self.attempt = 0;
                     self.shared.reconnects.fetch_add(1, Ordering::Relaxed);
                     self.shared
@@ -828,6 +902,14 @@ impl Env {
                 Err(error) => self.last_error = error.to_string(),
             }
         }
+    }
+
+    /// Reads the node's controls again and shares them.
+    fn read_controls(&mut self, session: &Session) {
+        let (table, controls) = session.read_controls();
+        self.table = table;
+        self.devices.clone_from(&controls.devices);
+        self.shared.set_controls(controls);
     }
 
     /// Sets every mapped control back to the value it was asked for.
@@ -877,6 +959,9 @@ impl Env {
                 reply,
             } => {
                 let result = self.set(session, control, value);
+                if let (Ok(()), Some(session)) = (&result, session) {
+                    self.read_controls(session);
+                }
                 let _ = reply.send(result);
                 false
             }
@@ -885,7 +970,11 @@ impl Env {
                 false
             }
             Command::SetDevice { id, value, reply } => {
-                let _ = reply.send(self.set_device(session, id, value));
+                let result = self.set_device(session, id, value);
+                if let (Ok(()), Some(session)) = (&result, session) {
+                    self.read_controls(session);
+                }
+                let _ = reply.send(result);
                 false
             }
         }
@@ -908,16 +997,11 @@ impl Env {
             .ok_or_else(|| Error::DeviceValue(format!("{} has no integer value", control.name)))
     }
 
-    /// Sets a passthrough control by id on the open device, after checking it can take the value.
-    fn set_device(&self, session: Option<&Session>, id: u32, value: i64) -> Result<(), Error> {
+    /// Sets a control by id on the open device, after checking it can take the value. A mapped
+    /// control's Styx value is read back, so the frame metadata stays true.
+    fn set_device(&mut self, session: Option<&Session>, id: u32, value: i64) -> Result<(), Error> {
         let control = self.device(id)?;
-        if let Some(mapped) = control.mapped {
-            return Err(Error::DeviceValue(format!(
-                "{} is mapped to the Styx control {}: set that one",
-                control.name,
-                mapped.name()
-            )));
-        }
+        let mapped = control.mapped;
         if control.read_only {
             return Err(Error::DeviceValue(format!("{} is read-only", control.name)));
         }
@@ -953,6 +1037,11 @@ impl Env {
         };
         let session = session.ok_or_else(|| Error::Lost("the device is not open".into()))?;
         session.dev.set_control(id, raw)?;
+        if let Some(control) = mapped
+            && let Some(value) = self.table.read(&session.dev, session.buf_type, control)
+        {
+            self.wanted[control.index()] = value;
+        }
         Ok(())
     }
 
@@ -1000,6 +1089,14 @@ impl Env {
                         return Next::Stop;
                     }
                 }
+            }
+            // Another user of the node changed a control: read them again.
+            let mut changed = false;
+            while let Ok(Some(_event)) = session.dev.dequeue_event() {
+                changed = true;
+            }
+            if changed {
+                self.read_controls(session);
             }
             if let Err(error) = session.requeue_free() {
                 return Next::Fault(error);

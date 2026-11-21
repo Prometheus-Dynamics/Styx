@@ -398,6 +398,16 @@ pub struct RawControl {
     pub step: u64,
     pub default: i64,
     pub read_only: bool,
+    /// Not in effect under the current settings (`V4L2_CTRL_FLAG_INACTIVE`: a manual exposure while
+    /// exposure is automatic). The driver still takes a value.
+    pub inactive: bool,
+    /// Held by another user of the device (`V4L2_CTRL_FLAG_GRABBED`).
+    pub grabbed: bool,
+    /// Present but disabled (`V4L2_CTRL_FLAG_DISABLED`).
+    pub disabled: bool,
+    /// The value read with the description. `None` for controls with no single integer value
+    /// (buttons, classes, compound controls), write-only ones, and a read the driver refused.
+    pub value: Option<i64>,
     /// The items of a menu control, in index order; empty for other types.
     pub menu: Vec<DeviceMenuItem>,
     /// The Styx control this one maps to, when this crate maps it.
@@ -428,6 +438,21 @@ impl RawControl {
         } else {
             Vec::new()
         };
+        let readable = matches!(
+            info.control_type,
+            ControlType::Integer
+                | ControlType::Integer64
+                | ControlType::Boolean
+                | ControlType::Menu
+                | ControlType::IntegerMenu
+                | ControlType::Bitmask
+        ) && !info.flags.contains(ControlFlags::WRITE_ONLY)
+            && !info.flags.contains(ControlFlags::DISABLED);
+        let value = if readable {
+            dev.control(info.id).ok().and_then(|v| v.as_i64())
+        } else {
+            None
+        };
         RawControl {
             id: info.id,
             name: info.name.clone(),
@@ -437,6 +462,10 @@ impl RawControl {
             step: info.step,
             default: info.default,
             read_only: info.flags.contains(ControlFlags::READ_ONLY),
+            inactive: info.flags.contains(ControlFlags::INACTIVE),
+            grabbed: info.flags.contains(ControlFlags::GRABBED),
+            disabled: info.flags.contains(ControlFlags::DISABLED),
+            value,
             menu,
             mapped: control_of(info.id),
         }
@@ -503,7 +532,7 @@ fn sizes_of(dev: &VideoDevice, fourcc: styx_lemnos::v4l2::FourCc, sizes: FrameSi
     }
 }
 
-fn intervals_of(
+pub(crate) fn intervals_of(
     dev: &VideoDevice,
     fourcc: styx_lemnos::v4l2::FourCc,
     width: u32,
@@ -526,6 +555,23 @@ fn intervals_of(
         },
         Err(_) => Intervals::Unknown,
     }
+}
+
+/// The frame rates the intervals allow, in millihertz: the longest interval's rate up to the
+/// shortest's. `None` when the driver did not say.
+pub(crate) fn rate_range_milli(intervals: &Intervals) -> Option<(u32, u32)> {
+    let milli = |i: &Interval| {
+        u32::try_from(u64::from(i.denominator.get()) * 1000 / u64::from(i.numerator.get())).ok()
+    };
+    let (shortest, longest) = match intervals {
+        Intervals::Discrete(list) => {
+            let rates: Vec<u32> = list.iter().filter_map(milli).collect();
+            return Some((*rates.iter().min()?, *rates.iter().max()?));
+        }
+        Intervals::Stepwise { min, max, .. } | Intervals::Continuous { min, max } => (min, max),
+        Intervals::Unknown => return None,
+    };
+    Some((milli(longest)?, milli(shortest)?))
 }
 
 /// A driver's interval as a format-crate interval; a zero numerator or denominator is no interval.

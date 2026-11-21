@@ -10,7 +10,10 @@ use styx_controls::{Control, ControlValue, DeviceKind, FrameMetadata, Update};
 use styx_frame::FrameLease;
 use styx_libcamera::{Capture as LibcameraStream, CaptureConfig, Error as LibcameraError};
 use styx_native_run::{Clock, Event, Ranges, Session, State};
-use styx_v4l2::{State as V4l2State, Stream, StreamConfig};
+use styx_v4l2::{
+    NodeControls, RawControl, StandardControl, StandardRange, State as V4l2State, Stream,
+    StreamConfig,
+};
 
 use crate::capture::{Capture, CaptureError, Edge, RateReport, Status};
 use crate::controls::{
@@ -323,9 +326,107 @@ impl Capture for V4l2Capture {
         }
     }
 
+    fn controls_info(&self) -> ControlsInfo {
+        match &self.stream {
+            Some(stream) => v4l2_controls(&stream.controls().1),
+            None => ControlsInfo::default(),
+        }
+    }
+
+    fn controls_generation(&self) -> u64 {
+        self.stream.as_ref().map_or(0, Stream::controls_generation)
+    }
+
+    fn set_device(&mut self, id: u32, value: i64) -> Result<(), CaptureError> {
+        let stream = self.stream.as_ref().ok_or(CaptureError::Stopped)?;
+        stream
+            .set_device_control(id, value)
+            .map_err(|e| CaptureError::Failed(e.to_string()))
+    }
+
     fn stop(&mut self) {
         // Dropping the stream stops it and waits for its thread.
         self.stream = None;
+    }
+}
+
+fn v4l2_access(read_only: bool, inactive: bool, grabbed: bool, disabled: bool) -> Access {
+    // The strongest reason first: a disabled control is not there to set at all.
+    if disabled {
+        Access::Disabled
+    } else if read_only {
+        Access::ReadOnly
+    } else if grabbed {
+        Access::Grabbed
+    } else if inactive {
+        Access::Inactive
+    } else {
+        Access::ReadWrite
+    }
+}
+
+fn v4l2_standard(c: &StandardControl) -> StandardInfo {
+    let range = c.range.map(|r| match r {
+        StandardRange::Manual { min, max } => Span::Manual { min, max },
+        StandardRange::Flag => Span::Flag,
+    });
+    StandardInfo {
+        control: c.control,
+        range,
+        step: c.step,
+        default: c.default,
+        // V4L2 has no narrower range in effect than the one the driver gives now (it reports a
+        // changed range as the control's range, read again on its event).
+        effective: match range {
+            Some(Span::Manual { min, max }) => Some((min, max)),
+            _ => None,
+        },
+        auto: Some(c.auto),
+        access: v4l2_access(c.read_only, c.inactive, c.grabbed, c.disabled),
+    }
+}
+
+fn v4l2_device(raw: &RawControl) -> DeviceInfo {
+    let control = raw.device_control();
+    let menu = raw
+        .menu
+        .iter()
+        .map(|item| MenuEntry {
+            value: item.value,
+            label: Some(item.name.clone()),
+        })
+        .collect();
+    let bounded = !matches!(control.kind, DeviceKind::Button | DeviceKind::Other);
+    DeviceInfo {
+        id: raw.id,
+        name: raw.name.clone(),
+        kind: control.kind,
+        min: bounded.then_some(raw.min),
+        max: bounded.then_some(raw.max),
+        // The driver's step; 0 is "does not say".
+        step: (bounded && raw.step != 0).then_some(raw.step),
+        default: bounded.then_some(raw.default),
+        effective: bounded.then_some((raw.min, raw.max)),
+        value: raw.value,
+        standard: raw.mapped,
+        access: v4l2_access(raw.read_only, raw.inactive, raw.grabbed, raw.disabled),
+        menu,
+    }
+}
+
+/// A V4L2 node's controls: the Styx controls it maps in their units (exposure in microseconds from
+/// the driver's 100 us units, normalised controls 0..1000 over the driver's range), and every
+/// driver control as the driver gives it, by its `V4L2_CID_*`. Control classes (headings) are left
+/// out: they are not controls.
+fn v4l2_controls(node: &NodeControls) -> ControlsInfo {
+    ControlsInfo {
+        standard: node.standard.iter().map(v4l2_standard).collect(),
+        device: node
+            .devices
+            .iter()
+            .filter(|raw| raw.control_type != styx_v4l2::ControlType::CtrlClass)
+            .map(v4l2_device)
+            .collect(),
     }
 }
 
@@ -407,5 +508,102 @@ impl Capture for LibcameraCapture {
 
     fn stop(&mut self) {
         self.camera = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use styx_v4l2::{ControlType, DeviceMenuItem};
+
+    fn raw(id: u32, control_type: ControlType) -> RawControl {
+        RawControl {
+            id,
+            name: format!("control {id}"),
+            control_type,
+            min: 0,
+            max: 10,
+            step: 1,
+            default: 5,
+            read_only: false,
+            inactive: false,
+            grabbed: false,
+            disabled: false,
+            value: Some(5),
+            menu: Vec::new(),
+            mapped: None,
+        }
+    }
+
+    #[test]
+    fn a_v4l2_controls_access_is_its_strongest_reason() {
+        assert_eq!(v4l2_access(false, false, false, false), Access::ReadWrite);
+        assert_eq!(v4l2_access(false, true, false, false), Access::Inactive);
+        assert_eq!(v4l2_access(false, true, true, false), Access::Grabbed);
+        assert_eq!(v4l2_access(true, true, true, false), Access::ReadOnly);
+        assert_eq!(v4l2_access(true, true, true, true), Access::Disabled);
+    }
+
+    /// Class headings are not controls; a button has no range; a step of 0 is "does not say";
+    /// menu entries keep the driver's names.
+    #[test]
+    fn a_v4l2_nodes_device_controls_are_the_drivers_less_its_headings() {
+        let mut menu = raw(3, ControlType::Menu);
+        menu.menu = vec![
+            DeviceMenuItem {
+                value: 0,
+                name: "Off".into(),
+            },
+            DeviceMenuItem {
+                value: 2,
+                name: "On".into(),
+            },
+        ];
+        let mut stepless = raw(4, ControlType::Integer);
+        stepless.step = 0;
+        stepless.grabbed = true;
+        let node = NodeControls {
+            devices: vec![
+                raw(1, ControlType::CtrlClass),
+                raw(2, ControlType::Button),
+                menu,
+                stepless,
+            ],
+            standard: Vec::new(),
+        };
+        let info = v4l2_controls(&node);
+        let ids: Vec<u32> = info.device.iter().map(|d| d.id).collect();
+        assert_eq!(ids, [2, 3, 4]);
+
+        let button = &info.device[0];
+        assert_eq!(button.kind, DeviceKind::Button);
+        assert_eq!(
+            (button.min, button.max, button.step, button.default),
+            (None, None, None, None)
+        );
+        assert_eq!(button.effective, None);
+
+        let menu = &info.device[1];
+        assert_eq!(menu.kind, DeviceKind::Menu);
+        assert_eq!(
+            menu.menu,
+            [
+                MenuEntry {
+                    value: 0,
+                    label: Some("Off".into())
+                },
+                MenuEntry {
+                    value: 2,
+                    label: Some("On".into())
+                },
+            ]
+        );
+        assert_eq!(menu.step, Some(1));
+        assert_eq!(menu.effective, Some((0, 10)));
+
+        let stepless = &info.device[2];
+        assert_eq!(stepless.step, None);
+        assert_eq!(stepless.access, Access::Grabbed);
+        assert_eq!(stepless.value, Some(5));
     }
 }
