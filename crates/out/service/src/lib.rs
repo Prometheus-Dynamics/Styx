@@ -36,19 +36,19 @@
 //!
 //! # Frames
 //!
-//! Every frame of a camera is a `FrameLease` from the camera's own stream. The service's own
-//! path does not copy or allocate per frame, and `styx_frame::copy_counters` stays zero (the
-//! tests check both). The socket way out (a `styx-socket` producer per camera, so that other
-//! processes read the frames without a copy) is not wired yet: its producer publishes only the
-//! buffers it takes itself (`Producer::begin`), and the native streams fill the buffers Lemnos
-//! hands out, so a camera's frames cannot be published without a copy until the stream can fill
-//! buffers the producer supplies. Orion and Daedalus outlets are other crates' features and are
-//! not wired here.
+//! Every frame of a camera is a `FrameLease` from the camera's own stream. The service's raw path
+//! does not copy or allocate per frame, and `styx_frame::copy_counters` stays zero for it (the
+//! tests check both). Each camera's frames are published on its own socket by a `styx-socket`
+//! producer over the camera's own pool (`Producer::with_pool`), so other processes read the
+//! buffers the camera filled. With the config's `isp` key set, each processed output has a socket
+//! of its own; the PiSP back end's input is one copy of the raw frame, counted at the copy site
+//! `pisp-be-input`. Orion and Daedalus readers are other crates' features (`styx-orion`,
+//! `styx-daedalus`) and read these sockets; they are not wired into the service.
 //!
 //! # Not wired in this service
 //!
 //! - The 3A controller. The config accepts `tuning_dirs`, and nothing reads them yet.
-//! - The socket and Orion and Daedalus ways out (see above). The [`Outlets`] trait is the hook.
+//! - Orion and Daedalus ways out inside the service (see above). The [`Outlets`] trait is the hook.
 //! - Degraded health from a backend (see above).
 
 pub mod access;

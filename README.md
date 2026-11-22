@@ -6,3 +6,6 @@ libcamera, V4L2 and FFmpeg for coverage.
 
 This is the `next` branch, a rebuild in progress. The working library is on `dev`. Start with
 [`docs/design.md`](docs/design.md) and [`AGENTS.md`](AGENTS.md).
+
+Using it: the user guide is [`docs/guide/`](docs/guide/README.md): every camera backend, ISP and
+way out, the tools, and what `next` replaces on `dev`.
