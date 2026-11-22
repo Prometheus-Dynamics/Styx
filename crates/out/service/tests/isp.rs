@@ -699,6 +699,14 @@ fn nine_buffers_run_the_isp_at_a_hand_off_of_one_and_leave_raw_readers_a_frame()
         Some("0"),
         "the held frame was never cut: {line}"
     );
+    // The service's own Lemnos reader never found itself at its declared hold (Lemnos's `AtLimit`,
+    // which only the reader counts): the hold arithmetic for 9 buffers holds with a raw reader
+    // keeping a frame. The field is the one the board sheet's P4.c reads.
+    assert_eq!(
+        field(&line, "lemnos_at_limit"),
+        Some("0"),
+        "the service's reader stayed within its hold: {line}"
+    );
     println!("proof: case 7 {line}");
 }
 

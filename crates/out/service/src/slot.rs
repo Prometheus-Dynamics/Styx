@@ -278,6 +278,10 @@ pub struct CameraStatus {
     /// Frames the camera's own Lemnos stream reader was too late for, since the service started
     /// (`FrameStream::skipped`: overwritten or taken back before a read). Set from the capture.
     pub lemnos_skipped: u64,
+    /// Reads that found the camera's own Lemnos stream reader at its declared hold, since the service
+    /// started (Lemnos's `AtLimit`: no frame read because the service held every buffer it
+    /// declared). Lemnos prints no such count; this is the reader's own. Set from the capture.
+    pub lemnos_at_limit: u64,
     /// The last frame delivered.
     pub last_frame: Option<FrameSummary>,
     /// The frame rate asked for, in milli-fps: the config's `fps_milli`, or the last frame-rate
@@ -429,6 +433,7 @@ impl Slot {
             skipped: 0,
             discontinuities: 0,
             lemnos_skipped: 0,
+            lemnos_at_limit: 0,
             last_frame: None,
             requested_milli: settings.fps_milli,
             achieved_milli: None,
@@ -641,9 +646,11 @@ impl Slot {
         status.rate_clamped = rate.clamped;
     }
 
-    /// The Lemnos reader's skipped-frame count, as the capture reports it.
-    pub(crate) fn set_lemnos_skipped(&self, skipped: u64) {
-        lock(&self.status).lemnos_skipped = skipped;
+    /// The Lemnos reader's skipped-frame and at-limit counts, as the capture reports them.
+    pub(crate) fn set_lemnos_counts(&self, skipped: u64, at_limit: u64) {
+        let mut status = lock(&self.status);
+        status.lemnos_skipped = skipped;
+        status.lemnos_at_limit = at_limit;
     }
 
     /// The mode choice a native camera started with.

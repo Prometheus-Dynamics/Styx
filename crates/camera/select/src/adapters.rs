@@ -152,6 +152,10 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
         self.session.skipped()
     }
 
+    fn lemnos_at_limit(&self) -> u64 {
+        self.session.at_limit()
+    }
+
     fn hold(&self) -> Option<u32> {
         self.session.hold()
     }

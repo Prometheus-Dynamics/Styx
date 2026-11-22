@@ -335,6 +335,9 @@ pub struct Session<'a, C: Clock> {
     /// Frames the readers of earlier runs were too late for (`Frames::skipped`), summed over the
     /// runs this session has stopped.
     skipped_done: u64,
+    /// Reads that found the reader at its declared hold (`Frames::at_limit`), summed over the runs
+    /// this session has stopped.
+    at_limit_done: u64,
     /// When the last frame came (the session clock), or when the session started running: the
     /// silence the no-frame report measures from.
     last_frame_at: Option<Duration>,
@@ -399,6 +402,7 @@ impl<'a, C: Clock> Session<'a, C> {
             stop: Arc::new(AtomicBool::new(false)),
             running: None,
             skipped_done: 0,
+            at_limit_done: 0,
             last_frame_at: None,
             silenced: false,
             stall_without_reason: None,
@@ -852,6 +856,7 @@ impl<'a, C: Clock> Session<'a, C> {
     fn take_running(&mut self) -> Option<Running> {
         let running = self.running.take()?;
         self.skipped_done += running.frames.skipped();
+        self.at_limit_done += running.frames.at_limit();
         Some(running)
     }
 
@@ -859,6 +864,13 @@ impl<'a, C: Clock> Session<'a, C> {
     /// (`FrameStream::skipped`) over every run so far. A reader that keeps up never counts one.
     pub fn skipped(&self) -> u64 {
         self.skipped_done + self.running.as_ref().map_or(0, |r| r.frames.skipped())
+    }
+
+    /// Reads that found this session's reader at its declared hold, in all (`Frames::at_limit`,
+    /// Lemnos's `AtLimit`) over every run so far: no frame was read because every buffer the reader
+    /// declared was still held. A reader that gives frames back in time never counts one.
+    pub fn at_limit(&self) -> u64 {
+        self.at_limit_done + self.running.as_ref().map_or(0, |r| r.frames.at_limit())
     }
 
     /// The buffers the running stream declared it holds at once, when it was taken

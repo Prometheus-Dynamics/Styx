@@ -16,6 +16,9 @@ pub struct ServiceCamera {
     pub skipped: Option<u64>,
     /// The Lemnos stream reader's own skipped count (`lemnos_skipped`), apart from `skipped`.
     pub lemnos_skipped: Option<u64>,
+    /// Reads that found the service's own Lemnos reader at its declared hold (`lemnos_at_limit`,
+    /// Lemnos's `AtLimit`). `None` from a service that does not report it: never read as 0.
+    pub lemnos_at_limit: Option<u64>,
     pub last_id: Option<u64>,
     pub publish: String,
     pub readers: Option<u64>,
@@ -132,6 +135,7 @@ fn camera_json(c: &Option<ServiceCamera>) -> Json {
             ("frames", Json::opt_int(c.frames)),
             ("skipped", Json::opt_int(c.skipped)),
             ("lemnos_skipped", Json::opt_int(c.lemnos_skipped)),
+            ("lemnos_at_limit", Json::opt_int(c.lemnos_at_limit)),
             ("last_id", Json::opt_int(c.last_id)),
             ("publish", Json::Str(c.publish.clone())),
             ("readers", Json::opt_int(c.readers)),
@@ -454,6 +458,14 @@ impl Report {
                     fmt_int(c.hardware_reserve),
                     fmt_int(c.reclaimed),
                     fmt_int(c.reserve_cuts)
+                ),
+            );
+            row(
+                "service Lemnos reader",
+                format!(
+                    "skipped {}, at its hold {}",
+                    fmt_int(c.lemnos_skipped),
+                    fmt_int(c.lemnos_at_limit)
                 ),
             );
         }

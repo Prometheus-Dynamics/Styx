@@ -116,6 +116,13 @@ pub trait Capture {
         0
     }
 
+    /// Reads that found this reader at its declared hold, in all (a Lemnos stream's `AtLimit`, on a
+    /// native camera): no frame was read because the reader held every buffer it declared. 0 where
+    /// the backend has no such count.
+    fn lemnos_at_limit(&self) -> u64 {
+        0
+    }
+
     /// The buffers of the camera's pool this reader declared it holds at once, every lease and
     /// share of its frames included (a native camera's Lemnos stream); `None` where the backend
     /// bounds no hold. A frame in hand is one of them, so whatever keeps frames past it (a ring of

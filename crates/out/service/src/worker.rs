@@ -674,7 +674,7 @@ fn pump_frames(
             }
         }
         let next = capture.next_frame(FRAME_WAIT);
-        slot.set_lemnos_skipped(capture.lemnos_skipped());
+        slot.set_lemnos_counts(capture.lemnos_skipped(), capture.lemnos_at_limit());
         match next {
             Ok(Some(lease)) => {
                 delivered = true;
