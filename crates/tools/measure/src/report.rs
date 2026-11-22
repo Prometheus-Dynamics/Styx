@@ -258,6 +258,7 @@ impl Report {
                 ("max", Json::opt_int(f.latency.max())),
                 ("samples", Json::Int(f.latency.len())),
                 ("negative_samples", Json::Int(f.negative_latency)),
+                ("since_previous_capture_max", Json::opt_int(f.since_previous_capture_max)),
                 ("note", Json::Str("median and p99 are bucket midpoints (within 3 %); min and max are exact".into())),
             ])),
             ("made_by", Json::Object(
@@ -394,6 +395,10 @@ impl Report {
                 fmt_int(f.latency.quantile(0.99)),
                 fmt_int(f.latency.max())
             ),
+        );
+        row(
+            "longest previous capture to next frame (ns)",
+            fmt_int(f.since_previous_capture_max),
         );
         for (maker, m) in crate::stats::MAKERS.iter().zip(&f.made_by) {
             if m.delivered > 0 {

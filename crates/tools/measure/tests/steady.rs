@@ -2,11 +2,11 @@
 //! service in this process, with and without the soft ISP, and the allocations this thread makes
 //! while the loop runs are counted. Other threads (the service's) are not counted.
 //!
-//! A reader that keeps up sees every frame the service had for it, with and without the soft ISP,
-//! as long as the ISP's time per frame is below (keep - 1) frame periods (the window the service
-//! keeps for it). A frame the service itself never had (its own reader was late for the camera's
-//! stream, or its ring had no buffer for it: a busy machine) is a gap the reader sees and did not
-//! cause. The service counts those, and the reader counts the frames its own ring skipped when it
+//! A reader that keeps up sees every frame the service had for it, with and without the soft ISP:
+//! the frame it wants next is younger than (keep - 1) frame periods when it comes back for it (the
+//! window the service keeps for it while it has a frame in hand). A frame the service itself never
+//! had (its own reader was late for the camera's stream, or its ring had no buffer for it: a busy
+//! machine) is a gap the reader sees and did not cause. The service counts those, and the reader counts the frames its own ring skipped when it
 //! was late, so the claim is checked against the counts: every gap the reader sees is a frame
 //! the service lost or the ring skipped, and a reader that kept up was skipped nothing. So with
 //! no loss upstream and a reader that kept up, there is no gap.
@@ -157,32 +157,22 @@ fn the_read_loop_allocates_nothing_per_frame() {
              ring skipped {skipped}: a gap with no frame behind it",
             session.stats.gaps
         );
-        // The claim: the ring skips nothing for a reader that keeps up. With the ISP it applies
-        // while the ISP's time per frame is below (keep - 1) frame periods.
-        let bound_ns = (keep as f64 - 1.0) * period_ns;
-        let isp_max = session
-            .isp_stats()
-            .and_then(|s| s.times.max())
-            .map(|ns| ns as f64);
-        let within_bound = isp.is_none() || isp_max.is_some_and(|m| m < bound_ns);
-        // "Keeps up" is checked, not assumed: the longest capture-to-reader time covers a stall
-        // of the reader (a busy machine).
-        let latency_max = session.stats.latency.max().map(|ns| ns as f64);
-        if latency_max.is_some_and(|m| m >= bound_ns) {
+        // The claim: the ring skips nothing for a reader that keeps up, with or without the ISP.
+        // "Keeps up" is the age of the frame it wanted when it came back for it, not the latency
+        // of the frame it got (after a skip that one is younger): the time since the previous
+        // capture below `keep` periods (see tests/read.rs for the window).
+        let bound_ns = keep as f64 * period_ns;
+        let since_previous = session.stats.since_previous_capture_max.map(|ns| ns as f64);
+        if since_previous.is_some_and(|m| m >= bound_ns) {
             println!(
-                "isp {isp:?}: capture-to-reader max {latency_max:?} ns is not below {bound_ns} ns: the reader was held up; no skip by the ring not asserted ({} skipped)",
+                "isp {isp:?}: previous capture to next frame max {since_previous:?} ns is not below {bound_ns} ns: the reader was held up; no skip by the ring not asserted ({} skipped)",
                 session.reader_stats().skipped
             );
-        } else if within_bound {
+        } else {
             assert_eq!(
                 session.reader_stats().skipped,
                 0,
                 "the ring skipped no frame for a reader that kept up"
-            );
-        } else {
-            println!(
-                "isp {isp:?}: soft ISP max {isp_max:?} ns is not below {bound_ns} ns; no skip by the ring not asserted ({} skipped)",
-                session.reader_stats().skipped
             );
         }
         assert!(stop.is_some());

@@ -40,6 +40,11 @@ pub struct FrameStats {
     /// Capture to reader, now minus the capture time (ns). Negative values are counted apart.
     pub latency: Histogram,
     pub negative_latency: u64,
+    /// The longest time from the previous frame's capture to the reader having the next frame
+    /// (ns); the first frame after a producer stall is left out. This is what says whether a reader kept up: the frame it
+    /// wanted next was this old, less one frame period, when it came back for it. A frame the
+    /// ring skipped is not in `latency` (the reader got a younger one instead); it is here.
+    pub since_previous_capture_max: Option<u64>,
     /// The first frames one by one, `[id, capture time, time the reader had it]` in ns, up to
     /// the room reserved by [`FrameStats::keep_trace`]. Empty unless asked for.
     pub trace: Vec<[u64; 3]>,
@@ -95,6 +100,7 @@ impl FrameStats {
             intervals: Histogram::new(),
             latency: Histogram::new(),
             negative_latency: 0,
+            since_previous_capture_max: None,
             trace: Vec::new(),
             made_by: Default::default(),
             made_by_unknown: 0,
@@ -142,6 +148,11 @@ impl FrameStats {
             self.stall_pending = false;
         } else if let Some(prev) = self.prev_capture_ns {
             self.intervals.record(capture_ns.saturating_sub(prev));
+            let since = now_ns.saturating_sub(prev);
+            self.since_previous_capture_max = Some(
+                self.since_previous_capture_max
+                    .map_or(since, |m| m.max(since)),
+            );
         }
         self.prev_seen_ns = Some(now_ns);
         self.prev_capture_ns = Some(capture_ns);
@@ -211,6 +222,24 @@ pub struct IspStats {
 #[cfg(test)]
 mod tests {
     use super::{FrameStats, MadeBy};
+
+    #[test]
+    fn a_reader_held_up_past_skipped_frames_shows_it_since_the_previous_capture() {
+        // Frames every 10 ns. The reader has 1 at 15, then is held up and the ring skips 2..4:
+        // it has 5 at 52, only 2 ns after its capture. Its latency says nothing of the hold-up;
+        // the time since the previous capture (10) does: 42, so frame 2 was 32 old when asked for.
+        let mut s = FrameStats::new();
+        s.record(1, 10, 15, true);
+        s.record(5, 50, 52, true);
+        assert_eq!(s.latency.max(), Some(5));
+        assert_eq!(s.since_previous_capture_max, Some(42));
+        s.record(6, 60, 61, true);
+        assert_eq!(s.since_previous_capture_max, Some(42));
+        // Across a producer stall the wait is the stall's, not the reader's.
+        s.across_stall();
+        s.record(0, 1000, 1001, true);
+        assert_eq!(s.since_previous_capture_max, Some(42));
+    }
 
     #[test]
     fn frames_are_counted_by_maker_with_their_latency() {

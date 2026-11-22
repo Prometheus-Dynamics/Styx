@@ -145,11 +145,9 @@ fn check_report(path: &std::path::Path, isp: bool) {
     }
 
     assert_eq!(json_u64(&v, &["frames", "delivered"]), FRAMES, "{text}");
-    // The claim: a reader that keeps up gets every frame, no gap and no skip. Without the ISP it
-    // always applies. With the ISP it applies while the ISP's time per frame is below (keep - 1)
-    // frame periods, the window the ring keeps for the reader (checked below, with the ISP's
-    // numbers). Where the bound is exceeded, the reader itself is late: the gaps must still be
-    // counted skips, and that is what is asserted instead.
+    // The claim: a reader that keeps up gets every frame, no gap and no skip, with or without the
+    // ISP (checked below against the ring's window). Where the reader was late, the gaps must
+    // still be counted skips, and that is what is asserted instead.
     let gaps = json_u64(&v, &["frames", "gaps"]);
     let skipped = json_u64(&v, &["frames", "skipped_by_ring"]);
     assert_eq!(json_u64(&v, &["frames", "duplicates"]), 0, "{text}");
@@ -214,31 +212,26 @@ fn check_report(path: &std::path::Path, isp: bool) {
         keep, 3.0,
         "keep is min(history 8, buffers 8 - reserve 5): {text}"
     );
-    let isp_max = if isp {
-        json_u64(&v, &["isp", "time_ns", "max"]) as f64
-    } else {
-        0.0
-    };
-    let bound_ns = (keep - 1.0) * period_ns;
-    // "Keeps up" is checked, not assumed: the longest time from a frame's capture to the reader
-    // holding it covers a stall of the reader, of the service or of the simulated camera (a busy
-    // machine). A frame older than the keep window when it was read says somebody stalled.
-    let latency_max = json_u64(&v, &["latency_ns", "max"]) as f64;
-    if latency_max >= bound_ns {
+    // "Keeps up" is checked, not assumed, and not from the latency of the frames the reader got:
+    // a reader held up past frames the ring skipped gets a younger frame next, and its latency
+    // looks fine. What decides a skip is how old the frame the reader wanted was when it came
+    // back for it. While the reader has a frame in hand (the soft ISP's time included), that
+    // frame is one of the `keep` and the ring keeps the newest `keep - 1` beside it; the next
+    // frame is cut once `keep - 1` more are published. Published is no earlier than captured, so
+    // the next frame is safe while it is younger than (keep - 1) periods when asked for: the time
+    // since the previous capture is below `keep` periods.
+    let bound_ns = keep * period_ns;
+    let since_previous = json_u64(&v, &["latency_ns", "since_previous_capture_max"]) as f64;
+    if since_previous >= bound_ns {
         println!(
-            "capture-to-reader max {latency_max} ns is not below (keep - 1) frame periods \
-             ({bound_ns} ns): a process was held up, zero gaps is not asserted for this run \
-             ({gaps} gaps, {skipped} skips)"
-        );
-    } else if !isp || isp_max < bound_ns {
-        assert_eq!(gaps, 0, "a reader that keeps up has no gaps: {text}");
-        assert_eq!(skipped, 0, "the ring skipped no frame: {text}");
-    } else {
-        println!(
-            "soft ISP max {isp_max} ns is not below (keep - 1) frame periods ({bound_ns} ns): \
-             zero gaps is not asserted for this run ({gaps} gaps, {skipped} skips)"
+            "previous capture to next frame max {since_previous} ns is not below keep frame \
+             periods ({bound_ns} ns): the reader (or a process before it) was held up; zero gaps \
+             is not asserted for this run ({gaps} gaps, {skipped} skips)"
         );
         assert!(gaps <= skipped, "{gaps} gaps but {skipped} skips: {text}");
+    } else {
+        assert_eq!(gaps, 0, "a reader that keeps up has no gaps: {text}");
+        assert_eq!(skipped, 0, "the ring skipped no frame: {text}");
     }
 
     if isp {
