@@ -107,12 +107,25 @@ impl Link {
     /// Runs one job's work on the session, opening it first when it is not open. Records a
     /// failure for the backoff, and leaves a refusal to the caller.
     pub fn run(&mut self, work: &[u8]) -> Result<(), CodecError> {
+        self.run_with(|session| session.run(work)).map(|_| ())
+    }
+
+    /// Runs one job's work as [`Self::run`] does, with its read-back copied into `read_back`
+    /// ([`Session::run_reading`]). Returns the read-back count.
+    pub fn run_reading(&mut self, work: &[u8], read_back: &mut [u8]) -> Result<u32, CodecError> {
+        self.run_with(|session| session.run_reading(work, read_back))
+    }
+
+    fn run_with(
+        &mut self,
+        job: impl FnOnce(&mut Box<dyn Session>) -> Result<u32, CodecError>,
+    ) -> Result<u32, CodecError> {
         let now = self.now_ns();
         let session = self.session(now)?;
-        match session.run(work) {
-            Ok(_) => {
+        match job(session) {
+            Ok(count) => {
                 self.failures = 0;
-                Ok(())
+                Ok(count)
             }
             Err(error @ CodecError::Rejected(_)) => Err(error),
             Err(error) => {

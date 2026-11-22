@@ -31,6 +31,9 @@ lemnos-driver-isp600 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.gi
 lemnos-driver-k230isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12", default-features = false }
 lemnos-driver-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12", default-features = false }
 lemnos-driver-rkisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12", default-features = false }
+lemnos-driver-rkvenc = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12" }
+lemnos-driver-rk-mpp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12", default-features = false }
+lemnos-driver-codec-jobs = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12" }
 lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12" }
 lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12" }
 lemnos-linux-stream = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "7b4fdb255826fe2c00caadd5716e807c31364b12" }

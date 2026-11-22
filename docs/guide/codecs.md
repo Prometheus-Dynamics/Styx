@@ -20,6 +20,7 @@ carries the same decisions. The registry logs nothing; the caller logs what it w
 | Scaler, software | `styx-scale` (`Software`) | any resize; exact conversions within a format family | native | host |
 | Scaler, hardware | `styx-scale` (`Lemnos`) | resize, same format in and out, on a Lemnos `image.scaler/1` device (RGA, G2D) | native | untested on board |
 | HEVC / H.264 decode | `styx-block` | Annex B → NV12, on a Lemnos `codec.block/1` stateless decoder | native | untested on board |
+| H.264 encode, rkvenc | `styx-block` (`rkvenc`) | NV12 → H.264 IDR, on the `rk-mpp:rkvenc` block (VEPU540 class) | native | not usable until Lemnos supplies the VEPU540 encodings; untested on board |
 | FFmpeg | `styx-ffmpeg` (feature `ffmpeg`) | MJPG ↔ I420; DRM PRIME frames from a hardware decoder | FFmpeg | host |
 
 ## Styx's own encoders
@@ -54,7 +55,26 @@ they build.
 - **H.264:** decodes by slice, with Lemnos's V4L2 H.264 control structures.
 - **Recovery:** follows Lemnos's stateless decoder backoff.
 
-There is no hardware encode yet.
+## Hardware encode: `styx-block::rkvenc`
+
+H.264 on a Rockchip VEPU541-class block (`rk-mpp:rkvenc`, the VEPU540 among them), one job
+per frame through `codec.block/1`. Lemnos owns the register layout and the job; Styx owns the
+bitstream: the SPS and PPS (`styx_h264::ParameterSets`, the same bytes as Styx's own encoder),
+the slice's syntax values and the QP.
+
+- **No copy:** the input and output leases are job stream buffers, named in the job by buffer and
+  offset. The block reads the picture and writes the slice in place; Styx writes only the
+  parameter sets at the start of the output. A frame allocates nothing.
+- **Each frame is an IDR** (all intra, CAVLC, deblocking on), with `idr_pic_id` alternating.
+- **Not usable until Lemnos supplies the VEPU540 encodings.** The layout gives each field's place,
+  not what its values mean. `EncoderFacts` holds what the encoder needs (`rkvenc::MISSING` lists
+  the six facts asked of Lemnos), and `vepu540_facts()` has none, so the registry candidate does
+  not build and its decision says why.
+- **What the gate proves:** the job's shape (every register Styx sets, every buffer reference on
+  the leases, the read-back window), zero copy, no per-frame allocation, and the parameter set
+  bytes, on rk-mpp's played kernel with the facts filled by test values. Not the encoded picture:
+  the played kernel runs no encoder, and a stand-in puts the slice's length in the read-back.
+- Untested on board.
 
 ## FFmpeg, for coverage: `styx-ffmpeg`
 

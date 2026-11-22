@@ -42,6 +42,18 @@ pub trait Session: Send {
     /// the session stays open. [`CodecError::Failed`] or [`CodecError::Unavailable`] means the
     /// block failed: the decoder closes the session and reopens it after a backoff.
     fn run(&mut self, work: &[u8]) -> Result<u32, CodecError>;
+
+    /// Runs one job as [`Self::run`] does, and copies its read-back (the bytes after the
+    /// completion's record: registers an encoder reads its results from) into `read_back`.
+    /// Returns the read-back count. The read-back is the block's few status words, never a
+    /// frame's bytes. A session that gives no read-back refuses the job
+    /// ([`CodecError::Rejected`]), so no block runs it.
+    fn run_reading(&mut self, work: &[u8], read_back: &mut [u8]) -> Result<u32, CodecError> {
+        let _ = (work, read_back);
+        Err(CodecError::Rejected(
+            "this block session gives no read-back".into(),
+        ))
+    }
 }
 
 /// The parameter sets the slices refer to.

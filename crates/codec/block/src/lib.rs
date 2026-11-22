@@ -1,4 +1,5 @@
-//! Hardware codec blocks for Styx: the HEVC bitstream and the decode jobs that run on a block.
+//! Hardware codec blocks for Styx: the HEVC and H.264 bitstreams, and the decode and encode jobs
+//! that run on a block.
 //!
 //! Lemnos owns the block (its `codec.block/1` contract, and the M2M session under the
 //! stateless driver); Styx owns the bitstream. So the parser ([`hevc`]) and the controls it
@@ -12,7 +13,9 @@
 //! - Recovery, with the backoff of Lemnos's stateless decoder, lives in [`decoder`].
 //! - H.264 decodes by slice as well ([`h264`]): its parser, reference tracker and controls are
 //!   here, and its controls are Lemnos's V4L2 H.264 structures.
-//! - Encoding is not here yet.
+//! - H.264 encodes on a Rockchip rkvenc block ([`rkvenc`]): Styx writes the parameter sets and
+//!   sets the slice's syntax values; the block codes the picture. Not usable until Lemnos states
+//!   the VEPU540's encodings ([`rkvenc::MISSING`]); untested on board.
 //! - Each job is stamped by its decoder, a whole number of microseconds and unique ([`work::Stamps`]),
 //!   and a reference picture is named in the controls by its stamp, never as a slot.
 //!
@@ -27,6 +30,7 @@ pub mod h264;
 pub mod hevc;
 pub mod link;
 pub mod live;
+pub mod rkvenc;
 pub mod work;
 
 pub use decoder::{HevcDecoder, Session, candidate, descriptor};

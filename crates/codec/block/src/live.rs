@@ -164,7 +164,12 @@ impl LiveSession {
 
     /// Waits for the completion of the job `identity` whose result is `result`, reads its
     /// record and releases the frame: the result is the block's again from this release on.
-    fn completion(&mut self, identity: u64, result: u32) -> Result<Answer, CodecError> {
+    fn completion(
+        &mut self,
+        identity: u64,
+        result: u32,
+        read_back: &mut [u8],
+    ) -> Result<Answer, CodecError> {
         let frame = self
             .stream
             .wait(self.timeout)
@@ -172,7 +177,7 @@ impl LiveSession {
             .ok_or_else(|| {
                 CodecError::Failed(format!("no completion within {:?}", self.timeout))
             })?;
-        let outcome = read_completion(&self.stream, &frame, identity, result);
+        let outcome = read_completion(&self.stream, &frame, identity, result, read_back);
         self.stream
             .release(frame)
             .map_err(|e| CodecError::Failed(format!("releasing the completion: {e}")))?;
@@ -182,7 +187,12 @@ impl LiveSession {
     /// Takes the work and result buffers for one job, posts it and waits for the block's answer.
     /// `named` is the buffers the work references, one bit each: the work and result are never
     /// picked among them.
-    fn post_once(&mut self, work: &[u8], named: u64) -> Result<Answer, CodecError> {
+    fn post_once(
+        &mut self,
+        work: &[u8],
+        named: u64,
+        read_back: &mut [u8],
+    ) -> Result<Answer, CodecError> {
         let pool = self.stream.pool();
         let count = pool.buffers();
         // A buffer the job's work or result takes: free locally and not named by the work.
@@ -252,7 +262,7 @@ impl LiveSession {
             self.posts_refused += 1;
             return Err(CodecError::Failed("refused: the job queue is full".into()));
         }
-        self.completion(identity, result_index as u32)
+        self.completion(identity, result_index as u32, read_back)
     }
 }
 
@@ -278,6 +288,7 @@ fn read_completion(
     frame: &HeldFrame,
     identity: u64,
     result: u32,
+    read_back: &mut [u8],
 ) -> Result<Answer, CodecError> {
     if frame.identity() != identity || frame.buffer() != result {
         return Err(CodecError::Failed(format!(
@@ -301,6 +312,18 @@ fn read_completion(
                     frame.len()
                 )));
             }
+            if !read_back.is_empty() {
+                let from = bytes.get(DATA_OFFSET..DATA_OFFSET + count).ok_or_else(|| {
+                    CodecError::Failed("the read-back is outside the frame".into())
+                })?;
+                let asked = read_back.len();
+                let into = read_back.get_mut(..count).ok_or_else(|| {
+                    CodecError::Failed(format!(
+                        "job {identity} read back {count} bytes, {asked} asked for"
+                    ))
+                })?;
+                into.copy_from_slice(from);
+            }
             Ok(Answer::Done(record.count))
         }
         JobStatus::Refused => Ok(Answer::Refused),
@@ -318,8 +341,9 @@ fn reservation_format() -> Result<MediaFormat, CodecError> {
     Ok(MediaFormat::with_defaults(FourCc::HEVC, resolution))
 }
 
-impl Session for LiveSession {
-    fn run(&mut self, work: &[u8]) -> Result<u32, CodecError> {
+impl LiveSession {
+    /// The work's named buffers, checked, then the job posted and its answer.
+    fn run_job(&mut self, work: &[u8], read_back: &mut [u8]) -> Result<u32, CodecError> {
         let parsed = Work::parse(work)
             .ok_or_else(|| CodecError::Rejected("the job's work is not work".into()))?;
         // The buffers the job names: its work's references, one bit each.
@@ -333,7 +357,7 @@ impl Session for LiveSession {
             }
             named |= 1 << buffer;
         }
-        match self.post_once(work, named)? {
+        match self.post_once(work, named, read_back)? {
             Answer::Done(count) => Ok(count),
             Answer::Refused => {
                 self.refusals += 1;
@@ -341,5 +365,17 @@ impl Session for LiveSession {
                 Err(CodecError::Rejected("the block refused the job".into()))
             }
         }
+    }
+}
+
+impl Session for LiveSession {
+    fn run(&mut self, work: &[u8]) -> Result<u32, CodecError> {
+        self.run_job(work, &mut [])
+    }
+
+    /// The read-back is copied out of the completion frame before the frame is released: the
+    /// block's status words, a few hundred bytes, not a frame's.
+    fn run_reading(&mut self, work: &[u8], read_back: &mut [u8]) -> Result<u32, CodecError> {
+        self.run_job(work, read_back)
     }
 }

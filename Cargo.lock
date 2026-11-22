@@ -2167,6 +2167,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "lemnos-driver-rkvenc"
+version = "2.0.1-dev"
+source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=7b4fdb255826fe2c00caadd5716e807c31364b12#7b4fdb255826fe2c00caadd5716e807c31364b12"
+dependencies = [
+ "lemnos-driver-rk-mpp",
+]
+
+[[package]]
 name = "lemnos-driver-rkvpss"
 version = "2.0.1-dev"
 source = "git+https://github.com/Prometheus-Dynamics/Lemnos.git?rev=7b4fdb255826fe2c00caadd5716e807c31364b12#7b4fdb255826fe2c00caadd5716e807c31364b12"
@@ -3748,6 +3756,9 @@ dependencies = [
  "lemnos-client",
  "lemnos-contract-codec-block",
  "lemnos-core",
+ "lemnos-driver-codec-jobs",
+ "lemnos-driver-rk-mpp",
+ "lemnos-driver-rkvenc",
  "lemnos-hal",
  "lemnos-host",
  "lemnos-linux-sys",

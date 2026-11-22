@@ -1,7 +1,7 @@
 [package]
 autotests = false
 name = "styx-block"
-description = "Hardware codec blocks for Styx: the HEVC bitstream (parser and stateless controls) and the decode job that Lemnos's codec.block/1 contract runs. Styx builds the work; Lemnos runs the block. Registers as styx-codec-api decoders."
+description = "Hardware codec blocks for Styx: the HEVC bitstream (parser and stateless controls) and the decode job that Lemnos's codec.block/1 contract runs. Styx builds the work; Lemnos runs the block. Registers as styx-codec-api decoders, and an H.264 encoder on a Rockchip rkvenc block."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,16 +18,21 @@ lemnos-client = { workspace = true }
 lemnos-core = { workspace = true, features = ["std"] }
 lemnos-contract-codec-block = { workspace = true }
 lemnos-linux-sys = { workspace = true }
+# The VEPU541/540 encoders' register layouts and job builder (layouts only: no engine).
+lemnos-driver-rkvenc = { workspace = true }
+# Styx's H.264 parameter sets, written ahead of the block's slices.
+styx-h264 = { path = "../h264" }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# Styx's own H.264 encoder: the streams the H.264 parser's tests read.
-styx-h264 = { path = "../h264" }
+# The rk-mpp block on its played kernel: what Lemnos's own encoder tests run jobs on.
+lemnos-driver-rk-mpp = { workspace = true, features = ["played", "device"] }
+lemnos-driver-codec-jobs = { workspace = true }
 # The simulated backend: lemnosd in this process, its board and the test driver (test only).
 lemnosd = { workspace = true }
 lemnos-host = { workspace = true }
 lemnos-sim = { workspace = true }
-lemnos-hal = { workspace = true, features = ["std"] }
+lemnos-hal = { workspace = true, features = ["std", "mock"] }
 # Stream memory for the simulated boards, and whether this host has a dma-heap.
 styx-sim = { path = "../../camera/sim" }
 
@@ -38,6 +43,11 @@ workspace = true
 # Its own process: it sets the sim block's process-wide refusal and stall switches, which every simulated block reads.
 name = "race"
 path = "tests/race.rs"
+
+[[test]]
+# Its own process: it installs a counting global allocator to show a frame allocates nothing.
+name = "rkvenc"
+path = "tests/rkvenc.rs"
 
 [[test]]
 name = "all"

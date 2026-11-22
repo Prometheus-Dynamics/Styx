@@ -18,7 +18,7 @@ reads any other the same way.
   them (in-process Rust, other processes, C, GStreamer, PipeWire, Orion, Daedalus) and
   multi-camera grouping.
 - [codecs.md](codecs.md): encoders, decoders and converters (Styx's own JPEG and H.264, MJPEG
-  decode, scaling, hardware decode blocks, FFmpeg for coverage).
+  decode, scaling, hardware decode and encode blocks, FFmpeg for coverage).
 - [tools.md](tools.md): `styx-measure`, recording and replay, previews, calibration
   (`styx-tune`), counters, DNG, and the examples.
 - [dev-to-next.md](dev-to-next.md): what each `dev` crate and tool becomes on `next`, and what
@@ -39,7 +39,8 @@ written and tested on the host (simulated hardware, or the host's own devices) a
 | GPU ISP | host (lavapipe, and a desktop GPU by hand) |
 | Rockchip, K230, ISP600 ISPs | untested on board |
 | Native USB, V4L2, libcamera | host (V4L2 on `vivid`); untested on board |
-| Hardware codec blocks, hardware scaler | untested on board |
+| Hardware decode blocks, hardware scaler | untested on board |
+| Hardware H.264 encode (rkvenc) | not usable until Lemnos supplies the VEPU540 encodings; untested on board |
 | GStreamer, PipeWire, C API, Orion, Daedalus | host |
 
 ## Quick start: one camera to another process

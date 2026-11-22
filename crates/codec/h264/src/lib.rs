@@ -19,6 +19,7 @@ mod cavlc;
 mod encoder;
 mod headers;
 mod mb;
+mod params;
 mod picture;
 mod rate;
 mod stream;
@@ -27,5 +28,6 @@ mod tables;
 mod transform;
 
 pub use encoder::{DEFAULT_KEYFRAME_INTERVAL, DEFAULT_QP, H264Encoder, INPUTS, NAME, candidates};
+pub use params::{ParameterSets, SHAPE, Shape};
 pub use rate::RateTarget;
 pub use stream::{StyxH264, StyxH264Input};
