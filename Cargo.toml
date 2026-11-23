@@ -15,41 +15,41 @@ homepage = "https://github.com/Prometheus-Dynamics/Styx"
 [workspace.dependencies]
 # Locked by commit. Moving a lock is its own PR. Every git dependency is named here and nowhere
 # else: crates use `workspace = true` (the gate checks).
-lemnos-client = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-camera-sensor = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-camera-receiver = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-camera-isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-camera-frames = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-isp-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-codec-block = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-image-scaler = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-lens = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-contract-isp-isp600 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-driver-isp600 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d", default-features = false }
-lemnos-driver-k230isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d", default-features = false }
-lemnos-driver-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d", default-features = false }
-lemnos-driver-rkisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d", default-features = false }
-lemnos-driver-rkvenc = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-driver-rk-mpp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d", default-features = false }
-lemnos-driver-codec-jobs = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-linux-stream = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-v4l2 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnos-wire = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d", default-features = false }
+lemnos-client = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-linux-sys = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-camera-sensor = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-camera-receiver = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-camera-isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-camera-frames = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-isp-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-codec-block = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-image-scaler = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-lens = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-contract-isp-isp600 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-core = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-driver-isp600 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755", default-features = false }
+lemnos-driver-k230isp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755", default-features = false }
+lemnos-driver-pisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755", default-features = false }
+lemnos-driver-rkisp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755", default-features = false }
+lemnos-driver-rkvenc = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-driver-rk-mpp = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755", default-features = false }
+lemnos-driver-codec-jobs = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-hal = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-host = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-linux-stream = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-sim = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-v4l2 = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnos-wire = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+lemnosd = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755", default-features = false }
 # The shared ring: a standalone family hosted in the Lemnos repository (X5).
-shm-sample-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-shm-ring = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-shm-ring-latest = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-shm-ring-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-shm-ring-doorbell = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-shm-ring-buffers = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-shm-ring-holds = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
-shm-fdpass = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "a6251ecfb815752880f399e4e137634d022d4a2d" }
+shm-sample-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+shm-ring = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+shm-ring-latest = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+shm-ring-time = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+shm-ring-doorbell = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+shm-ring-buffers = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+shm-ring-holds = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
+shm-fdpass = { git = "https://github.com/Prometheus-Dynamics/Lemnos.git", rev = "e199fcb934968feeaf72c99628610c1c52096755" }
 daedalus = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "2f9390171104d913d2d7cdbff330150433f68ee3" }
 daedalus-dmabuf = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "2f9390171104d913d2d7cdbff330150433f68ee3" }
 daedalus-abi = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "2f9390171104d913d2d7cdbff330150433f68ee3" }
@@ -61,11 +61,11 @@ daedalus-runner = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git",
 daedalus-types = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "2f9390171104d913d2d7cdbff330150433f68ee3" }
 daedalus-wgpu = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "2f9390171104d913d2d7cdbff330150433f68ee3" }
 daedalus-wgpu-author = { git = "https://github.com/Prometheus-Dynamics/Daedalus.git", rev = "2f9390171104d913d2d7cdbff330150433f68ee3" }
-orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "47bfd7f3cec16d028f03c58a7ab42b75d61bc68d", default-features = false }
-orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "47bfd7f3cec16d028f03c58a7ab42b75d61bc68d" }
-orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "47bfd7f3cec16d028f03c58a7ab42b75d61bc68d" }
-orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "47bfd7f3cec16d028f03c58a7ab42b75d61bc68d" }
-orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "47bfd7f3cec16d028f03c58a7ab42b75d61bc68d" }
+orion = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "b01a7fb2fc76436b551b8f61ac8ebe3d332164ab", default-features = false }
+orion-broker = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "b01a7fb2fc76436b551b8f61ac8ebe3d332164ab" }
+orion-broker-buffers = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "b01a7fb2fc76436b551b8f61ac8ebe3d332164ab" }
+orion-server = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "b01a7fb2fc76436b551b8f61ac8ebe3d332164ab" }
+orion-unix = { git = "https://github.com/Prometheus-Dynamics/Orion.git", rev = "b01a7fb2fc76436b551b8f61ac8ebe3d332164ab" }
 # Tests only: a test's own scratch folder, removed when the test ends (passed or panicked). Never
 # a normal dependency: no product code writes temporary files.
 tempfile = "3"
