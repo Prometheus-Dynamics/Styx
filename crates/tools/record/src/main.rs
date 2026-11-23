@@ -194,6 +194,12 @@ fn export_options(rest: &[String]) -> Option<ExportOptions> {
     Some(options)
 }
 
+/// A line on stderr. Unlike `eprintln!` it does not panic when stderr is closed, so the exit
+/// status stays the command's.
+fn complain(line: std::fmt::Arguments<'_>) {
+    let _ = writeln!(std::io::stderr(), "{line}");
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -202,12 +208,12 @@ fn main() -> ExitCode {
         ["export", input, output, ..] => match export_options(&args[3..]) {
             Some(options) => export(input, output, options),
             None => {
-                eprintln!("{USAGE}");
+                complain(format_args!("{USAGE}"));
                 return ExitCode::from(2);
             }
         },
         _ => {
-            eprintln!("{USAGE}");
+            complain(format_args!("{USAGE}"));
             return ExitCode::from(2);
         }
     };
@@ -216,7 +222,7 @@ fn main() -> ExitCode {
         // The reader went away (`| head`): not a failure.
         Err(RecordError::Io(e)) if e.kind() == std::io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
         Err(e) => {
-            eprintln!("styx-record: {e}");
+            complain(format_args!("styx-record: {e}"));
             ExitCode::FAILURE
         }
     }

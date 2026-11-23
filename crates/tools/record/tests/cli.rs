@@ -165,3 +165,38 @@ fn refusals() {
     let out = run(&["info", d.join("missing").to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1));
 }
+
+/// Output into a pipe whose reader has gone (`| head`, a closed terminal): the exit status is
+/// still the command's, not a panic's (101). The reader is closed before the command starts, so
+/// its first write fails.
+fn run_into_closed(args: &[&str], stdout_closed: bool) -> Output {
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_styx-record"));
+    cmd.args(args);
+    if stdout_closed {
+        cmd.stdout(writer);
+    } else {
+        cmd.stderr(writer);
+    }
+    cmd.output().unwrap()
+}
+
+#[test]
+fn a_closed_pipe_keeps_the_exit_status() {
+    let d = dir("cli-closed-pipe");
+    let (bytes, _) = recording(&samples(63));
+    let rec = d.join("a.styxrec");
+    std::fs::write(&rec, &bytes).unwrap();
+    let rec = rec.to_str().unwrap();
+    // stdout closed: success stays success.
+    assert_eq!(run_into_closed(&["info", rec], true).status.code(), Some(0));
+    // stderr closed: bad arguments stay 2, a refused file stays 1.
+    assert_eq!(
+        run_into_closed(&["frobnicate"], false).status.code(),
+        Some(2)
+    );
+    let missing = d.join("missing");
+    let out = run_into_closed(&["info", missing.to_str().unwrap()], false);
+    assert_eq!(out.status.code(), Some(1));
+}
