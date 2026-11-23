@@ -29,7 +29,10 @@ restart always is in `crates/out/service/systemd/styx-service.service`.
 - **Failure rule:** a camera that leaves or fails comes back. Its worker retries with a backoff
   that doubles from `backoff_first_ms` and holds at `backoff_cap_ms` (5 to 10 s). A manual `stop`
   ends a camera until a manual `start`. `auto_off_after` is the only automatic off.
-- **Shutdown:** SIGTERM and SIGINT stop every sensor and receiver through the Lemnos contract. A
+- **Shutdown:** SIGTERM and SIGINT stop every receiver, then its sensor, through the Lemnos
+  contract. Receiver first is deliberate: stopped sensor first, a board's receiver waited for a
+  frame end that never came and pinned its buffers until a reboot (two of two stops); receiver
+  first stopped cleanly (two of two). A
   sensor left streaming by a SIGKILL is stopped and started again once at the next start, and
   counted (`recoveries`).
 - **Access:** every socket gets `socket_group` and `socket_mode` (default: the service's group,

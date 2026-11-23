@@ -492,19 +492,12 @@ fn left_started(text: &str) -> bool {
     ))
 }
 
-/// Stops the camera's sensor, then its receiver, through the Lemnos contract, as a manual stop
-/// would. Each is tried even when the other refuses. The text says what was done, for the status.
+/// Stops the camera's receiver, then its sensor, through the Lemnos contract, as a manual stop
+/// would (the order and why: `halt` in styx-native-run's session). Each is tried even when the
+/// other refuses. The text says what was done, for the status.
 fn stop_left_started(client: &Client, camera: &Camera) -> String {
     let mut problems = Vec::new();
     let sensor = &camera.sensor().name;
-    match client.open::<dyn CameraSensor>(sensor) {
-        Ok(mut device) => {
-            if let Err(status) = device.stop() {
-                problems.push(format!("sensor.stop refused: {status:?}"));
-            }
-        }
-        Err(e) => problems.push(format!("open {sensor}: {e}")),
-    }
     let receiver = &camera.receiver().name;
     match client.open::<dyn CameraReceiver>(receiver) {
         Ok(mut device) => {
@@ -513,6 +506,14 @@ fn stop_left_started(client: &Client, camera: &Camera) -> String {
             }
         }
         Err(e) => problems.push(format!("open {receiver}: {e}")),
+    }
+    match client.open::<dyn CameraSensor>(sensor) {
+        Ok(mut device) => {
+            if let Err(status) = device.stop() {
+                problems.push(format!("sensor.stop refused: {status:?}"));
+            }
+        }
+        Err(e) => problems.push(format!("open {sensor}: {e}")),
     }
     if problems.is_empty() {
         format!("sensor {sensor} was left started: stopped it and receiver {receiver}, retrying")

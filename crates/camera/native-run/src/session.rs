@@ -289,22 +289,32 @@ impl Running {
     }
 }
 
-/// Stops the sensor, then the receiver, then closes the frame stream, which gives it back to Lemnos.
+/// Stops the receiver, then the sensor, then closes the frame stream, which gives it back to Lemnos.
 /// Each is tried even when an earlier one refuses.
+///
+/// Receiver first, on purpose; do not swap it back. A receiver confirms its DMA stopped with the
+/// end of the frame in flight, which arrives within about one frame while the sensor still
+/// streams. Sensor first leaves no frame to end: the receiver waits out its bound (at least
+/// 250 ms on Lemnos's CSI-2 receiver driver) and, before Lemnos's fix, called the DMA not stopped
+/// and pinned its buffers until a reboot. On a board (2026-11-22, Lemnos bbb3c420): sensor first,
+/// two of two stops logged "DMA did not stop; buffers stay pinned until reboot", the next
+/// `receiver.start` was refused with -EIO, 9 dma-bufs stayed attached; receiver first, two of two
+/// stops were clean (no line, 0 dma-bufs, receiver errors 0) and the camera started again. With
+/// Lemnos's fix either order is safe, and receiver first stays the fast stop.
 fn halt(mut running: Running) -> Result<(), String> {
-    let sensor = running
-        .sensor
-        .stop()
-        .map_err(|status| format!("sensor.stop refused: {status:?}"));
     let receiver = running
         .receiver
         .stop()
         .map_err(|status| format!("receiver.stop refused: {status:?}"));
+    let sensor = running
+        .sensor
+        .stop()
+        .map_err(|status| format!("sensor.stop refused: {status:?}"));
     let closed = running
         .frames
         .close()
         .map_err(|e| format!("closing the frame stream: {e}"));
-    sensor.and(receiver).and(closed)
+    receiver.and(sensor).and(closed)
 }
 
 /// Stops what started, then reports the fault, with the stop's refusal if there was one.
@@ -555,7 +565,7 @@ impl<'a, C: Clock> Session<'a, C> {
         self.bring_up()
     }
 
-    /// Manual off: stops the sensor, then the receiver, and ends any backoff in progress.
+    /// Manual off: stops the receiver, then the sensor, and ends any backoff in progress.
     pub fn stop(&mut self) -> Result<(), Error> {
         self.stop.store(true, Ordering::Release);
         self.status.state = State::Stopped;
@@ -789,7 +799,9 @@ impl<'a, C: Clock> Session<'a, C> {
             })?;
         let index = running.mode;
         // The receiver is still running from before the bind: it is stopped, so it can be configured
-        // and started again with the sensor. The frame stream stays attached.
+        // and started again with the sensor. The frame stream stays attached. The sensor is already
+        // gone here, so this is an idle stop (no frame in flight to end): its safety is Lemnos's
+        // receiver fix (an idle stop confirmed after the full bound), not this order.
         running
             .receiver
             .stop()

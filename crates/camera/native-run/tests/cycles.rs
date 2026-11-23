@@ -81,8 +81,8 @@ fn start_and_stop_100_times_on_the_simulated_backend() {
         "sensor.set_controls",
         "receiver.start",
         "sensor.start",
-        "sensor.stop",
         "receiver.stop",
+        "sensor.stop",
     ];
 
     for cycle in 0..100 {

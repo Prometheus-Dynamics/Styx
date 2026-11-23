@@ -1,7 +1,7 @@
 [package]
 autotests = false
 name = "styx-native-run"
-description = "Native camera sessions: picks a sensor mode, configures the receiver with its link, starts receiver then sensor, drops the mode's first frames, stops in reverse, and comes back after a fault with capped backoff."
+description = "Native camera sessions: picks a sensor mode, configures the receiver with its link, starts receiver then sensor, drops the mode's first frames, stops receiver then sensor, and comes back after a fault with capped backoff."
 version.workspace = true
 edition.workspace = true
 license.workspace = true

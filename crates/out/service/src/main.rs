@@ -68,7 +68,7 @@ fn main() -> ExitCode {
         Ok(signal) => eprintln!("styx-service: {}: stopping the cameras", name(*signal)),
         Err(e) => eprintln!("styx-service: waiting for a signal: {e}: stopping the cameras"),
     }
-    // Each camera's thread ends, and its session stops the sensor and receiver before it does.
+    // Each camera's thread ends, and its session stops the receiver, then the sensor, before it does.
     service.shutdown();
     if waited.is_ok() {
         ExitCode::SUCCESS

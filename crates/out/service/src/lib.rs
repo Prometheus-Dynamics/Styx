@@ -23,10 +23,11 @@
 //! # Shutdown and a sensor left started
 //!
 //! SIGTERM and SIGINT end the process through [`Service::shutdown`] (see `main.rs`): every camera's
-//! thread ends, and its session stops the sensor and the receiver through the Lemnos contract
-//! before the thread does. The sockets are removed last. A SIGKILL cannot be caught, so a sensor
-//! can be left streaming. The next start then gets a busy refusal from the sensor's mode selection:
-//! that camera's worker stops the sensor and receiver once through the contract and tries again
+//! thread ends, and its session stops the receiver and then the sensor through the Lemnos contract
+//! before the thread does. Receiver first is deliberate (styx-native-run's `halt` says why, with
+//! the board result): sensor first wedged a board's receiver until a reboot. The sockets are
+//! removed last. A SIGKILL cannot be caught, so a sensor can be left streaming. The next start
+//! then gets a busy refusal from the sensor's mode selection: that camera's worker stops the receiver and sensor once through the contract and tries again
 //! once, in the same attempt. The stop is counted in the status (`recoveries`, `last_recovery`). A
 //! second refusal is an ordinary failure and backs off like any other.
 //!
