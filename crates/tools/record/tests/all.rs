@@ -4,6 +4,8 @@
 
 mod support;
 
+#[path = "channels.rs"]
+mod channels;
 #[path = "fuzz.rs"]
 mod fuzz;
 #[path = "mcap_import.rs"]

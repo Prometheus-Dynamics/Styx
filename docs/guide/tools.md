@@ -36,8 +36,32 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
 - **`Recorder`:** writes `styxrec`. That is a checksummed header (device, backend, format, buffer
   size), then one record per frame: identity, timestamp, format, planes and metadata, checksummed,
   followed by the frame's bytes as the producer wrote them.
+- **Data channels** (format version 2): streams of timestamped samples recorded beside the
+  frames, such as an IMU, a pose or a message from another process. Styx reads no sensors; the
+  consumer that has the data writes it.
+  - `Recorder::declare(ChannelSpec)` declares a channel once and returns its `ChannelId`. The
+    spec has a name, the samples' encoding, and a schema (name, encoding, bytes), as MCAP
+    names them, plus the producer's clock. Both clocks are read when it is declared and kept.
+  - `Recorder::sample(id, timestamp_ns, bytes)` writes one sample (at most 1 MiB, CRC over its
+    head and bytes). It allocates nothing.
+  - Every timestamp in a recording is `CLOCK_MONOTONIC` ns. A producer on `CLOCK_BOOTTIME`
+    converts with `ClockPair::now()` and `monotonic_from_boottime` (or the free function of
+    that name, which reads the pair each call).
+  - Write records as they arrive. Replay sorts them.
 - **`Replay`:** hands a recording out as `FrameLease`s from its own pool, with the recorded
   identities, timestamps and metadata. It has a camera's shape: a pool, and `next_frame`.
+  - `next_item` hands out frames and samples (`Item::Frame`, `Item::Sample`) in timestamp
+    order, with one frame of lookahead. A sample at or before a frame's time comes before it.
+  - A sample older than a frame already handed out is late: it comes out in file order,
+    marked `late`, counted in `late_samples()`, never dropped.
+  - The samples of a channel between frame n-1 and frame n are the ones that come out between
+    them; the last of them is the nearest at or before frame n. The loop is in `next_item`'s
+    documentation.
+  - `channels()` / `channel_named` give the declarations. Those at the start of the file are
+    read when it opens.
+  - Version 1 files (frames only) still read. A build that reads only version 1 refuses a
+    version 2 file as `UnsupportedVersion(2)`.
+  - Neither path allocates once warm (tests/steady_state.rs counts).
 - **`import_mcap`:** converts MCAP recordings in the Styx layout to `styxrec`. Import only.
   - It reads uncompressed chunks, and lz4 chunks with the `mcap-lz4` feature (on by default, a
     pure-Rust decoder).
@@ -47,6 +71,19 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
 
 Headers and records are untrusted input: every length is checked against a limit before it is
 used, and a recording cut short ends at its last whole frame and says so.
+
+What a channel costs the recorder (`examples/channel_cost.rs`, x86_64 host):
+
+| | |
+|---|---|
+| `Recorder::sample`, 24 / 48 / 256 B | 42 / 55 / 178 ns |
+| 120 fps 1280x800 GREY to `/dev/null`, recorder thread | 1.9% of a core; 2.4% with a 1 kHz channel of 24 B samples |
+| the same to an SSD, three 20 s runs each | 7.0–7.2% without the channel, 5.5–7.8% with; no drops from the channel |
+
+The cost of a 1 kHz channel is the recorder thread waking once per sample (about 5 us each in
+the example, which sends each sample on its own); the write itself is the 42 ns. A consumer that
+hands samples to its recorder thread in batches pays that wake once per batch. Frames
+were dropped only in some disk runs, with or without the channel, when the disk stalled.
 
 ## Previews: `styx-preview`
 

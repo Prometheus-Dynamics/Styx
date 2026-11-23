@@ -126,4 +126,5 @@ Ordered by the coordinator; parked rows are recorded, not worked.
 - [ ] P6 (GAP 3, parked) A run-time request for N pyramid levels.
 - [ ] P7 (GAP 4, parked) A replay source inside the service, serving a recording as a camera.
 - [ ] P8 (GAP 6, parked) PNG replay.
-- [ ] P9 (for the coordinator to order) An MCAP writer in `styx-record`. HeliOS's recorder writes `.mcap` (lz4) through dev's `StreamRecorder`, but next writes only `styxrec`. Needed only if HeliOS keeps MCAP as its recording format and does not write it itself.
+- [x] P9a Sensor data in `styxrec` (format version 2): `Recorder::declare` / `sample`, `ClockPair` / `monotonic_from_boottime`, `Replay::next_item` (timestamp order, one frame of lookahead, late samples counted), v1 still read. Host cost in docs/guide/tools.md; the Raze figures are owed (kit /mnt/ssd-samsung/styx-targets/p9a-kit).
+- [ ] P9b MCAP export of `styxrec` (lz4), data channels as MCAP channels with their encoding and schema, round-trip through the mcap crate and `import_mcap`; import keeps HeliOS .mcap data topics as channels (losses reported), BOOTTIME moved by dev's /styx/clock records.

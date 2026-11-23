@@ -4353,6 +4353,7 @@ version = "2.0.2-dev"
 dependencies = [
  "lz4_flex",
  "mcap",
+ "rustix",
  "styx-controls",
  "styx-format",
  "styx-frame",

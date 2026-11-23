@@ -21,6 +21,11 @@ styx-controls = { path = "../../core/controls" }
 styx-frame = { path = "../../core/frame" }
 lz4_flex = { version = "0.14.0", default-features = false, features = ["frame", "safe-decode", "checked-decode"], optional = true }
 
+# The two clocks a declaration records (CLOCK_MONOTONIC and CLOCK_BOOTTIME), read without
+# `unsafe` in this crate.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.6", default-features = false, features = ["std", "time"] }
+
 [dev-dependencies]
 # Writes MCAP files the way the Styx recorder lays them out, so the importer is tested against
 # the real writer, uncompressed and with its lz4 chunks (the reference lz4 library, test only).
@@ -30,6 +35,11 @@ lz4_flex = { version = "0.14.0" }
 
 [lints]
 workspace = true
+
+[[test]]
+# Its own binary: a counting global allocator.
+name = "steady_state"
+path = "tests/steady_state.rs"
 
 [[test]]
 name = "all"

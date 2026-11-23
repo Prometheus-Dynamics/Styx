@@ -92,10 +92,10 @@ fn wrong_magic_and_version_are_refused() {
         Err(RecordError::NotARecording)
     ));
     bytes[0] = b'S';
-    bytes[8..10].copy_from_slice(&2u16.to_le_bytes());
+    bytes[8..10].copy_from_slice(&3u16.to_le_bytes());
     assert!(matches!(
         Replay::new(Cursor::new(bytes)),
-        Err(RecordError::UnsupportedVersion(2))
+        Err(RecordError::UnsupportedVersion(3))
     ));
 }
 

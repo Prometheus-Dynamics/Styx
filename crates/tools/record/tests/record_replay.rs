@@ -9,7 +9,7 @@ use std::path::Path;
 
 use styx_controls::FrameMetadata;
 use styx_frame::{BufferSize, FramePool};
-use styx_record::{REPLAY_BUFFERS, Recorder, RecordingHeader, Replay};
+use styx_record::{Item, LOOKAHEAD_FRAMES, REPLAY_BUFFERS, Recorder, RecordingHeader, Replay};
 
 use support::{Sample, fps30, payload_of, samples};
 
@@ -124,10 +124,41 @@ fn held_buffers_drop_frames_and_count_them() {
     while let Some(lease) = replay.next_frame().unwrap() {
         held.push(lease);
     }
-    assert_eq!(held.len(), REPLAY_BUFFERS);
-    assert_eq!(replay.dropped(), (doubled.len() - REPLAY_BUFFERS) as u64);
+    // `next_frame` holds no lookahead: its consumer gets every buffer.
+    let buffers = REPLAY_BUFFERS + LOOKAHEAD_FRAMES;
+    assert_eq!(held.len(), buffers);
+    assert_eq!(replay.dropped(), (doubled.len() - buffers) as u64);
     for (lease, original) in held.iter().zip(&doubled) {
         assert_same(lease, original);
+    }
+}
+
+#[test]
+fn held_buffers_under_lookahead_still_leave_the_consumer_its_share() {
+    let frames = samples(33);
+    let header = header_for(&frames);
+    let mut doubled = frames.clone();
+    doubled.extend(frames.iter().cloned());
+    doubled.extend(frames.iter().cloned());
+    let bytes = record_leases(&doubled, &header);
+
+    let mut replay = Replay::new(Cursor::new(bytes)).unwrap();
+    let mut held = Vec::new();
+    while let Some(item) = replay.next_item().unwrap() {
+        if let Item::Frame(lease) = item {
+            held.push(lease);
+        }
+    }
+    // The consumer filled its REPLAY_BUFFERS while the lookahead held its own two; the frames
+    // read with no buffer free were dropped; at the end the lookahead's two came out too.
+    assert_eq!(held.len(), REPLAY_BUFFERS + LOOKAHEAD_FRAMES);
+    assert_eq!(replay.dropped(), (doubled.len() - held.len()) as u64);
+    for lease in &held[..REPLAY_BUFFERS] {
+        let i = doubled
+            .iter()
+            .position(|d| d.entry == *lease.entry())
+            .unwrap();
+        assert_same(lease, &doubled[i]);
     }
 }
 

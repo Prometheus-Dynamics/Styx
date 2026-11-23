@@ -238,6 +238,9 @@ yet).
 - **Playing a recording back** (`ReplayPacing`, PNG, lz4):
   - **Reading frames** (exists on next): `styx_record::Replay::open(path)` reads a `styxrec`
     file. `next_frame` gives `FrameLease<FrameMetadata>` frames with their recorded timestamps.
+  - **Sensor data with the frames** (exists on next): `next_item` gives frames and samples of
+    the recording's data channels in timestamp order (`Item::Frame`, `Item::Sample`). See
+    "Recording sensor data" below.
   - **Pacing** (consumer's job): sleep to the timestamps, or run as fast as possible.
   - **Into a graph** (exists on next): `StyxFrame::from_lease`.
   - **Into the service as a camera** (gap): no replay source exists.
@@ -266,13 +269,11 @@ yet).
 
 These names come from a survey of HeliOS's own code (backend, at its `dev`).
 
-- **Writing MCAP** (gap, for the coordinator to decide):
+- **Recording** (decided: HeliOS records `styxrec`; export to MCAP is TODO P9b):
   - HeliOS's recorder writes `.mcap` through `StreamRecorder`, with `RecorderOptions`,
     `RecordCompression` and `ChannelId`.
-  - On `next`, `styx-record` writes only `styxrec` (`Recorder`), and reads MCAP by import.
-  - Either HeliOS writes `styxrec` with `Recorder` (exists on next; its playback tools then read
-    `styxrec`), or it writes MCAP itself with the `mcap` crate it already depends on (consumer's
-    job), or Styx gets an MCAP writer (gap, TODO P9).
+  - On `next` it writes `styxrec` with `Recorder`, frames and sensor data in one file (see
+    "Recording sensor data" below).
   - `DeviceIdentity { display, keys }` becomes `RecordingHeader`'s `device` and `keys`.
 - **Discovery** (`probe_all`, `probe_all_with_errors`, `probe_capture_devices`, `ProbedDevice`,
   `ProbedBackend`, `BackendHandle`, `BackendKind`, `CaptureProbe`):
@@ -316,6 +317,56 @@ These names come from a survey of HeliOS's own code (backend, at its `dev`).
   on a `styx_sim::SimRig` (see above), or read a `styx_sim::SimCamera` in process.
 - **`peripherals_mem_probe`** (a `CameraService` with `CodecRegistry`): the service process's
   RSS is in `styx-measure`'s report (`--service-pid`).
+
+#### Recording sensor data
+
+HeliOS reads Lemnos and NetworkTables; Styx reads no sensors. HeliOS's recorder writes the
+samples beside the frames:
+
+```rust
+use styx_record::{ChannelSpec, ClockPair, Recorder, SourceClock};
+
+let mut rec = Recorder::create(path, &header)?;            // header: RecordingHeader
+let imu = rec.declare(ChannelSpec {
+    name: "/helios/imu".into(),
+    encoding: "json".into(),                               // as the samples are written
+    schema_name: "helios.Imu".into(),
+    schema_encoding: "jsonschema".into(),
+    schema: IMU_SCHEMA.into(),                             // or empty
+    clock: SourceClock::Boottime,                          // Lemnos stamps t_boottime_us
+})?;
+let clocks = ClockPair::now();                             // once; moves only on suspend
+// each Lemnos sample:
+rec.sample(imu, clocks.monotonic_from_boottime(t_boottime_us * 1_000), &bytes)?;
+// each frame:
+rec.record(&lease)?;
+rec.finish()?;
+```
+
+- Write samples and frames as they arrive, from one thread (the recorder is `&mut`). Replay
+  sorts them by time within one frame.
+- A sample that arrives more than a frame after its time replays as `late` (counted, not
+  dropped).
+- `monotonic_from_boottime(ns)` reads the clock pair on each call; use it when the process may
+  have suspended since the pair was read.
+- Per sample: 42 ns at 24 B on the x86_64 host (55 ns at 48 B, 178 ns at 256 B). Wake the
+  recorder thread once per batch, not once per sample.
+
+Reading it back:
+
+```rust
+use styx_record::{Item, Replay};
+
+let mut replay = Replay::open(path)?;
+let imu = replay.channel_named("/helios/imu").map(|c| c.id);
+while let Some(item) = replay.next_item()? {
+    match item {
+        Item::Frame(frame) => { /* the samples since the previous frame are in hand */ }
+        Item::Sample(s) if Some(s.channel) == imu => { /* s.timestamp_ns, s.data, s.late */ }
+        Item::Sample(_) => {}
+    }
+}
+```
 
 ### New to adopt
 

@@ -95,3 +95,71 @@ fn mutated_records_never_panic() {
     }
     assert!(frames_seen > 0);
 }
+
+/// A recording with two channels and samples between the frames, mutated: replay through
+/// `next_item` never panics, and every sample it hands out is of a declared channel.
+#[test]
+fn mutated_channel_records_never_panic() {
+    let frames = samples(17);
+    let header = styx_record::RecordingHeader {
+        device: "fuzz camera".into(),
+        keys: vec![],
+        backend: "native".into(),
+        format: frames[0].entry.format,
+        interval: fps30(),
+        payload: payload_of(&frames),
+    };
+    let mut recorder = Recorder::new(Vec::new(), &header).unwrap();
+    let imu = recorder
+        .declare(styx_record::ChannelSpec {
+            name: "/imu".into(),
+            encoding: "json".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let pose = recorder
+        .declare(styx_record::ChannelSpec {
+            name: "/pose".into(),
+            schema: vec![1, 2, 3],
+            ..Default::default()
+        })
+        .unwrap();
+    for (i, f) in frames.iter().enumerate() {
+        for k in 0..3u64 {
+            let at = f.entry.timestamp_ns + k * 1_000_000;
+            recorder.sample(imu, at, &[i as u8; 24]).unwrap();
+        }
+        recorder.record_frame(&f.entry, &f.meta, &f.data).unwrap();
+        recorder
+            .sample(pose, f.entry.timestamp_ns, &[0xA5; 48])
+            .unwrap();
+    }
+    let original = recorder.finish().unwrap();
+    let header_end = 14 + u32::from_le_bytes(original[10..14].try_into().unwrap()) as usize + 4;
+
+    let mut prng = Prng::new(0x5EED_0003);
+    let mut items_seen = 0u64;
+    for _ in 0..ITERATIONS {
+        let mut bytes = original.clone();
+        for _ in 0..=prng.below(6) {
+            let at = header_end + prng.below(bytes.len() - header_end);
+            bytes[at] = prng.next_u64() as u8;
+        }
+        if prng.below(5) == 0 {
+            let cut = header_end + prng.below(bytes.len() - header_end);
+            bytes.truncate(cut);
+        }
+        // A damaged leading declaration is refused at open; that is a refusal, not a panic.
+        let Ok(mut replay) = Replay::new(Cursor::new(bytes)) else {
+            continue;
+        };
+        while let Ok(Some(item)) = replay.next_item() {
+            if let styx_record::Item::Sample(s) = item {
+                assert!(s.channel.get() < 2, "a sample of a channel never declared");
+            }
+            items_seen += 1;
+        }
+        assert!(replay.channels().len() <= 2);
+    }
+    assert!(items_seen > 0);
+}

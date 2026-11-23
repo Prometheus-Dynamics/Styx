@@ -22,6 +22,9 @@ pub enum RecordError {
     Unsupported(&'static str),
     /// A frame cannot be recorded or replayed (its layout, data or buffer does not fit).
     Frame(String),
+    /// A channel cannot be declared, or a sample written to it (an unknown channel, a name
+    /// declared twice, too many channels).
+    Channel(&'static str),
 }
 
 impl fmt::Display for RecordError {
@@ -34,6 +37,7 @@ impl fmt::Display for RecordError {
             Self::TooLarge(what) => write!(f, "recording limit exceeded: {what}"),
             Self::Unsupported(what) => write!(f, "unsupported recording: {what}"),
             Self::Frame(what) => write!(f, "frame: {what}"),
+            Self::Channel(what) => write!(f, "channel: {what}"),
         }
     }
 }
