@@ -8,5 +8,7 @@ mod common;
 mod golden;
 #[path = "paths.rs"]
 mod paths;
+#[path = "stats_scale.rs"]
+mod stats_scale;
 #[path = "switch.rs"]
 mod switch;

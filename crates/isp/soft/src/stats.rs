@@ -3,6 +3,7 @@
 use alloc::{vec, vec::Vec};
 
 use serde::{Deserialize, Serialize};
+use styx_aaa::{ColourZone, Statistics, ZoneGrid};
 
 use crate::prepare::StatsSetup;
 use crate::simd::{self, scalar::WORK_MAX};
@@ -56,6 +57,47 @@ pub struct IspStats {
 }
 
 impl IspStats {
+    /// Writes these statistics into `out` (the 3A controller's form), reusing its buffers.
+    ///
+    /// The controller takes pixel values on 0..1, so the 12-bit sums are divided by
+    /// [`WORK_MAX`]; colour sums are also taken back to before the white balance gains, so
+    /// `before_wb` holds. Lens shading is applied before the statistics, so `before_lsc` does
+    /// not. The histogram's bins stay as counted (evenly over the same 0..1).
+    pub fn write_into(&self, out: &mut Statistics) {
+        let full = f64::from(WORK_MAX);
+        let scale = self
+            .gains
+            .map(|g| if g > 0.0 { full * g as f64 } else { full });
+        let colour = &mut out.colour;
+        colour.width = self.zones_x;
+        colour.height = self.zones_y;
+        colour.zones.clear();
+        colour.zones.extend(self.zones.iter().map(|z| ColourZone {
+            r: z.r_sum as f64 / scale[0],
+            g: z.g_sum as f64 / scale[1],
+            b: z.b_sum as f64 / scale[2],
+            counted: z.count,
+        }));
+        out.luma = None;
+        out.histogram
+            .set_bins(self.histogram.iter().map(|&b| b as u64));
+        if self.focus.is_empty() {
+            out.focus = None;
+        } else {
+            let grid = out.focus.get_or_insert_with(|| ZoneGrid {
+                width: 0,
+                height: 0,
+                zones: Vec::new(),
+            });
+            grid.width = self.zones_x;
+            grid.height = self.zones_y;
+            grid.zones.clear();
+            grid.zones.extend_from_slice(&self.focus);
+        }
+        out.before_wb = true;
+        out.before_lsc = false;
+    }
+
     pub fn zone(&self, x: u32, y: u32) -> &ZoneStats {
         &self.zones[(y * self.zones_x + x) as usize]
     }

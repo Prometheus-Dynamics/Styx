@@ -6,9 +6,8 @@
 //! when the caller reuses its statistics.
 
 use alloc::string::String;
-use alloc::vec::Vec;
 
-use styx_aaa::{ColourZone, Statistics, ZoneGrid};
+use styx_aaa::Statistics;
 use styx_format::FourCc;
 use styx_frame::{FrameLease, PlaneLayout};
 use styx_settings::IspSettings;
@@ -168,7 +167,7 @@ impl SoftIspStage {
         self.isp.set_statistics(stats.is_some());
         let got: Option<IspStats> = self.isp.process(plane.data, plane.stride, scale, buffers)?;
         if let (Some(stats), Some(got)) = (stats, got) {
-            write_statistics(&got, stats);
+            got.write_into(stats);
             self.isp.recycle_stats(got);
         }
         Ok(())
@@ -211,39 +210,4 @@ fn split_planes<'a>(
 fn take_plane<'a>(planes: &mut [(&'a mut [u8], usize)], index: usize) -> (&'a mut [u8], usize) {
     let (data, stride) = &mut planes[index];
     (core::mem::take(data), *stride)
-}
-
-/// Writes `got` into `out`, reusing its buffers. Colour sums are taken back to before the
-/// white balance gains (the statistics' sums include them), so `before_wb` holds; lens shading
-/// is applied before the statistics, so `before_lsc` does not.
-fn write_statistics(got: &IspStats, out: &mut Statistics) {
-    let gains = got.gains.map(|g| if g > 0.0 { g as f64 } else { 1.0 });
-    let colour = &mut out.colour;
-    colour.width = got.zones_x;
-    colour.height = got.zones_y;
-    colour.zones.clear();
-    colour.zones.extend(got.zones.iter().map(|z| ColourZone {
-        r: z.r_sum as f64 / gains[0],
-        g: z.g_sum as f64 / gains[1],
-        b: z.b_sum as f64 / gains[2],
-        counted: z.count,
-    }));
-    out.luma = None;
-    out.histogram
-        .set_bins(got.histogram.iter().map(|&b| b as u64));
-    if got.focus.is_empty() {
-        out.focus = None;
-    } else {
-        let grid = out.focus.get_or_insert_with(|| ZoneGrid {
-            width: 0,
-            height: 0,
-            zones: Vec::new(),
-        });
-        grid.width = got.zones_x;
-        grid.height = got.zones_y;
-        grid.zones.clear();
-        grid.zones.extend_from_slice(&got.focus);
-    }
-    out.before_wb = true;
-    out.before_lsc = false;
 }

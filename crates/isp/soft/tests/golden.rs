@@ -192,6 +192,9 @@ fn outputs_and_statistics_equal_dev_bit_for_bit() {
     }
 }
 
+/// The soft ISP's 12-bit working full scale.
+const FULL: f64 = 4095.0;
+
 fn check_stats(name: &str, stats: &Statistics) {
     let want = golden_stats(name);
     assert_eq!(
@@ -201,19 +204,21 @@ fn check_stats(name: &str, stats: &Statistics) {
     );
     assert_eq!(stats.colour.zones.len(), want.zones.len(), "{name}");
     for (i, (got, [r, g, b, count])) in stats.colour.zones.iter().zip(&want.zones).enumerate() {
-        // The colour sums are dev's sums divided by the white balance gains: back to dev's.
+        // The colour sums are dev's 12-bit sums divided by the white balance gains and by the
+        // working full scale (the 3A controller takes 0..1; dev handed over the 12-bit sums):
+        // back to dev's.
         assert_eq!(
-            (got.r * want.gains[0]).round() as u64,
+            (got.r * want.gains[0] * FULL).round() as u64,
             *r,
             "{name}: zone {i} red"
         );
         assert_eq!(
-            (got.g * want.gains[1]).round() as u64,
+            (got.g * want.gains[1] * FULL).round() as u64,
             *g,
             "{name}: zone {i} green"
         );
         assert_eq!(
-            (got.b * want.gains[2]).round() as u64,
+            (got.b * want.gains[2] * FULL).round() as u64,
             *b,
             "{name}: zone {i} blue"
         );
