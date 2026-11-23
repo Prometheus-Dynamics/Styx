@@ -3,11 +3,14 @@
 //! `channel_cost samples <file> [count]`: ns per `Recorder::sample` at 24, 48 and 256 bytes,
 //! `count` samples each (default one million), through the recorder's own 1 MiB buffered file.
 //!
-//! `channel_cost stream <file> <seconds> [imu]`: a 120 fps 1280x800 GREY stream recorded to
-//! `<file>` from a producer thread, with a 1 kHz channel of 24-byte samples beside it when
-//! `imu` is given. The producer drops a frame when every pool buffer is still queued for the
+//! `channel_cost stream <file> <seconds> [imu | imu-batch]`: a 120 fps 1280x800 GREY stream
+//! recorded to `<file>` from a producer thread, with a 1 kHz channel of 24-byte samples beside
+//! it: `imu` hands each sample to the recorder thread on its own, `imu-batch` hands them over
+//! eight at a time and writes them with `Recorder::sample_batch`. The producer drops a frame when every pool buffer is still queued for the
 //! recorder (as a camera drops). `<file>` may be `/dev/null`, to leave the disk out. Prints the recorder thread's CPU time per second of
-//! recording, the frames and samples written, and the frames dropped.
+//! recording, the frames and samples written, the frames dropped, and how long `record` blocked:
+//! the longest call and the calls longer than a frame interval (a write the kernel held, as on a
+//! writeback stall).
 
 use std::fs::File;
 use std::io::BufWriter;
@@ -83,9 +86,20 @@ fn samples(path: &str, n: u64) {
 enum Msg {
     Frame(FrameLease<FrameMetadata>),
     Sample(u64, [u8; 24]),
+    Batch(u64, [[u8; 24]; BATCH]),
 }
 
-fn stream(path: &str, seconds: u64, with_imu: bool) {
+/// Samples per batch in `imu-batch`: 8 ms of a 1 kHz IMU.
+const BATCH: usize = 8;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Imu {
+    Off,
+    Each,
+    Batch,
+}
+
+fn stream(path: &str, seconds: u64, imu_mode: Imu) {
     let layouts = packed_layouts(FourCc::GREY, WIDTH, HEIGHT, None, None).unwrap();
     let format = MediaFormat::with_defaults(FourCc::GREY, Resolution::new(WIDTH, HEIGHT).unwrap());
     let span = layouts.span().unwrap();
@@ -104,24 +118,41 @@ fn stream(path: &str, seconds: u64, with_imu: bool) {
         let id = recorder.declare(imu()).unwrap();
         let cpu = thread_cpu_ns();
         let wall = monotonic_ns();
+        let frame_ns = 1_000_000_000 / FPS;
+        let (mut longest, mut over) = (0u64, 0u64);
         for msg in rx {
             match msg {
-                Msg::Frame(lease) => recorder.record(&lease).unwrap(),
+                Msg::Frame(lease) => {
+                    let start = monotonic_ns();
+                    recorder.record(&lease).unwrap();
+                    let took = monotonic_ns() - start;
+                    longest = longest.max(took);
+                    over += u64::from(took > frame_ns);
+                }
                 Msg::Sample(ts, data) => recorder.sample(id, ts, &data).unwrap(),
+                Msg::Batch(first, data) => {
+                    let batch = data
+                        .iter()
+                        .enumerate()
+                        .map(|(i, d)| (first + i as u64 * 1_000_000, &d[..]));
+                    recorder.sample_batch(id, batch).unwrap();
+                }
             }
         }
         let cpu = thread_cpu_ns() - cpu;
         let wall = monotonic_ns() - wall;
         let (frames, samples) = (recorder.frames(), recorder.samples());
         recorder.finish().unwrap();
-        (cpu, wall, frames, samples)
+        (cpu, wall, frames, samples, longest, over)
     });
 
-    let imu_thread = with_imu.then(|| {
+    let imu_thread = (imu_mode != Imu::Off).then(|| {
         let tx = tx.clone();
         thread::spawn(move || {
             let mut next = monotonic_ns();
             let mut n = 0u64;
+            let mut batch = [[0u8; 24]; BATCH];
+            let mut first = 0;
             while next < end {
                 let now = monotonic_ns();
                 if now < next {
@@ -129,7 +160,18 @@ fn stream(path: &str, seconds: u64, with_imu: bool) {
                 }
                 let mut data = [0u8; 24];
                 data[..8].copy_from_slice(&n.to_le_bytes());
-                tx.send(Msg::Sample(next, data)).unwrap();
+                if imu_mode == Imu::Each {
+                    tx.send(Msg::Sample(next, data)).unwrap();
+                } else {
+                    let k = (n % BATCH as u64) as usize;
+                    if k == 0 {
+                        first = next;
+                    }
+                    batch[k] = data;
+                    if k == BATCH - 1 {
+                        tx.send(Msg::Batch(first, batch)).unwrap();
+                    }
+                }
                 n += 1;
                 next += 1_000_000;
             }
@@ -161,14 +203,20 @@ fn stream(path: &str, seconds: u64, with_imu: bool) {
     if let Some(t) = imu_thread {
         t.join().unwrap();
     }
-    let (cpu, wall, frames, samples) = recorder.join().unwrap();
+    let (cpu, wall, frames, samples, longest, over) = recorder.join().unwrap();
     println!(
         "stream {WIDTH}x{HEIGHT} GREY {FPS} fps, {seconds} s, imu {}: recorder cpu {:.2}% of a core \
-         ({:.1} ms/s), frames {frames}/{} written, {dropped} dropped, samples {samples}",
-        if with_imu { "1 kHz x 24 B" } else { "off" },
+         ({:.1} ms/s), frames {frames}/{} written, {dropped} dropped, samples {samples}, \
+         longest record {:.1} ms, {over} records over a frame interval",
+        match imu_mode {
+            Imu::Off => "off",
+            Imu::Each => "1 kHz x 24 B, each sample sent",
+            Imu::Batch => "1 kHz x 24 B, sent in batches of 8",
+        },
         cpu as f64 * 100.0 / wall as f64,
         cpu as f64 / (wall as f64 / 1e9) / 1e6,
         sent + dropped,
+        longest as f64 / 1e6,
     );
 }
 
@@ -182,10 +230,16 @@ fn main() {
         Some("stream") => stream(
             &args[2],
             args[3].parse().unwrap(),
-            args.get(4).is_some_and(|a| a == "imu"),
+            match args.get(4).map(String::as_str) {
+                Some("imu") => Imu::Each,
+                Some("imu-batch") => Imu::Batch,
+                _ => Imu::Off,
+            },
         ),
         _ => {
-            eprintln!("usage: channel_cost samples <file> [count] | stream <file> <seconds> [imu]")
+            eprintln!(
+                "usage: channel_cost samples <file> [count] | stream <file> <seconds> [imu | imu-batch]"
+            )
         }
     }
 }

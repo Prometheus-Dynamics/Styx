@@ -43,7 +43,8 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
     spec has a name, the samples' encoding, and a schema (name, encoding, bytes), as MCAP
     names them, plus the producer's clock. Both clocks are read when it is declared and kept.
   - `Recorder::sample(id, timestamp_ns, bytes)` writes one sample (at most 1 MiB, CRC over its
-    head and bytes). It allocates nothing.
+    head and bytes). `Recorder::sample_batch(id, iter)` writes several of one channel in one
+    call. Neither allocates.
   - Every timestamp in a recording is `CLOCK_MONOTONIC` ns. A producer on `CLOCK_BOOTTIME`
     converts with `ClockPair::now()` and `monotonic_from_boottime` (or the free function of
     that name, which reads the pair each call).
@@ -77,12 +78,12 @@ What a channel costs the recorder (`examples/channel_cost.rs`, x86_64 host):
 | | |
 |---|---|
 | `Recorder::sample`, 24 / 48 / 256 B | 42 / 55 / 178 ns |
-| 120 fps 1280x800 GREY to `/dev/null`, recorder thread | 1.9% of a core; 2.4% with a 1 kHz channel of 24 B samples |
+| 120 fps 1280x800 GREY to `/dev/null`, recorder thread, 15 s x3 | 2.12% of a core; with a 1 kHz channel of 24 B samples 2.72% sent one by one, 2.21% in batches of 8 (`sample_batch`) |
 | the same to an SSD, three 20 s runs each | 7.0–7.2% without the channel, 5.5–7.8% with; no drops from the channel |
 
-The cost of a 1 kHz channel is the recorder thread waking once per sample (about 5 us each in
-the example, which sends each sample on its own); the write itself is the 42 ns. A consumer that
-hands samples to its recorder thread in batches pays that wake once per batch. Frames
+The cost of a 1 kHz channel is the recorder thread waking once per sample; the write itself is
+the 42 ns. Handing samples over in batches and writing them with `sample_batch` pays that wake
+once per batch. Frames
 were dropped only in some disk runs, with or without the channel, when the disk stalled.
 
 ## Previews: `styx-preview`

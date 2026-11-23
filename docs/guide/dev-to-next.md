@@ -336,8 +336,9 @@ let imu = rec.declare(ChannelSpec {
     clock: SourceClock::Boottime,                          // Lemnos stamps t_boottime_us
 })?;
 let clocks = ClockPair::now();                             // once; moves only on suspend
-// each Lemnos sample:
-rec.sample(imu, clocks.monotonic_from_boottime(t_boottime_us * 1_000), &bytes)?;
+// each batch of Lemnos samples, handed to the recorder thread at once:
+rec.sample_batch(imu, batch.iter().map(|s| (clocks.monotonic_from_boottime(s.t_boottime_us * 1_000), &s.bytes[..])))?;
+// or one sample: rec.sample(imu, ts_ns, &bytes)?;
 // each frame:
 rec.record(&lease)?;
 rec.finish()?;
@@ -350,7 +351,10 @@ rec.finish()?;
 - `monotonic_from_boottime(ns)` reads the clock pair on each call; use it when the process may
   have suspended since the pair was read.
 - Per sample: 42 ns at 24 B on the x86_64 host (55 ns at 48 B, 178 ns at 256 B). Wake the
-  recorder thread once per batch, not once per sample.
+  recorder thread once per batch and write it with `sample_batch`, not once per sample: a
+  1 kHz channel beside 120 fps cost +0.60% of a core sent per sample, +0.09% in batches of 8.
+- The recorder blocks its thread when the disk holds a write (TODO RECORD-WRITEBACK). Frames
+  that pile up in front of it are dropped by whatever queues them, not by the recorder.
 
 Reading it back:
 

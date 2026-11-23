@@ -172,6 +172,28 @@ impl<W: Write> Recorder<W> {
         Ok(())
     }
 
+    /// Writes several samples of one channel, in order: each a `CLOCK_MONOTONIC` time and its
+    /// bytes, as [`Recorder::sample`] writes them. For a channel read in batches (a 1 kHz IMU
+    /// that a driver hands over a few samples at a time): hand the batch to the recorder's
+    /// thread once, and write it with one call. The channel is checked once. Returns the
+    /// samples written; on an error, the samples before the failing one are written.
+    /// Allocates nothing.
+    pub fn sample_batch<'a>(
+        &mut self,
+        channel: ChannelId,
+        samples: impl IntoIterator<Item = (u64, &'a [u8])>,
+    ) -> Result<usize, RecordError> {
+        if usize::from(channel.0) >= self.channels.len() {
+            return Err(RecordError::Channel("sample of a channel not declared"));
+        }
+        let mut written = 0;
+        for (timestamp_ns, data) in samples {
+            self.sample(channel, timestamp_ns, data)?;
+            written += 1;
+        }
+        Ok(written)
+    }
+
     /// Frames written so far.
     pub fn frames(&self) -> u64 {
         self.frames

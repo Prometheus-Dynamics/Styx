@@ -409,3 +409,37 @@ fn damaged_channel_records_are_refused() {
     assert!(replay.next_item().unwrap().is_none());
     assert!(replay.truncated());
 }
+
+/// A batch writes the same records as one call per sample, and checks the channel first.
+#[test]
+fn a_batch_is_the_same_as_its_samples() {
+    let frames = samples(23);
+    let clocks = ClockPair {
+        monotonic_ns: 5,
+        boottime_ns: 6,
+    };
+    let batch: Vec<(u64, Vec<u8>)> = (0..8u64).map(|i| (1_000 + i, vec![i as u8; 24])).collect();
+    let mut one = Recorder::new(Vec::new(), &header_for(&frames)).unwrap();
+    let id = one.declare_at(imu(), clocks).unwrap();
+    for (ts, data) in &batch {
+        one.sample(id, *ts, data).unwrap();
+    }
+    let mut many = Recorder::new(Vec::new(), &header_for(&frames)).unwrap();
+    let id = many.declare_at(imu(), clocks).unwrap();
+    let written = many
+        .sample_batch(id, batch.iter().map(|(ts, d)| (*ts, d.as_slice())))
+        .unwrap();
+    assert_eq!((written, many.samples()), (8, 8));
+    assert_eq!(one.finish().unwrap(), many.finish().unwrap());
+
+    let mut other = Recorder::new(Vec::new(), &header_for(&frames)).unwrap();
+    other.declare(imu()).unwrap();
+    let second = other.declare(pose()).unwrap();
+    let mut rec = Recorder::new(Vec::new(), &header_for(&frames)).unwrap();
+    rec.declare(imu()).unwrap();
+    assert!(matches!(
+        rec.sample_batch(second, [(0u64, &b"x"[..])]),
+        Err(RecordError::Channel(_))
+    ));
+    assert_eq!(rec.samples(), 0);
+}
