@@ -84,7 +84,9 @@ pub struct Replay<R: Read> {
     /// [`LOOKAHEAD_FRAMES`]).
     ahead: VecDeque<FrameLease<FrameMetadata>>,
     /// Samples read ahead, in the recording's order, and the bytes they point into.
-    queue: Vec<Queued>,
+    queue: VecDeque<Queued>,
+    /// The queued samples' bytes in total.
+    queued_bytes: usize,
     arena: Vec<u8>,
     last_frame_ns: Option<u64>,
     /// A record tag read by `new` while it read the leading declarations.
@@ -125,7 +127,8 @@ impl<R: Read> Replay<R> {
             frame_header: Vec::with_capacity(256),
             channels: Vec::new(),
             ahead: VecDeque::with_capacity(LOOKAHEAD_FRAMES),
-            queue: Vec::with_capacity(256),
+            queue: VecDeque::with_capacity(256),
+            queued_bytes: 0,
             arena: Vec::with_capacity(64 * 1024),
             last_frame_ns: None,
             peeked: None,
@@ -227,8 +230,7 @@ impl<R: Read> Replay<R> {
     /// skipped and counted in [`Replay::dropped`]. A record that fails its checks is an error:
     /// the recording is refused from there on.
     pub fn next_frame(&mut self) -> Result<Option<FrameLease<FrameMetadata>>, RecordError> {
-        self.queue.clear();
-        self.arena.clear();
+        self.clear_queue();
         if let Some(frame) = self.ahead.pop_front() {
             return Ok(Some(self.hand_out(frame)));
         }
@@ -238,8 +240,7 @@ impl<R: Read> Replay<R> {
                 Record::Frame(frame) => return Ok(Some(self.hand_out(frame))),
                 Record::Dropped | Record::Channel => {}
                 Record::Sample => {
-                    self.queue.clear();
-                    self.arena.clear();
+                    self.clear_queue();
                 }
             }
         }
@@ -321,11 +322,13 @@ impl<R: Read> Replay<R> {
     }
 
     fn queue_full(&self) -> bool {
-        self.queue.len() >= LOOKAHEAD_SAMPLES || self.queued_bytes() >= LOOKAHEAD_SAMPLE_BYTES
+        self.queue.len() >= LOOKAHEAD_SAMPLES || self.queued_bytes >= LOOKAHEAD_SAMPLE_BYTES
     }
 
-    fn queued_bytes(&self) -> usize {
-        self.queue.iter().map(|q| q.len).sum()
+    fn clear_queue(&mut self) {
+        self.queue.clear();
+        self.queued_bytes = 0;
+        self.arena.clear();
     }
 
     fn hand_out(&mut self, frame: FrameLease<FrameMetadata>) -> FrameLease<FrameMetadata> {
@@ -337,7 +340,11 @@ impl<R: Read> Replay<R> {
     /// Takes queued sample `i` out of the queue and hands it out. Its bytes stay in the arena
     /// until the next sample is queued.
     fn take_sample(&mut self, i: usize) -> Item<'_> {
-        let q = self.queue.remove(i);
+        // In the recording's order this is the front: O(1).
+        let Some(q) = self.queue.remove(i) else {
+            unreachable!("a queued sample's index")
+        };
+        self.queued_bytes -= q.len;
         let late = self.last_frame_ns.is_some_and(|t| q.timestamp_ns <= t);
         self.samples += 1;
         if late {
@@ -353,7 +360,10 @@ impl<R: Read> Replay<R> {
 
     /// Room for `len` more bytes at the arena's end, reusing the space of samples already
     /// handed out: the arena is emptied when the queue is, and otherwise packed (the queued
-    /// samples moved to its front, in order) when it would have to grow.
+    /// samples moved to its front, in order) when it would have to grow. After a pack the arena
+    /// has room for at least as many bytes again as are queued, so a queue that stays full (a
+    /// recording of samples only) packs once per queue's worth of samples, not once per sample:
+    /// the arena grows to at most twice what the queue holds, then stops.
     fn make_room(&mut self, len: usize) {
         if self.queue.is_empty() {
             self.arena.clear();
@@ -365,6 +375,7 @@ impl<R: Read> Replay<R> {
                 end += q.len;
             }
             self.arena.truncate(end);
+            self.arena.reserve(end + len);
         }
     }
 
@@ -499,7 +510,8 @@ impl<R: Read> Replay<R> {
             self.arena.truncate(start);
             return Err(RecordError::Corrupt("sample checksum"));
         }
-        self.queue.push(Queued {
+        self.queued_bytes += len;
+        self.queue.push_back(Queued {
             channel,
             timestamp_ns,
             start,
