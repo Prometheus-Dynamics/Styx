@@ -422,9 +422,41 @@ fn live_path(memory: Memory) {
     );
 
     lend_cases(&mut live, &mut expect, &frames[frames.len() - 1], &pool);
+    statistics_case(&mut live, &frames[frames.len() - 1]);
     live.stop().expect("stop the ISP");
     drop(client);
     service.stop();
+}
+
+/// Case 6, last: frames put into the input in one pass (their form, 16-bit Bayer) count the raw
+/// statistics on the frames `count_next` asks for only (the 3A loop's one frame in N), and a
+/// frame it leaves out has none.
+fn statistics_case(live: &mut LiveIsp, (settings, exposure): &(IspSettings, f64)) {
+    sim::refuse(None);
+    // A pool of its own: not the lent one, so each frame is put in by the pass.
+    let pool: FramePool<()> =
+        FramePool::host(2, BufferSize::new(input_len(), 0)).expect("raw pool");
+    let form = live
+        .set_input_form(raw_frame(&pool, 200).format())
+        .expect("16-bit Bayer frames have a form");
+    let raw = raw_frame(&pool, 200);
+    let config = form.stats_config(raw.format()).expect("stats config");
+    drop(raw);
+    live.count_statistics(Some(styx_aaa::BayerStats::new(config, 0)));
+    let mut counted = Vec::new();
+    for identity in 200..206u64 {
+        let take = identity % 3 == 0;
+        live.count_next(take);
+        let raw = raw_frame(&pool, identity);
+        live.post(identity, settings, *exposure, &raw)
+            .expect("post");
+        if live.raw_statistics(identity).is_some() {
+            counted.push(identity);
+        }
+        drop(live.wait().expect("wait").expect("a completion in time"));
+    }
+    assert_eq!(counted, [201, 204], "counted on the frames asked for only");
+    live.count_statistics(None);
 }
 
 /// Cases 3 to 5, after the copied ones: a lent input, a lend refused and posted again with the

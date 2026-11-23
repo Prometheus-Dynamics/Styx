@@ -73,6 +73,7 @@ pub use aaa::AaaStatus;
 pub use access::Access;
 pub use config::{
     CameraConfig, Config, ConfigError, Force, GroupSpec, IspMode, IspOutputSpec, IspPlan,
+    StatsSampling,
 };
 pub use outlet::{Discard, Outlet, Outlets};
 pub use service::{Daemon, Deps, Error, Listers, Nothing, Service};

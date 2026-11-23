@@ -178,9 +178,17 @@ stream's frames are not copied for them.
 - **In the service:** `aaa = true` beside `isp` runs the loop on a native camera's processed
   stream (off by default: exposure and gain stay as set, and the ISP runs neutral settings).
   - Statistics: the PiSP route counts them in its input pass (the copy it already makes, every
-    other quad of every other quad row, 32x32 zones); the soft ISP gathers its own on the first
+    other quad of the rows counted, 32x32 zones); the soft ISP gathers its own on the first
     picture it makes. Neither reads the frame again.
-  - Each frame's step runs on the ISP thread after the frame is published. Its exposure and gain go
+  - Their cost: they are taken on one frame in `aaa_stats_every` (default 4: 30 a second at
+    120 fps, the rate the tunings' speeds are made for) and counted on one quad row in
+    `aaa_stats_rows` (default 4: about 31 quads in each zone at 1280x800 on the PiSP route, above
+    the 16 a tuning's zone needs; fewer rows on a frame too short for every zone row to have one).
+    A frame without them costs nothing extra. The loop steps on the frames that have them; the
+    status says the sampling as it runs (`aaa_stats=<every>/<rows>`). At the defaults the loop
+    settles from a dark start, and after the light steps four times brighter, within 0.1-0.17 s
+    on the simulated frames (`known_frames.rs`).
+  - The step runs on the ISP thread after the frame is published. Its exposure and gain go
     to the sensor through the native controls for a named frame; its `IspSettings` apply to the
     next frame (never part of one). The frame rate stays as set.
   - Controls: `ae`, `ev`, `ae_exposure_max_us`, `ae_gain_max`, `awb`, `red_gain`, `blue_gain`,
@@ -189,8 +197,8 @@ stream's frames are not copied for them.
     thread posts it for that frame itself); `auto` gives it back.
   - White balance outside the tuning: when fewer zones than the tuning's `min_regions` are within
     `delta_limit` of the grey point the search chose, and of the point the zones alone choose (the
-    search without the prior), no point fitted the data and the lux prior alone chose. AWB then takes the tuning curve's point nearest the zones' mean, and the status gives that
-    mean (`awb_outside=<r/g>/<b/g>`, thousandths). On Raze #2's bench lamp the scene read R/G 1.49,
+    search without the prior), no point fitted the data and the lux prior alone chose. AWB then
+    takes the tuning curve's point nearest the zones' mean, and the status gives that mean (`awb_outside=<r/g>/<b/g>`, thousandths). On Raze #2's bench lamp the scene read R/G 1.49,
     B/G 0.22 against the curve's warm end of 0.95 / 0.42. The prior had picked 6155 K, which turned
     the picture further orange. The nearest point is 2860 K, which goes the right way as far as
     the tuning reaches.

@@ -578,6 +578,7 @@ impl Stage {
                     ctx.slot.settings.aaa == Some(true),
                     format.resolution.width.get(),
                     format.resolution.height.get(),
+                    plan.stats.rows,
                 ),
             )
             .map_err(|e| format!("soft ISP: {e}"))
@@ -639,7 +640,13 @@ impl Stage {
                 Some(PathBuf::from(styx_tuning::BUNDLED_DIR)),
             );
             let found = search.find(ctx.slot.settings.tuning.as_deref());
-            crate::aaa::Aaa::new(found.tuning.clone(), found.describe())
+            let height = format.resolution.height.get();
+            crate::aaa::Aaa::new(
+                found.tuning.clone(),
+                found.describe(),
+                plan.stats.every,
+                stats_rows(plan.stats.rows, height),
+            )
         });
         let mut stage = Self {
             mode: plan.mode,
@@ -775,6 +782,12 @@ impl Stage {
             (IspMode::Soft, None) => Route::Soft,
             (_, None) => Route::Pisp,
         };
+        // The 3A loop's statistics on this frame or not (`aaa_stats_every`): the back end's
+        // input pass counts them only when due, as does the soft ISP's pass.
+        let due = self.aaa.as_ref().is_some_and(crate::aaa::Aaa::due);
+        if let Some(live) = self.live.as_mut() {
+            live.count_next(due);
+        }
         let made = match route {
             Route::Soft => self.soft_frame(raw, ctx.slot),
             Route::Pisp | Route::PispTry => {
@@ -878,9 +891,14 @@ impl Stage {
         let Some(live) = self.live.as_mut() else {
             return;
         };
+        let rows = self.aaa.as_ref().map_or(1, |a| a.status().stats_rows);
         let config = live
             .input_form()
-            .and_then(|form| form.stats_config(&self.raw).ok());
+            .and_then(|form| form.stats_config(&self.raw).ok())
+            .map(|mut c| {
+                c.row_step = rows;
+                c
+            });
         live.count_statistics(config.map(|c| styx_aaa::BayerStats::new(c, 0)));
         set_stats_black(live, &self.settings);
     }
@@ -903,6 +921,7 @@ impl Stage {
             _ => false,
         };
         aaa.soft_counted = false;
+        aaa.made(counted);
         if counted {
             let fps = ctx.slot.settings.fps_milli.unwrap_or(0);
             if aaa.step(&ctx.slot.aaa, raw.id(), raw.meta(), fps, &mut self.settings) {
@@ -1004,8 +1023,12 @@ impl Stage {
         let len = raw.meta().to_bytes(&mut self.blob);
         MadeBy::Soft.mark(&mut self.blob[..len]);
         let mut made = false;
-        // The 3A loop's statistics come with the first picture made (one per frame).
-        let mut stats = self.aaa.as_mut().map(|aaa| &mut aaa.stats);
+        // The 3A loop's statistics come with the first picture made (one per frame, on the frames due).
+        let mut stats = self
+            .aaa
+            .as_mut()
+            .filter(|aaa| aaa.due())
+            .map(|aaa| &mut aaa.stats);
         let mut counted = false;
         for out in &mut self.outs {
             let Some(index) = (out.be..out.be + out.soft).find(|&i| out.pool.is_free(i)) else {
@@ -1048,19 +1071,25 @@ impl Stage {
 }
 
 /// The soft ISP's choices: with the 3A loop, the statistics it meters, on the back end's grid
-/// (32x32 zones, every other quad row) so either route gives the loop the same zones; fewer on a
-/// frame with fewer quads than that.
-fn soft_options(aaa: bool, width: u32, height: u32) -> Options {
+/// (32x32 zones, one quad row in `rows`) so either route gives the loop the same zones; fewer on
+/// a frame with fewer quads than that.
+fn soft_options(aaa: bool, width: u32, height: u32, rows: u32) -> Options {
     Options {
         stats: aaa.then(|| StatsConfig {
             zones_x: (width / 2).clamp(1, 32),
             zones_y: (height / 2).clamp(1, 32),
             histogram_bins: 128,
-            row_step: 2,
+            row_step: stats_rows(rows, height),
             ..StatsConfig::default()
         }),
         ..Options::default()
     }
+}
+
+/// The statistics' quad row step for `rows` (`aaa_stats_rows`) on a frame `height` rows high:
+/// at most the step that leaves every one of 32 zone rows a counted row.
+fn stats_rows(rows: u32, height: u32) -> u32 {
+    rows.min((height / 2 / 32).max(1)).max(1)
 }
 
 /// The raw statistics' black level: the settings' (normalised), in the counted samples' units.

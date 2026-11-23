@@ -368,6 +368,13 @@ fn manual_values_win_from_their_frame_and_auto_gives_them_back() {
     let rig = Rig::start("isp = \"soft\"\n");
     let line = rig.wait_for("the loop running", |l| field(l, "isp_3a") == Some("ae,awb"));
     assert_eq!(field(&line, "flicker"), Some("off"));
+    // The statistics' sampling as it runs: one frame in 4 (the default), and one quad row in at
+    // most 4 (fewer on a frame too short for every zone row to have one).
+    let (every, rows) = field(&line, "aaa_stats")
+        .and_then(|v| v.split_once('/'))
+        .map(|(a, b)| (a.parse::<u32>().unwrap(), b.parse::<u32>().unwrap()))
+        .expect("aaa_stats=<every>/<rows>");
+    assert!(every == 4 && (1..=4).contains(&rows), "{line}");
     assert!(
         field(&line, "aaa_tuning").is_some_and(|t| t.contains("defaults") || t.contains("generic")),
         "the tuning is named: {line}"

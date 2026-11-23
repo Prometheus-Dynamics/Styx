@@ -332,3 +332,83 @@ fn a_known_level_gets_the_exposure_it_needs_on_both_routes() {
         );
     }
 }
+
+/// Frames until the loop settles, closed: each frame is exposed as the loop's newest request that
+/// has landed asks (the light follows exposure x gain), and the loop steps on one frame in `every`
+/// (`aaa_stats_every`), as the service runs it. From a dark start; then, once settled, the light
+/// four times brighter. Returns the frames to settle from the start and after the step.
+fn settle(route: Route, every: u64) -> (u64, u64) {
+    let tuning = tuning();
+    let mut c = controller(&tuning);
+    let mut soft = (route == Route::Soft).then(Soft::new);
+    let mut settings = IspSettings::neutral(BLACK);
+    let lens = shading();
+    // A grey under the 4650 K light, `light` of full scale (in the centre) at 1 ms, 1x.
+    let at = |light: f64| {
+        Raw::new(|x, y| {
+            let t = table_at(&lens, x, y);
+            [0.6756 * light / t[0], light / t[1], 0.6433 * light / t[2]].map(|v| v.min(1.0))
+        })
+    };
+    let (mut exposure, mut gain) = (Duration::from_millis(1), 1.0);
+    let mut landed: Option<styx_aaa::SensorRequest> = None;
+    let (mut light, mut since, mut settled_for) = (0.01, 0, 0);
+    let mut first = None;
+    for step in 0..600u64 {
+        let frame = step * every;
+        if let Some(r) = landed.filter(|r| r.frame <= frame) {
+            (exposure, gain) = (r.exposure, r.analogue_gain);
+        }
+        let raw = at(light * exposure.as_secs_f64() / 1e-3 * gain);
+        let stats = match soft.as_mut() {
+            Some(s) => s.stats(&raw, &settings),
+            None => raw.pisp(),
+        };
+        let meta = FrameMetadata::new(frame, exposure, gain, FRAME);
+        let out = c.process(&stats, &meta).unwrap();
+        if let Some(r) = out.sensor {
+            landed = Some(r);
+        }
+        settings.clone_from(out.isp);
+        let p = &out.params;
+        let awb_there = (p.colour_temperature - 4650.0).abs() < 300.0;
+        settled_for = if p.ae.locked && awb_there {
+            settled_for + 1
+        } else {
+            0
+        };
+        // Settled: AE locked and AWB on the light, three steps running.
+        if settled_for == 3 {
+            let took = frame - 2 * every - since;
+            match first {
+                None => {
+                    first = Some(took);
+                    (light, since, settled_for) = (light * 4.0, frame + every, 0);
+                }
+                Some(first) => return (first, took),
+            }
+        }
+    }
+    panic!("{route:?}: not settled in 600 steps of {every} frames");
+}
+
+/// How long the loop takes to settle at the service's default sampling (one frame in 4 at
+/// 120 fps: 30 steps a second, the rate the tunings' speeds are made for): from a dark start, and
+/// after the light steps four times brighter. Within a second each, on both routes.
+#[test]
+fn the_loop_settles_within_a_second_at_the_default_sampling() {
+    let every = u64::from(styx_service::StatsSampling::DEFAULT_EVERY);
+    for route in [Route::Pisp, Route::Soft] {
+        let (start, step) = settle(route, every);
+        let s = |frames: u64| frames as f64 / 120.0;
+        println!(
+            "{route:?}: settled from dark after {start} frames ({} steps) = {:.3} s, after the light x4 \
+             {step} frames ({} steps) = {:.3} s, at 120 fps",
+            start / every,
+            s(start),
+            step / every,
+            s(step)
+        );
+        assert!(s(start) < 1.0 && s(step) < 1.0, "{route:?}");
+    }
+}

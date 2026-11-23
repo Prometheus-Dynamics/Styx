@@ -788,6 +788,8 @@ impl Slot {
         s.wb_milli = aaa.wb_milli;
         s.colour_temperature = aaa.colour_temperature;
         s.awb_outside_milli = aaa.awb_outside_milli;
+        s.stats_every = aaa.stats_every;
+        s.stats_rows = aaa.stats_rows;
         match &aaa.tuning {
             Some(text) => set_text(&mut s.tuning, text),
             None => s.tuning = None,

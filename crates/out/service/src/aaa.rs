@@ -83,6 +83,10 @@ pub struct AaaStatus {
     /// The zones' mean R/G and B/G in thousandths, while AWB finds the scene outside the
     /// tuning's colour range and takes the curve's nearest point (`styx_aaa::AwbStatus::outside`).
     pub awb_outside_milli: Option<(u32, u32)>,
+    /// The statistics are taken on one frame in this many and counted on one quad row in this
+    /// many (`aaa_stats_every`, `aaa_stats_rows` as they run: fewer rows on a short frame).
+    pub stats_every: u32,
+    pub stats_rows: u32,
     /// The tuning in use, or why the loop does not run.
     pub tuning: Option<String>,
     pub reason: Option<String>,
@@ -436,6 +440,9 @@ pub(crate) struct Aaa {
     pub(crate) stats: Statistics,
     /// The soft ISP filled [`Self::stats`] for the frame just made.
     pub(crate) soft_counted: bool,
+    /// Statistics on one frame in this many; frames made since the last ones.
+    every: u32,
+    since: u32,
     meta: FrameMetadata,
     seen: u64,
     /// The first frame id of this stream (the loop counts frames from it).
@@ -447,7 +454,8 @@ pub(crate) struct Aaa {
 
 impl Aaa {
     /// A loop with `tuning`, built once the capture thread has said the sensor's timing.
-    pub(crate) fn new(tuning: Tuning, described: String) -> Self {
+    /// `every` and `rows`: the statistics' sampling as it runs (see [`AaaStatus::stats_every`]).
+    pub(crate) fn new(tuning: Tuning, described: String, every: u32, rows: u32) -> Self {
         Self {
             tuning,
             controller: None,
@@ -459,16 +467,37 @@ impl Aaa {
                 None,
             ),
             soft_counted: false,
+            every: every.max(1),
+            // The first frame made takes them.
+            since: u32::MAX,
             meta: FrameMetadata::new(0, Duration::ZERO, 1.0, Duration::ZERO),
             seen: u64::MAX,
             first: None,
             lead: LEAD,
             status: AaaStatus {
                 running: true,
+                stats_every: every.max(1),
+                stats_rows: rows,
                 tuning: Some(described),
                 ..AaaStatus::default()
             },
         }
+    }
+
+    /// The frame about to be made takes the statistics: one in [`Self::new`]'s `every`, counted
+    /// from the last frame that took them (a frame that should have and was not made leaves the
+    /// next one due).
+    pub(crate) fn due(&self) -> bool {
+        self.since.saturating_add(1) >= self.every
+    }
+
+    /// A frame was made: with the statistics (`counted`), or without.
+    pub(crate) fn made(&mut self, counted: bool) {
+        self.since = if counted {
+            0
+        } else {
+            self.since.saturating_add(1)
+        };
     }
 
     /// The status as the loop has it now.
@@ -633,6 +662,34 @@ mod tests {
     /// on a frame the newest queued at or before it. Frame F has the manual value, every frame
     /// after it too, and none before it.
     #[test]
+    fn the_statistics_are_due_on_one_frame_in_every_and_a_missed_one_leaves_the_next_due() {
+        let mut aaa = Aaa::new(Tuning::default(), "defaults".into(), 4, 4);
+        assert_eq!((aaa.status().stats_every, aaa.status().stats_rows), (4, 4));
+        // The first frame made takes them; then one in 4.
+        let mut taken = Vec::new();
+        for frame in 0..12 {
+            let due = aaa.due();
+            if due {
+                taken.push(frame);
+            }
+            aaa.made(due);
+        }
+        assert_eq!(taken, [0, 4, 8]);
+        // Due on frame 12 but not counted (the frame was made without them): 13 is due.
+        assert!(aaa.due());
+        aaa.made(false);
+        assert!(aaa.due());
+        aaa.made(true);
+        assert!(!aaa.due());
+        // Every frame.
+        let mut every = Aaa::new(Tuning::default(), "defaults".into(), 1, 2);
+        for _ in 0..3 {
+            assert!(every.due());
+            every.made(true);
+        }
+    }
+
+    #[test]
     fn a_manual_exposure_lands_on_its_frame_when_the_loop_skips_frames() {
         let link = Link::default();
         link.set_timing(Some(SensorTiming {
@@ -788,7 +845,7 @@ mod tests {
     fn a_dark_frame_raises_exposure_and_the_request_names_a_frame_after_the_delays() {
         let link = Link::default();
         link.set_timing(Some(timing()));
-        let mut aaa = Aaa::new(Tuning::default(), "defaults".into());
+        let mut aaa = Aaa::new(Tuning::default(), "defaults".into(), 1, 2);
         let mut settings = IspSettings::neutral(0.0);
         // A dark, grey frame: every zone at 2% of full scale.
         let mut acc = styx_aaa::StatsAccumulator::new(4, 4, 64, 0.99);

@@ -76,6 +76,8 @@
 //! isp_retry_cap_ms = 5000       # auto: the longest wait between tries (at most 10000)
 //! aaa = true             # the 3A loop on the processed stream (default false; needs isp)
 //! tuning = "<sensor>.toml"      # the tuning file it asks for (default: the generic one)
+//! aaa_stats_every = 4    # the loop's statistics on one frame in this many (1..=30, default 4)
+//! aaa_stats_rows = 4     # ... counted on one quad row in this many (1..=8, default 4)
 //! ```
 //!
 //! Native cameras: `width` and `height` are the smallest mode that is acceptable, and `format` and
@@ -192,6 +194,42 @@ pub struct CameraConfig {
     /// `tuning_dirs`); absent or not found, the generic tuning, then styx-aaa's defaults.
     #[serde(default)]
     pub tuning: Option<String>,
+    /// The 3A loop's statistics are taken on one frame in this many, and the loop steps on
+    /// those frames (1..=30, default [`StatsSampling::DEFAULT_EVERY`]). The tunings' speeds are
+    /// per step, as made for about 30 steps a second.
+    #[serde(default)]
+    pub aaa_stats_every: Option<u32>,
+    /// The statistics are counted on one quad row in this many (1..=8, default
+    /// [`StatsSampling::DEFAULT_ROWS`]; fewer where the frame has too few rows for every zone).
+    #[serde(default)]
+    pub aaa_stats_rows: Option<u32>,
+}
+
+/// How often and how densely the 3A loop's statistics are counted (`aaa_stats_every`,
+/// `aaa_stats_rows`): their cost against how soon the loop follows the light.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatsSampling {
+    /// One frame in this many.
+    pub every: u32,
+    /// One quad row in this many.
+    pub rows: u32,
+}
+
+impl StatsSampling {
+    /// At 120 frames a second, 30 statistics a second: the rate the tunings' speeds are made for.
+    pub const DEFAULT_EVERY: u32 = 4;
+    /// Every 4th quad row (every other quad of it on the back end's route): about 31 quads in
+    /// each of 32x32 zones at 1280x800, above the tunings' 16 a zone needs.
+    pub const DEFAULT_ROWS: u32 = 4;
+}
+
+impl Default for StatsSampling {
+    fn default() -> Self {
+        Self {
+            every: Self::DEFAULT_EVERY,
+            rows: Self::DEFAULT_ROWS,
+        }
+    }
 }
 
 /// Which ISP makes a camera's processed stream (`isp`).
@@ -235,6 +273,8 @@ pub struct IspPlan {
     pub output0: IspOutputSpec,
     pub output1: Option<IspOutputSpec>,
     pub policy: crate::isp_switch::SwitchPolicy,
+    /// The 3A loop's statistics.
+    pub stats: StatsSampling,
 }
 
 fn parse_size(text: &str) -> Option<(u32, u32)> {
@@ -289,11 +329,31 @@ impl CameraConfig {
             self.isp_retry_start_ms.map_or(defaults.retry_start, ms),
             self.isp_retry_cap_ms.map_or(defaults.retry_cap, ms),
         )?;
+        let within = |v: Option<u32>, default: u32, max: u32, key: &str| match v {
+            None => Ok(default),
+            Some(v) if (1..=max).contains(&v) => Ok(v),
+            Some(v) => Err(format!("{key}: {v} is not within 1..={max}")),
+        };
+        let stats = StatsSampling {
+            every: within(
+                self.aaa_stats_every,
+                StatsSampling::DEFAULT_EVERY,
+                30,
+                "aaa_stats_every",
+            )?,
+            rows: within(
+                self.aaa_stats_rows,
+                StatsSampling::DEFAULT_ROWS,
+                8,
+                "aaa_stats_rows",
+            )?,
+        };
         Ok(Some(IspPlan {
             mode,
             output0,
             output1,
             policy,
+            stats,
         }))
     }
 }
@@ -523,6 +583,23 @@ mod tests {
         );
         assert_eq!(plan.policy.refusals, 2);
         assert_eq!(
+            plan.stats,
+            StatsSampling { every: 4, rows: 4 },
+            "the default sampling"
+        );
+        let sampled = Config::parse(
+            "socket_dir = \"/x\"\n[camera.\"a\"]\nisp = \"soft\"\naaa_stats_every = 1\naaa_stats_rows = 8\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            sampled.camera["a"]
+                .isp_plan()
+                .expect("valid")
+                .expect("a plan")
+                .stats,
+            StatsSampling { every: 1, rows: 8 }
+        );
+        assert_eq!(
             Config::parse("socket_dir = \"/x\"\n[camera.\"a\"]\n")
                 .expect("parses")
                 .camera["a"]
@@ -538,6 +615,9 @@ mod tests {
                 "isp_retry_cap_ms",
             ),
             ("isp = \"auto\"\nisp_refusals = 0\n", "isp_refusals"),
+            ("isp = \"soft\"\naaa_stats_every = 0\n", "aaa_stats_every"),
+            ("isp = \"soft\"\naaa_stats_every = 31\n", "aaa_stats_every"),
+            ("isp = \"soft\"\naaa_stats_rows = 9\n", "aaa_stats_rows"),
         ] {
             let err = Config::parse(&format!("socket_dir = \"/x\"\n[camera.\"a\"]\n{keys}"))
                 .expect_err(keys);

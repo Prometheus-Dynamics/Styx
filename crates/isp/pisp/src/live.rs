@@ -139,6 +139,8 @@ pub struct LiveIsp<M = ()> {
     /// of the frame they are of.
     stats: Option<BayerStats>,
     stats_of: Option<u64>,
+    /// The next input pass leaves the statistics out ([`LiveIsp::count_next`]).
+    stats_skip: bool,
 }
 
 impl<M> std::fmt::Debug for LiveIsp<M> {
@@ -285,6 +287,7 @@ impl<M> LiveIsp<M> {
             row: Vec::new(),
             stats: None,
             stats_of: None,
+            stats_skip: false,
         })
     }
 
@@ -293,6 +296,13 @@ impl<M> LiveIsp<M> {
     pub fn count_statistics(&mut self, stats: Option<BayerStats>) {
         self.stats = stats;
         self.stats_of = None;
+    }
+
+    /// Whether the next frame's input pass counts the statistics (`false` leaves them out, and
+    /// costs nothing): for statistics on some frames only. Holds until changed; counting is on
+    /// by default.
+    pub fn count_next(&mut self, count: bool) {
+        self.stats_skip = !count;
     }
 
     /// The accumulator [`Self::count_statistics`] gave, for its black level.
@@ -791,11 +801,13 @@ impl<M> LiveIsp<M> {
                 .acquire_at(input, entry)
                 .map_err(|e| setup(format!("input buffer {input}: {e}")))?;
             self.stats_of = None;
-            if let Some(stats) = self.stats.as_mut() {
-                stats.reset();
+            let mut stats = self.stats.as_mut().filter(|_| !self.stats_skip);
+            if let Some(s) = stats.as_deref_mut() {
+                s.reset();
             }
-            crate::input::fill_with_stats(form, raw, &mut dst, &mut self.row, self.stats.as_mut())?;
-            if self.stats.is_some() {
+            let counting = stats.is_some();
+            crate::input::fill_with_stats(form, raw, &mut dst, &mut self.row, stats)?;
+            if counting {
                 self.stats_of = Some(identity);
             }
             self.input_copies += 1;

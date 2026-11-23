@@ -61,7 +61,8 @@ fn raw_stats_cost() {
         .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
         .collect();
     let mut out = Statistics::default();
-    for (rows, cols) in [(2, 2), (4, 4), (8, 8)] {
+    // 4x2: the service's default (`aaa_stats_rows = 4`, the back end's route's every other quad).
+    for (rows, cols) in [(2, 2), (4, 2), (4, 4), (8, 8)] {
         let mut config = BayerStatsConfig::new(W as u32, H as u32, Cfa::Bggr, 10);
         config.row_step = rows;
         config.col_step = cols;
