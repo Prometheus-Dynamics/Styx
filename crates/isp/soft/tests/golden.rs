@@ -224,9 +224,13 @@ fn check_stats(name: &str, stats: &Statistics) {
         );
         assert_eq!(got.counted as u64, *count, "{name}: zone {i} count");
     }
+    // dev's bins as counted (after the gains), moved back to before them as the controller
+    // reads them.
+    let before: Vec<u64> =
+        styx_soft::histogram_before_gains(&want.histogram, want.gains.map(|g| g as f32)).collect();
     assert_eq!(
         stats.histogram.bins(),
-        want.histogram.as_slice(),
+        before.as_slice(),
         "{name}: histogram"
     );
     assert!(stats.luma.is_none() && stats.focus.is_none());

@@ -106,6 +106,12 @@ pub struct AwbStatus {
     pub estimate: (f64, f64, f64),
     /// Filtered gains are within 1% of the estimate.
     pub converged: bool,
+    /// Set when the last estimate's scene was outside the tuning's colour range: fewer zones
+    /// than the tuning's `min_regions` were within `delta_limit` of the grey point the search
+    /// chose, so the data did not choose it (the prior did). The estimate is then the curve's
+    /// point nearest the zones' mean instead. Holds the zones' mean (R/G, B/G).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub outside: Option<(f64, f64)>,
 }
 
 impl Clone for AwbStatus {
@@ -122,11 +128,13 @@ impl Clone for AwbStatus {
             mode,
             estimate,
             converged,
+            outside,
         } = source;
         self.auto = *auto;
         self.mode.clone_from(mode);
         self.estimate = *estimate;
         self.converged = *converged;
+        self.outside = *outside;
     }
 }
 

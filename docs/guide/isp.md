@@ -41,7 +41,9 @@ The whole pipeline in Rust, each stage optional:
 6. Optional denoise and sharpening.
 7. Output.
 
-The 3A statistics (zones, histogram) come out of the same pass.
+The 3A statistics (zones, histogram) come out of the same pass. They are handed to the
+controller as before the white balance and digital gains, as the back end's are: the zone sums
+divided by each channel's gain, and the histogram's bins moved down by the gain a grey quad took.
 
 The default arithmetic is integer with an exact tone table. It gives the same bits on every host
 and on the GPU ISP. `Half` (fp16) and `ApproxTone` are chosen only by name, and no CPU feature
@@ -183,7 +185,15 @@ stream's frames are not copied for them.
     next frame (never part of one). The frame rate stays as set.
   - Controls: `ae`, `ev`, `ae_exposure_max_us`, `ae_gain_max`, `awb`, `red_gain`, `blue_gain`,
     `colour_temperature` and `flicker`, set at run time on the control socket. A manual `exposure`
-    or `gain` wins from the frame it is set for; `auto` gives it back.
+    or `gain` wins from the frame it is set for, even when the loop skips frames (the capture
+    thread posts it for that frame itself); `auto` gives it back.
+  - White balance outside the tuning: when fewer zones than the tuning's `min_regions` are within
+    `delta_limit` of the grey point the search chose, and of the point the zones alone choose (the
+    search without the prior), no point fitted the data and the lux prior alone chose. AWB then takes the tuning curve's point nearest the zones' mean, and the status gives that
+    mean (`awb_outside=<r/g>/<b/g>`, thousandths). On Raze #2's bench lamp the scene read R/G 1.49,
+    B/G 0.22 against the curve's warm end of 0.95 / 0.42. The prior had picked 6155 K, which turned
+    the picture further orange. The nearest point is 2860 K, which goes the right way as far as
+    the tuning reaches.
   - Tuning: `tuning = "<sensor>.toml"`, searched in `tuning_dirs` first. The status says which
     file ran (`aaa_tuning`) and why the loop stopped, if it did (`aaa_reason`).
   - A raw reader beside a processed one gets the same exposure and gain: they are the sensor's.

@@ -103,4 +103,4 @@ pub use params::{
 };
 pub use settings::{Options, params_for};
 pub use stage::{SoftIspStage, StageError};
-pub use stats::{IspStats, ZoneStats};
+pub use stats::{IspStats, ZoneStats, histogram_before_gains};

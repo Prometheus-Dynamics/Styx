@@ -35,6 +35,8 @@ use crate::warm::WarmStart;
 #[cfg(feature = "awb-bayes")]
 use search::Search;
 use search::{Estimate, SearchBuffers, Zone};
+#[cfg(feature = "awb-bayes")]
+use tuning::AwbMode;
 use tuning::{AwbTuning, CtCurve};
 use zones::Binned;
 
@@ -44,6 +46,25 @@ const DEFAULT_CT: f64 = 4500.0;
 /// Mean luma range of a frame whose colours count as a start-up estimate: neither lost in the
 /// noise floor nor mostly clipped.
 pub const USABLE_Y: (f64, f64) = (0.02, 0.7);
+
+/// The curve's point (within `mode`'s range) nearest `(r/g, b/g)` in the search's relative
+/// measure: `(r/g ÷ curve r − 1)² + (b/g ÷ curve b − 1)²`, over 256 steps in mired.
+#[cfg(feature = "awb-bayes")]
+fn nearest_on_curve(curve: &CtCurve, mode: &AwbMode, (x, y): (f64, f64)) -> (f64, f64, f64) {
+    let (lo, hi) = curve.r.domain();
+    let (lo, hi) = (mode.lo.clamp(lo, hi), mode.hi.clamp(lo, hi));
+    let (m_lo, m_hi) = (1e6 / hi, 1e6 / lo);
+    let mut best = (f64::INFINITY, lo, 1.0, 1.0);
+    for i in 0..=256 {
+        let ct = 1e6 / (m_lo + (m_hi - m_lo) * f64::from(i) / 256.0);
+        let (r, b) = (curve.r.eval(ct), curve.b.eval(ct));
+        let cost = (x / r - 1.0).powi(2) + (y / b - 1.0).powi(2);
+        if cost < best.0 {
+            best = (cost, ct, r, b);
+        }
+    }
+    (best.1, best.2, best.3)
+}
 
 /// The AWB algorithm. See the [module documentation](self).
 #[derive(Debug, Clone)]
@@ -60,6 +81,9 @@ pub struct Awb {
     anchor: Option<f64>,
     estimate: Estimate,
     filtered: Estimate,
+    /// The zones' mean (R/G, B/G) when the last estimate's scene was outside the tuning's
+    /// colour range (see [`crate::AwbStatus::outside`]).
+    outside: core::cell::Cell<Option<(f64, f64)>>,
     /// Buffers the estimates reuse (kept across frames).
     scratch: Scratch,
 }
@@ -97,6 +121,7 @@ impl Awb {
             anchor: None,
             estimate: (DEFAULT_CT, 1.0, 1.0),
             filtered: (DEFAULT_CT, 1.0, 1.0),
+            outside: core::cell::Cell::new(None),
             scratch: Scratch::default(),
         };
         awb.reset();
@@ -113,6 +138,7 @@ impl Awb {
         self.frames_seen = 0;
         self.frame_phase = 0;
         self.anchor = None;
+        self.outside.set(None);
         self.estimate = match (&self.curve, self.bayes) {
             (Some(c), true) => self.gains_for_ct(c, 4000.0),
             _ => (DEFAULT_CT, 1.0, 1.0),
@@ -234,7 +260,52 @@ impl Awb {
             anchor: self.anchor.map(|t| 1e6 / t),
         };
         let ((ct, r, b), best) = s.run(*mode, &mut sc.search);
-        ((ct, t.sensitivity_r / r, t.sensitivity_b / b), best)
+        // Could the data choose? Zones within `delta_limit` of a grey point. With fewer than
+        // `min_regions` at the point chosen and at the point the zones alone choose (the search
+        // without the prior), no candidate fitted any zone, every cost was the same capped sum
+        // and the prior alone chose: on a scene beyond the curve's warm end, a daylight answer
+        // that turns the picture further orange (the first 3A board proof). The curve's point
+        // nearest the zones' mean then goes the right way, as far as the tuning reaches, and is
+        // said. Where some point fits (a tie between the data and the prior), the search's
+        // answer stands.
+        let enough = t.min_regions as usize;
+        let within = |ratios: &[(f64, f64)], r: f64, b: f64| {
+            ratios
+                .iter()
+                .filter(|&&(x, y)| {
+                    let (dr, db) = (x / r - 1.0 - t.whitepoint_r, y / b - 1.0 - t.whitepoint_b);
+                    dr * dr + db * db < t.delta_limit
+                })
+                .count()
+        };
+        let chosen = ((ct, t.sensitivity_r / r, t.sensitivity_b / b), best);
+        if sc.ratios.is_empty() || within(&sc.ratios, r, b) >= enough {
+            self.outside.set(None);
+            return chosen;
+        }
+        // The scratch prior is made again for the next frame.
+        sc.prior.map_y_in_place(|_, _| 0.0);
+        let data = Search {
+            tuning: t,
+            curve,
+            zones: &sc.bins,
+            prior: &sc.prior,
+            anchor: None,
+        };
+        let ((_, dr, db), _) = data.run(*mode, &mut sc.search);
+        if within(&sc.ratios, dr, db) >= enough {
+            self.outside.set(None);
+            return chosen;
+        }
+        let n = sc.ratios.len() as f64;
+        let mean = sc
+            .ratios
+            .iter()
+            .fold((0.0, 0.0), |(a, b), &(x, y)| (a + x / n, b + y / n));
+        let near = nearest_on_curve(curve, mode, mean);
+        self.outside.set(Some(mean));
+        let (ct, r, b) = near;
+        ((ct, t.sensitivity_r / r, t.sensitivity_b / b), 1e6 / ct)
     }
 
     /// Manual gains or temperature, if the controls ask for them.
@@ -344,6 +415,7 @@ impl Algorithm for Awb {
         params.awb.mode.push_str(mode);
         params.awb.estimate = e;
         params.awb.converged = close(f.1, e.1) && close(f.2, e.2);
+        params.awb.outside = if auto { self.outside.get() } else { None };
     }
 }
 

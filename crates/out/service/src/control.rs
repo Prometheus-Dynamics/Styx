@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. lemnos_at_limit=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. controls_seq=.. isp=.. isp_asked=.. isp_form=.. isp_refused=.. isp_skipped=.. isp_made=<made>/<asked> isp_short=.. isp_fallback=.. isp_left_out=.. isp_switches=<to_soft>/<to_pisp> isp_published=a/b isp_dropped=a/b isp_readers=a/b isp0_socket=.. isp1_socket=.. isp_3a=.. ae_state=.. wb_gains=<r>/<b> colour_temperature=.. flicker=.. gain_requested=.. gain_applied=.. gain_clamp=.. aaa_tuning=.. aaa_reason=.. isp_reason_at=.. isp_reason=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. [bytes_read=..] site=..` line per copy site (the service's process; `bytes` is what was written, `bytes_read` is given where the copy changes the form; `site` is free text, last), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. lemnos_at_limit=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. controls_seq=.. isp=.. isp_asked=.. isp_form=.. isp_refused=.. isp_skipped=.. isp_made=<made>/<asked> isp_short=.. isp_fallback=.. isp_left_out=.. isp_switches=<to_soft>/<to_pisp> isp_published=a/b isp_dropped=a/b isp_readers=a/b isp0_socket=.. isp1_socket=.. isp_3a=.. ae_state=.. wb_gains=<r>/<b> colour_temperature=.. awb_outside=<r/g>/<b/g> flicker=.. gain_requested=.. gain_applied=.. gain_clamp=.. aaa_tuning=.. aaa_reason=.. isp_reason_at=.. isp_reason=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. [bytes_read=..] site=..` line per copy site (the service's process; `bytes` is what was written, `bytes_read` is given where the copy changes the form; `site` is free text, last), then `ok` |
 //! | `controls <id>` | `seq <n>` (the camera's `controls_seq`), one `control <name> unit=.. range=.. step=.. default=.. effective=.. auto=.. access=.. value=..` line per standard control the camera has, one `device <id> kind=.. access=.. min=.. max=.. step=.. default=.. effective=.. value=.. standard=.. entries=.. name=..` line per device control (`name` is free text, last), each followed by its menu's `entry <id> <value> [<label>]` lines, then `ok` |
 //! | `getd <id> <device-id>` | that device control's `device` line and its `entry` lines, then `ok` |
 //! | `setd <id> <device-id> <value>` | `ok` once the backend took the value (the device's own units) |
@@ -25,7 +25,9 @@
 //! in thousandths. `isp_3a` is what the 3A loop moves (`ae,awb`, `ae`, `awb`, `manual`; `none`
 //! without it, `-` without a processed stream); `ae_state` is `converging` or `settled` (`-` when
 //! AE does not run), `wb_gains` the white balance's red and blue gains over green in thousandths,
-//! `colour_temperature` its estimate in kelvin, `flicker` the avoidance (`off`, `50`, `60`,
+//! `colour_temperature` its estimate in kelvin, `awb_outside` the zones' mean R/G and B/G in
+//! thousandths while the scene is outside the tuning's colour range (AWB then takes the curve's
+//! nearest point instead of the prior's choice; `-` while inside), `flicker` the avoidance (`off`, `50`, `60`,
 //! `auto`), `aaa_tuning` the tuning the loop runs and `aaa_reason` why it does not run (`-`).
 //! `last_error` and the other free text come last on their line; `mode_text`, `exposure_clamp`,
 //! `gain_clamp`, `aaa_tuning`, `aaa_reason` and `rate_reason` are one word (spaces are `_`).
@@ -706,7 +708,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} lemnos_at_limit={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} controls_seq={} isp={} isp_asked={} isp_form={} isp_refused={} isp_skipped={} isp_made={} isp_short={} isp_fallback={} isp_left_out={} isp_switches={} isp_published={} isp_dropped={} isp_readers={} isp0_socket={} isp1_socket={} isp_3a={} ae_state={} wb_gains={} colour_temperature={} flicker={} gain_requested={} gain_applied={} gain_clamp={} aaa_tuning={} aaa_reason={} isp_reason_at={} isp_reason={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} lemnos_at_limit={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} controls_seq={} isp={} isp_asked={} isp_form={} isp_refused={} isp_skipped={} isp_made={} isp_short={} isp_fallback={} isp_left_out={} isp_switches={} isp_published={} isp_dropped={} isp_readers={} isp0_socket={} isp1_socket={} isp_3a={} ae_state={} wb_gains={} colour_temperature={} awb_outside={} flicker={} gain_requested={} gain_applied={} gain_clamp={} aaa_tuning={} aaa_reason={} isp_reason_at={} isp_reason={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -783,6 +785,10 @@ fn camera_line(status: &CameraStatus) -> String {
         aaa_word(aaa.running, || {
             aaa.colour_temperature
                 .map_or_else(|| "-".to_string(), |k| k.to_string())
+        }),
+        aaa_word(aaa.running, || match aaa.awb_outside_milli {
+            Some((r, b)) => format!("{r}/{b}"),
+            None => "-".to_string(),
         }),
         aaa_word(aaa.running, || aaa.flicker.to_string()),
         gain_requested,
@@ -895,6 +901,9 @@ pub struct CameraLine {
     pub wb_gains: Option<(u64, u64)>,
     /// The colour temperature AWB estimates or the one set, in kelvin (`colour_temperature=`).
     pub colour_temperature: Option<u32>,
+    /// The zones' mean R/G and B/G in thousandths while AWB finds the scene outside the
+    /// tuning's colour range (`awb_outside=<r/g>/<b/g>`; `-` while inside it).
+    pub awb_outside: Option<(u64, u64)>,
     /// Flicker avoidance (`flicker=`: `off`, `50`, `60`, `auto`).
     pub flicker: Option<String>,
     /// The analogue gain asked for last and the one the sensor reports in force, in thousandths
@@ -1045,6 +1054,7 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "ae_state" => camera.ae_state = text,
             "wb_gains" => camera.wb_gains = pair(value),
             "colour_temperature" => camera.colour_temperature = milli,
+            "awb_outside" => camera.awb_outside = pair(value),
             "flicker" => camera.flicker = text,
             "gain_requested" => camera.gain_requested = milli,
             "gain_applied" => camera.gain_applied = milli,
@@ -1452,7 +1462,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_made=0/0 isp_short=- isp_fallback=- isp_left_out=- isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
+                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_made=0/0 isp_short=- isp_fallback=- isp_left_out=- isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- awb_outside=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
             ),
             "{line}"
         );
@@ -1483,7 +1493,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_made=0/0 isp_short=- isp_fallback=- isp_left_out=- isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=frame stream cam0: the marks page"
+                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_made=0/0 isp_short=- isp_fallback=- isp_left_out=- isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- awb_outside=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=frame stream cam0: the marks page"
             ),
             "the fields come before the free text: {line}"
         );

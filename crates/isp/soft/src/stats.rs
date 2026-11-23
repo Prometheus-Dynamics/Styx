@@ -36,6 +36,26 @@ impl ZoneStats {
     }
 }
 
+/// Histogram bins counted after the gains, moved back to before them (as the controller reads
+/// them, and as the back end counts them): the quads include the white balance and digital
+/// gains, so each bin moves down by the gain the quad luma `(R + 2G + B) / 4` of a quad grey after
+/// them took (the harmonic mean of the gains, weighted 1, 2, 1: what the white balance makes of a
+/// grey), and its counts land where they were before the gains. The bins stay evenly over the
+/// same range.
+pub fn histogram_before_gains<T: Copy + Into<u64>>(
+    counted: &[T],
+    gains: [f32; 3],
+) -> impl Iterator<Item = u64> + '_ {
+    let [r, g, b] = gains.map(|g| if g > 0.0 { f64::from(g) } else { 1.0 });
+    let k = 4.0 / (1.0 / r + 2.0 / g + 1.0 / b);
+    let bins = counted.len();
+    let edge = move |j: usize| ((j as f64 * k - 0.5).ceil().max(0.0) as usize).min(bins);
+    (0..bins).map(move |j| {
+        let hi = if j + 1 == bins { bins } else { edge(j + 1) };
+        counted[edge(j)..hi].iter().map(|&n| n.into()).sum::<u64>()
+    })
+}
+
 /// Statistics of one frame.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct IspStats {
@@ -62,7 +82,7 @@ impl IspStats {
     /// The controller takes pixel values on 0..1, so the 12-bit sums are divided by
     /// [`WORK_MAX`]; colour sums are also taken back to before the white balance gains, so
     /// `before_wb` holds. Lens shading is applied before the statistics, so `before_lsc` does
-    /// not. The histogram's bins stay as counted (evenly over the same 0..1).
+    /// not. The histogram's bins are moved back to before the gains as a grey's luma took them.
     pub fn write_into(&self, out: &mut Statistics) {
         let full = f64::from(WORK_MAX);
         let scale = self
@@ -80,7 +100,7 @@ impl IspStats {
         }));
         out.luma = None;
         out.histogram
-            .set_bins(self.histogram.iter().map(|&b| b as u64));
+            .set_bins(histogram_before_gains(&self.histogram, self.gains));
         if self.focus.is_empty() {
             out.focus = None;
         } else {

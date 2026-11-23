@@ -787,6 +787,7 @@ impl Slot {
         s.ae_settled = aaa.ae_settled;
         s.wb_milli = aaa.wb_milli;
         s.colour_temperature = aaa.colour_temperature;
+        s.awb_outside_milli = aaa.awb_outside_milli;
         match &aaa.tuning {
             Some(text) => set_text(&mut s.tuning, text),
             None => s.tuning = None,

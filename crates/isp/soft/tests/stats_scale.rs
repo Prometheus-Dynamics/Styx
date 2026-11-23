@@ -87,6 +87,27 @@ fn statistics_are_handed_over_on_0_to_1_before_the_gains() {
             );
         }
     }
+    // The histogram, before the gains too: every quad of the flat frame in the bin of its quad
+    // luma (R + 2G + B) / 4 above black, on 0..1 (within a bin either side, from the 10-bit to
+    // 12-bit step and the bins' edges).
+    let bins = stats.histogram.len();
+    let quad = (want[0] + 2.0 * want[1] + want[2]) / 4.0;
+    let at = (quad * bins as f64) as usize;
+    let near: u64 = stats.histogram.bins()[at.saturating_sub(1)..(at + 2).min(bins)]
+        .iter()
+        .sum();
+    assert_eq!(
+        near,
+        stats.histogram.total(),
+        "histogram: every quad near bin {at} of {bins}, the frame's quad luma {quad:.4}: {:?}",
+        stats
+            .histogram
+            .bins()
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| **n > 0)
+            .collect::<Vec<_>>()
+    );
     let luma = styx_aaa::stats::rec601(want[0], want[1], want[2]);
     let got = stats.mean_luma();
     assert!(

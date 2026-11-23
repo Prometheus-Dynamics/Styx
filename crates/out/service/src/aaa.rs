@@ -80,6 +80,9 @@ pub struct AaaStatus {
     pub wb_milli: Option<(u32, u32)>,
     /// The colour temperature AWB estimates or the one set, in kelvin.
     pub colour_temperature: Option<u32>,
+    /// The zones' mean R/G and B/G in thousandths, while AWB finds the scene outside the
+    /// tuning's colour range and takes the curve's nearest point (`styx_aaa::AwbStatus::outside`).
+    pub awb_outside_milli: Option<(u32, u32)>,
     /// The tuning in use, or why the loop does not run.
     pub tuning: Option<String>,
     pub reason: Option<String>,
@@ -568,6 +571,10 @@ impl Aaa {
             (p.colour_gains[2] / g * 1000.0).round() as u32,
         ));
         s.colour_temperature = Some(p.colour_temperature.round() as u32);
+        s.awb_outside_milli = p
+            .awb
+            .outside
+            .map(|(r, b)| ((r * 1000.0).round() as u32, (b * 1000.0).round() as u32));
         true
     }
 
