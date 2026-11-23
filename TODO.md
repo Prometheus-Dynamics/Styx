@@ -112,12 +112,14 @@ Ordered by the coordinator; parked rows are recorded, not worked.
 
 - [x] P1 (GAP 1) `styx-control-client`: the control socket's client, out of `styx-capi` (next 9ebbf67c).
 - [x] P2 (GAP 5) lz4 MCAP chunks on import, `styx-record` feature `mcap-lz4` (next 593d5b18).
-- [ ] P3 (GAP 2) Pyramid levels as `styx:pyramid` in `styx-daedalus`, held until Eidos says what its nodes consume.
-  - One value per frame; the reader picks the level with a const.
-  - The feed fills the promised levels: from `isp1` with no copy when it is exactly half, otherwise a CPU 2x2 box.
-  - Pools: `max_held + 1` per level. An empty pool skips the frame and counts it.
-  - A planner-placed `styx:pyramid` → `styx:frame` conversion (level 0, no copy) is exported in `styx_daedalus::NODES`.
-- [ ] P4 The pyramid's wgpu box body: no reader until Eidos next has its GPU layer again.
+- [ ] P3 isp_second as a companion of the isp0 frame in `styx-daedalus`. Designed, not built until the coordinator confirms.
+  - Pyramids are Eidos's (owner ruling 2026-11-21), so Styx builds no levels, scaler or pyramid type. The Styx-built pyramid (former GAP 2) and its wgpu body are withdrawn.
+  - Design:
+    - `StyxFrame::second()` gives the isp1 frame with the same id, held by the isp0 value.
+    - A `PairedFeed` pairs the two rings by id. Each ring keeps its own hold share.
+    - A missing or late companion is `None` and is counted. The feed never waits.
+  - Open point: ordering. Either the service publishes output 1 before output 0 (recommended), or the feed holds isp0 until isp1 n arrives.
+  - A GPU node gets isp0 only: Daedalus moves the outer value, not the companion.
 - [ ] P5 CONTROLS-WAIT-NOT-POLL: measure the service's idle CPU and wakes with 0, 1 and 2 `wait_controls_change` watchers on one camera (proof 2 sheet, item W).
   - If the cost is not negligible, add a wait the service answers: `wait <id> <seq> <timeout>`, or the seq on the frame socket. Not a different poll period.
 - [ ] P6 (GAP 3, parked) A run-time request for N pyramid levels.
