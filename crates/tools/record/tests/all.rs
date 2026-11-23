@@ -6,6 +6,8 @@ mod support;
 
 #[path = "channels.rs"]
 mod channels;
+#[path = "cli.rs"]
+mod cli;
 #[path = "fuzz.rs"]
 mod fuzz;
 #[path = "mcap_export.rs"]

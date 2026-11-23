@@ -85,7 +85,9 @@ pub struct ImportLosses {
     pub attachments: u64,
     /// Metadata records other than `styx.recording`.
     pub metadata_records: u64,
-    /// Data messages: their MCAP sequence numbers are dropped (a sample has none).
+    /// Data messages whose MCAP sequence number was not the channel's message count (0, 1,
+    /// 2, ...): a sample has none, so the number is dropped. The count is what an export writes
+    /// back, so a Styx export's sequences are not lost.
     pub data_sequences: u64,
     /// Data messages whose publish time differed from their log time (the log time is kept).
     pub data_publish_times: u64,
@@ -197,6 +199,8 @@ pub struct McapReader<R: Read + Seek> {
     size: u64,
     pos: u64,
     channels: BTreeMap<u16, Topic>,
+    /// Messages seen per data channel (MCAP id), against which their sequences are checked.
+    data_counts: BTreeMap<u16, u32>,
     /// Schemas by id: name, encoding, bytes.
     schemas: BTreeMap<u16, (String, String, Vec<u8>)>,
     header: Option<RecordingHeader>,
@@ -221,6 +225,7 @@ impl<R: Read + Seek> McapReader<R> {
             size,
             pos: 8,
             channels: BTreeMap::new(),
+            data_counts: BTreeMap::new(),
             schemas: BTreeMap::new(),
             header: None,
             pending: BTreeMap::new(),
@@ -438,7 +443,11 @@ impl<R: Read + Seek> McapReader<R> {
                     .ok_or(RecordError::Corrupt("message on an unknown channel"))?;
                 match topic {
                     Topic::Data(id) => {
-                        self.losses.data_sequences += 1;
+                        let count = self.data_counts.entry(channel).or_insert(0);
+                        if sequence != *count {
+                            self.losses.data_sequences += 1;
+                        }
+                        *count = count.wrapping_add(1);
                         if publish_time != log_time {
                             self.losses.data_publish_times += 1;
                         }

@@ -9,6 +9,11 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[[bin]]
+# `styx-record info | export | import`: a recording from the command line.
+name = "styx-record"
+path = "src/main.rs"
+
 [features]
 default = ["mcap-lz4"]
 # lz4-compressed MCAP chunks (the MCAP writer's usual compression), read on import and written

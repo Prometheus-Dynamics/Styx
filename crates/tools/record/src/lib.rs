@@ -48,7 +48,7 @@ pub use channel::{Channel, ChannelId, ChannelSpec, Sample, SourceClock};
 pub use clock::{ClockPair, monotonic_from_boottime};
 pub use error::RecordError;
 pub use format::RecordingHeader;
-pub use mcap_export::{ExportOptions, ExportStats, export_mcap};
+pub use mcap_export::{ExportLosses, ExportOptions, ExportStats, export_mcap};
 pub use mcap_import::{ImportLosses, ImportStats, ImportedFrame, McapReader, import_mcap};
 pub use mcap_write::McapCompression;
 pub use recorder::Recorder;

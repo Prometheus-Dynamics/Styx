@@ -73,9 +73,10 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
     `styx.clock = CLOCK_MONOTONIC` (every log time) and `styx.source_clock` (the producer's
     clock). Each sample is a message at its time.
   - `/styx/clock`: one record per declaration, with the clocks it recorded.
-  - Not carried: the frame's control values (exposure and gains are), row and plane padding, a
-    frame id above `u32::MAX`, a sensor timestamp other than the frame's, a lux or colour
-    temperature of exactly 0.
+  - Not carried: the frame's control values (the exposure and gains it was taken with are), row
+    and plane padding, a frame id above `u32::MAX`, a sensor timestamp other than the frame's, a
+    lux or colour temperature of exactly 0. `ExportStats::losses` counts the frames each of
+    these applied to.
 - **`import_mcap`:** converts MCAP recordings in the Styx layout to `styxrec`.
   - Every topic outside `/styx/` becomes a data channel: name, message encoding, schema and
     metadata; each message a sample at its log time.
@@ -87,8 +88,9 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
   - `/styx/clock` (`styx/msg/ClockSample`, CDR): encapsulation `00 01 00 00`, then `u64
     monotonic_ns`, `u64 boottime_ns`, `u64 realtime_ns`, `u32 read_spread_ns`.
   - `ImportStats::losses` counts what is not carried: attachments, metadata records other than
-    `styx.recording`, data messages' sequences and differing publish times, pyramid messages,
-    other `/styx/` topics, data messages over 1 MiB.
+    `styx.recording`, data messages' sequences (those other than the channel's count 0, 1, 2,
+    ..., which is what export writes) and differing publish times, pyramid messages, other
+    `/styx/` topics, data messages over 1 MiB.
   - Import then export then import gives the same frames (rows packed) and the same channels
     and samples (tests/mcap_export.rs, read back by the `mcap` crate too).
   - It reads uncompressed chunks, and lz4 chunks with the `mcap-lz4` feature (on by default, a
@@ -96,6 +98,34 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
   - A zstd chunk is refused by name, and so is an lz4 chunk in a build without the feature.
   - A decompressed chunk must have the size it states (at most 256 MiB), and its CRC when it
     gives one.
+
+### The `styx-record` command
+
+The crate builds a command for a person holding a recording (no Rust to write). It runs on a PC
+and on a board: `cargo build --release -p styx-record --bin styx-record`, and for an aarch64 board
+`--target aarch64-unknown-linux-musl` with `CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=rust-lld`
+(a static binary of about 610 KB; the crate has no C dependencies).
+
+```bash
+styx-record info rec.styxrec
+styx-record export rec.styxrec rec.mcap [--uncompressed] [--chunk-size BYTES]
+styx-record import rec.mcap rec.styxrec
+```
+
+- **`info`:** the header (device, keys, backend, format, interval, buffer size), the frame count
+  and time span, each channel with its id, encoding, schema, producer's clock, sample count, the
+  clocks recorded at its declaration and its metadata, the late samples, and how the file ended:
+  - `clean`: finished with the end marker (`Recorder::finish`).
+  - `not finished`: no end marker, but no record was cut (the recorder stopped between
+    records).
+  - `truncated`: cut inside a record; replay ends at the last whole one.
+- **`export`:** writes MCAP (lz4 chunks unless `--uncompressed`), then the counts and the
+  `ExportStats::losses` table.
+- **`import`:** writes `styxrec`, then the counts and the `ImportStats::losses` table.
+
+Exit status 0 on success (also when the output pipe closes, as with `| head`), 1 on a file it
+refuses or cannot read or write, 2 on bad arguments. The output is the same on x86_64 and
+aarch64 (tests/cli.rs runs the commands; the aarch64 build was checked under qemu).
 
 Headers and records are untrusted input: every length is checked against a limit before it is
 used, and a recording cut short ends at its last whole frame and says so.

@@ -95,6 +95,7 @@ pub struct Replay<R: Read> {
     late_samples: u64,
     ended: bool,
     truncated: bool,
+    end_marker: bool,
 }
 
 impl Replay<BufReader<File>> {
@@ -134,6 +135,7 @@ impl<R: Read> Replay<R> {
             late_samples: 0,
             ended: false,
             truncated: false,
+            end_marker: false,
         };
         if replay.version >= 2 {
             replay.read_declarations()?;
@@ -206,6 +208,13 @@ impl<R: Read> Replay<R> {
     /// Samples handed out after a frame newer than them (see [`Sample::late`]).
     pub fn late_samples(&self) -> u64 {
         self.late_samples
+    }
+
+    /// Whether the recording's end marker has been read: it was finished
+    /// ([`crate::Recorder::finish`]). A recording that stops between records without it was
+    /// not finished but lost nothing; one cut inside a record is [`Replay::truncated`].
+    pub fn end_marker(&self) -> bool {
+        self.end_marker
     }
 
     /// Whether the recording ended inside a record (it was cut short while being written).
@@ -379,6 +388,7 @@ impl<R: Read> Replay<R> {
         match tag {
             TAG_END => {
                 self.ended = true;
+                self.end_marker = true;
                 Ok(Record::End)
             }
             TAG_FRAME => self.read_frame(),

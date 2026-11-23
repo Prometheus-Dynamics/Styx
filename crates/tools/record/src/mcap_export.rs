@@ -161,6 +161,25 @@ pub struct ExportStats {
     pub late_samples: u64,
     /// The recording was cut short; the export holds what it had.
     pub truncated: bool,
+    /// What MCAP could not carry.
+    pub losses: ExportLosses,
+}
+
+/// What an export could not carry into MCAP, counted in frames.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ExportLosses {
+    /// Frames with a control value other than auto (the exposure and gains the frame was taken
+    /// with are carried; the controls' settings are not).
+    pub control_values: u64,
+    /// Frames with padding between rows or planes (the rows are packed).
+    pub padding: u64,
+    /// Frames whose id is above `u32::MAX` (the id is cut to 32 bits).
+    pub ids: u64,
+    /// Frames whose sensor timestamp is set and differs from the frame timestamp.
+    pub sensor_timestamps: u64,
+    /// Frames with a lux or colour temperature of exactly zero (read back as unknown).
+    pub zero_lux_or_temperature: u64,
 }
 
 /// The `styx.recording` metadata for `header`.
@@ -466,6 +485,40 @@ impl<W: Write> Exporter<W> {
     }
 }
 
+fn count_losses(losses: &mut ExportLosses, lease: &FrameLease<FrameMetadata>) {
+    let entry = lease.entry();
+    let meta = lease.meta();
+    if meta
+        .controls
+        .iter()
+        .any(|v| *v != styx_controls::ControlValue::Auto)
+    {
+        losses.control_values += 1;
+    }
+    let format = entry.format;
+    if !format.code.is_compressed() {
+        let packed = packed_layouts(
+            format.code,
+            format.resolution.width.get(),
+            format.resolution.height.get(),
+            None,
+            None,
+        );
+        if packed.is_ok_and(|p| p != entry.layouts) {
+            losses.padding += 1;
+        }
+    }
+    if entry.id > u64::from(u32::MAX) {
+        losses.ids += 1;
+    }
+    if meta.sensor_timestamp_ns != 0 && meta.sensor_timestamp_ns != entry.timestamp_ns {
+        losses.sensor_timestamps += 1;
+    }
+    if meta.lux == Some(0.0) || meta.colour_temperature_k == Some(0) {
+        losses.zero_lux_or_temperature += 1;
+    }
+}
+
 /// Exports the recording `replay` reads as MCAP, written to `out`; returns what was written
 /// and the writer. Frames and samples go in timestamp order ([`Replay::next_item`]); the
 /// replay holds no frame past its message, so none is dropped.
@@ -551,6 +604,7 @@ pub fn export_mcap<R: Read, W: Write>(
             None => break,
             Some(Item::Frame(lease)) => {
                 ex.frame(&lease)?;
+                count_losses(&mut stats.losses, &lease);
                 stats.frames += 1;
             }
             Some(Item::Sample(s)) => {

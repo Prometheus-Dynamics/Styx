@@ -645,7 +645,8 @@ fn helios_data_topics_import_as_channels() {
         w.write_to_known_channel(&header(imu, seq, boot, publish), body.as_bytes())
             .unwrap();
         expected_imu.push((t + 1_000, body.into_bytes()));
-        w.write_to_known_channel(&header(pose, seq, t + 2_000, t + 2_000), b"{}")
+        // The pose's sequences are not its message count: lost on import.
+        w.write_to_known_channel(&header(pose, seq + 100, t + 2_000, t + 2_000), b"{}")
             .unwrap();
     }
     w.finish().unwrap();
@@ -663,7 +664,7 @@ fn helios_data_topics_import_as_channels() {
     assert_eq!(l.attachments, 1);
     assert_eq!(l.metadata_records, 1);
     assert_eq!(l.pyramid_messages, frames.len() as u64);
-    assert_eq!(l.data_sequences, 2 * frames.len() as u64);
+    assert_eq!(l.data_sequences, frames.len() as u64);
     assert_eq!(l.data_publish_times, 1);
     assert_eq!(l.boottime_assumed_equal, 0);
 

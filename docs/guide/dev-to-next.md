@@ -43,7 +43,7 @@ page only maps one onto the other. Why the rebuild was done is in [`../design.md
 | `tools/native-pipeline` | `styx-measure` on the board; replay through `styx-record` and `styx_aaa::replay` |
 | `tools/compare` | not carried; `styx-measure` gives next's column of a comparison |
 | `tools/styx-tune`, `tools/styx-calibrate` | `styx-tune` (`styx-tune calibrate` covers black level, noise and hot pixels) |
-| `tools/styx-record` (grey Y recordings) | `styx-record` (`styxrec`, any format, with metadata; MCAP import) |
+| `tools/styx-record` (grey Y recordings) | `styx-record` (`styxrec`, any format, with metadata; MCAP import and export; the `styx-record` command: `info`, `export`, `import`) |
 | `tools/iq-compare` | not carried |
 | `examples` | `examples/` (`quickstart`, `capture`, `socket_reader`, `daedalus_frames`), all with `--sim` |
 | `examples/nostd-smoke` | `crates/core/nostd-smoke` |
@@ -248,7 +248,11 @@ yet).
     data topics (`/helios/imu` etc. become channels, BOOTTIME times moved by `/styx/clock`).
     Losses are counted in `ImportStats::losses`: attachments, other metadata records, data
     messages' publish time and sequence, pyramid topics. `export_mcap` writes `styxrec` back
-    out as MCAP (lz4) for Foxglove and other MCAP tools.
+    out as MCAP (lz4) for Foxglove and other MCAP tools, counting its losses in
+    `ExportStats::losses`.
+  - **From the command line** (exists on next): `styx-record info | export | import`, on a PC
+    or a board, prints the header, channels, counts and how the file ended, and the losses
+    after a conversion. See the tools guide.
   - **HeliOS's lz4 recordings** (exists on next): `import_mcap` reads lz4 chunks, which is what
     HeliOS's recorder writes by default.
     - This is the `mcap-lz4` feature of `styx-record`, on by default: a pure-Rust decoder, read

@@ -38,11 +38,11 @@ fn pose() -> ChannelSpec {
 }
 
 /// A sample as written: channel, time, bytes.
-type Written = (u16, u64, Vec<u8>);
+pub(crate) type Written = (u16, u64, Vec<u8>);
 
 /// A recording of `frames` with lux and colour temperature set, an IMU sample before and after
 /// each frame, a pose sample on each frame's time, and a channel declared at the end.
-fn recording(frames: &[Sample]) -> (Vec<u8>, Vec<Written>) {
+pub(crate) fn recording(frames: &[Sample]) -> (Vec<u8>, Vec<Written>) {
     let header = RecordingHeader {
         device: "export camera".into(),
         keys: vec!["sensor-1".into(), "serial-42".into()],
