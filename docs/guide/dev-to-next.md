@@ -97,3 +97,185 @@ controls (`ae` to `flicker`) need `aaa = true`; without it they answer `err`.
 it has the value, and AE moves the other one alone. `auto` gives the control back. The status line
 says what runs (`isp_3a`: `ae,awb`, `ae`, `awb`, `manual`, or `none` without the loop), and what was
 asked, applied and clamped (`exposure_*`, `gain_*`).
+
+## Porting HeliOS
+
+HeliOS builds against `dev` 12b63eb (its image pins bcd29a7). It uses the `styx` facade and
+`styx-softisp`, and neither exists on `next`, so this is a port, not a repin. Each group below is
+marked **unchanged**, **renamed** (old → new), **removed** (with what replaces it), or **adopt**
+(new on `next`).
+
+### Daedalus
+
+- `next` builds against Daedalus rev `2f9390171104d913d2d7cdbff330150433f68ee3`, from Daedalus's
+  `next` branch. The package is `daedalus`, not `daedalus-rs`, and has no `daedalus-data`.
+- **HeliOS must build against exactly that source.** This is Cargo's rule, not the ABI's:
+  - `styx-daedalus` is linked into the consumer's own process.
+  - `StyxFrame` implements `Typed` and `DmaBufBacked` from Styx's copy of Daedalus.
+  - A different rev or branch is a different crate, and its traits are not those.
+  - Pin the same rev, or `[patch]` both to one checkout.
+- **The plugin ABI** (`daedalus-abi`, for plugins loaded at run time) is looser. It needs:
+  - the same major (0);
+  - a plugin minor no higher than the host's;
+  - the same `FROZEN_HASH`.
+
+### What each group became
+
+| Group | `dev` | `next` | |
+|---|---|---|---|
+| Daedalus bridge | `StyxFramesPlugin`, `frame_payload`, `FRAME_TYPE_KEY`, `FrameDescriptor`, `FrameLease` | `styx_daedalus` (feature `daedalus`) has `StyxFrame` (`from_lease(lease, size)`, `from_ring(frame)`), `FRAME_KEY` (`"styx:frame"`), `dmabuf_memory()` to add to a plan, and `next_value` / `latest_value` from a ring reader. There is nothing to register: `StyxFrame` is an opaque `Typed` value. `FrameDescriptor`'s fields are `StyxFrame`'s methods. `FrameLease` is now `styx_frame::FrameLease`. | renamed |
+| Frames over IPC | `FrameClient` | `styx_socket::Reader` (`connect`, `connect_with`, `next_frame`, `latest`, `next_event`, `wait`, `stats`). Find the paths with `styx_service::camera_socket(dir, id)` and `isp_socket(dir, id, k)`. | renamed |
+| Camera service | `CameraService`, `CameraServiceHandle`, `SERVICE_FRAME_RATE` | `styx-service`: one process holds every camera, set up by its TOML file. The rate is `fps_milli` for each camera. | removed |
+| Controls over IPC | `ControlClient` and its builder, `ControlDescriptor`, `ControlTarget`, `StandardControl`, `ControlRefusal`, `ControlEvent`, `AppliedControl`, `ClientEvent`, `IpcError` | The control socket's line protocol (`styx_service::control`) and its parsers. `StandardControl` becomes `styx_controls::Control`, and `ControlRefusal` becomes `styx_select::Refusal`. | removed |
+| Planner | `Accelerators`, `Hardware::{Auto, Off, Required}`, `Delivered`, `FrameRequest.pyramid` | the per-camera `isp`, `isp_size`, `isp_second` keys and the status line | removed |
+| Probe and capture | `probe_all(_with_errors)`, `probe_capture_devices`, `capture_api::{StyxConfig, CaptureRequest}` | In process: `styx_select` (`NativeLister`, `V4l2Lister`, `LibcameraLister`, `plan`, `select`, `Capture`). Out of process: the service's `list`. `StyxConfig` and `CaptureRequest` become the service's `[camera."<id>"]` table. | renamed |
+| Virtual sources | `VirtualSourceConfig`, `make_virtual_device(_with_controls)` | see below | removed |
+| Hotplug | `watch::{CompositeWatcher, LinuxVideoFsWatcher, WatchRuntime}` | `styx_watch::{Watch, WatchConfig, Event}`. `Watch::poll` runs on the caller's thread; there is no runtime. | renamed |
+| Codecs | `codec::CodecRegistry` | `styx_codec_api::Registry`; `styx_decode::register` adds MJPEG and raw | renamed |
+| Recording | `StreamRecorder`, `RecorderOptions`, `RecordingHeader`, `open_recording`, `read_header` | `styx_record::{Recorder, RecordingHeader, Replay, RecordError, import_mcap}`. There are no options. | renamed |
+| Replay | `ReplaySourceConfig`, `ReplayTimestamps`, `ReplayPacing` | `styx_record::Replay`; see below | removed |
+| Preview | `Preview::from_service`, `MJPEG_CONTENT_TYPE`, `ws_message` | `styx_preview::Preview` (`new`, `offer_held`, `offer`, `attach`), which publishes JPEGs on a ring | renamed; the HTTP helpers are removed |
+| Metrics | `metrics::Drops` | `CameraLine` fields (`skipped`, `publish_dropped`, `lemnos_skipped`, `reserve_cuts`, `bound_unmet`, `discontinuities`, `isp_dropped`, ...) and `ReaderStats` | removed |
+| Soft ISP | `styx_softisp::{IspParams, OutputBuffers, RawFormat, Scale, SoftIsp}` | `styx_soft::{SoftIsp, OutputBuffers, RawFormat, Scale, Options, params_for}`; the parameter types are in `styx_soft::params` | renamed; same arithmetic |
+
+### Features
+
+| HeliOS turns on (`dev`) | On `next` |
+|---|---|
+| `facade`, `native`, `v4l2`, `hotplug`, `raw-decoders` | no features: depend on `styx-select`, `styx-native*`, `styx-v4l2`, `styx-watch` and `styx-decode` |
+| `daedalus` | `styx-daedalus/daedalus` |
+| `serde`, `metrics-serde` | `serde` on `styx-controls`, `styx-format` and `styx-aaa`. The status is text, read with `parse_camera_line`. |
+| `preview` | the `styx-preview` crate |
+| `codec-turbojpeg` | `styx-decode/turbojpeg` (on by default) |
+| `replay-mcap`, `replay-softisp` | `styx-record` (MCAP import is always in) and `styx-soft` |
+| `replay-mcap-lz4`, `replay-png` | not carried (see below) |
+| `async`, `tracing` | not carried: the APIs block (`poll`, `wait`), and Styx logs nothing through `tracing` |
+
+### Controls by name
+
+The names and units are in the table in [Control names](#control-names) above.
+
+- **Every control is per camera.** `set <id> ...` moves the camera itself, so the raw stream and
+  both processed streams (`isp0`, `isp1`) see the change. No control is per stream.
+- **The 3A switches are config keys** in a camera's table, not run-time controls:
+  - `aaa = true` turns the loop on, and needs `isp`;
+  - `tuning`;
+  - `aaa_stats_every` (1 to 30, default 4);
+  - `aaa_stats_rows` (1 to 8, default 4).
+- **The loop's state is on the status line:** `isp_3a`, `ae_state`, `wb_gains`,
+  `colour_temperature`, `awb_outside`, `aaa_stats=<every>/<rows>`.
+
+### What HeliOS does instead of what was removed
+
+Each item is marked **exists on next**, **consumer's job**, or **gap** (nothing on `next` does it
+yet).
+
+- **Controls (list, get, set, watch).** These are lines on the control socket. Each request is
+  one line; its answer ends in `ok` or `err <why>`.
+  - **List** (exists on next): send `list`. Read it with `parse_list`, then `parse_camera_line`
+    for each camera.
+  - **Get** (exists on next):
+    - `controls <id>` gives every standard and device control with its range, step, default,
+      effective range, access and value. Read it with `parse_controls_answer`.
+    - `getd <id> <device-id>` gives one device control.
+    - `frame <id>` gives the last frame's applied `exposure_us` and `gain_milli`.
+  - **Set** (exists on next):
+    - `set <id> <name> <value> <frame>` sets a standard control. The value is a number, `auto`,
+      `on` or `off`.
+    - `setd <id> <device-id> <value>` sets a device control.
+    - A refusal carries the camera's numbers (`err OutOfRange { min, max, value }`, `NotStep`,
+      `NoEntry`, `the control is read_only`).
+  - **Watch** (exists on next): there is no push. Poll `list` and read `controls_seq=`. Ask
+    `controls <id>` only when it moved. It moves on every set by any client, on a range change,
+    and when the camera reopens.
+  - **Connect, timeout, reconnect** (gap): next has no public Rust client.
+    - `styx-capi` has one inside it (`crates/bridge/capi/src/wire.rs`, about 350 lines,
+      crate-private): a 5 s read timeout, a 4096-line answer limit, and typed refusals.
+    - **The gap:** move it into a public crate (a typed `list` / `controls` / `set` / `setd` /
+      `frame` / `start` / `stop`, a timeout, and a reconnect on a backoff). `styx-capi` would
+      then use that crate. This is one new crate, mostly moved code, with no wire change.
+    - Until then, every consumer writes its own connect, timeout and reconnect around the parsers.
+- **Format, size, route and pyramids** (`CameraService` and the planner):
+  - **Who decides** (exists on next): the service config, for each camera. That covers:
+    - the capture: `width`, `height`, `format`, `bit_depth`, `fps_milli`;
+    - the processed stream: `isp_format` and `isp_size`;
+    - a second output: `isp_second = "<fourcc>:<w>x<h>"`;
+    - the route: `isp = auto | pisp | soft | none`.
+  - **Native mode choice** (exists on next): Styx picks the native sensor mode from these keys,
+    and the status line says why (`mode`, `mode_reason`, `achieved`).
+  - **Which ISP ran** (exists on next): the status line says it (`isp`, `isp_fallback`,
+    `isp_switches`, `isp_reason`), and so does each frame's metadata.
+  - **Changing the config** (consumer's job): HeliOS writes the config file. The service does
+    not re-read its file, so a change means restarting the service.
+  - **One pyramid level** (exists on next): `isp0` is level 0.
+  - **Two levels** (exists on next):
+    - `isp_second` at half of `isp0`'s size is level 1.
+    - On the PiSP that level is a 2x2 box, the same filter as the CPU's `Scale::Half`.
+    - Each processed frame carries its raw frame's id and timestamp, so pair `isp0` and `isp1`
+      frames by id.
+  - **Three levels** (gap): HeliOS's features and maps ask for 3. A third half-size level is graph
+    work: a half-size box node over `styx:frame`, in Styx's Daedalus bridge or in the graph's own
+    library. Neither exists today.
+  - **Levels on request** (gap): there is no run-time "N levels" request either. Levels are config.
+- **Virtual sources** (exists on next):
+  - **Tests and the simulator, as a real service:**
+    - `styx_sim::SimRig::start()` runs a simulated Lemnos daemon with a simulated sensor and
+      receiver.
+    - Point the service's `lemnos_socket` at `rig.socket()`; the camera is then served exactly as
+      a board camera.
+    - `pause` and `run` stop and start frames; `inject_fault` injects faults.
+    - The service's own tests do this.
+  - **In process:** `styx_sim::SimCamera`.
+  - **A program feeding frames:** a V4L2 loopback named in `virtual_nodes`.
+  - **Not carried:** a Rust API to push frames into the service as a camera.
+- **Playing a recording back** (`ReplayPacing`, PNG, lz4):
+  - **Reading frames** (exists on next): `styx_record::Replay::open(path)` reads a `styxrec`
+    file. `next_frame` gives `FrameLease<FrameMetadata>` frames with their recorded timestamps.
+  - **Pacing** (consumer's job): sleep to the timestamps, or run as fast as possible.
+  - **Into a graph** (exists on next): `StyxFrame::from_lease`.
+  - **Into the service as a camera** (gap): no replay source exists.
+  - **MCAP** (exists on next): `import_mcap` converts an MCAP file into `styxrec`.
+  - **HeliOS's lz4 recordings** (gap):
+    - `import_mcap` reads uncompressed chunks only, and refuses lz4 and zstd chunks.
+    - HeliOS's recorder writes lz4 chunks by default, so **existing HeliOS `.mcap` recordings
+      cannot be read on `next` today**.
+    - Closing it means an lz4 chunk decoder in `styx-record`. A pure-Rust one (`lz4_flex`) avoids
+      the C library.
+    - Until then, decompress the recordings with an MCAP tool first, for example by rewriting
+      them uncompressed.
+  - **PNG** (gap): PNG replay is not carried.
+- **Preview** (exists on next, renamed):
+  - `styx_preview::Preview` takes a share of each frame, encodes a small JPEG on its own thread,
+    and publishes the JPEGs as a ring. It does this without a copy and without waiting.
+  - Serving MJPEG over HTTP or JPEGs over a WebSocket is the consumer's job. A ring reader has
+    each JPEG's bytes in place.
+  - `MJPEG_CONTENT_TYPE` and `ws_message` are gone.
+- **`metrics::Drops`** (exists on next, renamed): it is the camera line's fields, read with
+  `parse_camera_line`: `skipped`, `publish_dropped`, `lemnos_skipped`, `reserve_cuts`,
+  `bound_unmet`, `discontinuities`, `empty_frames`, and per processed stream `isp_dropped` and
+  `isp_short`. A reader's own drops and cuts are in `Reader::stats()`.
+
+### New to adopt
+
+- **The Raze camera is a Lemnos device.**
+  - The OV9782, its CSI receiver and the PiSP are reached through `lemnosd` (`lemnos_socket`).
+  - Styx opens no `/dev/video*` node and no media graph for the camera, and neither should
+    HeliOS.
+- **Stop is receiver first.**
+  - The native session stops the receiver before the sensor (`9fce7b49`, see
+    [board-runs.md](board-runs.md)).
+  - A consumer stops a camera only through `stop <id>` or by dropping it. It never stops the
+    sensor itself.
+- **Timestamps** are `CLOCK_MONOTONIC` nanoseconds on every backend. This covers `FrameEntry`'s
+  `timestamp_ns`, `FrameMetadata`'s `sensor_timestamp_ns`, and the `frame <id>` answer.
+  libcamera's `CLOCK_BOOTTIME` is converted; a source with no clock is stamped on arrival.
+- **Holds:**
+  - Readers together may hold `buffers - reserve - 1` frames older than the newest. On the Raze
+    with `isp` that is 1.
+  - Past that, the reserve cuts one holder off, and its next read is
+    `ReadError::Ended(ConsumerFault)`. Drop every frame and reconnect.
+  - Read through `Frame::read`, and call `Frame::check` before handing a frame on: a frame whose
+    buffer was reused answers `Torn`.
+  - A frame a GPU reads is given back only after the GPU job's fence has signalled.
+- **Failure policy:** a camera that drops is served again. It retries on a backoff from 250 ms,
+  doubling, capped at 5 to 10 s. It turns off only with `auto_off_after`, or by hand with `stop`.
