@@ -21,6 +21,7 @@ reads any other the same way.
   decode, scaling, hardware decode and encode blocks, FFmpeg for coverage).
 - [tools.md](tools.md): `styx-measure`, recording and replay, previews, calibration
   (`styx-tune`), counters, DNG, and the examples.
+- [board-runs.md](board-runs.md): what has run on real hardware, and the figures.
 - [dev-to-next.md](dev-to-next.md): what each `dev` crate and tool becomes on `next`, and what
   is not carried over. Replacing `dev` with `next` is the user's call; this page is the map.
 
@@ -34,8 +35,8 @@ written and tested on the host (simulated hardware, or the host's own devices) a
 |---|---|
 | Native camera (CSI sensor through Lemnos) | run on a board: Raspberry Pi CM5 carrier, OV9782, 640x400 binned at 239.9 fps with 0 gaps, service CPU and RSS measured, reader hold limits checked (H1 pass 3) |
 | Camera service, frame socket, `styx-measure` | run on a board (the same pass) |
-| PiSP back end on the live stream (`isp = "pisp"`) | simulated ISP only; board run pending |
-| Soft ISP | host; on the board as `styx-measure`'s in-reader ISP |
+| PiSP back end on the live stream (`isp = "pisp"`) | run on a board: the same carrier, 1280x800 10-bit at 119.967 fps, 9000 frames with 0 gaps, 10.35 ms median capture to reader ([board-runs.md](board-runs.md), R-PASS) |
+| Soft ISP | run on a board, in the service (`isp = "soft"`) and in `styx-measure`'s reader (R-PASS) |
 | GPU ISP | host (lavapipe, and a desktop GPU by hand) |
 | Rockchip, K230, ISP600 ISPs | untested on board |
 | Native USB, V4L2, libcamera | host (V4L2 on `vivid`); untested on board |

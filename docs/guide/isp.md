@@ -6,9 +6,9 @@ to its own hardware or arithmetic. Styx holds the values; Lemnos holds the hardw
 
 | ISP | Crate | Runs on | State |
 |---|---|---|---|
-| Soft ISP | `styx-soft` | any CPU (scalar, SSE2/SSSE3/AVX2, NEON); `no_std` + `alloc` | host; on the board as `styx-measure`'s ISP |
+| Soft ISP | `styx-soft` | any CPU (scalar, SSE2/SSSE3/AVX2, NEON); `no_std` + `alloc` | run on a board, in the service and in `styx-measure` ([board-runs.md](board-runs.md)) |
 | GPU ISP | `styx-gpu` (feature `vulkan`) | any Vulkan device | host: lavapipe, and a desktop GPU by hand |
-| PiSP | `styx-pisp` | the Raspberry Pi PiSP front and back end, through Lemnos | simulated ISP; board run pending |
+| PiSP | `styx-pisp` | the Raspberry Pi PiSP front and back end, through Lemnos | run on a board ([board-runs.md](board-runs.md)) |
 | Rockchip ISP21 / ISP30 | `styx-rkisp` | Rockchip boards, through Lemnos | untested on board |
 | K230 ISP8000 | `styx-k230` | Canaan K230D, through Lemnos | untested on board |
 | ISP600 | `styx-isp600` | the black level and enables only (see below) | untested on board |

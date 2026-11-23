@@ -65,7 +65,6 @@ What a consumer of `dev` has to change, and what is still open on `next`:
 - **3A in the service:** the controller does not run in the camera service yet, and processed
   streams use neutral settings.
 - **Board runs owed:**
-  - the PiSP back end on the live stream (R-PASS);
   - libcamera on a Pi camera (H6);
   - a USB webcam (H5);
   - the Rockchip, K230 and hardware codec paths;
