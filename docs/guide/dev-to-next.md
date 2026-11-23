@@ -107,7 +107,7 @@ marked **unchanged**, **renamed** (old → new), **removed** (with what replaces
 
 ### Daedalus
 
-- `next` builds against Daedalus rev `2f9390171104d913d2d7cdbff330150433f68ee3`, from Daedalus's
+- `next` builds against Daedalus rev `025f4fdbd197aefd747bf3a91237d62f90386578`, from Daedalus's
   `next` branch. The package is `daedalus`, not `daedalus-rs`, and has no `daedalus-data`.
 - **HeliOS must build against exactly that source.** This is Cargo's rule, not the ABI's:
   - `styx-daedalus` is linked into the consumer's own process.
