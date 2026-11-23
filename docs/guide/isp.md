@@ -71,7 +71,10 @@ The neutral settings mapped into the Lemnos library's PiSP front and back end co
 - the YCbCr conversion of each output, and two outputs (full size, and output 1 as a 2x2 box).
 
 The layouts and tiling are the library's. A block the library does not carry is refused
-(`PispError::Unsupported`), never written here.
+(`PispError::Unsupported`), never written here. A setting the back end has a block for, but whose
+values no source Styx may use gives a meaning, is left out of the frame and named
+(`LeftOut`). The frame is made with everything else. Today that is `denoise.dpc`: the uapi names
+the defective pixel coefficients but says nothing of what they do, so the block stays off.
 
 The configuration bytes equal `dev`'s for the recorded settings, every block (`tests/dev_golden.rs`).
 The live path is tested against a simulated ISP.
@@ -114,6 +117,12 @@ isp_second = "NV12:640x400"  # output 1, published too (default: not published)
   doubling to `isp_retry_cap_ms`). The status names the ISP in use and every refusal's reason
   (`isp=`, `isp_reason=`). Each frame's metadata says what made it: the camera, the PiSP or the
   soft ISP.
+- **Fallback, said out loud:** while `auto` runs the soft ISP because the back end refused,
+  `isp_fallback=` carries the refusal. It is `-` when the back end makes the frames.
+- **Left out:** `isp_left_out=` names each setting the ISP in force does not apply, and why.
+- **Frames made against frames asked:** `isp_made=<made>/<asked>`. While frames go without a
+  picture, `isp_short=` says why, with the ISP's measured time per frame against the camera's
+  frame interval, for example a soft ISP at 16.6 ms per frame on a 120 fps camera.
 - **Sockets:** each output is published on its own socket (`isp0_socket=`, `isp1_socket=`).
 - **The input copy:** the back end's input is one copy of the raw frame, counted at the copy site
   `pisp-be-input` with the bytes read and written.

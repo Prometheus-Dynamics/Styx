@@ -367,6 +367,11 @@ impl<M> LiveIsp<M> {
         self.lent
     }
 
+    /// The settings the last posted frame left out (see [`crate::LeftOut`]).
+    pub fn left_out(&self) -> crate::LeftOut {
+        self.builder.left_out()
+    }
+
     /// Lent jobs Lemnos refused and that were posted again with the copy, since the setup.
     pub fn lend_fallbacks(&self) -> u64 {
         self.lend_fallbacks

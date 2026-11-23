@@ -109,12 +109,28 @@ fn a_frame_splits_into_two_jobs_for_its_first_rows() {
 }
 
 #[test]
-fn settings_the_library_cannot_carry_are_refused_before_a_job() {
+fn a_setting_the_back_end_cannot_apply_is_left_out_and_named_never_refused() {
     let mut b = BackEndBuilder::new(&geometry()).unwrap();
-    // Defective pixel correction has no table in the library at this rev: refused, not written.
+    // A full tuning carries a defective pixel level. The back end's block has no published
+    // meaning of its coefficients: the frame is made with everything else, the block stays off,
+    // and the setting is named with why (the board's 3A proof fell to the soft ISP on this).
     let mut s = IspSettings::neutral(0.0625);
     s.denoise.dpc = 1;
-    assert!(matches!(b.update(&s, 0.01), Err(PispError::Unsupported(_))));
+    b.update(&s, 0.01)
+        .expect("a frame with a DPC level is made");
+    let left = b.left_out();
+    assert!(left.contains(styx_pisp::LeftOut::DPC), "{left}");
+    assert!(left.to_string().starts_with("denoise.dpc ("), "{left}");
+    assert_eq!(
+        b.config().config.global.bayer_enables & styx_pisp::pisp::uapi::bayer_enable::DPC,
+        0,
+        "the DPC block stays off"
+    );
+    b.update(&IspSettings::neutral(0.0625), 0.01).unwrap();
+    assert!(
+        b.left_out().is_empty(),
+        "nothing left out without a DPC level"
+    );
     // Sharpening is the library's default now, scaled by the settings' factors.
     let mut s = IspSettings::neutral(0.0625);
     s.sharpen = Some(SharpenParams {

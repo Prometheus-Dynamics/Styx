@@ -7,7 +7,7 @@
 //!
 //! | Request | Answer |
 //! |---|---|
-//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. lemnos_at_limit=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. controls_seq=.. isp=.. isp_asked=.. isp_form=.. isp_refused=.. isp_skipped=.. isp_switches=<to_soft>/<to_pisp> isp_published=a/b isp_dropped=a/b isp_readers=a/b isp0_socket=.. isp1_socket=.. isp_3a=.. ae_state=.. wb_gains=<r>/<b> colour_temperature=.. flicker=.. gain_requested=.. gain_applied=.. gain_clamp=.. aaa_tuning=.. aaa_reason=.. isp_reason_at=.. isp_reason=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. [bytes_read=..] site=..` line per copy site (the service's process; `bytes` is what was written, `bytes_read` is given where the copy changes the form; `site` is free text, last), then `ok` |
+//! | `list` | one `control socket=.. mode=.. group=.. gid=..` line for the control socket (its effective mode and group, see `access`), then one `camera <id> state=.. owner=.. starts=.. failures=.. total_failures=.. recoveries=.. frames=.. skipped=.. last_id=.. next_delay_ms=.. socket=.. publish=.. readers=.. published=.. publish_dropped=.. health=.. requested=.. achieved=.. achieved_meta=.. measured=.. rate_clamped=.. keep=.. kept=.. buffers=.. reserve=.. reclaimed=.. reserve_cuts=.. rate_reason=.. mode=.. format=.. bits=.. mode_reason=.. mode_text=.. last_recovery=.. empty_frames=.. exposure_requested=.. exposure_applied=.. exposure_clamp=.. lemnos_skipped=.. lemnos_at_limit=.. producer=.. layout_refused=.. fault=.. bound_unmet=.. discontinuities=.. contract_mismatch=.. controls_seq=.. isp=.. isp_asked=.. isp_form=.. isp_refused=.. isp_skipped=.. isp_made=<made>/<asked> isp_short=.. isp_fallback=.. isp_left_out=.. isp_switches=<to_soft>/<to_pisp> isp_published=a/b isp_dropped=a/b isp_readers=a/b isp0_socket=.. isp1_socket=.. isp_3a=.. ae_state=.. wb_gains=<r>/<b> colour_temperature=.. flicker=.. gain_requested=.. gain_applied=.. gain_clamp=.. aaa_tuning=.. aaa_reason=.. isp_reason_at=.. isp_reason=.. last_error=..` line per camera, then one `copy copies=.. bytes=.. [bytes_read=..] site=..` line per copy site (the service's process; `bytes` is what was written, `bytes_read` is given where the copy changes the form; `site` is free text, last), then `ok` |
 //! | `controls <id>` | `seq <n>` (the camera's `controls_seq`), one `control <name> unit=.. range=.. step=.. default=.. effective=.. auto=.. access=.. value=..` line per standard control the camera has, one `device <id> kind=.. access=.. min=.. max=.. step=.. default=.. effective=.. value=.. standard=.. entries=.. name=..` line per device control (`name` is free text, last), each followed by its menu's `entry <id> <value> [<label>]` lines, then `ok` |
 //! | `getd <id> <device-id>` | that device control's `device` line and its `entry` lines, then `ok` |
 //! | `setd <id> <device-id> <value>` | `ok` once the backend took the value (the device's own units) |
@@ -684,10 +684,11 @@ fn camera_line(status: &CameraStatus) -> String {
             .as_ref()
             .map_or_else(|| "-".to_string(), |p| p.display().to_string())
     };
-    let isp_reason = isp
-        .reason
-        .as_deref()
-        .map_or_else(|| "-".to_string(), |r| one_line(r).replace(' ', "_"));
+    let word = |text: &Option<String>| {
+        text.as_deref()
+            .map_or_else(|| "-".to_string(), |r| one_line(r).replace(' ', "_"))
+    };
+    let isp_reason = word(&isp.reason);
     let (mode, format, bits, mode_reason, mode_text) = match &status.mode {
         Some(chosen) => (
             chosen.mode.to_string(),
@@ -705,7 +706,7 @@ fn camera_line(status: &CameraStatus) -> String {
         ),
     };
     format!(
-        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} lemnos_at_limit={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} controls_seq={} isp={} isp_asked={} isp_form={} isp_refused={} isp_skipped={} isp_switches={} isp_published={} isp_dropped={} isp_readers={} isp0_socket={} isp1_socket={} isp_3a={} ae_state={} wb_gains={} colour_temperature={} flicker={} gain_requested={} gain_applied={} gain_clamp={} aaa_tuning={} aaa_reason={} isp_reason_at={} isp_reason={} last_error={}",
+        "camera {} state={} owner={} starts={} failures={} total_failures={} recoveries={} frames={} skipped={} last_id={} next_delay_ms={} socket={} publish={} readers={} published={} publish_dropped={} health={} requested={} achieved={} achieved_meta={} measured={} rate_clamped={} keep={} kept={} buffers={} reserve={} reclaimed={} reserve_cuts={} rate_reason={} mode={} format={} bits={} mode_reason={} mode_text={} last_recovery={} empty_frames={} exposure_requested={} exposure_applied={} exposure_clamp={} lemnos_skipped={} lemnos_at_limit={} producer={} layout_refused={} fault={} bound_unmet={} discontinuities={} contract_mismatch={} controls_seq={} isp={} isp_asked={} isp_form={} isp_refused={} isp_skipped={} isp_made={} isp_short={} isp_fallback={} isp_left_out={} isp_switches={} isp_published={} isp_dropped={} isp_readers={} isp0_socket={} isp1_socket={} isp_3a={} ae_state={} wb_gains={} colour_temperature={} flicker={} gain_requested={} gain_applied={} gain_clamp={} aaa_tuning={} aaa_reason={} isp_reason_at={} isp_reason={} last_error={}",
         clip(&status.id),
         status.state,
         owner,
@@ -759,6 +760,10 @@ fn camera_line(status: &CameraStatus) -> String {
         isp.input_form.unwrap_or("-"),
         isp.refused,
         isp.skipped,
+        format_args!("{}/{}", isp.made, isp.made + isp.skipped),
+        word(&isp.short),
+        word(&isp.fallback),
+        word(&isp.left_out),
         format_args!("{}/{}", isp.to_soft, isp.to_pisp),
         format_args!("{}/{}", isp.published[0], isp.published[1]),
         format_args!("{}/{}", isp.dropped[0], isp.dropped[1]),
@@ -865,6 +870,14 @@ pub struct CameraLine {
     pub isp_refused: Option<u64>,
     /// Raw frames the processed stream has no picture for (`isp_skipped=`).
     pub isp_skipped: Option<u64>,
+    /// Raw frames an ISP made a picture for, and those asked for (`isp_made=<made>/<asked>`).
+    pub isp_made: Option<(u64, u64)>,
+    /// Why frames go without a picture now (`isp_short=`, one word: spaces are `_`).
+    pub isp_short: Option<String>,
+    /// Why `isp = "auto"` runs the soft ISP: the back end's refusal (`isp_fallback=`, one word).
+    pub isp_fallback: Option<String>,
+    /// Settings the ISP in force leaves out, each with why (`isp_left_out=`, one word).
+    pub isp_left_out: Option<String>,
     /// Switches to the soft ISP and back (`isp_switches=<to_soft>/<to_pisp>`).
     pub isp_switches: Option<(u64, u64)>,
     /// Frames published on isp0 and isp1 (`isp_published=a/b`).
@@ -1019,6 +1032,10 @@ pub fn parse_camera_line(line: &str) -> Option<CameraLine> {
             "isp_form" => camera.isp_form = text,
             "isp_refused" => camera.isp_refused = number,
             "isp_skipped" => camera.isp_skipped = number,
+            "isp_made" => camera.isp_made = pair(value),
+            "isp_short" => camera.isp_short = text,
+            "isp_fallback" => camera.isp_fallback = text,
+            "isp_left_out" => camera.isp_left_out = text,
             "isp_switches" => camera.isp_switches = pair(value),
             "isp_published" => camera.isp_published = pair(value),
             "isp_readers" => camera.isp_readers = pair(value),
@@ -1435,7 +1452,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
+                "fault=12 bound_unmet=0 discontinuities=0 contract_mismatch=camera.sensor/1 controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_made=0/0 isp_short=- isp_fallback=- isp_left_out=- isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=this Styx and the board's Lemnos are different builds: contract camera.sensor/1"
             ),
             "{line}"
         );
@@ -1466,7 +1483,7 @@ mod tests {
         let line = camera_line(&slot.snapshot());
         assert!(
             line.contains(
-                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=frame stream cam0: the marks page"
+                "layout_refused=marks:1:2 fault=1 bound_unmet=0 discontinuities=0 contract_mismatch=- controls_seq=0 isp=none isp_asked=none isp_form=- isp_refused=0 isp_skipped=0 isp_made=0/0 isp_short=- isp_fallback=- isp_left_out=- isp_switches=0/0 isp_published=0/0 isp_dropped=0/0 isp_readers=0/0 isp0_socket=- isp1_socket=- isp_3a=- ae_state=- wb_gains=- colour_temperature=- flicker=- gain_requested=- gain_applied=- gain_clamp=- aaa_tuning=- aaa_reason=- isp_reason_at=- isp_reason=- last_error=frame stream cam0: the marks page"
             ),
             "the fields come before the free text: {line}"
         );

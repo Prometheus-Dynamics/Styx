@@ -34,6 +34,18 @@ pub struct IspStatus {
     /// Raw frames the processed stream has no picture for: the hand-off was full, or no ISP made
     /// the frame (no free buffer, or a refusal with no soft fallback).
     pub skipped: u64,
+    /// Raw frames an ISP made a picture for, since the service started. With `skipped`, the
+    /// frames asked for are `made + skipped` (`isp_made=<made>/<asked>`).
+    pub made: u64,
+    /// Why frames are going without a picture now, with the ISP's measured time a frame against
+    /// the camera's frame interval (`isp_short=`); `None` while every frame gets one.
+    pub short: Option<String>,
+    /// Set while `isp = "auto"` runs the soft ISP because the back end refused the settings
+    /// (`isp_fallback=`): the refusal, so a fallback is never only in `isp_reason`.
+    pub fallback: Option<String>,
+    /// Settings the ISP in force does not apply, each with why (`isp_left_out=`); the frames are
+    /// made with everything else.
+    pub left_out: Option<String>,
     /// Switches to the soft ISP, and back to the back end, this attempt.
     pub to_soft: u64,
     pub to_pisp: u64,
@@ -738,6 +750,9 @@ impl Slot {
         status.isp.to_soft = 0;
         status.isp.to_pisp = 0;
         status.isp.input_form = None;
+        status.isp.short = None;
+        status.isp.fallback = None;
+        status.isp.left_out = None;
     }
 
     /// No processed stream this attempt, for `reason`.
@@ -790,6 +805,43 @@ impl Slot {
 
     pub(crate) fn isp_skipped(&self) {
         lock(&self.status).isp.skipped += 1;
+    }
+
+    /// One raw frame through the ISP thread: made (a picture) or skipped.
+    pub(crate) fn isp_frame(&self, made: bool) {
+        let mut status = lock(&self.status);
+        if made {
+            status.isp.made += 1;
+        } else {
+            status.isp.skipped += 1;
+        }
+    }
+
+    /// Why frames go without a picture (`None`: every frame gets one again).
+    pub(crate) fn isp_short(&self, why: Option<&str>) {
+        let mut status = lock(&self.status);
+        match why {
+            Some(text) => set_text(&mut status.isp.short, text),
+            None => status.isp.short = None,
+        }
+    }
+
+    /// The soft fallback of `isp = "auto"` (`None`: the back end makes the frames again).
+    pub(crate) fn isp_fallback(&self, why: Option<&str>) {
+        let mut status = lock(&self.status);
+        match why {
+            Some(text) => set_text(&mut status.isp.fallback, text),
+            None => status.isp.fallback = None,
+        }
+    }
+
+    /// The settings the ISP in force leaves out (`None`: it applies them all).
+    pub(crate) fn isp_left_out(&self, what: Option<&str>) {
+        let mut status = lock(&self.status);
+        match what {
+            Some(text) => set_text(&mut status.isp.left_out, text),
+            None => status.isp.left_out = None,
+        }
     }
 
     pub(crate) fn isp_refused(&self) {

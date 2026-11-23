@@ -4,7 +4,9 @@
 //! the camera runs one more thread, the camera's ISP thread. The capture thread offers it each raw
 //! frame through a hand-off of at most [`HANDOFF`] frames (see [`hold_for`]: fewer when the
 //! camera's pool is small); a frame that finds the hand-off full is skipped for the ISP and counted
-//! (`isp_skipped`), and the raw socket still publishes it. The ISP thread
+//! (`isp_skipped`), and the raw socket still publishes it. The status says how many frames got a
+//! picture against how many were asked for (`isp_made`), and while frames go without one, why,
+//! with the ISP's measured time a frame against the camera's interval (`isp_short`). The ISP thread
 //! makes pictures with the PiSP back end ([`styx_pisp::LiveIsp`]) or the soft ISP
 //! ([`styx_soft::SoftIspStage`]) and publishes output 0 on `<camera socket>.isp0.sock` and, when
 //! `isp_second` is set, output 1 on `.isp1.sock`.
@@ -380,6 +382,100 @@ struct Stage {
     /// they moved: see `aaa::moved`).
     aaa: Option<crate::aaa::Aaa>,
     soft_applied: IspSettings,
+    /// The ISP's pace against the camera's, for `isp_short`.
+    pace: Pace,
+    /// Whether the status shows a soft fallback now (`isp_fallback`).
+    fallback_shown: bool,
+    /// The settings the status shows left out now (`isp_left_out`).
+    left_out_shown: styx_pisp::LeftOut,
+}
+
+/// Frames without a picture keep `isp_short` set for this many frames after the last one.
+const SHORT_HOLD: u32 = 240;
+/// While short, `isp_short` is written again every this many frames (its figures move).
+const SHORT_REFRESH: u32 = 30;
+
+/// The ISP's measured time a frame and the camera's frame interval, both smoothed, and the
+/// frames since one went without a picture: what `isp_short` says.
+#[derive(Debug, Default)]
+struct Pace {
+    /// The last raw frame's (id, timestamp ns).
+    last: Option<(u64, u64)>,
+    interval_ns: f64,
+    work_ns: f64,
+    /// Frames since the last one without a picture (`None`: none went without one yet).
+    since_short: Option<u32>,
+    text: String,
+}
+
+impl Pace {
+    /// Smooths over about 16 frames.
+    const WEIGHT: f64 = 1.0 / 16.0;
+
+    fn smooth(into: &mut f64, value: f64) {
+        *into = if *into == 0.0 {
+            value
+        } else {
+            *into + (value - *into) * Self::WEIGHT
+        };
+    }
+
+    /// One raw frame `id` taken at `at_ns`, `work_ns` in the ISP, `made` or not. Returns what
+    /// `isp_short` should become when it changes: `Some(Some(text))`, or `Some(None)` to clear.
+    fn frame(
+        &mut self,
+        id: u64,
+        at_ns: u64,
+        work_ns: u64,
+        made: bool,
+        isp: &str,
+    ) -> Option<Option<&str>> {
+        // Frames between this one and the last never reached the ISP (the hand-off was full).
+        let mut missed = 0;
+        if let Some((last_id, last_ns)) = self.last
+            && id > last_id
+        {
+            missed = id - last_id - 1;
+            if at_ns > last_ns {
+                Self::smooth(
+                    &mut self.interval_ns,
+                    (at_ns - last_ns) as f64 / (id - last_id) as f64,
+                );
+            }
+        }
+        self.last = Some((id, at_ns));
+        Self::smooth(&mut self.work_ns, work_ns as f64);
+        let short_now = missed > 0 || !made;
+        let since = match (short_now, self.since_short) {
+            (true, _) => 0,
+            (false, Some(n)) => n.saturating_add(1),
+            (false, None) => return None,
+        };
+        self.since_short = Some(since);
+        if since > SHORT_HOLD {
+            self.since_short = None;
+            return Some(None);
+        }
+        if since != 0 && since % SHORT_REFRESH != 0 && !self.text.is_empty() {
+            return None;
+        }
+        use std::fmt::Write as _;
+        let (work, interval) = (self.work_ns / 1e6, self.interval_ns / 1e6);
+        self.text.clear();
+        if interval > 0.0 && work > interval {
+            let _ = write!(
+                self.text,
+                "{isp} ISP takes {work:.1} ms a frame and frames come every {interval:.1} ms, so about 1 frame in {:.1} gets a picture",
+                work / interval
+            );
+        } else {
+            let _ = write!(
+                self.text,
+                "{isp} ISP takes {work:.1} ms a frame and frames come every {interval:.1} ms; frames went without a picture at the hand-off or for want of a free buffer"
+            );
+        }
+        Some(Some(&self.text))
+    }
 }
 
 /// The output media and layouts a plan gives for raw frames of `raw`'s size: output 0, and
@@ -548,6 +644,9 @@ impl Stage {
         let mut stage = Self {
             mode: plan.mode,
             soft_applied: settings.clone(),
+            pace: Pace::default(),
+            fallback_shown: false,
+            left_out_shown: styx_pisp::LeftOut::default(),
             aaa,
             settings,
             raw: format,
@@ -670,6 +769,7 @@ impl Stage {
             out.release();
         }
         let now = nanos((ctx.now)());
+        let started = styx_socket::clock_ns();
         let route = match (self.mode, self.switcher.as_mut()) {
             (_, Some(switcher)) => switcher.route(now),
             (IspMode::Soft, None) => Route::Soft,
@@ -713,13 +813,60 @@ impl Stage {
                 }
             }
         };
-        if !made {
-            ctx.slot.isp_skipped();
+        let work = styx_socket::clock_ns().saturating_sub(started);
+        ctx.slot.isp_frame(made);
+        let isp = if self.active == IspActive::Pisp {
+            "pisp"
+        } else {
+            "soft"
+        };
+        if let Some(short) = self
+            .pace
+            .frame(raw.id(), raw.timestamp_ns(), work, made, isp)
+        {
+            ctx.slot.isp_short(short);
         }
         if made {
+            self.show_fallback_and_left_out(ctx.slot, route);
             self.aaa_step(ctx, raw);
         }
         self.show(ctx.slot);
+    }
+
+    /// `isp_fallback` and `isp_left_out`, when they change: a fallback of `isp = "auto"` to the
+    /// soft ISP is shown with the back end's refusal for as long as it lasts, and the settings the
+    /// ISP in force leaves out are named.
+    fn show_fallback_and_left_out(&mut self, slot: &Slot, route: Route) {
+        // On the switcher's soft route (or a refused try back): a frame the back end could not
+        // take now (busy) and the soft ISP made is not a fallback.
+        let falling_back =
+            self.mode == IspMode::Auto && route != Route::Pisp && self.active == IspActive::Soft;
+        if falling_back != self.fallback_shown {
+            self.fallback_shown = falling_back;
+            if falling_back {
+                let mut why = String::from("the soft ISP makes the frames because ");
+                if self.reason.is_empty() {
+                    why.push_str("the back end is not open");
+                } else {
+                    why.push_str(&self.reason);
+                }
+                slot.isp_fallback(Some(&why));
+            } else {
+                slot.isp_fallback(None);
+            }
+        }
+        let left_out = match (self.active, self.live.as_ref()) {
+            (IspActive::Pisp, Some(live)) => live.left_out(),
+            _ => styx_pisp::LeftOut::default(),
+        };
+        if left_out != self.left_out_shown {
+            self.left_out_shown = left_out;
+            if left_out.is_empty() {
+                slot.isp_left_out(None);
+            } else {
+                slot.isp_left_out(Some(&left_out.to_string()));
+            }
+        }
     }
 
     /// With the 3A loop, has the back end count raw statistics in its input pass (at the black
@@ -1027,5 +1174,51 @@ mod hold_tests {
             hold_for(16, native_base(16)).map(|h| (h.depth, h.readers)),
             Ok((2, 3))
         );
+    }
+}
+
+#[cfg(test)]
+mod pace_tests {
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    /// The board's case: 120 fps asked (8.3 ms apart), the soft ISP with a full tuning at 16.6 ms
+    /// a frame, so every other frame never reaches it. `isp_short` says so with both figures, and
+    /// clears once every frame gets a picture again.
+    #[test]
+    fn a_slow_isp_says_how_slow_against_the_frame_interval() {
+        let mut pace = Pace::default();
+        let interval = 8_333_333;
+        let mut said = None;
+        for k in 0..40u64 {
+            let id = 2 * k + 1;
+            if let Some(Some(text)) = pace.frame(id, id * interval, 16_600_000, true, "soft") {
+                said = Some(text.to_string());
+            }
+        }
+        let said = said.expect("isp_short set while frames are missed");
+        assert!(
+            said.starts_with("soft ISP takes 16.6 ms a frame and frames come every 8.3 ms")
+                && said.contains("about 1 frame in 2.0"),
+            "{said}"
+        );
+        // Every frame again, well inside the interval: cleared after the hold, once.
+        let mut cleared = 0;
+        for id in 81..81 + u64::from(SHORT_HOLD) + 10 {
+            if let Some(None) = pace.frame(id, id * interval, 2 * MS, true, "soft") {
+                cleared += 1;
+            }
+        }
+        assert_eq!(cleared, 1);
+    }
+
+    /// Every frame made: nothing is said.
+    #[test]
+    fn an_isp_that_keeps_up_says_nothing() {
+        let mut pace = Pace::default();
+        for id in 1..100u64 {
+            assert!(pace.frame(id, id * 8 * MS, 3 * MS, true, "pisp").is_none());
+        }
     }
 }

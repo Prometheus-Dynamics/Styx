@@ -16,7 +16,9 @@
 //!   per frame, and the completions as leases (the sequence of the library's README).
 //!
 //! Values are Styx's; layouts and tiling are the library's. Blocks the library does not carry
-//! yet are refused rather than written here: see [`PispError::Unsupported`].
+//! yet are refused rather than written here: see [`PispError::Unsupported`]. Settings the back
+//! end has a block for but no published meaning of its values are left out of the frame and
+//! named: see [`LeftOut`].
 //!
 //! Untested on board (H1): the configuration bytes are checked against dev's for the recorded
 //! settings (`tests/dev_golden.rs`, every block equal), and the live path against a simulated ISP
@@ -30,6 +32,7 @@ pub mod job;
 pub mod live;
 pub mod stats;
 
+pub use back_end::LeftOut;
 pub use back_end::{BackEndBuilder, Geometry, Output};
 pub use front_end::FrontEndBuilder;
 pub use input::{InputForm, PISP_BE_INPUT};

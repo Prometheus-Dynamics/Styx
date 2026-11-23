@@ -143,6 +143,18 @@ impl Rig {
         })
         .expect("start lemnosd");
         let socket_dir = dir.path().join("styx");
+        // A full module tuning (DPC, denoise, ALSC, ...), as a board runs, for a camera that names
+        // it; the others find nothing for their name here and run the defaults.
+        let tuning = dir.path().join("tuning");
+        std::fs::create_dir(&tuning).expect("the tuning folder");
+        std::fs::copy(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../../data/tuning/ov9782.toml"
+            ),
+            tuning.join("full.toml"),
+        )
+        .expect("the full tuning");
         let text = format!(
             "socket_dir = \"{}\"\nlemnos_socket = \"{}\"\ncameras = [\"{CAMERA}\"]\nscan_ms = 100\n\
              tuning_dirs = [\"{}\"]\n\
@@ -150,7 +162,7 @@ impl Rig {
              exposure_us = 1000\ngain_milli = 1000\naaa = true\n{camera_keys}",
             socket_dir.display(),
             lemnos.display(),
-            dir.path().join("no-tuning-here").display(),
+            tuning.display(),
         );
         let service = Service::start(
             Config::parse(&text).expect("config"),
@@ -307,6 +319,45 @@ fn shots_through(reader: &mut Reader, id: u64, more: usize) -> Vec<Shot> {
 fn the_3a_loop_on_the_simulated_camera() {
     manual_values_win_from_their_frame_and_auto_gives_them_back();
     pisp_back_end_counts_statistics_in_its_input_pass_and_allocates_nothing();
+    a_full_tuning_stays_on_the_back_end_and_names_what_it_leaves_out();
+}
+
+/// `isp = "auto"` with a full module tuning stays on the back end: the setting the back end has
+/// no published values for (DPC) is left out and named, never a reason to fall to the soft ISP
+/// (the first 3A board proof did, and the soft ISP then made every other frame). Every frame
+/// asked for is counted against those made.
+fn a_full_tuning_stays_on_the_back_end_and_names_what_it_leaves_out() {
+    pisp_be::refuse_next(0);
+    pisp_be::refuse_outputs(false);
+    let rig = Rig::start("isp = \"auto\"\ntuning = \"full.toml\"\n");
+    let line = rig.wait_for("the loop on the back end with the full tuning", |l| {
+        field(l, "isp_3a") == Some("ae,awb") && field(l, "isp_left_out") != Some("-")
+    });
+    assert!(
+        field(&line, "aaa_tuning").is_some_and(|t| t.contains("/full.toml")),
+        "{line}"
+    );
+    let mut reader = rig.isp_reader();
+    for _ in 0..60 {
+        let _ = take(&mut reader);
+    }
+    let line = rig.line();
+    println!("proof: full tuning on auto: {line}");
+    assert_eq!(field(&line, "isp"), Some("pisp"), "{line}");
+    assert_eq!(field(&line, "isp_fallback"), Some("-"), "{line}");
+    assert!(
+        field(&line, "isp_switches").is_some_and(|s| s.starts_with("0/")),
+        "never switched to the soft ISP: {line}"
+    );
+    assert!(
+        field(&line, "isp_left_out").is_some_and(|t| t.starts_with("denoise.dpc_(")),
+        "DPC named as left out: {line}"
+    );
+    let (made, asked) = field(&line, "isp_made")
+        .and_then(|v| v.split_once('/'))
+        .map(|(a, b)| (a.parse::<u64>().unwrap(), b.parse::<u64>().unwrap()))
+        .expect("isp_made=<made>/<asked>");
+    assert!(made >= 60 && asked >= made, "{line}");
 }
 
 /// The soft ISP's statistics drive AE on black frames: exposure and gain rise. A manual exposure set

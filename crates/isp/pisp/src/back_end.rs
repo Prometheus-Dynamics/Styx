@@ -92,6 +92,58 @@ pub struct Geometry {
     pub slice_at: Option<u16>,
 }
 
+/// Settings a frame was given that the back end does not apply, each named with why. The frame is
+/// made with everything else; the caller reports the set (it never refuses the frame).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LeftOut(u8);
+
+impl LeftOut {
+    /// `denoise.dpc`: the back end has a defective pixel block, but what its coefficients mean
+    /// for a correction strength is published by no source Styx may take values from (the uapi
+    /// names the fields only), so Styx writes none and leaves the block off.
+    pub const DPC: Self = Self(1);
+
+    const ALL: [(Self, &'static str, &'static str); 1] = [(
+        Self::DPC,
+        "denoise.dpc",
+        "no published meaning of the back end's defective pixel coefficients",
+    )];
+
+    /// Nothing left out.
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn contains(self, other: Self) -> bool {
+        self.0 & other.0 == other.0 && other.0 != 0
+    }
+
+    fn insert(&mut self, other: Self) {
+        self.0 |= other.0;
+    }
+
+    /// Each setting left out: (its name in the settings, why).
+    pub fn iter(self) -> impl Iterator<Item = (&'static str, &'static str)> {
+        Self::ALL
+            .into_iter()
+            .filter(move |(f, ..)| self.contains(*f))
+            .map(|(_, name, why)| (name, why))
+    }
+}
+
+impl std::fmt::Display for LeftOut {
+    /// `name (why), name (why)`; empty when nothing is left out.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        for (i, (name, why)) in self.iter().enumerate() {
+            if i > 0 {
+                f.write_str(", ")?;
+            }
+            write!(f, "{name} ({why})")?;
+        }
+        Ok(())
+    }
+}
+
 /// Stripes are cut this many rows above the split line, so the first stripe's input ends by it.
 const STRIPE_MARGIN: u16 = 32;
 
@@ -113,6 +165,8 @@ pub struct BackEndBuilder {
     tdn_last: Option<f64>,
     /// The tone curve's points, rebuilt into the same buffer for every frame.
     gamma: Vec<(u32, u32)>,
+    /// The settings the last [`Self::update`] left out of the frame.
+    left_out: LeftOut,
 }
 
 impl BackEndBuilder {
@@ -186,6 +240,7 @@ impl BackEndBuilder {
             tdn_on: geometry.tdn.is_some(),
             tdn_last: None,
             gamma: Vec::with_capacity(65),
+            left_out: LeftOut::default(),
         })
     }
 
@@ -203,6 +258,11 @@ impl BackEndBuilder {
     /// The config as of the last [`Self::update`] (the template's before the first).
     pub fn config(&self) -> &BeTilesConfig {
         &self.config
+    }
+
+    /// The settings the last [`Self::update`] left out of the frame (empty before one).
+    pub fn left_out(&self) -> LeftOut {
+        self.left_out
     }
 
     /// Lets temporal denoise start its average over with the next frame.
@@ -230,7 +290,7 @@ impl BackEndBuilder {
             }
         }
         let mut be = self.template.clone();
-        apply(&mut be, settings, &mut self.gamma)?;
+        self.left_out = apply(&mut be, settings, &mut self.gamma)?;
         // Temporal denoise's state moves only for a frame that is made: a refusal below restores it.
         let before = self.tdn_last;
         let tdn = self.tdn_for(settings, exposure);
@@ -290,14 +350,17 @@ fn prepare_error(e: styx_lemnos::pisp::be::PrepareError) -> PispError {
 }
 
 /// Applies `s` to `be`: the blocks the algorithms move, in the order that makes the black level
-/// the denoise blocks read.
-fn apply(be: &mut BackEnd, s: &IspSettings, gamma: &mut Vec<(u32, u32)>) -> Result<(), PispError> {
+/// the denoise blocks read. Returns the settings it left out (see [`LeftOut`]).
+fn apply(
+    be: &mut BackEnd,
+    s: &IspSettings,
+    gamma: &mut Vec<(u32, u32)>,
+) -> Result<LeftOut, PispError> {
+    let mut left_out = LeftOut::default();
     be.set_black_levels(s.black_cfa().map(level16));
     let d = &s.denoise;
     if d.dpc != 0 {
-        return Err(PispError::Unsupported(
-            "defective pixel correction level (denoise.dpc)",
-        ));
+        left_out.insert(LeftOut::DPC);
     }
     be.set_dpc(None::<BeDpcConfig>);
     be.set_geq(d.geq.map(|g| BeGeqConfig {
@@ -339,7 +402,7 @@ fn apply(be: &mut BackEnd, s: &IspSettings, gamma: &mut Vec<(u32, u32)>) -> Resu
     // The tone curve is always on: the library's template leaves its block enable off.
     let rgb = be.config().global.rgb_enables | rgb_enable::GAMMA;
     be.config_mut().global.rgb_enables = rgb;
-    Ok(())
+    Ok(left_out)
 }
 
 /// The back end's blocks that have no settings of their own, each at the library's own default
