@@ -40,6 +40,19 @@ if ! cargo metadata --locked --format-version 1 > /dev/null; then
   exit 1
 fi
 
+# A target directory belongs to one worktree. In a target shared between worktrees, a workspace
+# crate another worktree built from its newer files is taken as current (cargo compares times, and
+# its build products carry that worktree's paths), so this tree is tested with that one's code.
+# The target records the worktree that first built in it (<target>/.styx-worktree, written after
+# the seed restore below) and the gate refuses any other: the rule is enforced, not kept by habit.
+target_dir="${CARGO_TARGET_DIR:-$PWD/target}"
+owner_file="$target_dir/.styx-worktree"
+here="$(pwd -P)"
+if [ -f "$owner_file" ] && [ "$(cat "$owner_file")" != "$here" ]; then
+  echo "gate: the target directory $target_dir belongs to the worktree $(cat "$owner_file"), not this one ($here): give this worktree a CARGO_TARGET_DIR of its own, and delete that one with its worktree" >&2
+  exit 1
+fi
+
 # At most two gates of this repository run at once on one machine: every gate links its test
 # binaries in the same minutes, and more than two of them starve each other and whatever else
 # the machine is doing. A gate waits here for one of two slots. STYX_GATE_SLOTS=0 turns it off.
@@ -142,6 +155,11 @@ done
 
 # Slowest green: 1.6 s (restore from a reflink seed, 2.1 GB).
 [ "$cargo_lanes" = 0 ] || step "cargo seed" 60 scripts/cargo-seed.sh restore
+# The record, after the restore (which starts only an empty target).
+if [ "$cargo_lanes" != 0 ] && [ ! -f "$owner_file" ]; then
+  mkdir -p "$target_dir"
+  printf '%s\n' "$here" > "$owner_file"
+fi
 
 # Cases that cannot run here (styx_frame::not_run): no camera, no GPU, no dma-heap, no PipeWire
 # daemon, no test driver. A case whose need is required (STYX_REQUIRE_<NEED>=1) fails the gate.

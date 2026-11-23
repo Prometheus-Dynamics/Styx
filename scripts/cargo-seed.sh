@@ -64,7 +64,9 @@ for p in meta["packages"]:
     if p["id"] in meta["workspace_members"]:
         pkgs.append(p["name"])
         names += [t["name"].replace("-", "_") for t in p["targets"]]
-trees = {os.path.join(target, "tmp"), os.path.join(target, "nextest")}
+# The gate's record of the target's worktree (scripts/gate.sh) holds its path: never in a seed.
+trees = {os.path.join(target, "tmp"), os.path.join(target, "nextest"),
+         os.path.join(target, ".styx-worktree")}
 files = set()
 def listdir(d):
     try:

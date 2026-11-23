@@ -75,6 +75,11 @@ also in every key, so a key made under other gate rules never matches. The docte
 clippy, the default-features pass and the no_std checks always run (cargo's own freshness makes
 the unchanged ones cheap).
 
+A target directory belongs to one worktree: the gate records the worktree that first built in it
+(`<target>/.styx-worktree`) and refuses to run in it from any other. In a shared target, cargo
+takes a workspace crate another worktree built from its newer files as current, and this tree
+would be tested with that one's code. The record is never part of a seed.
+
 ## Records
 
 Records live in `STYX_GATE_RECORDS` (default `~/.local/state/styx-gate`). A green run prints the
