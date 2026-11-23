@@ -369,9 +369,15 @@ fn manual_values_win_from_their_frame_and_auto_gives_them_back() {
         "every frame from F has the manual exposure, none of AE's: {held:?}"
     );
     let before: Vec<&Shot> = shots.iter().filter(|s| s.id < from).collect();
+    // No frame before F has the manual value (the switch is frame-exact): each has AE's, or the
+    // configured start on frames before AE's first value landed.
     assert!(
-        before.iter().all(|s| s.exposure_us > 3000),
-        "AE's own exposure on every frame before F (the switch is frame-exact): {before:?}"
+        before.iter().all(|s| s.exposure_us != first),
+        "the manual exposure on a frame before F: {before:?}"
+    );
+    assert!(
+        before.last().is_some_and(|s| s.exposure_us > 3000),
+        "AE's brighter exposure on the frame before F: {before:?}"
     );
     println!(
         "proof: manual exposure 3000 from frame {from}: {} frames from it all at {first} us; before it {:?}",
