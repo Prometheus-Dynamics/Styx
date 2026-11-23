@@ -644,6 +644,27 @@ fn controls_proof(mode: &str, camera: *mut styx_capi::Camera) {
             E_NOT_FOUND,
             "{mode}: a control the camera does not have"
         );
+
+        // The service hangs up on a connection idle for 2 s; a camera kept open longer still
+        // reaches it, since each request has its own connection.
+        std::thread::sleep(std::time::Duration::from_millis(2_500));
+        let mut again = std::ptr::null_mut();
+        ok(
+            styx_camera_controls(camera, &mut again),
+            "controls after an idle wait",
+        );
+        styx_controls_free(again);
+        ok(
+            styx_camera_set_control(camera, b"gain".as_ptr(), 4, gain_value(2_000), 0),
+            "a set after an idle wait",
+        );
+    }
+}
+
+fn gain_value(value: u32) -> styx_capi::StyxControlValue {
+    styx_capi::StyxControlValue {
+        kind: styx_capi::VALUE_MANUAL,
+        value,
     }
 }
 

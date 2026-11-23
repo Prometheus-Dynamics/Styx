@@ -21,6 +21,7 @@ styx-native = { path = "../../camera/native" }
 styx-native-run = { path = "../../camera/native-run" }
 styx-select = { path = "../../camera/select" }
 styx-service = { path = "../../out/service" }
+styx-control-client = { path = "../../out/control-client" }
 styx-socket = { path = "../../out/socket" }
 styx-counters = { path = "../../tools/counters" }
 

@@ -1,0 +1,25 @@
+[package]
+autotests = false
+name = "styx-control-client"
+description = "A client of the camera service's control socket: the camera list, controls, sets, the last frame, start and stop, typed, with a timeout per request, a retry backoff while the service is away, and a wait for a camera's controls to change. One connection per request, since the service serves one connection at a time."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+styx-controls = { path = "../../core/controls" }
+styx-select = { path = "../../camera/select" }
+styx-service = { path = "../service" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "all"
+path = "tests/all.rs"

@@ -126,7 +126,7 @@ marked **unchanged**, **renamed** (old → new), **removed** (with what replaces
 | Daedalus bridge | `StyxFramesPlugin`, `frame_payload`, `FRAME_TYPE_KEY`, `FrameDescriptor`, `FrameLease` | `styx_daedalus` (feature `daedalus`) has `StyxFrame` (`from_lease(lease, size)`, `from_ring(frame)`), `FRAME_KEY` (`"styx:frame"`), `dmabuf_memory()` to add to a plan, and `next_value` / `latest_value` from a ring reader. There is nothing to register: `StyxFrame` is an opaque `Typed` value. `FrameDescriptor`'s fields are `StyxFrame`'s methods. `FrameLease` is now `styx_frame::FrameLease`. | renamed |
 | Frames over IPC | `FrameClient` | `styx_socket::Reader` (`connect`, `connect_with`, `next_frame`, `latest`, `next_event`, `wait`, `stats`). Find the paths with `styx_service::camera_socket(dir, id)` and `isp_socket(dir, id, k)`. | renamed |
 | Camera service | `CameraService`, `CameraServiceHandle`, `SERVICE_FRAME_RATE` | `styx-service`: one process holds every camera, set up by its TOML file. The rate is `fps_milli` for each camera. | removed |
-| Controls over IPC | `ControlClient` and its builder, `ControlDescriptor`, `ControlTarget`, `StandardControl`, `ControlRefusal`, `ControlEvent`, `AppliedControl`, `ClientEvent`, `IpcError` | The control socket's line protocol (`styx_service::control`) and its parsers. `StandardControl` becomes `styx_controls::Control`, and `ControlRefusal` becomes `styx_select::Refusal`. | removed |
+| Controls over IPC | `ControlClient` and its builder, `ControlDescriptor`, `ControlTarget`, `StandardControl`, `ControlRefusal`, `ControlEvent`, `AppliedControl`, `ClientEvent`, `IpcError` | `styx_control_client::ControlClient` (below), over the control socket's line protocol (`styx_service::control`). `StandardControl` becomes `styx_controls::Control`, and `ControlRefusal` becomes `styx_control_client::Error` (its `ErrorKind`) or `styx_select::Refusal`. | renamed |
 | Planner | `Accelerators`, `Hardware::{Auto, Off, Required}`, `Delivered`, `FrameRequest.pyramid` | the per-camera `isp`, `isp_size`, `isp_second` keys and the status line | removed |
 | Probe and capture | `probe_all(_with_errors)`, `probe_capture_devices`, `capture_api::{StyxConfig, CaptureRequest}` | In process: `styx_select` (`NativeLister`, `V4l2Lister`, `LibcameraLister`, `plan`, `select`, `Capture`). Out of process: the service's `list`. `StyxConfig` and `CaptureRequest` become the service's `[camera."<id>"]` table. | renamed |
 | Virtual sources | `VirtualSourceConfig`, `make_virtual_device(_with_controls)` | see below | removed |
@@ -188,13 +188,19 @@ yet).
   - **Watch** (exists on next): there is no push. Poll `list` and read `controls_seq=`. Ask
     `controls <id>` only when it moved. It moves on every set by any client, on a range change,
     and when the camera reopens.
-  - **Connect, timeout, reconnect** (gap): next has no public Rust client.
-    - `styx-capi` has one inside it (`crates/bridge/capi/src/wire.rs`, about 350 lines,
-      crate-private): a 5 s read timeout, a 4096-line answer limit, and typed refusals.
-    - **The gap:** move it into a public crate (a typed `list` / `controls` / `set` / `setd` /
-      `frame` / `start` / `stop`, a timeout, and a reconnect on a backoff). `styx-capi` would
-      then use that crate. This is one new crate, mostly moved code, with no wire change.
-    - Until then, every consumer writes its own connect, timeout and reconnect around the parsers.
+  - **The client** (exists on next): `styx_control_client::ControlClient` does all of the above.
+    - Calls: `list`, `camera`, `controls`, `controls_info`, `get`, `device`, `set`, `set_named`
+      (the 3A loop's names), `set_device`, `set_device_real`, `frame`, `start` and `stop`.
+    - Each request has its own connection. The service serves one connection at a time and hangs
+      up on one idle for 2 s, so the client holds none between calls.
+    - Each request has a timeout (5 s by default).
+    - While the socket can't be reached, the client retries on a backoff: 250 ms, doubling, capped
+      at 5 s. A call before the next try fails at once as `Unreachable`.
+    - `wait_controls_change(id, seen, timeout)` polls `controls_seq` every 100 ms by default,
+      never faster than every 20 ms, and returns the new count.
+    - Errors come back typed (`ErrorKind`: `NotFound`, `Range`, `Access`, `Invalid`, ...), with the
+      service's text, which carries the camera's numbers.
+    - `styx-capi` uses the same client.
 - **Format, size, route and pyramids** (`CameraService` and the planner):
   - **Who decides** (exists on next): the service config, for each camera. That covers:
     - the capture: `width`, `height`, `format`, `bit_depth`, `fps_milli`;

@@ -57,6 +57,26 @@ Reading the camera's ring, use `offer_held` with the `Frame` itself, so its hold
 the preview's share. Serving MJPEG or WebSocket to a browser is the application's job: a reader
 of the preview ring gets the JPEG bytes in place.
 
+## Controls from another process: `styx-control-client`
+
+`ControlClient` speaks the camera service's control socket (the protocol is in
+`styx_service::control`):
+
+- **The calls:** the camera list, one camera's status line, its controls (as the service's lines
+  or as the in-process `ControlsInfo`), standard and device sets, the 3A loop's controls by name,
+  the last frame, start, and stop.
+- **One connection per request.** The service serves one connection at a time and hangs up on
+  one idle for 2 s.
+- **Time limits:** each request has a timeout (5 s by default). An unreachable socket is retried
+  on a backoff from 250 ms, doubling, capped at 5 s; calls before the next try fail at once.
+- **Waiting for a change:** `wait_controls_change` polls the camera's `controls_seq` every 100 ms
+  by default (never under 20 ms) until it moves.
+- **Checked requests:** ids, names and values that could add a request of their own (white space,
+  control characters, too long) are refused before anything is sent.
+- **Errors are typed** by `ErrorKind`, with the service's text.
+
+`styx-capi`'s service source uses it.
+
 ## Calibration: `styx-tune`
 
 Raw captures of standard targets go in, and a tuning file the tuning search finds comes out

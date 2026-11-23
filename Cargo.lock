@@ -3794,6 +3794,7 @@ dependencies = [
  "lemnos-host",
  "lemnos-sim",
  "lemnosd",
+ "styx-control-client",
  "styx-controls",
  "styx-counters",
  "styx-format",
@@ -3814,6 +3815,16 @@ version = "2.0.2-dev"
 dependencies = [
  "styx-format",
  "styx-frame",
+]
+
+[[package]]
+name = "styx-control-client"
+version = "2.0.2-dev"
+dependencies = [
+ "styx-controls",
+ "styx-select",
+ "styx-service",
+ "tempfile",
 ]
 
 [[package]]
