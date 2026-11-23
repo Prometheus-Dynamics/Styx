@@ -9,15 +9,24 @@ rust-version.workspace = true
 repository.workspace = true
 homepage.workspace = true
 
+[features]
+default = ["mcap-lz4"]
+# MCAP import of lz4-compressed chunks (the MCAP writer's usual compression): a pure-Rust lz4
+# frame decoder, read side only. Without it such a chunk is refused by name.
+mcap-lz4 = ["dep:lz4_flex"]
+
 [dependencies]
 styx-format = { path = "../../core/format" }
 styx-controls = { path = "../../core/controls" }
 styx-frame = { path = "../../core/frame" }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["frame", "safe-decode", "checked-decode"], optional = true }
 
 [dev-dependencies]
 # Writes MCAP files the way the Styx recorder lays them out, so the importer is tested against
-# the real writer. No compression: the importer reads uncompressed chunks only.
-mcap = { version = "0.25", default-features = false }
+# the real writer, uncompressed and with its lz4 chunks (the reference lz4 library, test only).
+mcap = { version = "0.25", default-features = false, features = ["lz4"] }
+# Hand-made lz4 chunks for the refusal cases (the encoder, test only).
+lz4_flex = { version = "0.14.0" }
 
 [lints]
 workspace = true

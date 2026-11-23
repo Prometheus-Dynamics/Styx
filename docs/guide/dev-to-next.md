@@ -148,7 +148,8 @@ marked **unchanged**, **renamed** (old → new), **removed** (with what replaces
 | `preview` | the `styx-preview` crate |
 | `codec-turbojpeg` | `styx-decode/turbojpeg` (on by default) |
 | `replay-mcap`, `replay-softisp` | `styx-record` (MCAP import is always in) and `styx-soft` |
-| `replay-mcap-lz4`, `replay-png` | not carried (see below) |
+| `replay-mcap-lz4` | `styx-record/mcap-lz4` (on by default): lz4 chunks on import |
+| `replay-png` | not carried (see below) |
 | `async`, `tracing` | not carried: the APIs block (`poll`, `wait`), and Styx logs nothing through `tracing` |
 
 ### Controls by name
@@ -241,14 +242,14 @@ yet).
   - **Into a graph** (exists on next): `StyxFrame::from_lease`.
   - **Into the service as a camera** (gap): no replay source exists.
   - **MCAP** (exists on next): `import_mcap` converts an MCAP file into `styxrec`.
-  - **HeliOS's lz4 recordings** (gap):
-    - `import_mcap` reads uncompressed chunks only, and refuses lz4 and zstd chunks.
-    - HeliOS's recorder writes lz4 chunks by default, so **existing HeliOS `.mcap` recordings
-      cannot be read on `next` today**.
-    - Closing it means an lz4 chunk decoder in `styx-record`. A pure-Rust one (`lz4_flex`) avoids
-      the C library.
-    - Until then, decompress the recordings with an MCAP tool first, for example by rewriting
-      them uncompressed.
+  - **HeliOS's lz4 recordings** (exists on next): `import_mcap` reads lz4 chunks, which is what
+    HeliOS's recorder writes by default.
+    - This is the `mcap-lz4` feature of `styx-record`, on by default: a pure-Rust decoder, read
+      side only.
+    - It costs 27 KB in a stripped x86_64 release binary that imports. The camera service does
+      not link `styx-record`, so it costs the service nothing.
+    - A decompressed chunk must have the size it states, and its CRC when it gives one.
+    - zstd chunks are still refused by name.
   - **PNG** (gap): PNG replay is not carried.
 - **Preview** (exists on next, renamed):
   - `styx_preview::Preview` takes a share of each frame, encodes a small JPEG on its own thread,

@@ -8,8 +8,10 @@
 //! channels (the clock, pyramid levels) are skipped: this
 //! format keeps the frame and nothing else.
 //!
-//! Uncompressed chunks are read; a compressed chunk (zstd, lz4) is refused, since this crate
-//! carries no decompressor. Import is one way: the output is `styxrec`.
+//! Uncompressed chunks are read, and lz4 chunks with the `mcap-lz4` feature (on by default; a
+//! pure-Rust decoder). A zstd chunk, and an lz4 chunk without the feature, are refused by name.
+//! A decompressed chunk must have the size the chunk states, and its CRC when the chunk gives one
+//! (not 0). Import is one way: the output is `styxrec`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -43,6 +45,10 @@ const MAX_CHANNELS: usize = 4096;
 const READABLE_VERSIONS: [&str; 2] = ["1", "2"];
 /// Frames whose messages may be partly arrived at once; the oldest are dropped past this.
 const MAX_PENDING: usize = 8;
+/// The largest decompressed chunk read. A writer's chunk is under a megabyte, or one frame when a
+/// frame is larger; 256 MiB is past any frame a camera makes.
+#[cfg_attr(not(feature = "mcap-lz4"), allow(dead_code))]
+const MAX_CHUNK: u64 = 256 << 20;
 
 /// One frame read from an MCAP recording: its entry and metadata, and its bytes (the span).
 #[derive(Debug, Clone, PartialEq)]
@@ -210,22 +216,60 @@ impl<R: Read + Seek> McapReader<R> {
         Ok(false)
     }
 
-    /// An uncompressed chunk: its records, read from the chunk body.
+    /// A chunk: its records, read from the chunk body, decompressed first when it is lz4.
     fn chunk(&mut self, body: &[u8]) -> Result<(), RecordError> {
         let mut p = Parser::new(body);
         p.u64()?; // message start time
         p.u64()?; // message end time
-        p.u64()?; // uncompressed size
-        p.u32()?; // uncompressed CRC (not checked: the frame records carry their own)
+        let size = p.u64()?;
+        let crc = p.u32()?;
         let compression = p.mcap_string()?;
-        if !compression.is_empty() {
-            return Err(RecordError::Unsupported(
-                "compressed MCAP chunks (zstd, lz4): record uncompressed",
-            ));
-        }
         let records_len =
             usize::try_from(p.u64()?).map_err(|_| RecordError::TooLarge("MCAP chunk"))?;
         let records = p.take(records_len)?;
+        match compression.as_str() {
+            "" => self.records(records),
+            "lz4" => self.lz4_chunk(records, size, crc),
+            "zstd" => Err(RecordError::Unsupported(
+                "zstd MCAP chunks: record uncompressed or with lz4",
+            )),
+            _ => Err(RecordError::Unsupported(
+                "an MCAP chunk compression other than lz4",
+            )),
+        }
+    }
+
+    #[cfg(feature = "mcap-lz4")]
+    fn lz4_chunk(&mut self, compressed: &[u8], size: u64, crc: u32) -> Result<(), RecordError> {
+        if size > MAX_CHUNK {
+            return Err(RecordError::TooLarge("MCAP chunk"));
+        }
+        let size = usize::try_from(size).map_err(|_| RecordError::TooLarge("MCAP chunk"))?;
+        let mut records = Vec::with_capacity(size);
+        lz4_flex::frame::FrameDecoder::new(compressed)
+            .take(size as u64 + 1)
+            .read_to_end(&mut records)
+            .map_err(|_| RecordError::Corrupt("MCAP lz4 chunk does not decompress"))?;
+        if records.len() != size {
+            return Err(RecordError::Corrupt(
+                "MCAP lz4 chunk is not the size it states",
+            ));
+        }
+        if crc != 0 && crate::crc::crc32(&records) != crc {
+            return Err(RecordError::Corrupt("MCAP lz4 chunk fails its CRC"));
+        }
+        self.records(&records)
+    }
+
+    #[cfg(not(feature = "mcap-lz4"))]
+    fn lz4_chunk(&mut self, _: &[u8], _: u64, _: u32) -> Result<(), RecordError> {
+        Err(RecordError::Unsupported(
+            "lz4 MCAP chunks: this build has no lz4 (feature mcap-lz4)",
+        ))
+    }
+
+    /// A chunk's records.
+    fn records(&mut self, records: &[u8]) -> Result<(), RecordError> {
         let mut q = Parser::new(records);
         while !q.at_end() {
             let opcode = q.u8()?;

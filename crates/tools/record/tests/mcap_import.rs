@@ -10,7 +10,7 @@ use std::io::Cursor;
 use mcap::records::{MessageHeader, Metadata};
 use styx_format::{FourCc, plane_geometry};
 use styx_frame::{FrameEntry, packed_layouts};
-use styx_record::{RecordError, Replay, import_mcap};
+use styx_record::{ImportStats, RecordError, Replay, import_mcap};
 
 use support::{Sample, samples};
 
@@ -160,10 +160,21 @@ fn image(s: &Sample) -> Vec<u8> {
 /// one image message per frame (sequence = the frame's id), with a clock and a pyramid message
 /// that the import skips.
 fn styx_mcap(frames: &[Sample], header: &[(&str, &str)]) -> Vec<u8> {
+    styx_mcap_with(frames, header, None, None)
+}
+
+/// [`styx_mcap`], with the writer's chunk compression and chunk size.
+fn styx_mcap_with(
+    frames: &[Sample],
+    header: &[(&str, &str)],
+    compression: Option<mcap::Compression>,
+    chunk_size: Option<u64>,
+) -> Vec<u8> {
     let mut w = mcap::WriteOptions::new()
         .profile("ros2")
         .library("styx-record tests")
-        .compression(None)
+        .compression(compression)
+        .chunk_size(chunk_size)
         .create(Cursor::new(Vec::new()))
         .unwrap();
     let metadata: BTreeMap<String, String> = header
@@ -256,8 +267,27 @@ fn header_pairs() -> Vec<(&'static str, &'static str)> {
 #[test]
 fn import_round_trips_frames_metadata_and_bytes() {
     let frames = packed_samples(3);
-    let mcap = styx_mcap(&frames, &header_pairs());
+    round_trip(&frames, styx_mcap(&frames, &header_pairs()));
+}
 
+/// The MCAP writer's lz4 chunks (its default compression, and HeliOS's recorder's), one chunk
+/// for the file and a chunk every few messages, read as the uncompressed file is.
+#[cfg(feature = "mcap-lz4")]
+#[test]
+fn import_reads_lz4_chunks_as_the_writer_makes_them() {
+    let frames = packed_samples(6);
+    for chunk_size in [None, Some(4096)] {
+        let mcap = styx_mcap_with(
+            &frames,
+            &header_pairs(),
+            Some(mcap::Compression::Lz4),
+            chunk_size,
+        );
+        round_trip(&frames, mcap);
+    }
+}
+
+fn round_trip(frames: &[Sample], mcap: Vec<u8>) {
     let mut out = Vec::new();
     let stats = import_mcap(&mut Cursor::new(mcap), &mut out).unwrap();
     assert_eq!(stats.frames, frames.len() as u64);
@@ -279,7 +309,7 @@ fn import_round_trips_frames_metadata_and_bytes() {
     assert_eq!(header.interval.unwrap().numerator.get(), 1);
     assert_eq!(header.interval.unwrap().denominator.get(), 30);
 
-    for sample in &frames {
+    for sample in frames {
         let lease = replay.next_frame().unwrap().expect("an imported frame");
         assert_eq!(*lease.entry(), sample.entry);
         assert_eq!(lease.meta().sensor_timestamp_ns, sample.entry.timestamp_ns);
@@ -362,22 +392,121 @@ fn not_an_mcap_file_is_refused() {
     ));
 }
 
-#[test]
-fn compressed_chunk_is_refused_rather_than_misread() {
-    // Magic, then one chunk record whose compression is "zstd".
+/// A file of one chunk record: magic, then the chunk with `compression`, its stated
+/// uncompressed `size` and `crc`, and `records` as its (compressed) records.
+fn one_chunk(compression: &str, size: u64, crc: u32, records: &[u8]) -> Vec<u8> {
     let mut body = Vec::new();
-    body.extend_from_slice(&[0u8; 8 * 3 + 4]); // times, uncompressed size, CRC
-    body.extend_from_slice(&4u32.to_le_bytes());
-    body.extend_from_slice(b"zstd");
-    body.extend_from_slice(&0u64.to_le_bytes()); // records
+    body.extend_from_slice(&[0u8; 8 * 2]); // times
+    body.extend_from_slice(&size.to_le_bytes());
+    body.extend_from_slice(&crc.to_le_bytes());
+    body.extend_from_slice(&(compression.len() as u32).to_le_bytes());
+    body.extend_from_slice(compression.as_bytes());
+    body.extend_from_slice(&(records.len() as u64).to_le_bytes());
+    body.extend_from_slice(records);
     let mut file = vec![0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
     file.push(0x06);
     file.extend_from_slice(&(body.len() as u64).to_le_bytes());
     file.extend_from_slice(&body);
+    file
+}
+
+fn import_of(file: Vec<u8>) -> Result<ImportStats, RecordError> {
     let mut out = Vec::new();
+    import_mcap(&mut Cursor::new(file), &mut out)
+}
+
+/// Without the decoder, an lz4 chunk is refused by name, never misread.
+#[cfg(not(feature = "mcap-lz4"))]
+#[test]
+fn an_lz4_chunk_is_refused_without_the_feature() {
+    let frames = packed_samples(2);
+    let mcap = styx_mcap_with(&frames, &header_pairs(), Some(mcap::Compression::Lz4), None);
     assert!(matches!(
-        import_mcap(&mut Cursor::new(file), &mut out),
+        import_of(mcap),
+        Err(RecordError::Unsupported(why)) if why.contains("mcap-lz4")
+    ));
+}
+
+#[test]
+fn compressed_chunk_is_refused_rather_than_misread() {
+    assert!(matches!(
+        import_of(one_chunk("zstd", 0, 0, &[])),
         Err(RecordError::Unsupported(_))
+    ));
+    assert!(matches!(
+        import_of(one_chunk("brotli", 0, 0, &[])),
+        Err(RecordError::Unsupported(_))
+    ));
+}
+
+/// An lz4 chunk that does not decompress, is not the size it states, fails its CRC, or states a
+/// size past the limit is refused, never read.
+#[cfg(feature = "mcap-lz4")]
+#[test]
+fn a_bad_lz4_chunk_is_refused() {
+    // One channel record (opcode 4): id 1, schema 0, topic "/x", encoding "", metadata {}.
+    let mut channel = vec![4u8];
+    let mut fields = Vec::new();
+    fields.extend_from_slice(&1u16.to_le_bytes());
+    fields.extend_from_slice(&0u16.to_le_bytes());
+    fields.extend_from_slice(&2u32.to_le_bytes());
+    fields.extend_from_slice(b"/x");
+    fields.extend_from_slice(&0u32.to_le_bytes());
+    fields.extend_from_slice(&0u32.to_le_bytes());
+    channel.extend_from_slice(&(fields.len() as u64).to_le_bytes());
+    channel.extend_from_slice(&fields);
+    let mut lz4 = lz4_flex::frame::FrameEncoder::new(Vec::new());
+    std::io::Write::write_all(&mut lz4, &channel).unwrap();
+    let packed = lz4.finish().unwrap();
+    let size = channel.len() as u64;
+    let crc = {
+        // CRC-32 (IEEE), as MCAP states it.
+        let mut c = !0u32;
+        for &b in &channel {
+            c ^= u32::from(b);
+            for _ in 0..8 {
+                c = if c & 1 != 0 {
+                    0xEDB8_8320 ^ (c >> 1)
+                } else {
+                    c >> 1
+                };
+            }
+        }
+        !c
+    };
+
+    // The good chunk reads (to the end: the file has no styx.recording metadata).
+    for good_crc in [crc, 0] {
+        assert!(matches!(
+            import_of(one_chunk("lz4", size, good_crc, &packed)),
+            Err(RecordError::Corrupt(
+                "MCAP file has no styx.recording metadata"
+            ))
+        ));
+    }
+    assert!(matches!(
+        import_of(one_chunk("lz4", size, crc ^ 1, &packed)),
+        Err(RecordError::Corrupt("MCAP lz4 chunk fails its CRC"))
+    ));
+    for wrong in [size - 1, size + 1] {
+        assert!(matches!(
+            import_of(one_chunk("lz4", wrong, 0, &packed)),
+            Err(RecordError::Corrupt(
+                "MCAP lz4 chunk is not the size it states"
+            ))
+        ));
+    }
+    let mut broken = packed.clone();
+    let last = broken.len() - 6;
+    broken[last] ^= 0xFF;
+    broken.truncate(broken.len() - 3);
+    assert!(matches!(
+        import_of(one_chunk("lz4", size, 0, &broken)),
+        Err(RecordError::Corrupt(_))
+    ));
+    assert!(matches!(
+        import_of(one_chunk("lz4", 1 << 40, 0, &packed)),
+        Err(RecordError::TooLarge("MCAP chunk"))
     ));
 }
 

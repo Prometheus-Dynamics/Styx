@@ -39,6 +39,11 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
 - **`Replay`:** hands a recording out as `FrameLease`s from its own pool, with the recorded
   identities, timestamps and metadata. It has a camera's shape: a pool, and `next_frame`.
 - **`import_mcap`:** converts MCAP recordings in the Styx layout to `styxrec`. Import only.
+  - It reads uncompressed chunks, and lz4 chunks with the `mcap-lz4` feature (on by default, a
+    pure-Rust decoder).
+  - A zstd chunk is refused by name, and so is an lz4 chunk in a build without the feature.
+  - A decompressed chunk must have the size it states (at most 256 MiB), and its CRC when it
+    gives one.
 
 Headers and records are untrusted input: every length is checked against a limit before it is
 used, and a recording cut short ends at its last whole frame and says so.
