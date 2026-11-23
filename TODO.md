@@ -105,3 +105,21 @@ Styx tests against simulated drivers of its own (crate `styx-sim`, and until X15
 - [ ] S1, after Lemnos SIM1 series 1 is in Styx's lock (buses and dma-buf streams under `lemnosd --sim`, sequence counting dropped starts, ideal-start timestamps, the `sim.camera/1` control contract, the OV9782 register model with the real driver, the synthetic data-described sensor with small modes, the real receiver and back end over simulated hardware with the ordering scheduler and the per-job record, two or more chains per board, usable outside test trees and on aarch64): delete `styx-sim`'s simulated sensor, receiver and back end. Every test that used them runs on Lemnos's: the camera crates, the service, the C API, the measure tool, the examples' `--sim`, the emulated dry run of board binaries. Tests that assert order or no gaps use the virtual clock; end-to-end tests on the real clock assert invariants only.
 - [ ] S2, after series 2 (the front end over the real driver with statistics in the real layout that follow exposure x gain; embedded registers on the synthetic sensor; the codec block and the scaler, consumer-reachable): delete the simulated front end and ISP statistics, the simulated PiSP in `crates/isp/pisp/tests`, and the simulated codec block and scaler in `crates/codec/*/tests`. The control schedule is proven against embedded registers.
 - [ ] S3, after series 3 (K230 and Rockchip ISP devices): delete the fakes those two ISP backends are tested against. `styx-sim` is removed from the workspace and the gate check with it.
+
+## P. The HeliOS port's gaps (`docs/guide/dev-to-next.md`, Porting HeliOS)
+
+Ordered by the coordinator; parked rows are recorded, not worked.
+
+- [x] P1 (GAP 1) `styx-control-client`: the control socket's client, out of `styx-capi` (next 9ebbf67c).
+- [x] P2 (GAP 5) lz4 MCAP chunks on import, `styx-record` feature `mcap-lz4` (next 593d5b18).
+- [ ] P3 (GAP 2) Pyramid levels as `styx:pyramid` in `styx-daedalus`, held until Eidos says what its nodes consume.
+  - One value per frame; the reader picks the level with a const.
+  - The feed fills the promised levels: from `isp1` with no copy when it is exactly half, otherwise a CPU 2x2 box.
+  - Pools: `max_held + 1` per level. An empty pool skips the frame and counts it.
+  - A planner-placed `styx:pyramid` → `styx:frame` conversion (level 0, no copy) is exported in `styx_daedalus::NODES`.
+- [ ] P4 The pyramid's wgpu box body: no reader until Eidos next has its GPU layer again.
+- [ ] P5 CONTROLS-WAIT-NOT-POLL: measure the service's idle CPU and wakes with 0, 1 and 2 `wait_controls_change` watchers on one camera (proof 2 sheet, item W).
+  - If the cost is not negligible, add a wait the service answers: `wait <id> <seq> <timeout>`, or the seq on the frame socket. Not a different poll period.
+- [ ] P6 (GAP 3, parked) A run-time request for N pyramid levels.
+- [ ] P7 (GAP 4, parked) A replay source inside the service, serving a recording as a camera.
+- [ ] P8 (GAP 6, parked) PNG replay.
