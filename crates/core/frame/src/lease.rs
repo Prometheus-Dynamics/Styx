@@ -1,8 +1,6 @@
 //! A hold on one frame.
 
-use alloc::sync::Arc;
 use core::fmt;
-use core::sync::atomic::Ordering;
 
 use styx_format::{LayoutError, MediaFormat, plane_geometry};
 
@@ -11,6 +9,7 @@ use crate::entry::FrameEntry;
 use crate::layout::{Layouts, PlaneLayout};
 use crate::memory::{BufferMemory, CpuAccess, MemoryKind};
 use crate::pool::{AcquireError, Shared, Slot};
+use crate::sync::{Arc, Ordering};
 
 /// A hold on one frame in a [`crate::FramePool`] buffer.
 ///

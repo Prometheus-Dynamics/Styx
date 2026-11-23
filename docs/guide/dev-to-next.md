@@ -18,7 +18,7 @@ page only maps one onto the other. Why the rebuild was done is in [`../design.md
 | `styx-sensor` | Lemnos | sensors are Lemnos drivers. Styx reads their modes, delays and gain laws through `camera.sensor/1` |
 | `styx-graph`, `styx-native` | `styx-native`, `styx-native-run`, `styx-native-controls` | on Lemnos's contracts; the sensor bridge kernel module goes |
 | `styx-uvc` (usbfs) | `styx-native-usb` (Lemnos's `uvc` driver), or uvcvideo through `styx-v4l2` | MJPEG on the native USB path is not chosen yet |
-| `styx-hal`, `styx-runtime` | not carried | the `no_std` split stays: the gate checks `styx-frame`, `-format`, `-controls`, `-math`, `-simd`, `-settings`, `-aaa`, `-controller`, `-group`, `-dng` and `nostd-smoke` on Cortex-M and RISC-V targets with no std (`styx-soft` builds without std too, outside that check); the camera runtime over embedded-hal is not carried |
+| `styx-hal`, `styx-runtime` | not carried | the `no_std` split stays: the gate checks `styx-frame`, `-format`, `-controls`, `-math`, `-simd`, `-settings`, `-aaa`, `-controller`, `-group`, `-dng` and `nostd-smoke` on Cortex-M and RISC-V targets with no std, and on `riscv32imc` (no compare-and-swap) with their `critical-section` feature, which takes styx-frame's counts and pool handle from portable-atomic (`styx-soft` builds without std too, outside that check); the camera runtime over embedded-hal is not carried |
 | `styx-algo` | `styx-aaa`, `styx-controller`, `styx-focus`, `styx-tuning` | the controller is not wired into the service yet |
 | `styx-pipeline` | `styx-controller` with `styx-native-controls` and an ISP crate | the closed loop on the board is not wired in the service yet |
 | `styx-softisp` | `styx-soft` | same arithmetic |

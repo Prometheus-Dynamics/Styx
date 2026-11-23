@@ -1,7 +1,8 @@
 //! Copy counters: one per place a frame's bytes are copied.
 
 use core::fmt;
-use core::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::sync::{AtomicUsize, Ordering};
 
 /// Counts the copies made at one site and the bytes they moved. Declared as a `static` where the
 /// copy happens, so a test can read it and assert none were made.

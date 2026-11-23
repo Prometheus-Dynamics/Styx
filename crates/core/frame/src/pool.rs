@@ -1,15 +1,14 @@
 //! The pool: buffers given once, a slot per buffer.
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 use crate::entry::FrameEntry;
 use crate::lease::FrameLease;
 use crate::memory::{BufferMemory, CpuAccess, HostMemory};
+use crate::sync::{Arc, AtomicBool, AtomicU32, AtomicUsize, Ordering, try_update};
 
 /// Why [`FramePool::acquire`] gave no buffer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -311,17 +310,12 @@ impl<M> FramePool<M> {
                 needed,
             });
         }
-        let claimed =
-            self.shared
-                .registered
-                .try_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-                    (n < capacity).then_some(n + 1)
-                });
+        let claimed = try_update(&self.shared.registered, |n| (n < capacity).then_some(n + 1));
         let Ok(index) = claimed else {
             return Err(PoolError::Full { capacity });
         };
         let slot = &self.shared.slots[index];
-        // SAFETY: `fetch_update` gave `index` to this call alone, `ready` is still false, so no
+        // SAFETY: `try_update` gave `index` to this call alone, `ready` is still false, so no
         // one reads `memory`, and no other call writes it.
         unsafe { *slot.memory.get() = Some(memory) };
         slot.ready.store(true, Ordering::Release);

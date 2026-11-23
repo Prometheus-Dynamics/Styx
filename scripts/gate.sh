@@ -135,7 +135,7 @@ stop_group() {
 
 # The lanes that build with cargo, and the ones that run tests.
 cargo_lanes=0 test_lanes=0
-for v in host:all host:default bare:thumbv7em bare:riscv32imac; do
+for v in host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc; do
   selected "$v" && cargo_lanes=1
 done
 { selected host:all || selected host:default; } && test_lanes=1
@@ -317,11 +317,19 @@ no_std_checks() {
     return 1
   fi
   no_std_out=$(mktemp -d)
+  # A target with no compare-and-swap (rustc leaves target_has_atomic unset): a crate with a
+  # `critical-section` feature is checked with it, every other one as it is.
+  local no_cas=0 features
+  rustc --print cfg --target "$target" | grep -q '^target_has_atomic="ptr"$' || no_cas=1
   for crate in "${no_std_crates[@]}"; do
-    cargo check -q --locked -p "styx-$crate" --no-default-features --target "$target" \
+    features=()
+    if [ "$no_cas" = 1 ] && grep -q '^critical-section = ' crates/*/"$crate"/Cargo.toml; then
+      features=(--features critical-section)
+    fi
+    cargo check -q --locked -p "styx-$crate" --no-default-features "${features[@]}" --target "$target" \
       > "$no_std_out/${#no_std_pids[@]}" 2>&1 &
     no_std_pids+=($!)
-    no_std_labels+=("$crate on $target")
+    no_std_labels+=("$crate on $target${features:+ with critical-section}")
   done
   for i in "${!no_std_pids[@]}"; do
     if wait "${no_std_pids[$i]}"; then
@@ -387,11 +395,20 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
     lane_mark host:default passed
   fi
   # bare: each no_std crate on its own, per target. Slowest green: 28 s (22 checks, both targets).
-  for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf; do
+  for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf riscv32imc-unknown-none-elf; do
     variant="bare:${target%%-*}"
     if selected "$variant"; then
       lane_mark "$variant" started
       step "no_std checks on $target" 90 no_std_checks "$target"
+      if [ "$variant" = bare:riscv32imc ]; then
+        # The portable-atomic path's tests, on the host: its own target directory (an explicit
+        # --target), so the flag rebuilds nothing else. portable-atomic uses the host's native
+        # atomics here: this runs the lease, pool and Arc code on the portable types, not the
+        # critical section itself, which is the library's.
+        step "styx-frame tests on the portable-atomic path" 300 \
+          env RUSTFLAGS="--cfg styx_portable_atomic" cargo test -q --locked -p styx-frame \
+          --features critical-section --target "$(rustc -vV | sed -n 's/^host: //p')"
+      fi
       lane_mark "$variant" passed
     fi
   done

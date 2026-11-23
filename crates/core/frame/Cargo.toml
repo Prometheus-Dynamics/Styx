@@ -19,12 +19,32 @@ std = ["styx-format/std"]
 # memfd and dma-buf memory on Linux: mapped through Lemnos's library crate, dma-buf CPU access
 # bracketed with its `DMA_BUF_IOCTL_SYNC` wrapper. Styx carries no ioctl of its own.
 linux = ["std", "dep:lemnos-linux-sys"]
+# A target with no compare-and-swap (riscv32imc, thumbv6m): there, the atomics and the pool's `Arc`
+# come from portable-atomic, each read-modify-write inside the critical section the final image
+# supplies (`critical_section::set_impl!`). On a target with compare-and-swap the feature changes
+# nothing and links nothing (the dependencies below are for no-CAS targets only), so a workspace
+# build with every feature is the same build. `--cfg styx_portable_atomic` puts a host on the
+# portable path, for the tests (scripts/gate.sh, lane bare:riscv32imc).
+critical-section = [
+  "dep:portable-atomic",
+  "dep:portable-atomic-util",
+  "portable-atomic/critical-section",
+]
 
 [dependencies]
 styx-format = { path = "../format", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 lemnos-linux-sys = { workspace = true, optional = true }
+
+# rustc sets `target_has_atomic` only where compare-and-swap exists.
+[target.'cfg(any(not(target_has_atomic = "ptr"), styx_portable_atomic))'.dependencies]
+portable-atomic = { version = "1.15", default-features = false, optional = true }
+portable-atomic-util = { version = "0.2.8", default-features = false, features = ["alloc"], optional = true }
+
+# The host's critical section (a global mutex) for the tests on the portable path.
+[target.'cfg(styx_portable_atomic)'.dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 # The dma-heap allocation of a read-only dma-buf in `tests/fd.rs` (the heap ioctl with O_RDONLY).

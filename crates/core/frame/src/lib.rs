@@ -21,7 +21,9 @@
 //! - Every copy goes through a [`CopyCounter`] at the place it happens, so a test can assert none.
 //!
 //! `no_std` + `alloc`; the `std` feature adds error traits and file descriptors, `linux` adds
-//! memfd and dma-buf memory.
+//! memfd and dma-buf memory. `critical-section` builds the crate on a target with no
+//! compare-and-swap (`riscv32imc`, `thumbv6m`): its counts and its pool handle come from
+//! `portable-atomic`, each read-modify-write taken inside the image's critical section.
 
 #![no_std]
 
@@ -41,6 +43,7 @@ mod memory;
 #[cfg(feature = "std")]
 pub mod not_run;
 mod pool;
+mod sync;
 
 pub use copies::{COPY_INTO, CopyCounter, copy_counters};
 pub use entry::FrameEntry;

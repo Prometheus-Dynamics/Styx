@@ -18,5 +18,15 @@ no_std = true
 styx-format = { path = "../format", default-features = false }
 styx-frame = { path = "../frame", default-features = false }
 
+[features]
+# A target with no compare-and-swap (riscv32imc): styx-frame's counts and the smoke image's bump
+# allocator from portable-atomic, inside a critical section. Linking the image then needs one
+# (`critical_section::set_impl!`, from the board's runtime crate); the gate only checks it.
+critical-section = ["styx-frame/critical-section", "dep:portable-atomic"]
+
+# rustc sets `target_has_atomic` only where compare-and-swap exists.
+[target.'cfg(not(target_has_atomic = "ptr"))'.dependencies]
+portable-atomic = { version = "1.15", default-features = false, features = ["critical-section"], optional = true }
+
 [lints]
 workspace = true

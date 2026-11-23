@@ -22,7 +22,11 @@ mod firmware {
     use core::cell::UnsafeCell;
     use core::mem::MaybeUninit;
     use core::panic::PanicInfo;
-    use core::sync::atomic::{AtomicUsize, Ordering};
+    #[cfg(target_has_atomic = "ptr")]
+    use core::sync::atomic::AtomicUsize;
+    use core::sync::atomic::Ordering;
+    #[cfg(not(target_has_atomic = "ptr"))]
+    use portable_atomic::AtomicUsize;
 
     /// The heap arena: a frame pool of two NV12 QQVGA buffers, with slack, needs well under this.
     const ARENA_LEN: usize = 64 * 1024;
@@ -35,7 +39,8 @@ mod firmware {
     }
 
     // SAFETY: the arena is only handed out through `alloc`, which moves `next` with a
-    // compare-and-swap, so two callers never receive the same bytes.
+    // compare-and-swap (portable-atomic's, in a critical section, where the target has none),
+    // so two callers never receive the same bytes.
     unsafe impl Sync for Bump {}
 
     // SAFETY: `alloc` returns a block inside the arena that no earlier call returned (the offset

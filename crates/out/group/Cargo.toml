@@ -15,6 +15,9 @@ no_std = true
 default = ["std"]
 # `std` for the frame's error traits and file descriptors; the grouper itself is `core` + `alloc`.
 std = ["styx-frame/std"]
+# A target with no compare-and-swap: styx-frame's `critical-section` (its counts from
+# portable-atomic). Changes nothing on a target with compare-and-swap.
+critical-section = ["styx-frame/critical-section"]
 
 [dependencies]
 styx-frame = { path = "../../core/frame", default-features = false }

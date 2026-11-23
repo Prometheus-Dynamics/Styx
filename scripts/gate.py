@@ -9,6 +9,8 @@ scripts/release-check.sh, scripts/land.sh. Lanes and their variants:
   host:all       clippy and tests with all features (nextest, then the doctests), the filter check
   host:default   clippy and tests with default features (the build, and the default-only tests)
   bare:thumbv7em, bare:riscv32imac   the no_std check of every no_std crate for that target
+  bare:riscv32imc   the same with no compare-and-swap: each crate with a `critical-section`
+                    feature checked with it, and styx-frame's tests on its portable-atomic path
 
 A lane name alone means all its variants; `all` means every variant. When host:default and
 host:all both run, the default-only list check runs too.
@@ -75,7 +77,7 @@ import affected  # noqa: E402  (the not(feature) and doctest rules, shared with 
 
 LANES = {
     "host": ["checks", "all", "default"],
-    "bare": ["thumbv7em", "riscv32imac"],
+    "bare": ["thumbv7em", "riscv32imac", "riscv32imc"],
 }
 ALL = [f"{lane}:{v}" for lane, vs in LANES.items() for v in vs]
 UPSTREAM = os.environ.get("STYX_GATE_UPSTREAM", "origin/next")

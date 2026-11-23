@@ -12,6 +12,7 @@ LANE-SELECT.
 | `host:all` | clippy and tests with all features (nextest, then the doctests), the test-group filter check |
 | `host:default` | clippy and tests with default features (the build, and the default-only tests) |
 | `bare:thumbv7em`, `bare:riscv32imac` | the no_std check of every no_std crate for that target |
+| `bare:riscv32imc` | the same on a target with no compare-and-swap: a crate with a `critical-section` feature is checked with it; then styx-frame's tests on the host on its portable-atomic path (`--cfg styx_portable_atomic`) |
 
 A lane name alone means all its variants; `all` means every variant. When `host:default` and
 `host:all` both run, the default-only list check runs too. vivid, PipeWire and lavapipe cases are

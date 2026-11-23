@@ -73,6 +73,8 @@ tempfile = "3"
 [workspace.lints.rust]
 missing_debug_implementations = "warn"
 unsafe_op_in_unsafe_fn = "deny"
+# styx-frame's portable-atomic path on a host, for its tests (crates/core/frame/src/sync.rs).
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(styx_portable_atomic)"] }
 
 [workspace.lints.clippy]
 dbg_macro = "deny"
