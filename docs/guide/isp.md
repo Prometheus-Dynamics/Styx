@@ -164,5 +164,17 @@ stream's frames are not copied for them.
   then the defaults. It records every file it skipped and why. A Raspberry Pi JSON tuning is
   skipped with that reason; `styx-tune` writes Styx's TOML form.
 
-Not wired yet: the controller does not run inside the camera service (the config accepts
-`tuning_dirs`, and nothing reads them yet).
+- **In the service:** `aaa = true` beside `isp` runs the loop on a native camera's processed
+  stream (off by default: exposure and gain stay as set, and the ISP runs neutral settings).
+  - Statistics: the PiSP route counts them in its input pass (the copy it already makes, every
+    other quad of every other quad row, 32x32 zones); the soft ISP gathers its own on the first
+    picture it makes. Neither reads the frame again.
+  - Each frame's step runs on the ISP thread after the frame is published. Its exposure and gain go
+    to the sensor through the native controls for a named frame; its `IspSettings` apply to the
+    next frame (never part of one). The frame rate stays as set.
+  - Controls: `ae`, `ev`, `ae_exposure_max_us`, `ae_gain_max`, `awb`, `red_gain`, `blue_gain`,
+    `colour_temperature` and `flicker`, set at run time on the control socket. A manual `exposure`
+    or `gain` wins from the frame it is set for; `auto` gives it back.
+  - Tuning: `tuning = "<sensor>.toml"`, searched in `tuning_dirs` first. The status says which
+    file ran (`aaa_tuning`) and why the loop stopped, if it did (`aaa_reason`).
+  - A raw reader beside a processed one gets the same exposure and gain: they are the sensor's.

@@ -29,8 +29,9 @@
 //! # Virtual V4L2 nodes (loopback, fed by another program) are used only when named here.
 //! # virtual_nodes = ["/dev/video9"]
 //!
-//! # Directories of tuning files. Accepted here; the 3A controller is not wired in this service.
-//! tuning_dirs = ["/usr/share/styx/tuning", "/etc/styx/tuning"]
+//! # Directories of tuning files for the 3A loop (`aaa`), searched in order first; then
+//! # STYX_TUNING_PATH, /etc/styx/tuning and the bundled /usr/share/styx/tuning.
+//! tuning_dirs = ["/opt/board/tuning"]
 //!
 //! # How often the cameras are listed again, in milliseconds.
 //! scan_ms = 2000
@@ -73,6 +74,8 @@
 //! isp_refusals = 3       # auto: back-end refusals in a row that switch to the soft ISP
 //! isp_retry_start_ms = 250      # auto: the first wait before the back end is tried again
 //! isp_retry_cap_ms = 5000       # auto: the longest wait between tries (at most 10000)
+//! aaa = true             # the 3A loop on the processed stream (default false; needs isp)
+//! tuning = "<sensor>.toml"      # the tuning file it asks for (default: the generic one)
 //! ```
 //!
 //! Native cameras: `width` and `height` are the smallest mode that is acceptable, and `format` and
@@ -179,6 +182,16 @@ pub struct CameraConfig {
     /// `auto`: the longest wait between tries, in ms (default 5000, at most 10000).
     #[serde(default)]
     pub isp_retry_cap_ms: Option<u64>,
+    /// Runs the 3A loop on the processed stream (needs `isp`; a native camera): auto exposure,
+    /// auto white balance and flicker avoidance, each on, off or manual at run time (default
+    /// false: exposure and gain stay as set, and the ISP runs neutral settings).
+    #[serde(default)]
+    pub aaa: Option<bool>,
+    /// The tuning file the 3A loop asks for, by file name (a `.json` name looks for the `.toml` of
+    /// the same stem first). Searched in `tuning_dirs`, then the system's directories (see
+    /// `tuning_dirs`); absent or not found, the generic tuning, then styx-aaa's defaults.
+    #[serde(default)]
+    pub tuning: Option<String>,
 }
 
 /// Which ISP makes a camera's processed stream (`isp`).
@@ -236,6 +249,9 @@ impl CameraConfig {
     pub fn isp_plan(&self) -> Result<Option<IspPlan>, String> {
         let mode = self.isp.unwrap_or_default();
         if mode == IspMode::None {
+            if self.aaa == Some(true) {
+                return Err("aaa: the 3A loop runs on a processed stream; set isp".to_string());
+            }
             return Ok(None);
         }
         let code = |text: &str, key: &str| {
@@ -318,7 +334,8 @@ pub struct Config {
     /// The cameras to serve, by id. Empty serves every camera found.
     #[serde(default)]
     pub cameras: Vec<String>,
-    /// Directories of tuning files (accepted; the 3A controller is not wired in this service).
+    /// Directories of tuning files for the 3A loop, searched in order before `STYX_TUNING_PATH`,
+    /// `/etc/styx/tuning` and the bundled `/usr/share/styx/tuning`.
     #[serde(default)]
     pub tuning_dirs: Vec<PathBuf>,
     /// How often the cameras are listed again, in milliseconds.

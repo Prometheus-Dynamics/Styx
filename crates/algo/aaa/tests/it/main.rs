@@ -3,4 +3,5 @@
 mod common;
 
 mod awb_continuity;
+mod raw_stats_cost;
 mod replay;

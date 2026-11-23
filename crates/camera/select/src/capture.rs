@@ -87,6 +87,22 @@ pub struct RateReport {
     pub clamped: bool,
 }
 
+/// What a 3A loop runs a camera's sensor against: the ranges of its controls, in styx-controls
+/// units, and the frames from a write to the first frame it shows on (a native camera's mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SensorTiming {
+    /// Exposure, in microseconds.
+    pub exposure_us: (u32, u32),
+    /// The longest exposure the frame length in force allows, in microseconds.
+    pub exposure_effective_max_us: u32,
+    /// Analogue gain, in thousandths (1000 is 1.0x); `None` when the mode does not say.
+    pub gain_milli: Option<(u32, u32)>,
+    /// Frame rate, in millihertz; `None` when the mode does not say.
+    pub frame_rate_milli: Option<(u32, u32)>,
+    /// Exposure, analogue gain and frame length delays, in frames.
+    pub delays: (u32, u32, u32),
+}
+
 /// An opened camera. Dropping it stops it.
 pub trait Capture {
     /// The next frame, or `None` when none arrived within `timeout`.
@@ -107,6 +123,13 @@ pub trait Capture {
     /// knows its rate overrides it.
     fn rate(&self) -> RateReport {
         RateReport::default()
+    }
+
+    /// The sensor's control ranges and delays, for a 3A loop that posts exposure and gain with
+    /// [`Capture::set_controls`] for named frames. `None` (the default) where the backend does not
+    /// land values on named frames.
+    fn sensor_timing(&self) -> Option<SensorTiming> {
+        None
     }
 
     /// Frames the reader was too late for, in all (a Lemnos stream's `skipped`, on a native

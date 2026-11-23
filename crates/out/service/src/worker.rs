@@ -613,6 +613,7 @@ fn pump(
         lemnos_socket: shared.lemnos_socket.clone(),
         isps: reports.map(|r| r.isps.clone()).unwrap_or_default(),
         now: &now,
+        tuning_dirs: &shared.config.tuning_dirs,
     };
     let ctx = &ctx;
     std::thread::scope(|scope| {
@@ -660,6 +661,8 @@ fn pump_frames(
     let mut replacing = publisher.is_some();
     let mut unpublishable = false;
     let mut window = KeepWindow::default();
+    // The 3A loop runs on the ISP thread; its sensor requests are posted here, between frames.
+    let aaa = isp.is_some() && slot.settings.aaa == Some(true);
     let ended = loop {
         if shared.shutdown.load(Ordering::Acquire) {
             break Ended::Stopped;
@@ -768,6 +771,9 @@ fn pump_frames(
                     delivered,
                 };
             }
+        }
+        if aaa {
+            post_aaa(capture, slot);
         }
         if let Some(edge) = capture.take_edge() {
             apply_edge(publisher, slot, edge);
@@ -909,6 +915,19 @@ fn apply_edge(publisher: &mut Publisher, slot: &Slot, edge: Edge) {
                 slot.discontinuity();
             }
         }
+    }
+}
+
+/// The 3A loop's side of the capture thread: the sensor's ranges and delays for the loop, and the
+/// loop's newest exposure and gain posted for the frame they name (a manual value in place of the
+/// loop's from the frame it was set for: see `aaa::Link::take_request`). A request the backend
+/// refuses is the loop's reason in the status; the next one is posted as usual.
+fn post_aaa(capture: &mut dyn Capture, slot: &Slot) {
+    slot.aaa.set_timing(capture.sensor_timing());
+    if let Some(updates) = slot.aaa.take_request()
+        && let Err(e) = capture.set_controls(&updates)
+    {
+        slot.aaa_refused(&describe(&e));
     }
 }
 

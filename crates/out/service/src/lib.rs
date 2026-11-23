@@ -46,12 +46,19 @@
 //! `pisp-be-input`. Orion and Daedalus readers are other crates' features (`styx-orion`,
 //! `styx-daedalus`) and read these sockets; they are not wired into the service.
 //!
+//! # 3A
+//!
+//! With `aaa = true` beside `isp`, a native camera's processed stream runs the 3A loop (`aaa`):
+//! auto exposure, auto white balance and flicker avoidance from the tuning the search finds in
+//! `tuning_dirs` (then `STYX_TUNING_PATH`, `/etc/styx/tuning` and the bundled tunings), each part on, off or manual at run time through the
+//! control socket. Without it, exposure and gain stay as set and the ISP runs neutral settings.
+//!
 //! # Not wired in this service
 //!
-//! - The 3A controller. The config accepts `tuning_dirs`, and nothing reads them yet.
 //! - Orion and Daedalus ways out inside the service (see above). The [`Outlets`] trait is the hook.
 //! - Degraded health from a backend (see above).
 
+pub mod aaa;
 pub mod access;
 pub mod config;
 pub mod control;
@@ -62,6 +69,7 @@ pub mod service;
 pub mod slot;
 pub mod worker;
 
+pub use aaa::AaaStatus;
 pub use access::Access;
 pub use config::{
     CameraConfig, Config, ConfigError, Force, GroupSpec, IspMode, IspOutputSpec, IspPlan,

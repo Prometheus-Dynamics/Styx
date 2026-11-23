@@ -318,6 +318,8 @@ pub struct CameraStatus {
     pub controls_seq: u64,
     /// The processed stream (`isp`), when the config asks for one.
     pub isp: IspStatus,
+    /// The 3A loop (`aaa`), when the config asks for it: what runs, and what it settled on.
+    pub aaa: crate::aaa::AaaStatus,
 }
 
 impl CameraStatus {
@@ -353,6 +355,9 @@ pub struct Slot {
     pub wake: AtomicBool,
     /// The camera's ISP thread, while one runs: where its processed sockets send their readers.
     pub(crate) isp_route: Mutex<Option<Sender<IspSocket>>>,
+    /// The 3A loop's controls and requests, shared by the control socket, the capture thread and
+    /// the ISP thread (`aaa`).
+    pub(crate) aaa: crate::aaa::Link,
 }
 
 /// A request to a camera's worker thread.
@@ -451,6 +456,7 @@ impl Slot {
                 asked: settings.isp.unwrap_or_default(),
                 ..IspStatus::default()
             },
+            aaa: crate::aaa::AaaStatus::default(),
         };
         Self {
             id,
@@ -460,6 +466,7 @@ impl Slot {
             commands,
             wake: AtomicBool::new(false),
             isp_route: Mutex::new(None),
+            aaa: crate::aaa::Link::default(),
         }
     }
 
@@ -746,6 +753,39 @@ impl Slot {
         status.isp.active = None;
         status.isp.readers = [0; 2];
         status.isp.input_form = None;
+        status.aaa.running = false;
+    }
+
+    /// The 3A loop's status, when it changed.
+    pub(crate) fn set_aaa(&self, aaa: &crate::aaa::AaaStatus) {
+        let mut status = lock(&self.status);
+        if status.aaa == *aaa {
+            return;
+        }
+        // Field by field, the text into its own buffers: a status that moves every frame (the
+        // gains as AWB settles) allocates nothing.
+        let s = &mut status.aaa;
+        s.running = aaa.running;
+        s.ae = aaa.ae;
+        s.awb = aaa.awb;
+        s.flicker = aaa.flicker;
+        s.ae_settled = aaa.ae_settled;
+        s.wb_milli = aaa.wb_milli;
+        s.colour_temperature = aaa.colour_temperature;
+        match &aaa.tuning {
+            Some(text) => set_text(&mut s.tuning, text),
+            None => s.tuning = None,
+        }
+        match &aaa.reason {
+            Some(text) => set_text(&mut s.reason, text),
+            None => s.reason = None,
+        }
+    }
+
+    /// The backend refused a request of the 3A loop: why, as the loop's reason.
+    pub(crate) fn aaa_refused(&self, why: &str) {
+        let mut status = lock(&self.status);
+        set_text(&mut status.aaa.reason, why);
     }
 
     pub(crate) fn isp_skipped(&self) {

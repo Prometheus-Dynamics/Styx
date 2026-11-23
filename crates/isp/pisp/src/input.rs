@@ -15,6 +15,7 @@
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+use styx_aaa::{BayerStats, BayerStatsConfig, Cfa};
 use styx_format::{BitDepth, CfaOrder, MediaFormat};
 use styx_frame::FrameLease;
 use styx_lemnos::pisp::format::{compute_stride_align, formats};
@@ -147,6 +148,34 @@ impl InputForm {
             CfaOrder::Bggr => BayerOrder::Bggr,
         })
     }
+
+    /// The raw statistics [`fill_with_stats`] can count for frames of `raw` in this form: the
+    /// frame's size and mosaic, with the bits the pass hands over (8, 16, or the 10 of an unpacked
+    /// RAW10 row) and the default zones and sampling of [`BayerStatsConfig::new`].
+    pub fn stats_config(self, raw: &MediaFormat) -> Result<BayerStatsConfig, PispError> {
+        let cfa =
+            raw.code.info().and_then(|info| info.cfa).ok_or_else(|| {
+                PispError::Config(format!("raw format {} is not Bayer", raw.code))
+            })?;
+        let cfa = match cfa {
+            CfaOrder::Rggb => Cfa::Rggb,
+            CfaOrder::Grbg => Cfa::Grbg,
+            CfaOrder::Gbrg => Cfa::Gbrg,
+            CfaOrder::Bggr => Cfa::Bggr,
+        };
+        let bits = match self {
+            Self::Bayer8 => 8,
+            Self::Bayer16 => 16,
+            Self::Raw10Unpacked => 10,
+        };
+        let r = raw.resolution;
+        Ok(BayerStatsConfig::new(
+            r.width.get(),
+            r.height.get(),
+            cfa,
+            bits,
+        ))
+    }
 }
 
 /// One pass of `raw` into `dst` (an input buffer laid out as [`InputForm::image`]), with `row` a
@@ -157,6 +186,20 @@ pub fn fill<M, N>(
     raw: &FrameLease<M>,
     dst: &mut FrameLease<N>,
     row: &mut [u16],
+) -> Result<(usize, usize), PispError> {
+    fill_with_stats(form, raw, dst, row, None)
+}
+
+/// [`fill`], handing the rows `stats` counts to it on the way (the samples as the pass has them:
+/// the unpacked RAW10 row, or the 8- or 16-bit row read once more from the input just written,
+/// still in cache). The frame's statistics come from the one pass, with no second read of the
+/// frame. `stats` is not reset here: the caller resets it per frame and finishes it after.
+pub fn fill_with_stats<M, N>(
+    form: InputForm,
+    raw: &FrameLease<M>,
+    dst: &mut FrameLease<N>,
+    row: &mut [u16],
+    mut stats: Option<&mut BayerStats>,
 ) -> Result<(usize, usize), PispError> {
     let width = raw.format().resolution.width.get() as usize;
     let height = raw.format().resolution.height.get() as usize;
@@ -186,8 +229,24 @@ pub fn fill<M, N>(
     for y in 0..height {
         let a = from.row_bytes(y, row_in).ok_or_else(short)?;
         let b = to.row_bytes_mut(y, row_out).ok_or_else(short)?;
+        let counted = stats.as_deref().filter(|s| s.wants(y)).is_some();
         match form {
-            InputForm::Bayer8 | InputForm::Bayer16 => b.copy_from_slice(a),
+            InputForm::Bayer8 => {
+                b.copy_from_slice(a);
+                if counted {
+                    for (v, &byte) in row[..width].iter_mut().zip(a) {
+                        *v = u16::from(byte);
+                    }
+                }
+            }
+            InputForm::Bayer16 => {
+                b.copy_from_slice(a);
+                if counted {
+                    for (v, pair) in row[..width].iter_mut().zip(a.as_chunks::<2>().0) {
+                        *v = u16::from_le_bytes(*pair);
+                    }
+                }
+            }
             InputForm::Raw10Unpacked => {
                 styx_simd::isp::unpack_raw10_row(a, row, width);
                 for (pair, sample) in b.as_chunks_mut::<2>().0.iter_mut().zip(&row[..width]) {
@@ -195,6 +254,9 @@ pub fn fill<M, N>(
                     *pair = (sample << 6).to_le_bytes();
                 }
             }
+        }
+        if counted && let Some(s) = stats.as_deref_mut() {
+            s.add_row(y, &row[..width]);
         }
     }
     let (read, written) = (row_in * height, row_out * height);
@@ -313,6 +375,59 @@ mod tests {
                 .collect();
             let want: Vec<u16> = samples.iter().map(|s| s << 6).collect();
             assert_eq!(got, want, "row {y}");
+        }
+    }
+
+    #[test]
+    fn the_pass_counts_the_statistics_of_the_rows_it_copies_in_each_form() {
+        let pool = FramePool::host(4, BufferSize::new(4096, 0)).expect("pool");
+        let r = Resolution::new(W, H).expect("non-empty");
+        // RGGB at R 400, G 200, B 100 (10-bit), as RAW10 packed and as 8-bit (divided by 4).
+        let samples: [u16; 8] = [400, 200, 400, 200, 400, 200, 400, 200];
+        let lower: [u16; 8] = [200, 100, 200, 100, 200, 100, 200, 100];
+        let pack = |row: &[u16; 8]| {
+            let mut bytes = [0u8; 10];
+            for (g, group) in row.chunks(4).enumerate() {
+                for (lane, &s) in group.iter().enumerate() {
+                    bytes[g * 5 + lane] = (s >> 2) as u8;
+                    bytes[g * 5 + 4] |= ((s & 3) as u8) << (2 * lane);
+                }
+            }
+            bytes
+        };
+        let mut raw10 = vec![0u8; 32];
+        raw10[..10].copy_from_slice(&pack(&samples));
+        raw10[16..26].copy_from_slice(&pack(&lower));
+        let mut raw8 = vec![0u8; 32];
+        for x in 0..8 {
+            raw8[x] = (samples[x] / 4) as u8;
+            raw8[16 + x] = (lower[x] / 4) as u8;
+        }
+        for (code, bytes, scale) in [
+            (FourCc::RGGB10P, raw10, 1023.0),
+            (FourCc::RGGB, raw8, 255.0 * 4.0),
+        ] {
+            let format = MediaFormat::with_defaults(code, r);
+            let form = InputForm::of(&format).expect("a form");
+            let mut config = form.stats_config(&format).expect("stats");
+            (config.zones, config.row_step, config.col_step) = ((1, 1), 1, 1);
+            let mut stats = BayerStats::new(config, 0);
+            let src = lease(&pool, code, &bytes);
+            let mut dst = input(&pool, form);
+            let mut row = vec![0u16; 8];
+            fill_with_stats(form, &src, &mut dst, &mut row, Some(&mut stats)).expect("filled");
+            assert_eq!(stats.quads(), 4, "{code}");
+            let mut out = styx_aaa::Statistics::new(
+                styx_aaa::ZoneGrid::new(0, 0),
+                None,
+                Default::default(),
+                None,
+            );
+            stats.finish_into(&mut out);
+            let (r, g, b) = out.colour.zones[0].mean();
+            assert!((r - 400.0 / scale).abs() < 1e-3, "{code} r {r}");
+            assert!((g - 200.0 / scale).abs() < 1e-3, "{code} g {g}");
+            assert!((b - 100.0 / scale).abs() < 1e-3, "{code} b {b}");
         }
     }
 

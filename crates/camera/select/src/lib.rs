@@ -16,7 +16,7 @@ pub mod controls;
 pub mod listing;
 pub mod real;
 
-pub use capture::{Capture, CaptureError, Edge, RateReport, Status};
+pub use capture::{Capture, CaptureError, Edge, RateReport, SensorTiming, Status};
 pub use choose::{Config, Plan, Reason, Scope, SelectError, Selected, Skip, Skipped, plan, select};
 pub use controls::{
     Access, ControlsInfo, DeviceInfo, MenuEntry, NATIVE_TEST_PATTERN, Real, RealValues, RectValues,

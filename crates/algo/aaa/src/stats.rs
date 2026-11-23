@@ -10,6 +10,7 @@
 //! * Focus values ([`Statistics::focus`]) are figures of merit (sharpness, e.g. the energy of
 //!   gradients), larger when sharper. AF uses only their ratios, so the units are the ISP's.
 //! * A software ISP: accumulate demosaiced or per-Bayer-quad values with [`StatsAccumulator`].
+//! * Raw Bayer rows from a pass that reads them anyway: [`crate::BayerStats`].
 
 use alloc::{vec, vec::Vec};
 

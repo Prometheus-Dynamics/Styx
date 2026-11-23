@@ -33,6 +33,7 @@ mod math;
 mod params;
 mod pipeline;
 pub mod pwl;
+mod raw_stats;
 #[cfg(feature = "std-core")]
 pub mod replay;
 pub mod stats;
@@ -53,6 +54,7 @@ pub use params::{
 };
 pub use pipeline::{Algorithm, Pipeline};
 pub use pwl::Pwl;
+pub use raw_stats::{BayerStats, BayerStatsConfig, Cfa};
 #[cfg(feature = "af")]
 pub use stats::FocusArea;
 pub use stats::{

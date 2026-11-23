@@ -115,6 +115,9 @@ pub struct NativeControls {
     gain_requested_milli: u32,
     /// The clamp the driver reported for gain, if it clamped the last request.
     gain_clamp: Option<Clamp>,
+    /// The gain the driver reports in force, in thousandths. `None` until a report says, and after
+    /// a request until the next one.
+    gain_applied_milli: Option<u32>,
     /// The reports read at the start of recent frames, by frame, for the frames' metadata. Each is
     /// the report as attributed to its frame (see [`attributed`]).
     reports: VecDeque<(u64, InForce)>,
@@ -146,6 +149,17 @@ pub struct Ranges {
     pub frame_rate_milli: Option<(u32, u32)>,
     /// The values the camera started with.
     pub initial: Initial,
+    /// The mode's control delays, in frames from a write to the first frame it shows on:
+    /// exposure, analogue gain and frame length.
+    pub delays: Delays,
+}
+
+/// A mode's control delays, in frames from a write to the first frame it shows on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Delays {
+    pub exposure: u32,
+    pub gain: u32,
+    pub frame_length: u32,
 }
 
 /// Frames whose reports are kept for their metadata.
@@ -335,6 +349,7 @@ impl NativeControls {
             exposure_clamp: None,
             gain_requested_milli: initial.gain_milli,
             gain_clamp: None,
+            gain_applied_milli: None,
             reports: VecDeque::with_capacity(REPORTS),
             landings_refused: false,
             initial,
@@ -379,6 +394,11 @@ impl NativeControls {
             gain_step_milli,
             frame_rate_milli,
             initial: self.initial,
+            delays: Delays {
+                exposure: self.lanes[EXPOSURE].delay,
+                gain: self.lanes[GAIN].delay,
+                frame_length: self.lanes[FRAME_LENGTH].delay,
+            },
         }
     }
 
@@ -389,6 +409,9 @@ impl NativeControls {
             requested_us: self.exposure_requested_us,
             applied_us: self.exposure_applied_us,
             clamp: self.exposure_clamp.clone(),
+            gain_requested_milli: self.gain_requested_milli,
+            gain_applied_milli: self.gain_applied_milli,
+            gain_clamp: self.gain_clamp.clone(),
         }
     }
 
@@ -434,6 +457,7 @@ impl NativeControls {
         self.reports.clear();
         self.exposure_applied_us = None;
         self.exposure_clamp = None;
+        self.gain_applied_milli = None;
         self.gain_clamp = None;
         for lane in &mut self.lanes {
             lane.restart();
@@ -478,6 +502,7 @@ impl NativeControls {
             Some(code) => {
                 let applied = self.limits.gain_milli(code);
                 let clamped = in_force.clamped & CLAMP_ANALOGUE_GAIN != 0;
+                self.gain_applied_milli = Some(applied);
                 self.gain_clamp = clamp_report(
                     self.gain_clamp.take(),
                     Control::Gain,
@@ -487,7 +512,10 @@ impl NativeControls {
                     clamped,
                 );
             }
-            None => self.gain_clamp = None,
+            None => {
+                self.gain_applied_milli = None;
+                self.gain_clamp = None;
+            }
         }
     }
 
@@ -530,6 +558,7 @@ impl NativeControls {
             Err(Status::NOT_SUPPORTED) => {
                 self.exposure_applied_us = None;
                 self.exposure_clamp = None;
+                self.gain_applied_milli = None;
                 self.gain_clamp = None;
             }
             Err(status) => return Err(Error::Sensor(status)),
@@ -625,6 +654,7 @@ impl NativeControls {
         }
         if let Some(milli) = gain_milli {
             self.gain_requested_milli = milli;
+            self.gain_applied_milli = None;
             self.gain_clamp = None;
         }
         for (lane, asked) in asked.into_iter().enumerate() {

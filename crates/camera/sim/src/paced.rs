@@ -932,6 +932,9 @@ pub struct Board<'a> {
     pub pisp_be: bool,
     /// `csi0`'s frame buffers (default 8).
     pub receiver_buffers: Option<u32>,
+    /// The `camera` both the sensor and `csi0` name, so they share a frame clock (posted values
+    /// land on the frame their delay names, and `in_force` answers).
+    pub camera: Option<&'a str>,
 }
 
 /// `isp0`'s device text: the simulated back end with its four streams (shared memory), sized for
@@ -964,11 +967,22 @@ pub fn board_from(spec: Board<'_>) -> String {
         .sensor_link
         .map(|target| format!("link = \"{target}\"\n"))
         .unwrap_or_default();
-    let identity = spec
-        .identity
-        .map(|name| format!("config = {{ identity = \"{name}\" }}\n"))
-        .unwrap_or_default();
+    let mut sensor = Vec::new();
+    if let Some(name) = spec.identity {
+        sensor.push(format!("identity = \"{name}\""));
+    }
+    if let Some(name) = spec.camera {
+        sensor.push(format!("camera = \"{name}\""));
+    }
+    let identity = if sensor.is_empty() {
+        String::new()
+    } else {
+        format!("config = {{ {} }}\n", sensor.join(", "))
+    };
     let mut receiver = Vec::new();
+    if let Some(name) = spec.camera {
+        receiver.push(format!("camera = \"{name}\""));
+    }
     if let Some(name) = spec.source {
         receiver.push(format!("source = \"{name}\""));
     }

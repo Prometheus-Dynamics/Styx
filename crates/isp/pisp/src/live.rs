@@ -35,6 +35,7 @@ use std::time::{Duration, Instant};
 use lemnos_contract_camera_isp::{CameraIsp, IspInput, IspOutput, MAX_STREAM_NAME, OutputLayout};
 use lemnos_contract_camera_receiver::BayerOrder as ContractBayer;
 use lemnos_contract_isp_pisp::{IspPisp, LAYOUT_BACK_END, OUTPUT_BACK_END_0, OUTPUT_BACK_END_1};
+use styx_aaa::BayerStats;
 use styx_format::{FourCc, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, FrameLease, FramePool, Layouts, PlaneLayout};
 use styx_lemnos::pisp::uapi::{BayerOrder, BeTilesConfig, ImageFormatConfig, Wire, image_format};
@@ -134,6 +135,10 @@ pub struct LiveIsp<M = ()> {
     input_media: Option<MediaFormat>,
     /// One row of unpacked samples, sized once by `set_input_form`.
     row: Vec<u16>,
+    /// Raw statistics counted in the input pass ([`LiveIsp::count_statistics`]), and the identity
+    /// of the frame they are of.
+    stats: Option<BayerStats>,
+    stats_of: Option<u64>,
 }
 
 impl<M> std::fmt::Debug for LiveIsp<M> {
@@ -278,7 +283,28 @@ impl<M> LiveIsp<M> {
             form: None,
             input_media: None,
             row: Vec::new(),
+            stats: None,
+            stats_of: None,
         })
+    }
+
+    /// Counts raw statistics in each frame's input pass with `stats` (reset per frame), or stops
+    /// counting (`None`). A lent frame is not copied, so it has none.
+    pub fn count_statistics(&mut self, stats: Option<BayerStats>) {
+        self.stats = stats;
+        self.stats_of = None;
+    }
+
+    /// The accumulator [`Self::count_statistics`] gave, for its black level.
+    pub fn statistics_mut(&mut self) -> Option<&mut BayerStats> {
+        self.stats.as_mut()
+    }
+
+    /// The raw statistics of the frame posted as `identity`, when its input pass counted them.
+    pub fn raw_statistics(&self, identity: u64) -> Option<&BayerStats> {
+        self.stats
+            .as_ref()
+            .filter(|_| self.stats_of == Some(identity))
     }
 
     /// Output `k`'s pool (0 or 1): the buffers the back end writes that output into, for a caller
@@ -759,7 +785,14 @@ impl<M> LiveIsp<M> {
                 .pool()
                 .acquire_at(input, entry)
                 .map_err(|e| setup(format!("input buffer {input}: {e}")))?;
-            crate::input::fill(form, raw, &mut dst, &mut self.row)?;
+            self.stats_of = None;
+            if let Some(stats) = self.stats.as_mut() {
+                stats.reset();
+            }
+            crate::input::fill_with_stats(form, raw, &mut dst, &mut self.row, self.stats.as_mut())?;
+            if self.stats.is_some() {
+                self.stats_of = Some(identity);
+            }
             self.input_copies += 1;
             return Ok(());
         }

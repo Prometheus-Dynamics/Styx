@@ -18,7 +18,7 @@ use styx_v4l2::{
     StreamConfig,
 };
 
-use crate::capture::{Capture, CaptureError, Edge, RateReport, Status};
+use crate::capture::{Capture, CaptureError, Edge, RateReport, SensorTiming, Status};
 use crate::controls::{
     Access, ControlsInfo, DeviceInfo, MenuEntry, NATIVE_TEST_PATTERN, Real, RealValues, RectValues,
     Span, StandardInfo,
@@ -197,6 +197,16 @@ impl<C: Clock> Capture for NativeCapture<'_, C> {
             .request_controls(updates)
             .map(|_| ())
             .map_err(|e| CaptureError::Failed(e.to_string()))
+    }
+
+    fn sensor_timing(&self) -> Option<SensorTiming> {
+        self.session.ranges().map(|r| SensorTiming {
+            exposure_us: r.exposure_us,
+            exposure_effective_max_us: r.exposure_effective_max_us,
+            gain_milli: r.gain_milli,
+            frame_rate_milli: r.frame_rate_milli,
+            delays: (r.delays.exposure, r.delays.gain, r.delays.frame_length),
+        })
     }
 
     fn controls_info(&self) -> ControlsInfo {

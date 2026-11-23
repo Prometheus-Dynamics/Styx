@@ -78,9 +78,9 @@ impl Clamp {
     }
 }
 
-/// Exposure as the native controls hold it now: the last value asked for, the value the driver
-/// reports in force, and the clamp the driver reported for the last request (`None` when it did not
-/// clamp it).
+/// Exposure and analogue gain as the native controls hold them now: the last value asked for, the
+/// value the driver reports in force, and the clamp the driver reported for the last request
+/// (`None` when it did not clamp it).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExposureReport {
     /// The exposure asked for last, in microseconds (the initial value before any request).
@@ -90,4 +90,10 @@ pub struct ExposureReport {
     pub applied_us: Option<u32>,
     /// The clamp the driver reported for the last request, if it clamped it.
     pub clamp: Option<Clamp>,
+    /// The analogue gain asked for last, in thousandths (the initial value before any request).
+    pub gain_requested_milli: u32,
+    /// The analogue gain the driver reports in force, in thousandths. `None` until a report says.
+    pub gain_applied_milli: Option<u32>,
+    /// The clamp the driver reported for the last gain request, if it clamped it.
+    pub gain_clamp: Option<Clamp>,
 }

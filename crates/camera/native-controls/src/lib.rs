@@ -53,6 +53,6 @@ mod schedule;
 mod units;
 
 pub use clamp::{Clamp, ClampReason, ExposureReport};
-pub use controls::{FrameRate, Initial, Landing, Landings, NativeControls, Ranges};
+pub use controls::{Delays, FrameRate, Initial, Landing, Landings, NativeControls, Ranges};
 pub use error::{Error, Limit};
 pub use gain::{code_to_gain, gain_to_code};

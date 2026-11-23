@@ -21,8 +21,11 @@
 //! - **Which ISP made a frame.** Each frame's metadata says so ([`MadeBy`]); the producer's state
 //!   page carries the ISP in force, the switches, the refusals and the last reason with its time;
 //!   the camera's status line carries the same.
-//! - **3A.** None: the service has no 3A loop. Exposure and gain stay the configured ones and the
-//!   ISP runs neutral settings (unity white balance, identity colour matrix, the sRGB curve).
+//! - **3A.** With `aaa = true` the camera's 3A loop runs on this thread after each frame is
+//!   published (see `aaa`): its statistics come from the back end's input pass or the soft ISP's
+//!   own, its settings go to the next frame, and its exposure and gain to the capture thread.
+//!   Without it, exposure and gain stay as set and the ISP runs neutral settings (unity white
+//!   balance, identity colour matrix, the sRGB curve).
 //!
 //! With `isp = "auto"` the [`Switcher`] picks the ISP per frame: a frame the back end refuses is
 //! made by the soft ISP, so its readers lose no frame to the refusal.
@@ -44,7 +47,7 @@ use styx_pisp::back_end::image_layouts;
 use styx_pisp::{Ended, Geometry, InputForm, LiveIsp, Output, PispError};
 use styx_settings::IspSettings;
 use styx_socket::{Accepted, HandshakePlan, IspActive, IspState, Producer};
-use styx_soft::{Options, SoftIspStage};
+use styx_soft::{Options, SoftIspStage, StatsConfig};
 
 use crate::config::{IspMode, IspPlan};
 use crate::isp_switch::{Route, Switcher};
@@ -230,6 +233,8 @@ pub(crate) struct Context<'a> {
     pub isps: Vec<DeviceEntry>,
     /// The policy's clock (the service's, injected in tests).
     pub now: &'a (dyn Fn() -> Duration + Sync),
+    /// Where the 3A loop's tuning is searched first (the config's `tuning_dirs`).
+    pub tuning_dirs: &'a [PathBuf],
 }
 
 /// The ISP thread: runs until the capture thread drops its [`Feed`].
@@ -371,6 +376,10 @@ struct Stage {
     reason_at_ns: u64,
     /// What the state page last carried: (active, to_soft, to_pisp, refused, reason time).
     shown: Option<(IspActive, u64, u64, u64, u64)>,
+    /// The 3A loop (`aaa`), and the settings the soft ISP has now (it takes new ones only when
+    /// they moved: see `aaa::moved`).
+    aaa: Option<crate::aaa::Aaa>,
+    soft_applied: IspSettings,
 }
 
 /// The output media and layouts a plan gives for raw frames of `raw`'s size: output 0, and
@@ -469,7 +478,11 @@ impl Stage {
                 format.resolution.width.get(),
                 format.resolution.height.get(),
                 &settings,
-                Options::default(),
+                soft_options(
+                    ctx.slot.settings.aaa == Some(true),
+                    format.resolution.width.get(),
+                    format.resolution.height.get(),
+                ),
             )
             .map_err(|e| format!("soft ISP: {e}"))
         };
@@ -516,8 +529,26 @@ impl Stage {
             (_, Err(be), Err(soft)) => return Err(format!("{be}; {soft}")),
         };
 
+        let aaa = (ctx.slot.settings.aaa == Some(true)).then(|| {
+            // The config's `tuning_dirs` first, then the system's search (`STYX_TUNING_PATH`,
+            // `/etc/styx/tuning`, the bundled tunings).
+            let env = std::env::var_os(styx_tuning::TUNING_PATH_ENV);
+            let search = styx_tuning::TuningSearch::new(
+                ctx.tuning_dirs
+                    .iter()
+                    .cloned()
+                    .chain(env.iter().flat_map(std::env::split_paths))
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .chain([PathBuf::from(styx_tuning::ADDED_DIR)]),
+                Some(PathBuf::from(styx_tuning::BUNDLED_DIR)),
+            );
+            let found = search.find(ctx.slot.settings.tuning.as_deref());
+            crate::aaa::Aaa::new(found.tuning.clone(), found.describe())
+        });
         let mut stage = Self {
             mode: plan.mode,
+            soft_applied: settings.clone(),
+            aaa,
             settings,
             raw: format,
             client,
@@ -534,6 +565,7 @@ impl Stage {
             shown: None,
         };
         stage.build_outs(&outputs[..published])?;
+        stage.count_statistics();
         if let Some(why) = reason {
             stage.note(&why);
         }
@@ -684,7 +716,68 @@ impl Stage {
         if !made {
             ctx.slot.isp_skipped();
         }
+        if made {
+            self.aaa_step(ctx, raw);
+        }
         self.show(ctx.slot);
+    }
+
+    /// With the 3A loop, has the back end count raw statistics in its input pass (at the black
+    /// level of the settings in force).
+    fn count_statistics(&mut self) {
+        if self.aaa.is_none() {
+            return;
+        }
+        let Some(live) = self.live.as_mut() else {
+            return;
+        };
+        let config = live
+            .input_form()
+            .and_then(|form| form.stats_config(&self.raw).ok());
+        live.count_statistics(config.map(|c| styx_aaa::BayerStats::new(c, 0)));
+        set_stats_black(live, &self.settings);
+    }
+
+    /// The 3A loop's step on the frame just published, when its ISP gathered statistics: the
+    /// settings for the next frame, and the loop's exposure and gain left for the capture thread.
+    fn aaa_step(&mut self, ctx: &Context<'_>, raw: &FrameLease<FrameMetadata>) {
+        let Some(aaa) = self.aaa.as_mut() else {
+            return;
+        };
+        let counted = match self.active {
+            IspActive::Pisp => match self.live.as_ref().and_then(|l| l.raw_statistics(raw.id())) {
+                Some(stats) => {
+                    stats.finish_into(&mut aaa.stats);
+                    true
+                }
+                None => false,
+            },
+            IspActive::Soft => aaa.soft_counted,
+            _ => false,
+        };
+        aaa.soft_counted = false;
+        if counted {
+            let fps = ctx.slot.settings.fps_milli.unwrap_or(0);
+            if aaa.step(&ctx.slot.aaa, raw.id(), raw.meta(), fps, &mut self.settings) {
+                if let Some(soft) = self.soft.as_mut()
+                    && crate::aaa::moved(&self.soft_applied, &self.settings)
+                {
+                    match soft.apply(&self.settings) {
+                        Ok(()) => self.soft_applied.clone_from(&self.settings),
+                        Err(e) => {
+                            self.reason.clear();
+                            self.reason.push_str("soft ISP: settings: ");
+                            self.reason.push_str(&e.to_string());
+                            self.reason_at_ns = styx_socket::clock_ns();
+                        }
+                    }
+                }
+                if let Some(live) = self.live.as_mut() {
+                    set_stats_black(live, &self.settings);
+                }
+            }
+        }
+        ctx.slot.set_aaa(aaa.status());
     }
 
     /// Opens the back end again for a try, after it was lost (or never opened).
@@ -696,6 +789,7 @@ impl Stage {
             Ok((client, live)) => {
                 self.client = Some(client);
                 self.live = Some(live);
+                self.count_statistics();
                 if let Ok(outputs) = outputs(&ctx.plan, &self.raw) {
                     let published = self.outs.len();
                     // New back-end buffers: the producers are made again (readers reconnect).
@@ -763,6 +857,9 @@ impl Stage {
         let len = raw.meta().to_bytes(&mut self.blob);
         MadeBy::Soft.mark(&mut self.blob[..len]);
         let mut made = false;
+        // The 3A loop's statistics come with the first picture made (one per frame).
+        let mut stats = self.aaa.as_mut().map(|aaa| &mut aaa.stats);
+        let mut counted = false;
         for out in &mut self.outs {
             let Some(index) = (out.be..out.be + out.soft).find(|&i| out.pool.is_free(i)) else {
                 slot.isp_published(out.k, true, out.producer.stats().readers);
@@ -771,7 +868,9 @@ impl Stage {
             let Ok(mut lease) = out.pool.acquire_at(index, out.entry(raw)) else {
                 continue;
             };
-            if let Err(e) = stage.process::<FrameMetadata, ()>(raw, &mut lease, None) {
+            let gather = if counted { None } else { stats.as_deref_mut() };
+            let gathering = gather.is_some();
+            if let Err(e) = stage.process::<FrameMetadata, ()>(raw, &mut lease, gather) {
                 // The reason is shown; the frame is not published.
                 drop(lease);
                 self.reason.clear();
@@ -781,10 +880,14 @@ impl Stage {
                 continue;
             }
             out.publish(lease, &self.blob[..len], slot);
+            counted |= gathering;
             made = true;
         }
         if made {
             self.active = IspActive::Soft;
+        }
+        if let Some(aaa) = self.aaa.as_mut() {
+            aaa.soft_counted = counted;
         }
         made
     }
@@ -794,6 +897,30 @@ impl Stage {
         if let Some(live) = self.live.take() {
             let _ = live.stop();
         }
+    }
+}
+
+/// The soft ISP's choices: with the 3A loop, the statistics it meters, on the back end's grid
+/// (32x32 zones, every other quad row) so either route gives the loop the same zones; fewer on a
+/// frame with fewer quads than that.
+fn soft_options(aaa: bool, width: u32, height: u32) -> Options {
+    Options {
+        stats: aaa.then(|| StatsConfig {
+            zones_x: (width / 2).clamp(1, 32),
+            zones_y: (height / 2).clamp(1, 32),
+            histogram_bins: 128,
+            row_step: 2,
+            ..StatsConfig::default()
+        }),
+        ..Options::default()
+    }
+}
+
+/// The raw statistics' black level: the settings' (normalised), in the counted samples' units.
+fn set_stats_black(live: &mut LiveIsp<FrameMetadata>, settings: &IspSettings) {
+    if let Some(stats) = live.statistics_mut() {
+        let max = f64::from((1u32 << stats.config().bits) - 1);
+        stats.set_black((settings.black_level.clamp(0.0, 1.0) * max).round() as u32);
     }
 }
 

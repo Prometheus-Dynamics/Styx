@@ -23,6 +23,10 @@ styx-socket = { path = "../socket" }
 styx-pisp = { path = "../../isp/pisp" }
 styx-soft = { path = "../../isp/soft" }
 styx-settings = { path = "../../isp/settings" }
+# The 3A loop (`aaa`): the algorithms, the loop over them, and the tuning search.
+styx-aaa = { path = "../../algo/aaa" }
+styx-controller = { path = "../../algo/controller" }
+styx-tuning = { path = "../../algo/tuning" }
 shm-ring = { workspace = true }
 lemnos-client = { workspace = true }
 lemnos-core = { workspace = true }
@@ -63,6 +67,12 @@ path = "tests/exit.rs"
 # process-wide, and it counts the ISP thread's allocations with its own global allocator.
 name = "isp"
 path = "tests/isp.rs"
+
+[[test]]
+# Its own process: the simulated back end's knobs are process-wide, and it counts the ISP
+# thread's allocations with its own global allocator.
+name = "aaa"
+path = "tests/aaa.rs"
 
 [[test]]
 name = "all"

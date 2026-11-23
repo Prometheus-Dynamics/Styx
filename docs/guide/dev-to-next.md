@@ -19,8 +19,8 @@ page only maps one onto the other. Why the rebuild was done is in [`../design.md
 | `styx-graph`, `styx-native` | `styx-native`, `styx-native-run`, `styx-native-controls` | on Lemnos's contracts; the sensor bridge kernel module goes |
 | `styx-uvc` (usbfs) | `styx-native-usb` (Lemnos's `uvc` driver), or uvcvideo through `styx-v4l2` | MJPEG on the native USB path is not chosen yet |
 | `styx-hal`, `styx-runtime` | not carried | the `no_std` split stays: the gate checks `styx-frame`, `-format`, `-controls`, `-math`, `-simd`, `-settings`, `-aaa`, `-controller`, `-group`, `-dng` and `nostd-smoke` on Cortex-M and RISC-V targets with no std, and on `riscv32imc` (no compare-and-swap) with their `critical-section` feature, which takes styx-frame's counts and pool handle from portable-atomic (`styx-soft` builds without std too, outside that check); the camera runtime over embedded-hal is not carried |
-| `styx-algo` | `styx-aaa`, `styx-controller`, `styx-focus`, `styx-tuning` | the controller is not wired into the service yet |
-| `styx-pipeline` | `styx-controller` with `styx-native-controls` and an ISP crate | the closed loop on the board is not wired in the service yet |
+| `styx-algo` | `styx-aaa`, `styx-controller`, `styx-focus`, `styx-tuning` | the service runs the controller on a processed stream with `aaa = true` (see `isp.md`, 3A) |
+| `styx-pipeline` | `styx-controller` with `styx-native-controls` and an ISP crate | the closed loop runs in the service (`aaa = true`); not yet run on a board |
 | `styx-softisp` | `styx-soft` | same arithmetic |
 | `styx-gpuisp` | `styx-gpu` | bit for bit the soft ISP's integer arithmetic |
 | `styx-wgpu` (box-filter pyramid) | not carried | pyramids and crops are graph work (Daedalus) |
@@ -62,8 +62,8 @@ page only maps one onto the other. Why the rebuild was done is in [`../design.md
 What a consumer of `dev` has to change, and what is still open on `next`:
 
 - **Consumers move to `next`'s frame type** (outside block X4 in `design.md`).
-- **3A in the service:** the controller does not run in the camera service yet, and processed
-  streams use neutral settings.
+- **3A in the service:** it runs with `aaa = true` on a processed stream (off by default, so
+  fixed-exposure runs are unchanged). Not yet run on a board. Control names change: see below.
 - **Board runs owed:**
   - libcamera on a Pi camera (H6);
   - a USB webcam (H5);
@@ -71,3 +71,29 @@ What a consumer of `dev` has to change, and what is still open on `next`:
   - colour tuning of the OV9782 from a chart.
 - **Not carried, listed above:** the `no_std` camera runtime, the GPU pyramid, `iq-compare`,
   `compare`, Raspberry Pi JSON tuning output, ISP32 mapping, and K230 lens shading.
+
+## Control names
+
+A consumer that set controls by `dev`'s API keys sets them on the control socket
+(`set <id> <control> <value> <frame>`, see `styx_service::control`) by these names. The loop's own
+controls (`ae` to `flicker`) need `aaa = true`; without it they answer `err`.
+
+| `dev` API key | Value on `dev` | Control-socket name | Value on `next` |
+|---|---|---|---|
+| `exposure_us` | microseconds | `exposure` | microseconds, or `auto` (back to AE) |
+| `gain` | times (2.0 is 2x) | `gain` | thousandths (2000 is 2x), or `auto` (back to AE) |
+| `ae` | true / false | `ae` | `on` / `off` (off holds the last values) |
+| `ev` | stops | `ev` | stops, -8 to 8 |
+| (none) | | `ae_exposure_max_us` | microseconds, or `auto` (the frame's longest) |
+| (none) | | `ae_gain_max` | thousandths, or `auto` (the sensor's highest) |
+| `fps` | frames per second | `frame_rate` | thousandths of a frame per second (mHz) |
+| `awb` | true / false | `awb` | `on` / `off` |
+| `red_gain`, `blue_gain` | times | `red_gain`, `blue_gain` | thousandths, or `auto`; setting one turns AWB off |
+| `colour_temperature` | kelvin | `colour_temperature` with `aaa`; `white_balance` without | kelvin (1000 to 20000), or `auto` |
+| `ae_flicker_mode` (a backend control) | libcamera's flicker mode | `flicker` | `off`, `50`, `60` or `auto` |
+| `af_mode`, `af_trigger`, `lens_position` | | `focus` | position 0 to 1000, or `auto` |
+
+`exposure` and `gain` set with a number while AE runs are manual from `<frame>`: every frame from
+it has the value, and AE moves the other one alone. `auto` gives the control back. The status line
+says what runs (`isp_3a`: `ae,awb`, `ae`, `awb`, `manual`, or `none` without the loop), and what was
+asked, applied and clamped (`exposure_*`, `gain_*`).
