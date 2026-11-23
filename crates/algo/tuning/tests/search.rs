@@ -224,19 +224,28 @@ fn the_installed_data_loads_its_generic_tuning() {
 }
 
 #[test]
-fn the_module_tuning_in_the_install_is_found_but_not_read_yet() {
-    let found = TuningSearch::new([], Some(bundled_install())).find(Some("ov9782.json"));
-    assert!(
-        matches!(found.source, Source::Generic { .. }),
-        "{:?}",
-        found.source
-    );
-    assert_eq!(found.skipped.len(), 1);
-    assert!(
-        found.describe().contains("ov9782.json"),
-        "{}",
-        found.describe()
-    );
+fn the_module_tuning_in_the_install_is_its_converted_toml() {
+    // A `.json` name finds the `.toml` of the same stem first: the bundled conversion.
+    for name in ["ov9782.json", "ov9782.toml"] {
+        let found = TuningSearch::new([], Some(bundled_install())).find(Some(name));
+        assert!(
+            matches!(
+                found.source,
+                Source::File { ref path, origin: Origin::Bundled } if path.ends_with("ov9782.toml")
+            ),
+            "{name}: {}",
+            found.describe()
+        );
+        assert!(found.skipped.is_empty(), "{}", found.describe());
+        // The measured black level (4172.8 of 65536 at 1x) and its table by gain.
+        let black = found.tuning.black_level.as_ref().expect("a black level");
+        assert!((black.g - 4172.8 / 65536.0).abs() < 1e-9, "{}", black.g);
+        let gains: Vec<f64> = black.by_gain.iter().map(|b| b.gain).collect();
+        assert_eq!(gains, [1.0, 2.0, 4.0, 7.75, 10.0, 15.88]);
+        assert!((black.by_gain[1].g - 4106.45 / 65536.0).abs() < 1e-9);
+        assert!(found.tuning.agc.is_some() && found.tuning.awb.is_some());
+        assert!(found.tuning.ccm.is_some() && found.tuning.alsc.is_some());
+    }
 }
 
 #[test]
