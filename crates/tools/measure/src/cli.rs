@@ -38,7 +38,7 @@ The paths in effect are printed to stderr at the first frame.
 too, so N + 1 count against the camera's hold bound (buffers - hardware_reserve - 1, shared by
 all readers): N = bound - 1 is never cut; N = bound is cut whenever this reader lags one frame.
 --keep N: keep the newest N frames read and let the older go (a reader that works on the last N):
-between frames it holds N.
+between frames it holds N; while it takes the next it has N + 1 in hand (N older + the newest).
 --stall-after N: read N frames, keep them, then read nothing more and stay attached until --seconds
 runs out (a stalled reader). It needs --seconds; a cut-off is reported as for --hold.
 ";

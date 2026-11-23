@@ -75,7 +75,7 @@ pub struct Session {
     /// taken once by [`Session::hold_first`]. For checking the producer's reserve rule from outside.
     held: Vec<Frame>,
     /// The newest frames this reader keeps (`--keep N`): each new frame is kept and the oldest past
-    /// `keep` is let go, so between frames it holds `keep`. Zero: none kept past the step.
+    /// `keep` is let go, so between frames it holds `keep`, and `keep + 1` while it takes the next. Zero: none kept past the step.
     kept: VecDeque<Frame>,
     keep: usize,
     /// After this many frames read (all of them kept), the reader stops reading and stays attached

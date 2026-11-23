@@ -122,7 +122,9 @@ All readers of one camera together may keep `buffers - hardware_reserve - 1` fra
 consumer fault, and the status's `reserve_cuts` counts it (the report's "readers cut"). Three reader
 shapes, one per reader:
 
-- `--keep N`: keeps its newest N frames and lets the older go (a reader working on the last N).
+- `--keep N`: keeps its newest N frames and lets the older go (a reader working on the last N);
+  while it takes the next it has N + 1 in hand (N older + the newest), so "1 older + the newest" is
+  `--keep 1`.
 - `--stall-after N --seconds S`: reads N frames, keeps them, then reads nothing more and stays attached
   until S runs out (a stalled reader); a cut is still seen, through the pool page.
 - `--hold N`: keeps its first N frames and reads on; the frame in hand counts too (N + 1).
