@@ -16,7 +16,9 @@
 //!   order. A producer on `CLOCK_BOOTTIME` converts with [`ClockPair`] /
 //!   [`monotonic_from_boottime`].
 //! - [`import_mcap`] reads an MCAP recording written in the Styx layout (ROS 2 CDR messages) and
-//!   writes it as `styxrec`. It is import only: Styx writes `styxrec` from now on.
+//!   writes it as `styxrec`, its other topics as data channels. [`export_mcap`] writes a
+//!   `styxrec` recording back out as MCAP (lz4 chunks by default), its data channels as MCAP
+//!   channels, for MCAP tools. Styx records `styxrec`.
 //!
 //! Headers and records are untrusted input. Every length and offset is checked before it is
 //! used, each header, frame record, declaration and sample carries a CRC-32, and nothing is allocated from a length
@@ -35,7 +37,9 @@ mod clock;
 mod crc;
 mod error;
 pub mod format;
+mod mcap_export;
 mod mcap_import;
+mod mcap_write;
 mod parse;
 mod recorder;
 mod replay;
@@ -44,7 +48,9 @@ pub use channel::{Channel, ChannelId, ChannelSpec, Sample, SourceClock};
 pub use clock::{ClockPair, monotonic_from_boottime};
 pub use error::RecordError;
 pub use format::RecordingHeader;
-pub use mcap_import::{ImportStats, ImportedFrame, McapReader, import_mcap};
+pub use mcap_export::{ExportOptions, ExportStats, export_mcap};
+pub use mcap_import::{ImportLosses, ImportStats, ImportedFrame, McapReader, import_mcap};
+pub use mcap_write::McapCompression;
 pub use recorder::Recorder;
 pub use replay::{
     Item, LOOKAHEAD_FRAMES, LOOKAHEAD_SAMPLE_BYTES, LOOKAHEAD_SAMPLES, REPLAY_BUFFERS, Replay,

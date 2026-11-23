@@ -147,8 +147,8 @@ marked **unchanged**, **renamed** (old → new), **removed** (with what replaces
 | `serde`, `metrics-serde` | `serde` on `styx-controls`, `styx-format` and `styx-aaa`. The status is text, read with `parse_camera_line`. |
 | `preview` | the `styx-preview` crate |
 | `codec-turbojpeg` | `styx-decode/turbojpeg` (on by default) |
-| `replay-mcap`, `replay-softisp` | `styx-record` (MCAP import is always in) and `styx-soft` |
-| `replay-mcap-lz4` | `styx-record/mcap-lz4` (on by default): lz4 chunks on import |
+| `replay-mcap`, `replay-softisp` | `styx-record` (MCAP import and export are always in) and `styx-soft` |
+| `replay-mcap-lz4` | `styx-record/mcap-lz4` (on by default): lz4 chunks on import and export |
 | `replay-png` | not carried (see below) |
 | `async`, `tracing` | not carried: the APIs block (`poll`, `wait`), and Styx logs nothing through `tracing` |
 
@@ -244,7 +244,11 @@ yet).
   - **Pacing** (consumer's job): sleep to the timestamps, or run as fast as possible.
   - **Into a graph** (exists on next): `StyxFrame::from_lease`.
   - **Into the service as a camera** (gap): no replay source exists.
-  - **MCAP** (exists on next): `import_mcap` converts an MCAP file into `styxrec`.
+  - **MCAP** (exists on next): `import_mcap` converts an MCAP file into `styxrec`, frames and
+    data topics (`/helios/imu` etc. become channels, BOOTTIME times moved by `/styx/clock`).
+    Losses are counted in `ImportStats::losses`: attachments, other metadata records, data
+    messages' publish time and sequence, pyramid topics. `export_mcap` writes `styxrec` back
+    out as MCAP (lz4) for Foxglove and other MCAP tools.
   - **HeliOS's lz4 recordings** (exists on next): `import_mcap` reads lz4 chunks, which is what
     HeliOS's recorder writes by default.
     - This is the `mcap-lz4` feature of `styx-record`, on by default: a pure-Rust decoder, read
@@ -269,7 +273,7 @@ yet).
 
 These names come from a survey of HeliOS's own code (backend, at its `dev`).
 
-- **Recording** (decided: HeliOS records `styxrec`; export to MCAP is TODO P9b):
+- **Recording** (decided: HeliOS records `styxrec`; `export_mcap` makes MCAP from it):
   - HeliOS's recorder writes `.mcap` through `StreamRecorder`, with `RecorderOptions`,
     `RecordCompression` and `ChannelId`.
   - On `next` it writes `styxrec` with `Recorder`, frames and sensor data in one file (see

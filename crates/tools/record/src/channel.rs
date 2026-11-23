@@ -7,6 +7,8 @@
 //! has the data writes it. The fields follow MCAP's channel and schema records, so a channel
 //! exports to MCAP as one.
 
+use std::collections::BTreeMap;
+
 use crate::clock::ClockPair;
 
 /// The clock a channel's producer stamps its samples on. Samples are recorded on
@@ -58,6 +60,9 @@ pub struct ChannelSpec {
     pub schema: Vec<u8>,
     /// The clock the producer stamps on.
     pub clock: SourceClock,
+    /// The channel's key/value metadata, as an MCAP channel carries it (for example its
+    /// source). At most [`crate::format::MAX_KEYS`] pairs.
+    pub metadata: BTreeMap<String, String>,
 }
 
 /// A channel's number in its recording: declarations are numbered from zero in order.

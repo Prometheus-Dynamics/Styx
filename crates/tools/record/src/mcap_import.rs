@@ -4,9 +4,23 @@
 //! messages on `/styx/frame_meta` (`styx/msg/FrameMeta`, the frame's format, timestamp and native
 //! sensor values) and on `/styx/image` (`sensor_msgs/msg/Image`, the pixels) or
 //! `/styx/image/compressed` (the bitstream). Messages of one frame share its MCAP sequence; the
-//! frame's identity is the producer's frame number in the metadata (the backend sequence). Other
-//! channels (the clock, pyramid levels) are skipped: this
-//! format keeps the frame and nothing else.
+//! frame's identity is the producer's frame number in the metadata (the backend sequence).
+//!
+//! Every other topic is a data channel and becomes a `styxrec` channel ([`crate::Channel`]):
+//! its topic as the name, its message encoding, its schema and its metadata; each message is a
+//! sample at its log time. A channel whose metadata says `clock = CLOCK_BOOTTIME` (as a consumer's
+//! recorder writes) has its times moved to `CLOCK_MONOTONIC` with the `/styx/clock` records
+//! (`styx/msg/ClockSample`: monotonic, boottime, realtime and the read's spread, CDR), the latest
+//! one before each message (the first in the file for messages before it). With no clock record
+//! the two clocks are taken as equal, and the import says so
+//! ([`ImportLosses::boottime_assumed_equal`]). A channel that carries `styx.clock` (an export
+//! of `styxrec`) is already on `CLOCK_MONOTONIC`; its `styx.source_clock` is its producer's
+//! clock, and both keys are dropped on import.
+//!
+//! What does not survive, counted in [`ImportLosses`]: attachments, metadata records other than
+//! `styx.recording`, the publish time and sequence of data messages, the pyramid topics
+//! (`/styx/pyramid/<level>`) and any other `/styx/` topic this reader does not know, and data
+//! messages larger than [`crate::format::MAX_SAMPLE`].
 //!
 //! Uncompressed chunks are read, and lz4 chunks with the `mcap-lz4` feature (on by default; a
 //! pure-Rust decoder). A zstd chunk, and an lz4 chunk without the feature, are refused by name.
@@ -21,17 +35,22 @@ use styx_format::{ColorSpace, FourCc, Interval, MediaFormat, Resolution};
 use styx_frame::{FrameEntry, Layouts, PlaneLayout, packed_layouts};
 
 use crate::cdr::Cdr;
+use crate::channel::{ChannelId, ChannelSpec, SourceClock};
+use crate::clock::ClockPair;
 use crate::error::RecordError;
-use crate::format::RecordingHeader;
+use crate::format::{MAX_SAMPLE, RecordingHeader};
+use crate::mcap_export::{BOOTTIME, CLOCK_TOPIC, STYX_CLOCK_KEY, STYX_SOURCE_CLOCK_KEY};
 use crate::parse::Parser;
 use crate::recorder::Recorder;
 use crate::replay::read_full;
 
 const MAGIC: [u8; 8] = [0x89, b'M', b'C', b'A', b'P', 0x30, b'\r', b'\n'];
 const OP_FOOTER: u8 = 0x02;
+const OP_SCHEMA: u8 = 0x03;
 const OP_CHANNEL: u8 = 0x04;
 const OP_MESSAGE: u8 = 0x05;
 const OP_CHUNK: u8 = 0x06;
+const OP_ATTACHMENT: u8 = 0x09;
 const OP_METADATA: u8 = 0x0C;
 const OP_DATA_END: u8 = 0x0F;
 
@@ -58,11 +77,43 @@ pub struct ImportedFrame {
     pub data: Vec<u8>,
 }
 
+/// What an import could not carry into `styxrec`, by kind.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
+pub struct ImportLosses {
+    /// Attachment records (files stored whole in the MCAP file).
+    pub attachments: u64,
+    /// Metadata records other than `styx.recording`.
+    pub metadata_records: u64,
+    /// Data messages: their MCAP sequence numbers are dropped (a sample has none).
+    pub data_sequences: u64,
+    /// Data messages whose publish time differed from their log time (the log time is kept).
+    pub data_publish_times: u64,
+    /// Messages on `/styx/pyramid/<level>` (pyramid companions of frames).
+    pub pyramid_messages: u64,
+    /// Messages on other `/styx/` topics this reader does not know.
+    pub other_styx_messages: u64,
+    /// Data messages larger than a sample may be.
+    pub samples_too_large: u64,
+    /// Data messages on a channel whose metadata says `CLOCK_BOOTTIME`, in a file with no
+    /// `/styx/clock` record: their times were taken as `CLOCK_MONOTONIC` unchanged.
+    pub boottime_assumed_equal: u64,
+}
+
 /// What an import wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct ImportStats {
     /// Frames written.
     pub frames: u64,
+    /// Data channels declared.
+    pub channels: usize,
+    /// Samples written, over every channel.
+    pub samples: u64,
+    /// `/styx/clock` records read (each moves later `CLOCK_BOOTTIME` times).
+    pub clock_records: u64,
+    /// What was not carried.
+    pub losses: ImportLosses,
     /// The payload (frame buffer size) the output declares: the largest frame's span.
     pub payload: u64,
     /// The MCAP file ended inside a record (cut short while being written).
@@ -74,18 +125,46 @@ enum Topic {
     Meta,
     Image,
     Compressed,
+    Clock,
+    Pyramid,
+    /// Another `/styx/` topic.
     Other,
+    /// A data channel, by its MCAP id.
+    Data(u16),
 }
 
 impl Topic {
-    fn of(name: &str) -> Self {
+    fn of(name: &str, id: u16) -> Self {
         match name {
             META_TOPIC => Self::Meta,
             IMAGE_TOPIC => Self::Image,
             COMPRESSED_TOPIC => Self::Compressed,
-            _ => Self::Other,
+            CLOCK_TOPIC => Self::Clock,
+            _ if name.starts_with("/styx/pyramid/") => Self::Pyramid,
+            _ if name.starts_with("/styx/") => Self::Other,
+            _ => Self::Data(id),
         }
     }
+}
+
+/// A data channel read from an MCAP file, as it becomes a `styxrec` channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImportedChannel {
+    /// Its MCAP channel id.
+    pub(crate) id: u16,
+    pub(crate) spec: ChannelSpec,
+    /// Its MCAP log times are on `CLOCK_BOOTTIME` and need moving.
+    pub(crate) boottime: bool,
+}
+
+/// One thing read from an MCAP file, in file order.
+#[derive(Debug)]
+pub(crate) enum Imported {
+    Frame(Box<ImportedFrame>),
+    Channel(ImportedChannel),
+    /// A data message: its MCAP channel, log time and bytes.
+    Sample(u16, u64, Vec<u8>),
+    Clock(ClockPair),
 }
 
 /// A `styx/msg/FrameMeta` message, the fields the frame needs.
@@ -101,6 +180,8 @@ struct FrameMetaPart {
     exposure_ns: u64,
     analog_gain: f32,
     digital_gain: f32,
+    lux: Option<f32>,
+    colour_temperature_k: Option<u32>,
 }
 
 #[derive(Debug, Default)]
@@ -116,9 +197,12 @@ pub struct McapReader<R: Read + Seek> {
     size: u64,
     pos: u64,
     channels: BTreeMap<u16, Topic>,
+    /// Schemas by id: name, encoding, bytes.
+    schemas: BTreeMap<u16, (String, String, Vec<u8>)>,
     header: Option<RecordingHeader>,
     pending: BTreeMap<u32, Pending>,
-    ready: VecDeque<ImportedFrame>,
+    ready: VecDeque<Imported>,
+    losses: ImportLosses,
     ended: bool,
     truncated: bool,
 }
@@ -137,9 +221,11 @@ impl<R: Read + Seek> McapReader<R> {
             size,
             pos: 8,
             channels: BTreeMap::new(),
+            schemas: BTreeMap::new(),
             header: None,
             pending: BTreeMap::new(),
             ready: VecDeque::new(),
+            losses: ImportLosses::default(),
             ended: false,
             truncated: false,
         };
@@ -164,16 +250,32 @@ impl<R: Read + Seek> McapReader<R> {
         self.truncated
     }
 
-    /// The next complete frame, or `None` at the end of the data.
+    /// The next complete frame, or `None` at the end of the data. Data channels and their
+    /// messages are passed over.
     pub fn next_frame(&mut self) -> Result<Option<ImportedFrame>, RecordError> {
+        while let Some(item) = self.next_item()? {
+            if let Imported::Frame(frame) = item {
+                return Ok(Some(*frame));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The next frame, channel, data message or clock record, in file order.
+    pub(crate) fn next_item(&mut self) -> Result<Option<Imported>, RecordError> {
         loop {
-            if let Some(frame) = self.ready.pop_front() {
-                return Ok(Some(frame));
+            if let Some(item) = self.ready.pop_front() {
+                return Ok(Some(item));
             }
             if !self.step()? {
                 return Ok(None);
             }
         }
+    }
+
+    /// What has not been carried so far.
+    pub fn losses(&self) -> ImportLosses {
+        self.losses
     }
 
     /// Reads one top-level record (a chunk's records are read from it). `false` once the data
@@ -205,6 +307,7 @@ impl<R: Read + Seek> McapReader<R> {
         match opcode {
             OP_CHUNK => self.chunk(&body)?,
             OP_DATA_END | OP_FOOTER => self.ended = true,
+            OP_ATTACHMENT => self.losses.attachments += 1,
             _ => self.record(opcode, &body)?,
         }
         Ok(!self.ended)
@@ -286,34 +389,88 @@ impl<R: Read + Seek> McapReader<R> {
 
     fn record(&mut self, opcode: u8, body: &[u8]) -> Result<(), RecordError> {
         match opcode {
+            OP_SCHEMA => {
+                let mut p = Parser::new(body);
+                let id = p.u16()?;
+                let name = p.mcap_string()?;
+                let encoding = p.mcap_string()?;
+                let len = p.u32()? as usize;
+                if len > crate::format::MAX_SCHEMA {
+                    return Err(RecordError::TooLarge("MCAP schema"));
+                }
+                let data = p.take(len)?.to_vec();
+                if !self.schemas.contains_key(&id) && self.schemas.len() >= MAX_CHANNELS {
+                    return Err(RecordError::TooLarge("MCAP schemas"));
+                }
+                self.schemas.insert(id, (name, encoding, data));
+            }
             OP_CHANNEL => {
                 let mut p = Parser::new(body);
                 let id = p.u16()?;
-                p.u16()?; // schema
+                let schema = p.u16()?;
                 let topic = p.mcap_string()?;
-                if !self.channels.contains_key(&id) && self.channels.len() >= MAX_CHANNELS {
+                let encoding = p.mcap_string()?;
+                let metadata = p.mcap_map()?;
+                if self.channels.contains_key(&id) {
+                    // Repeated in the summary or a later chunk: already known.
+                    return Ok(());
+                }
+                if self.channels.len() >= MAX_CHANNELS {
                     return Err(RecordError::TooLarge("MCAP channels"));
                 }
-                self.channels.insert(id, Topic::of(&topic));
+                let kind = Topic::of(&topic, id);
+                self.channels.insert(id, kind);
+                if kind == Topic::Data(id) {
+                    let channel = self.data_channel(id, schema, topic, encoding, metadata)?;
+                    self.ready.push_back(Imported::Channel(channel));
+                }
             }
             OP_MESSAGE => {
                 let mut p = Parser::new(body);
                 let channel = p.u16()?;
                 let sequence = p.u32()?;
-                p.u64()?; // log time
-                p.u64()?; // publish time
+                let log_time = p.u64()?;
+                let publish_time = p.u64()?;
                 let data = p.rest();
                 let topic = *self
                     .channels
                     .get(&channel)
                     .ok_or(RecordError::Corrupt("message on an unknown channel"))?;
-                self.message(topic, sequence, data)?;
+                match topic {
+                    Topic::Data(id) => {
+                        self.losses.data_sequences += 1;
+                        if publish_time != log_time {
+                            self.losses.data_publish_times += 1;
+                        }
+                        if data.len() > MAX_SAMPLE {
+                            self.losses.samples_too_large += 1;
+                        } else {
+                            self.ready
+                                .push_back(Imported::Sample(id, log_time, data.to_vec()));
+                        }
+                    }
+                    Topic::Clock => {
+                        let mut c = Cdr::new(data)?;
+                        let pair = ClockPair {
+                            monotonic_ns: c.u64()?,
+                            boottime_ns: c.u64()?,
+                        };
+                        self.ready.push_back(Imported::Clock(pair));
+                    }
+                    Topic::Pyramid => self.losses.pyramid_messages += 1,
+                    Topic::Other => self.losses.other_styx_messages += 1,
+                    Topic::Meta | Topic::Image | Topic::Compressed => {
+                        self.message(topic, sequence, data)?;
+                    }
+                }
             }
             OP_METADATA => {
                 let mut p = Parser::new(body);
                 let name = p.mcap_string()?;
                 if name == RECORDING_METADATA {
                     self.header = Some(header_from_map(&p.mcap_map()?)?);
+                } else {
+                    self.losses.metadata_records += 1;
                 }
             }
             _ => {}
@@ -321,9 +478,60 @@ impl<R: Read + Seek> McapReader<R> {
         Ok(())
     }
 
+    /// A data channel's declaration from its MCAP channel and schema.
+    fn data_channel(
+        &self,
+        id: u16,
+        schema: u16,
+        topic: String,
+        encoding: String,
+        mut metadata: BTreeMap<String, String>,
+    ) -> Result<ImportedChannel, RecordError> {
+        let (schema_name, schema_encoding, schema) = match schema {
+            0 => Default::default(),
+            n => self
+                .schemas
+                .get(&n)
+                .cloned()
+                .ok_or(RecordError::Corrupt("MCAP channel names an unknown schema"))?,
+        };
+        if metadata.len() > crate::format::MAX_KEYS {
+            return Err(RecordError::TooLarge("MCAP channel metadata"));
+        }
+        let (clock, boottime) = match metadata.remove(STYX_CLOCK_KEY) {
+            // An export of styxrec: already monotonic.
+            Some(_) => {
+                let source = metadata.remove(STYX_SOURCE_CLOCK_KEY);
+                let clock = if source.as_deref() == Some(BOOTTIME) {
+                    SourceClock::Boottime
+                } else {
+                    SourceClock::Monotonic
+                };
+                (clock, false)
+            }
+            None if metadata.get("clock").map(String::as_str) == Some(BOOTTIME) => {
+                (SourceClock::Boottime, true)
+            }
+            None => (SourceClock::Monotonic, false),
+        };
+        Ok(ImportedChannel {
+            id,
+            spec: ChannelSpec {
+                name: topic,
+                encoding,
+                schema_name,
+                schema_encoding,
+                schema,
+                clock,
+                metadata,
+            },
+            boottime,
+        })
+    }
+
     fn message(&mut self, topic: Topic, sequence: u32, data: &[u8]) -> Result<(), RecordError> {
         match topic {
-            Topic::Other => return Ok(()),
+            Topic::Clock | Topic::Pyramid | Topic::Other | Topic::Data(_) => return Ok(()),
             Topic::Meta => {
                 let meta = frame_meta(data)?;
                 self.pending_for(sequence).meta = Some(meta);
@@ -342,8 +550,12 @@ impl<R: Read + Seek> McapReader<R> {
             let (Some(meta), Some((compressed, data))) = (part.meta, part.image) else {
                 return Err(RecordError::Corrupt("incomplete frame"));
             };
-            self.ready
-                .push_back(assemble(u64::from(meta.sequence), meta, compressed, data)?);
+            self.ready.push_back(Imported::Frame(Box::new(assemble(
+                u64::from(meta.sequence),
+                meta,
+                compressed,
+                data,
+            )?)));
         }
         Ok(())
     }
@@ -439,6 +651,29 @@ fn frame_meta(data: &[u8]) -> Result<FrameMetaPart, RecordError> {
         part.analog_gain = c.f32()?;
         part.digital_gain = c.f32()?;
     }
+    if !c.at_end() {
+        c.u64()?; // frame duration
+        c.u32()?; // frame length
+        c.bool()?; // verified
+        c.bool()?; // error
+    }
+    if !c.at_end() {
+        c.u64()?; // frame end
+        let valid = c.bool()?;
+        for _ in 0..3 {
+            c.f32()?; // colour gains
+        }
+        let kelvin = c.f32()?;
+        let lux = c.f32()?;
+        if valid {
+            if kelvin.is_finite() && kelvin > 0.0 {
+                part.colour_temperature_k = Some(kelvin.round() as u32);
+            }
+            if lux.is_finite() && lux > 0.0 {
+                part.lux = Some(lux);
+            }
+        }
+    }
     Ok(part)
 }
 
@@ -503,6 +738,8 @@ fn assemble(
         exposure_us: u32::try_from(part.exposure_ns / 1000).unwrap_or(u32::MAX),
         analogue_gain_milli: gain_milli(part.analog_gain),
         digital_gain_milli: gain_milli(part.digital_gain),
+        lux: part.lux,
+        colour_temperature_k: part.colour_temperature_k,
         ..FrameMetadata::default()
     };
     Ok(ImportedFrame {
@@ -512,8 +749,10 @@ fn assemble(
     })
 }
 
-/// Imports the MCAP recording in `source` as `styxrec`, written to `out`. The file is read
-/// twice: once for its frame sizes (the output's payload) and once for the frames.
+/// Imports the MCAP recording in `source` as `styxrec`, written to `out`: its frames, and its
+/// data topics as channels (see the module documentation for clocks and losses). The file is
+/// read twice: once for its frame sizes (the output's payload) and its first clock record, and
+/// once for the records.
 pub fn import_mcap<R: Read + Seek, W: Write>(
     source: &mut R,
     out: W,
@@ -524,8 +763,13 @@ pub fn import_mcap<R: Read + Seek, W: Write>(
         "MCAP file has no styx.recording metadata",
     ))?;
     let mut largest = 0usize;
-    while let Some(frame) = first.next_frame()? {
-        largest = largest.max(frame.data.len());
+    let mut first_clock = None;
+    while let Some(item) = first.next_item()? {
+        match item {
+            Imported::Frame(frame) => largest = largest.max(frame.data.len()),
+            Imported::Clock(pair) if first_clock.is_none() => first_clock = Some(pair),
+            _ => {}
+        }
     }
     let payload = (largest as u64).max(1);
     header.payload = payload;
@@ -533,13 +777,50 @@ pub fn import_mcap<R: Read + Seek, W: Write>(
     source.seek(SeekFrom::Start(0))?;
     let mut second = McapReader::open(&mut *source)?;
     let mut recorder = Recorder::new(out, &header)?;
-    while let Some(frame) = second.next_frame()? {
-        recorder.record_frame(&frame.entry, &frame.meta, &frame.data)?;
+    let mut ids: BTreeMap<u16, (ChannelId, bool)> = BTreeMap::new();
+    let mut clock = first_clock;
+    let mut clock_records = 0u64;
+    let mut assumed_equal = 0u64;
+    while let Some(item) = second.next_item()? {
+        match item {
+            Imported::Frame(frame) => {
+                recorder.record_frame(&frame.entry, &frame.meta, &frame.data)?;
+            }
+            Imported::Clock(pair) => {
+                clock = Some(pair);
+                clock_records += 1;
+            }
+            Imported::Channel(channel) => {
+                let id = recorder.declare_at(channel.spec, clock.unwrap_or_default())?;
+                ids.insert(channel.id, (id, channel.boottime));
+            }
+            Imported::Sample(mcap_id, log_time, data) => {
+                let (id, boottime) = *ids
+                    .get(&mcap_id)
+                    .ok_or(RecordError::Corrupt("message on an unknown channel"))?;
+                let ts = match (boottime, clock) {
+                    (false, _) => log_time,
+                    (true, Some(pair)) => pair.monotonic_from_boottime(log_time),
+                    (true, None) => {
+                        assumed_equal += 1;
+                        log_time
+                    }
+                };
+                recorder.sample(id, ts, &data)?;
+            }
+        }
     }
     let frames = recorder.frames();
+    let samples = recorder.samples();
     recorder.finish()?;
+    let mut losses = second.losses();
+    losses.boottime_assumed_equal = assumed_equal;
     Ok(ImportStats {
         frames,
+        channels: ids.len(),
+        samples,
+        clock_records,
+        losses,
         payload,
         truncated: second.truncated(),
     })

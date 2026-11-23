@@ -17,7 +17,7 @@ use support::{Sample, samples};
 /// `s` as the Styx MCAP layout carries it: the visible rows of each plane, tightly packed, plane
 /// after plane (what the recorder writes and the importer checks). Compressed frames are as they
 /// are.
-fn packed(s: &Sample) -> Sample {
+pub(crate) fn packed(s: &Sample) -> Sample {
     let format = s.entry.format;
     if format.code.is_compressed() {
         return s.clone();
@@ -156,6 +156,16 @@ fn image(s: &Sample) -> Vec<u8> {
     c.finish()
 }
 
+/// A `styx/msg/ClockSample` message (CDR): monotonic, boottime, realtime, read spread.
+pub(crate) fn clock_sample(monotonic_ns: u64, boottime_ns: u64) -> Vec<u8> {
+    let mut out = vec![0x00, 0x01, 0x00, 0x00];
+    out.extend_from_slice(&monotonic_ns.to_le_bytes());
+    out.extend_from_slice(&boottime_ns.to_le_bytes());
+    out.extend_from_slice(&0u64.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out
+}
+
 /// An MCAP file in the Styx layout: the `styx.recording` metadata, the channels, and one meta and
 /// one image message per frame (sequence = the frame's id), with a clock and a pyramid message
 /// that the import skips.
@@ -234,7 +244,7 @@ fn styx_mcap_with(
         // A pyramid level and a clock sample: not frames, skipped.
         w.write_to_known_channel(&header(pyramid_channel), &Cdr::new().finish())
             .unwrap();
-        w.write_to_known_channel(&header(clock_channel), &[1, 2, 3])
+        w.write_to_known_channel(&header(clock_channel), &clock_sample(log_time, log_time))
             .unwrap();
     }
     // A frame whose image never arrives: never emitted.
@@ -532,4 +542,201 @@ fn recording_cut_short_imports_what_it_has() {
         }
     }
     assert!(seen_truncated);
+}
+
+/// A file as HeliOS's recorder writes it: frames in the Styx layout, `/styx/clock` records,
+/// a Lemnos topic on `CLOCK_BOOTTIME` (JSON, no schema), a topic with a schema on
+/// `CLOCK_MONOTONIC`, an attachment, a second metadata record and a pyramid level. The data
+/// topics come back as channels with their times moved to `CLOCK_MONOTONIC`, and what is not
+/// carried is counted.
+#[test]
+fn helios_data_topics_import_as_channels() {
+    let frames = packed_samples(41);
+    const SUSPENDED: u64 = 5_000_000_000;
+    let mut w = mcap::WriteOptions::new()
+        .profile("ros2")
+        .compression(None)
+        .create(Cursor::new(Vec::new()))
+        .unwrap();
+    let metadata: BTreeMap<String, String> = header_pairs()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    w.write_metadata(&Metadata {
+        name: "styx.recording".into(),
+        metadata,
+    })
+    .unwrap();
+    w.write_metadata(&Metadata {
+        name: "helios.calibration".into(),
+        metadata: BTreeMap::from([("fx".into(), "600".into())]),
+    })
+    .unwrap();
+    let schema = w.add_schema("styx/msg/FrameMeta", "ros2msg", b"#").unwrap();
+    let meta_channel = w
+        .add_channel(schema, "/styx/frame_meta", "cdr", &BTreeMap::new())
+        .unwrap();
+    let raw_channel = w
+        .add_channel(schema, "/styx/image", "cdr", &BTreeMap::new())
+        .unwrap();
+    let compressed_channel = w
+        .add_channel(schema, "/styx/image/compressed", "cdr", &BTreeMap::new())
+        .unwrap();
+    let clock_channel = w
+        .add_channel(schema, "/styx/clock", "cdr", &BTreeMap::new())
+        .unwrap();
+    let pyramid_channel = w
+        .add_channel(schema, "/styx/pyramid/1", "cdr", &BTreeMap::new())
+        .unwrap();
+    let imu_metadata = BTreeMap::from([
+        ("source".to_string(), "lemnosd".to_string()),
+        ("clock".to_string(), "CLOCK_BOOTTIME".to_string()),
+    ]);
+    let imu = w
+        .add_channel(0, "/helios/imu", "json", &imu_metadata)
+        .unwrap();
+    let pose_schema = w
+        .add_schema("helios.Pose", "jsonschema", br#"{"type":"object"}"#)
+        .unwrap();
+    let pose = w
+        .add_channel(pose_schema, "/helios/pose", "json", &BTreeMap::new())
+        .unwrap();
+    w.attach(&mcap::Attachment {
+        log_time: 0,
+        create_time: 0,
+        name: "notes.txt".into(),
+        media_type: "text/plain".into(),
+        data: std::borrow::Cow::Borrowed(b"hello"),
+    })
+    .unwrap();
+
+    let header = |channel_id, sequence, log_time, publish_time| MessageHeader {
+        channel_id,
+        sequence,
+        log_time,
+        publish_time,
+    };
+    let t0 = frames[0].entry.timestamp_ns;
+    // The clocks before any data: boottime runs SUSPENDED ahead.
+    w.write_to_known_channel(
+        &header(clock_channel, 0, t0 - 1, t0 - 1),
+        &clock_sample(t0 - 1, t0 - 1 + SUSPENDED),
+    )
+    .unwrap();
+    let mut expected_imu = Vec::new();
+    for (i, s) in frames.iter().enumerate() {
+        let t = s.entry.timestamp_ns;
+        let seq = i as u32;
+        w.write_to_known_channel(&header(meta_channel, seq, t, t), &frame_meta(s))
+            .unwrap();
+        let image_channel = if s.entry.format.code.is_compressed() {
+            compressed_channel
+        } else {
+            raw_channel
+        };
+        w.write_to_known_channel(&header(image_channel, seq, t, t), &image(s))
+            .unwrap();
+        w.write_to_known_channel(&header(pyramid_channel, seq, t, t), &image(s))
+            .unwrap();
+        let body = format!(r#"{{"device":"imu0","t_boottime_us":{},"values":{{}}}}"#, i);
+        let boot = t + SUSPENDED + 1_000;
+        // The publish time differs from the log time on the first one.
+        let publish = if i == 0 { boot + 7 } else { boot };
+        w.write_to_known_channel(&header(imu, seq, boot, publish), body.as_bytes())
+            .unwrap();
+        expected_imu.push((t + 1_000, body.into_bytes()));
+        w.write_to_known_channel(&header(pose, seq, t + 2_000, t + 2_000), b"{}")
+            .unwrap();
+    }
+    w.finish().unwrap();
+    let file = w.into_inner().into_inner();
+
+    let mut out = Vec::new();
+    let stats = import_mcap(&mut Cursor::new(file), &mut out).unwrap();
+    assert_eq!(stats.frames, frames.len() as u64);
+    assert_eq!(
+        (stats.channels, stats.samples),
+        (2, 2 * frames.len() as u64)
+    );
+    assert_eq!(stats.clock_records, 1);
+    let l = stats.losses;
+    assert_eq!(l.attachments, 1);
+    assert_eq!(l.metadata_records, 1);
+    assert_eq!(l.pyramid_messages, frames.len() as u64);
+    assert_eq!(l.data_sequences, 2 * frames.len() as u64);
+    assert_eq!(l.data_publish_times, 1);
+    assert_eq!(l.boottime_assumed_equal, 0);
+
+    let mut replay = Replay::new(Cursor::new(out)).unwrap();
+    let imu_channel = replay.channel_named("/helios/imu").unwrap().clone();
+    assert_eq!(imu_channel.spec.encoding, "json");
+    assert_eq!(imu_channel.spec.clock, styx_record::SourceClock::Boottime);
+    assert_eq!(imu_channel.spec.metadata, imu_metadata);
+    assert!(imu_channel.spec.schema.is_empty());
+    assert_eq!(
+        imu_channel.declared.boottime_ns - imu_channel.declared.monotonic_ns,
+        SUSPENDED
+    );
+    let pose_channel = replay.channel_named("/helios/pose").unwrap().clone();
+    assert_eq!(pose_channel.spec.schema_name, "helios.Pose");
+    assert_eq!(pose_channel.spec.schema_encoding, "jsonschema");
+    assert_eq!(pose_channel.spec.clock, styx_record::SourceClock::Monotonic);
+
+    let mut got_imu = Vec::new();
+    let mut frames_seen = 0;
+    while let Some(item) = replay.next_item().unwrap() {
+        match item {
+            styx_record::Item::Frame(_) => frames_seen += 1,
+            styx_record::Item::Sample(s) if s.channel == imu_channel.id => {
+                assert!(!s.late);
+                got_imu.push((s.timestamp_ns, s.data.to_vec()));
+            }
+            styx_record::Item::Sample(_) => {}
+        }
+    }
+    assert_eq!(frames_seen, frames.len());
+    assert_eq!(got_imu, expected_imu, "IMU times moved by the clock record");
+}
+
+/// A `CLOCK_BOOTTIME` topic in a file with no `/styx/clock` record: the clocks are taken as
+/// equal, and the import says how many samples that touched.
+#[test]
+fn boottime_without_clock_records_is_assumed_equal_and_counted() {
+    let frames = packed_samples(43);
+    let mut w = mcap::WriteOptions::new()
+        .compression(None)
+        .create(Cursor::new(Vec::new()))
+        .unwrap();
+    let metadata: BTreeMap<String, String> = header_pairs()
+        .iter()
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect();
+    w.write_metadata(&Metadata {
+        name: "styx.recording".into(),
+        metadata,
+    })
+    .unwrap();
+    let imu = w
+        .add_channel(
+            0,
+            "/helios/imu",
+            "json",
+            &BTreeMap::from([("clock".to_string(), "CLOCK_BOOTTIME".to_string())]),
+        )
+        .unwrap();
+    for i in 0..3u64 {
+        let h = MessageHeader {
+            channel_id: imu,
+            sequence: i as u32,
+            log_time: 100 + i,
+            publish_time: 100 + i,
+        };
+        w.write_to_known_channel(&h, b"{}").unwrap();
+    }
+    w.finish().unwrap();
+    let mut out = Vec::new();
+    let stats = import_mcap(&mut Cursor::new(w.into_inner().into_inner()), &mut out).unwrap();
+    assert_eq!(stats.samples, 3);
+    assert_eq!(stats.losses.boottime_assumed_equal, 3);
+    let _ = frames;
 }

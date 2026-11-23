@@ -20,6 +20,7 @@
 //! opt(T)  = 0x00 | 0x01 T
 //! channel = id:u16 name:str encoding:str schema_name:str schema_encoding:str
 //!           schema_len:u32 schema[schema_len] clock:u8 monotonic_ns:u64 boottime_ns:u64
+//!           [pairs:u16 (key:str value:str)*]     (metadata; absent reads as none)
 //! sample  = channel:u16 timestamp_ns:u64 len:u32 data[len] crc:u32   (crc over channel..data)
 //! ```
 //!
@@ -77,7 +78,7 @@ pub const MAX_CHANNELS: usize = 1024;
 /// Largest channel schema.
 pub const MAX_SCHEMA: usize = 64 * 1024;
 /// Largest channel record.
-pub const MAX_CHANNEL_RECORD: usize = MAX_SCHEMA + 5 * MAX_STRING;
+pub const MAX_CHANNEL_RECORD: usize = MAX_SCHEMA + (4 + 2 * MAX_KEYS) * (MAX_STRING + 2) + 64;
 /// Largest sample: 1 MiB.
 pub const MAX_SAMPLE: usize = 1 << 20;
 /// Bytes of a sample record's head after its tag: channel, timestamp, length.
@@ -423,6 +424,16 @@ pub(crate) fn encode_channel(out: &mut Vec<u8>, channel: &Channel) -> Result<(),
     out.push(spec.clock.code());
     out.extend_from_slice(&channel.declared.monotonic_ns.to_le_bytes());
     out.extend_from_slice(&channel.declared.boottime_ns.to_le_bytes());
+    if !spec.metadata.is_empty() {
+        if spec.metadata.len() > MAX_KEYS {
+            return Err(RecordError::TooLarge("channel metadata"));
+        }
+        out.extend_from_slice(&(spec.metadata.len() as u16).to_le_bytes());
+        for (key, value) in &spec.metadata {
+            put_str(out, key)?;
+            put_str(out, value)?;
+        }
+    }
     Ok(())
 }
 
@@ -444,6 +455,18 @@ pub(crate) fn decode_channel(buf: &[u8]) -> Result<Channel, RecordError> {
         monotonic_ns: p.u64()?,
         boottime_ns: p.u64()?,
     };
+    let mut metadata = std::collections::BTreeMap::new();
+    if !p.at_end() {
+        let pairs = usize::from(p.u16()?);
+        if pairs > MAX_KEYS {
+            return Err(RecordError::TooLarge("channel metadata"));
+        }
+        for _ in 0..pairs {
+            let key = string(&mut p)?;
+            let value = string(&mut p)?;
+            metadata.insert(key, value);
+        }
+    }
     p.finish()?;
     Ok(Channel {
         id,
@@ -454,6 +477,7 @@ pub(crate) fn decode_channel(buf: &[u8]) -> Result<Channel, RecordError> {
             schema_encoding,
             schema,
             clock,
+            metadata,
         },
         declared,
     })
@@ -553,6 +577,7 @@ mod tests {
                 schema_encoding: "jsonschema".into(),
                 schema: b"{}".to_vec(),
                 clock: SourceClock::Boottime,
+                metadata: [("source".to_string(), "lemnosd".to_string())].into(),
             },
             declared: ClockPair {
                 monotonic_ns: 7,

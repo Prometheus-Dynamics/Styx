@@ -8,6 +8,8 @@ mod support;
 mod channels;
 #[path = "fuzz.rs"]
 mod fuzz;
+#[path = "mcap_export.rs"]
+mod mcap_export;
 #[path = "mcap_import.rs"]
 mod mcap_import;
 #[path = "record_replay.rs"]

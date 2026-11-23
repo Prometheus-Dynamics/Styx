@@ -32,6 +32,7 @@ fn imu() -> ChannelSpec {
         schema_encoding: "jsonschema".into(),
         schema: br#"{"type":"object"}"#.to_vec(),
         clock: SourceClock::Boottime,
+        metadata: [("source".to_string(), "lemnosd".to_string())].into(),
     }
 }
 

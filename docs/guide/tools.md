@@ -63,9 +63,36 @@ hold frames, to check the producer's reserve rule from outside. A processed sock
   - Version 1 files (frames only) still read. A build that reads only version 1 refuses a
     version 2 file as `UnsupportedVersion(2)`.
   - Neither path allocates once warm (tests/steady_state.rs counts).
-- **`import_mcap`:** converts MCAP recordings in the Styx layout to `styxrec`. Import only.
+- **`export_mcap(&mut replay, out, ExportOptions)`:** writes a `styxrec` recording as MCAP for
+  MCAP tools, in the Styx MCAP layout (`ros2` profile, CDR). Chunks are lz4 by default
+  (`McapCompression::None` for none); each chunk has a message index, and the file has a summary
+  (schemas, channels, statistics, chunk indexes) so readers can seek.
+  - Frames: `/styx/frame_meta` (`styx/msg/FrameMeta`) and `/styx/image` (`sensor_msgs/msg/Image`,
+    rows packed) or `/styx/image/compressed`, at the frame's timestamp.
+  - Data channels: one MCAP channel each, with their encoding, schema and metadata, plus
+    `styx.clock = CLOCK_MONOTONIC` (every log time) and `styx.source_clock` (the producer's
+    clock). Each sample is a message at its time.
+  - `/styx/clock`: one record per declaration, with the clocks it recorded.
+  - Not carried: the frame's control values (exposure and gains are), row and plane padding, a
+    frame id above `u32::MAX`, a sensor timestamp other than the frame's, a lux or colour
+    temperature of exactly 0.
+- **`import_mcap`:** converts MCAP recordings in the Styx layout to `styxrec`.
+  - Every topic outside `/styx/` becomes a data channel: name, message encoding, schema and
+    metadata; each message a sample at its log time.
+  - A channel with metadata `clock = CLOCK_BOOTTIME` has its times moved to `CLOCK_MONOTONIC` by
+    the `/styx/clock` records (the latest before each message; the first in the file before
+    it). With none, the clocks are taken as equal and counted
+    (`losses.boottime_assumed_equal`). A channel with `styx.clock` (an export) is already
+    monotonic.
+  - `/styx/clock` (`styx/msg/ClockSample`, CDR): encapsulation `00 01 00 00`, then `u64
+    monotonic_ns`, `u64 boottime_ns`, `u64 realtime_ns`, `u32 read_spread_ns`.
+  - `ImportStats::losses` counts what is not carried: attachments, metadata records other than
+    `styx.recording`, data messages' sequences and differing publish times, pyramid messages,
+    other `/styx/` topics, data messages over 1 MiB.
+  - Import then export then import gives the same frames (rows packed) and the same channels
+    and samples (tests/mcap_export.rs, read back by the `mcap` crate too).
   - It reads uncompressed chunks, and lz4 chunks with the `mcap-lz4` feature (on by default, a
-    pure-Rust decoder).
+    pure-Rust codec, which export also uses).
   - A zstd chunk is refused by name, and so is an lz4 chunk in a build without the feature.
   - A decompressed chunk must have the size it states (at most 256 MiB), and its CRC when it
     gives one.

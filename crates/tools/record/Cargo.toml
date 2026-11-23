@@ -11,15 +11,15 @@ homepage.workspace = true
 
 [features]
 default = ["mcap-lz4"]
-# MCAP import of lz4-compressed chunks (the MCAP writer's usual compression): a pure-Rust lz4
-# frame decoder, read side only. Without it such a chunk is refused by name.
+# lz4-compressed MCAP chunks (the MCAP writer's usual compression), read on import and written
+# on export: a pure-Rust lz4 frame codec. Without it such a chunk is refused by name.
 mcap-lz4 = ["dep:lz4_flex"]
 
 [dependencies]
 styx-format = { path = "../../core/format" }
 styx-controls = { path = "../../core/controls" }
 styx-frame = { path = "../../core/frame" }
-lz4_flex = { version = "0.14.0", default-features = false, features = ["frame", "safe-decode", "checked-decode"], optional = true }
+lz4_flex = { version = "0.14.0", default-features = false, features = ["frame", "safe-encode", "safe-decode", "checked-decode"], optional = true }
 
 # The two clocks a declaration records (CLOCK_MONOTONIC and CLOCK_BOOTTIME), read without
 # `unsafe` in this crate.
