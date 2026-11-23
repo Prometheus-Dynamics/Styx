@@ -262,6 +262,61 @@ yet).
   `bound_unmet`, `discontinuities`, `empty_frames`, and per processed stream `isp_dropped` and
   `isp_short`. A reader's own drops and cuts are in `Reader::stats()`.
 
+### Also used by HeliOS
+
+These names come from a survey of HeliOS's own code (backend, at its `dev`).
+
+- **Writing MCAP** (gap, for the coordinator to decide):
+  - HeliOS's recorder writes `.mcap` through `StreamRecorder`, with `RecorderOptions`,
+    `RecordCompression` and `ChannelId`.
+  - On `next`, `styx-record` writes only `styxrec` (`Recorder`), and reads MCAP by import.
+  - Either HeliOS writes `styxrec` with `Recorder` (exists on next; its playback tools then read
+    `styxrec`), or it writes MCAP itself with the `mcap` crate it already depends on (consumer's
+    job), or Styx gets an MCAP writer (gap, TODO P9).
+  - `DeviceIdentity { display, keys }` becomes `RecordingHeader`'s `device` and `keys`.
+- **Discovery** (`probe_all`, `probe_all_with_errors`, `probe_capture_devices`, `ProbedDevice`,
+  `ProbedBackend`, `BackendHandle`, `BackendKind`, `CaptureProbe`):
+  - When the service owns the cameras (the usual case on `next`): its `list`, through
+    `ControlClient::list`.
+    - Each camera line has the id (`lemnos:<sensor>`, `usb:<port>`, `libcamera:<id>`,
+      `/dev/videoN`), `owner` (the backend: `native`, `libcamera`, `v4l2`), state, health and
+      sockets.
+    - The id is the stable name to key resources on; a V4L2 camera's id is its node path.
+  - In process: `styx_select`'s listers give `Listed { key, anchors, virtual_node }` per
+    backend, and `select` gives one owner per camera with the reason.
+- **Modes** (`CaptureDescriptor { modes }`, `Mode`, `CaptureStartPolicy`, `CaptureHandle`):
+  - There is no mode list.
+  - A native camera's mode is chosen by the service from the camera's table, and the status says
+    which and why (`mode`, `format`, `bits`, `mode_reason`, `achieved`).
+  - A V4L2 node's formats, sizes and intervals: `styx_v4l2::probe_node(path)`.
+  - The start and retry policy is the service config's (`backoff_first_ms`, `backoff_cap_ms`,
+    `auto_off_after`).
+- **Frame and format types** (`prelude`, `core::prelude`, `imports::framelease`):
+  - `FrameLease` → `styx_frame::FrameLease`.
+  - `BufferPool` → `styx_frame::FramePool`, with `BufferSize`.
+  - `plane_layout_from_dims` → `styx_frame::packed_layouts`, or `styx_format::plane_geometry`.
+  - `FrameMeta` → `styx_controls::FrameMetadata`, which has the controls in force, the sensor
+    timestamp, exposure, gains and the achieved rate.
+  - `ColorSpace`, `FourCc`, `Interval`, `MediaFormat` and `Resolution` → `styx_format`, same
+    names. `FrameRate` → `styx_format::Interval`, or millihertz (`fps_milli`) in the config.
+- **Control types** (`prelude`):
+  - `ControlValue` → `styx_controls::ControlValue`.
+  - `ControlRect` → `styx_controls::Rect`.
+  - `ControlKind` → `styx_controls::DeviceKind`.
+  - `Access` → `styx_select::Access`.
+  - `ControlId`, `ControlMeta` and `ControlMetadata` → a standard control is
+    `styx_controls::Control` with `styx_select::StandardInfo`; a device control is its id with
+    `styx_select::DeviceInfo`.
+- **Receiving** (`RecvOutcome`, `Frames`):
+  - `styx_socket::Reader::next_frame` returns `Ok(Some(frame))`, `Ok(None)` (nothing new; wait
+    with `wait(timeout)`), or `Err(ReadError)`.
+  - `ReadError::Ended(StreamEnd::ConsumerFault)` means drop every held frame and reconnect.
+  - `next_event` also gives the producer's state changes.
+- **Tests** that start a `CameraService` with a `VirtualSourceConfig`: start `styx_service::Service`
+  on a `styx_sim::SimRig` (see above), or read a `styx_sim::SimCamera` in process.
+- **`peripherals_mem_probe`** (a `CameraService` with `CodecRegistry`): the service process's
+  RSS is in `styx-measure`'s report (`--service-pid`).
+
 ### New to adopt
 
 - **The Raze camera is a Lemnos device.**

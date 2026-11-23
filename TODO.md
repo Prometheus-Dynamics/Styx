@@ -112,16 +112,18 @@ Ordered by the coordinator; parked rows are recorded, not worked.
 
 - [x] P1 (GAP 1) `styx-control-client`: the control socket's client, out of `styx-capi` (next 9ebbf67c).
 - [x] P2 (GAP 5) lz4 MCAP chunks on import, `styx-record` feature `mcap-lz4` (next 593d5b18).
-- [ ] P3 isp_second as a companion of the isp0 frame in `styx-daedalus`. Designed, not built until the coordinator confirms.
-  - Pyramids are Eidos's (owner ruling 2026-11-21), so Styx builds no levels, scaler or pyramid type. The Styx-built pyramid (former GAP 2) and its wgpu body are withdrawn.
-  - Design:
-    - `StyxFrame::second()` gives the isp1 frame with the same id, held by the isp0 value.
-    - A `PairedFeed` pairs the two rings by id. Each ring keeps its own hold share.
-    - A missing or late companion is `None` and is counted. The feed never waits.
-  - Open point: ordering. Either the service publishes output 1 before output 0 (recommended), or the feed holds isp0 until isp1 n arrives.
+- [ ] P3 isp_second as a companion of the isp0 frame in `styx-daedalus`. Design accepted; **build when Eidos PYRAMID-ONCE reaches its hardware-level step** (the coordinator says when).
+  - Pyramids are Eidos's (owner ruling 2026-11-21), so Styx builds no levels, scaler or pyramid type.
+  - `StyxFrame::second()` gives the isp1 frame with the same id, held by the isp0 value for its Arc lifetime.
+  - A `PairedFeed` pairs isp0 and isp1 by id.
+  - The two are separate rings with their own pools and reserves, so the hold limit is not halved. A held value pins one frame on each, within each ring's share.
+  - The feed keeps at most one unmatched isp1 frame.
+  - (a) The service publishes output 1 before output 0 for each frame, so isp1 n is always there before isp0 n and the feed never holds back. This is free on PiSP. On the soft route it delays isp0 by output 1's time. The config doc must say: "isp_second on the soft route delays isp0 by output 1's time; it is for consumers that want a second stream, not for pyramids."
+  - A missing companion is `None`, counted as `second_missing` (with `paired` and `unpaired`). The feed never waits.
   - A GPU node gets isp0 only: Daedalus moves the outer value, not the companion.
 - [ ] P5 CONTROLS-WAIT-NOT-POLL: measure the service's idle CPU and wakes with 0, 1 and 2 `wait_controls_change` watchers on one camera (proof 2 sheet, item W).
   - If the cost is not negligible, add a wait the service answers: `wait <id> <seq> <timeout>`, or the seq on the frame socket. Not a different poll period.
 - [ ] P6 (GAP 3, parked) A run-time request for N pyramid levels.
 - [ ] P7 (GAP 4, parked) A replay source inside the service, serving a recording as a camera.
 - [ ] P8 (GAP 6, parked) PNG replay.
+- [ ] P9 (for the coordinator to order) An MCAP writer in `styx-record`. HeliOS's recorder writes `.mcap` (lz4) through dev's `StreamRecorder`, but next writes only `styxrec`. Needed only if HeliOS keeps MCAP as its recording format and does not write it itself.
