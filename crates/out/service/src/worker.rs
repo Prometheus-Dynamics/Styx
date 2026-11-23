@@ -656,6 +656,10 @@ fn pump_frames(
     let mut controls_generation = capture.controls_generation();
     slot.set_controls_info(capture.controls_info());
     let mut delivered = false;
+    // The newest frame's id, and the manual exposure and gain the 3A loop's capture side posts
+    // (see `post_aaa`); room for the loop's lead in frames, so posting allocates nothing.
+    let mut last_id: Option<u64> = None;
+    let mut manual: Vec<Update> = Vec::with_capacity(16);
     // A producer held over from an earlier attempt belongs to the buffers that attempt had; the
     // first frame of this one ends it and publishes from a new pool.
     let mut replacing = publisher.is_some();
@@ -682,6 +686,7 @@ fn pump_frames(
         match next {
             Ok(Some(lease)) => {
                 delivered = true;
+                last_id = Some(lease.id());
                 if replacing {
                     replacing = false;
                     release(publisher, slot, None);
@@ -773,7 +778,7 @@ fn pump_frames(
             }
         }
         if aaa {
-            post_aaa(capture, slot);
+            post_aaa(capture, slot, last_id, &mut manual);
         }
         if let Some(edge) = capture.take_edge() {
             apply_edge(publisher, slot, edge);
@@ -922,12 +927,22 @@ fn apply_edge(publisher: &mut Publisher, slot: &Slot, edge: Edge) {
 /// loop's newest exposure and gain posted for the frame they name (a manual value in place of the
 /// loop's from the frame it was set for: see `aaa::Link::take_request`). A request the backend
 /// refuses is the loop's reason in the status; the next one is posted as usual.
-fn post_aaa(capture: &mut dyn Capture, slot: &Slot) {
+fn post_aaa(capture: &mut dyn Capture, slot: &Slot, at: Option<u64>, manual: &mut Vec<Update>) {
     slot.aaa.set_timing(capture.sensor_timing());
     if let Some(updates) = slot.aaa.take_request()
         && let Err(e) = capture.set_controls(&updates)
     {
         slot.aaa_refused(&describe(&e));
+    }
+    // A manual exposure or gain, posted for its own frame (and those after it the loop already
+    // asked for), one frame at a time: a request takes each control once.
+    if let Some(at) = at {
+        slot.aaa.take_manual(at, manual);
+        for update in manual.iter() {
+            if let Err(e) = capture.set_controls(core::slice::from_ref(update)) {
+                slot.aaa_refused(&describe(&e));
+            }
+        }
     }
 }
 

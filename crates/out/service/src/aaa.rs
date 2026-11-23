@@ -104,7 +104,18 @@ struct LinkState {
     pending: Option<[Update; 2]>,
     /// The sensor's ranges and delays, from the capture thread.
     timing: Option<SensorTiming>,
+    /// Whether the capture thread has posted the manual exposure and gain for their own frames
+    /// (see [`Link::take_manual`]).
+    posted_exposure: bool,
+    posted_gain: bool,
+    /// The newest frame a posted request of the loop is for (its values may be queued up to it).
+    newest_target: u64,
 }
+
+/// The capture thread posts a manual value this many frames before its post frame (the frame
+/// its exposure delay before it): the sensor's schedule holds it until then, and the margin
+/// covers a capture thread that sees a frame late.
+const MANUAL_MARGIN: u64 = 2;
 
 fn lock(m: &Mutex<LinkState>) -> std::sync::MutexGuard<'_, LinkState> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -290,8 +301,54 @@ impl Link {
             {
                 u.value = ControlValue::Manual(v);
             }
+            s.newest_target = s.newest_target.max(u.frame);
         }
         Some(updates)
+    }
+
+    /// The capture thread, at frame `at`: the manual exposure and gain to post for their own
+    /// frames, once each, into `out` (one update per frame, cleared first). A manual value is
+    /// posted for its frame F and for every frame after it a loop request already went out for,
+    /// so no loop value queued before the set lands on or after F. It does not wait for a loop
+    /// request that names F: the loop asks only on frames its ISP made, and when frames go
+    /// without (a slow soft ISP, statistics every Nth frame) no request may name F, which put
+    /// the manual value on F+1 on the board. Requests after this carry the manual value
+    /// ([`Self::take_request`]).
+    pub(crate) fn take_manual(&self, at: u64, out: &mut Vec<Update>) {
+        out.clear();
+        let mut s = lock(&self.state);
+        let (exposure_delay, gain_delay) = s
+            .timing
+            .map_or((0, 0), |t| (u64::from(t.delays.0), u64::from(t.delays.1)));
+        let newest = s.newest_target;
+        let mut due = |manual: Option<(u32, u64)>, posted: &mut bool, delay: u64, control| {
+            let Some((value, from)) = manual else { return };
+            if *posted || at + delay + MANUAL_MARGIN < from {
+                return;
+            }
+            *posted = true;
+            for frame in from..=newest.max(from) {
+                out.push(Update {
+                    control,
+                    value: ControlValue::Manual(value),
+                    frame,
+                });
+            }
+        };
+        let LinkState {
+            manual_exposure,
+            manual_gain,
+            posted_exposure,
+            posted_gain,
+            ..
+        } = &mut *s;
+        due(
+            *manual_exposure,
+            posted_exposure,
+            exposure_delay,
+            Control::Exposure,
+        );
+        due(*manual_gain, posted_gain, gain_delay, Control::Gain);
     }
 
     /// The ISP thread: the controls, copied into `into` when they changed since `seen`; the
@@ -562,6 +619,57 @@ pub(crate) fn moved(applied: &IspSettings, next: &IspSettings) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The board's case (3A proof 1, M.2): the loop asks only on the frames its ISP made, every
+    /// other one, for `id + 4`; a manual exposure is set for frame F, which no request names. The
+    /// camera's schedule is modelled as the native one: values queued by frame, the one in force
+    /// on a frame the newest queued at or before it. Frame F has the manual value, every frame
+    /// after it too, and none before it.
+    #[test]
+    fn a_manual_exposure_lands_on_its_frame_when_the_loop_skips_frames() {
+        let link = Link::default();
+        link.set_timing(Some(SensorTiming {
+            exposure_us: (10, 10_000),
+            exposure_effective_max_us: 10_000,
+            gain_milli: Some((1000, 16_000)),
+            frame_rate_milli: None,
+            delays: (2, 2, 2),
+        }));
+        let from = 40;
+        let mut queued = std::collections::BTreeMap::new();
+        let mut manual: Vec<Update> = Vec::new();
+        for at in 1..80u64 {
+            if at == 10 {
+                link.manual(Control::Exposure, ControlValue::Manual(4000), from)
+                    .unwrap();
+            }
+            // The ISP made only odd frames: only they ask.
+            if at % 2 == 1 {
+                link.request([
+                    update(Control::Exposure, 5000 + at as u32, at + 4),
+                    update(Control::Gain, 1000, at + 4),
+                ]);
+            }
+            if let Some(posted) = link.take_request() {
+                for u in posted {
+                    if u.control == Control::Exposure {
+                        queued.insert(u.frame, u.value);
+                    }
+                }
+            }
+            link.take_manual(at, &mut manual);
+            for u in &manual {
+                queued.insert(u.frame, u.value);
+            }
+        }
+        let in_force = |frame: u64| *queued.range(..=frame).next_back().unwrap().1;
+        for frame in 20..from {
+            assert_ne!(in_force(frame), ControlValue::Manual(4000), "frame {frame}");
+        }
+        for frame in from..80 {
+            assert_eq!(in_force(frame), ControlValue::Manual(4000), "frame {frame}");
+        }
+    }
 
     fn update(control: Control, value: u32, frame: u64) -> Update {
         Update {
