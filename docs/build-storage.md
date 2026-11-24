@@ -49,3 +49,17 @@ Each target must be warm first (one full `cargo test --workspace --all-features 
 
 A target moves by being built again in the new place: a built target names its own path, so a
 copied or renamed one is a different target to cargo.
+
+## Optimization level (2026-11-24)
+
+The dev profile builds at `opt-level = 1`. Against `opt-level = 0` (`CARGO_PROFILE_DEV_OPT_LEVEL=0`,
+a target of its own, the same edit and revert, then the all-features nextest run; one round at
+load 136–171, `STYX_AB_RUN=1 scripts/ab-target.sh`):
+
+| | opt-level 1 | opt-level 0 |
+|---|---|---|
+| Rebuild after the edit | 16.2 s, 77 CPU-s | 19.9 s, 102 CPU-s |
+| Rebuild after the revert | 22.2 s, 79 CPU-s | 35.3 s, 110 CPU-s |
+| Test run | 31.5 s (nextest 24.3 s), all passed | nextest 94.2 s, 7 tests over 60 s, and `styx-record channels::samples_only_replay_is_linear` failed its bound (16.4 s for 400000 samples) |
+
+Level 0 compiled no faster, with more CPU, and ran the tests four times slower. Level 1 stays.

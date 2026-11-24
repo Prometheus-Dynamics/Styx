@@ -528,11 +528,15 @@ def narrowed_crates(base, named):
             sys.exit(f"gate: no such crate: {' '.join(unknown)}")
         return sorted(named)
     crates = set()
-    for path in changed_files(base):
+    changed = changed_files(base)
+    readable = set(test_readable(tracked_files()))
+    for path in changed:
         crate = owner(path)
         if crate is None:
             if path.endswith(".md") or path.startswith("docs/"):
                 continue
+            if path.startswith("scripts/") and path not in readable:
+                continue  # a tool no test reads: it changes no test's result (test_readable)
             return None
         if path == os.path.join(metadata()[crate][0], "Cargo.toml"):
             return None
@@ -818,6 +822,24 @@ def tracked_files():
     return sorted(p for p in out.split("\0") if p and os.path.isfile(os.path.join(ROOT, p)))
 
 
+def test_readable(files):
+    """The files a test can read: all but the scripts no crate names. A script is read by a test
+    only through a path in a string literal of a crate's source (scripts/x.py, "x.py",
+    "../../scripts"); the gate's own scripts are in every key already (GATE_FILES). So a measuring
+    tool edited in scripts/ reruns nothing."""
+    named = set()
+    lit = re.compile(rb'"([^"\n]{1,200})"')
+    for rel in files:
+        if rel.startswith("crates/") and rel.endswith(".rs"):
+            with open(os.path.join(ROOT, rel), "rb") as f:
+                for m in lit.finditer(f.read()):
+                    for part in m.group(1).decode(errors="replace").split("/"):
+                        named.add(part)
+    return [rel for rel in files
+            if not rel.startswith("scripts/") or rel in GATE_FILES
+            or any(part in named for part in rel.split("/")[1:])]
+
+
 def shared_libs(binary, cache):
     """The shared libraries a binary loads, by path and file identity (a package update moves them)."""
     if binary in cache:
@@ -968,7 +990,7 @@ def cmd_reuse_plan(a):
     else:
         reach = set(per_crate)
     meta = metadata()
-    files = tracked_files()
+    files = test_readable(tracked_files())
     cache = {} if CI else load_digests()
     ldd_cache = {}
     binaries = sorted({b for c in reach for b in per_crate[c]})

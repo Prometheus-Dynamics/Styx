@@ -74,7 +74,9 @@ and records it as not run with the reason; `--dry-run` prints the selection.
 
 In `host:all` each crate's tests are one run with a content key over what its result depends on:
 its test binaries' bytes, the shared libraries they load, the files a test can read (the
-repository's files other than other crates' Rust sources and manifests and documentation), the
+repository's files other than other crates' Rust sources and manifests, documentation, and the
+scripts no crate's source names in a string literal: a measuring tool edited in `scripts/` reruns
+nothing, and does not widen `scripts/check.sh` to every crate), the
 environment its sources and its workspace dependencies' sources read (a variable naming a file is
 keyed by the file's content; one naming a directory gives no key, except `XDG_RUNTIME_DIR`, keyed
 by its value: the tests keep lock files there, and the PipeWire socket is a machine fact), the tools, the gate's own
