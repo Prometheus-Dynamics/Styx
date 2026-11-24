@@ -285,9 +285,7 @@ default_tests() {
   # each pass overwrote the other's and both rebuilt them every gate. The first time, the
   # directory starts as a reflink copy of the target (the same worktree's paths, so cargo finds
   # every unit both passes share current); without reflinks it starts empty.
-  local main="${CARGO_TARGET_DIR:-$PWD/target}"
-  export CARGO_TARGET_DIR="$main/default"
-  start_from "$main" default
+  # The lane's clippy runs in it too (start_default).
   # Only the crates whose tests can differ under default features build here (test-layout.py
   # default-only-crates: a not(feature) cfg, a build script reading CARGO_FEATURE_*, or a line of
   # .config/default-only.txt). Every other crate's tests are the all-features pass's, and the
@@ -322,8 +320,17 @@ all_tests() {
     cargo test --locked --workspace --all-features
     return
   fi
+  # styx-capi's c_proof links the C static library with the package's default features, built in
+  # a target of its own (<profile>/c-proof, crates/bridge/capi/tests/c_proof.rs). Built here, beside
+  # the test binaries, the test finds it current; built in the test, it is a cargo build at the
+  # tail of the run that every other test has finished waiting for. A different target directory:
+  # no lock is shared. A failure here is the test's to report, with its own message.
+  local cproof_pid cproof_out="$lists/c-proof.out"
+  CARGO_TARGET_DIR="$target_dir/debug/c-proof" cargo build --locked -p styx-capi --lib > "$cproof_out" 2>&1 &
+  cproof_pid=$!
   # The list builds every test binary; the run then builds nothing.
   cargo nextest list --locked --workspace --all-features --message-format json > "$lists/all.json"
+  wait "$cproof_pid" || { echo "==> the C library build for c_proof failed (the test reports it):"; cat "$cproof_out"; }
   local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0
   expr=$(python3 scripts/gate.py reuse-plan --list "$lists/all.json" --plan "$lists/plan.json")
   # nextest does not run doctests. They run beside the nextest run, not after it: rustdoc compiles
@@ -396,30 +403,49 @@ no_std_checks() {
   [ "$no_std_failed" = 0 ] || { echo "gate: a no_std check failed" >&2; return 1; }
 }
 
-# host:checks: a few seconds at most (slowest green 21 s); each is bound at 60 s.
-lane_mark host:checks started
-if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
-  # cargo fmt reads no dependency (and takes no --locked). Slowest green: 13 s.
-  step format 60 cargo fmt --all --check
+# host:checks: each a few seconds of CPU at most, bound at 60 s. They read the tree only and build
+# nothing, so they run beside the builds in a subshell of their own: one after the other they took
+# 28 s of wall for 6 CPU-s at load 140 (2026-11-24), all of it before the first build began. Their
+# output is printed when the host lanes end; a failure fails the gate there.
+checks_lane() {
+  lane_mark host:checks started
+  if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
+    # cargo fmt reads no dependency (and takes no --locked). Slowest green: 13 s.
+    step format 60 cargo fmt --all --check
+  fi
+  # Styx's code names no product, board or camera module. Those live in data.
+  if compgen -G "crates/*/*/src" > /dev/null; then
+    step "no product names in code" 60 bash -c '! grep -rn -i -E "\b(raze|helios|photonvision|systemcore|roborio|ov9782|cm5)\b" crates/*/*/src'
+  fi
+  # One lock per outside repository: crates name git dependencies through the workspace only.
+  step "git dependencies are named in the workspace only" 60 bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
+  # One simulated camera: the sensor, receiver and ISP drivers are defined in styx-sim only (S0/X15);
+  # a test needs one from `styx_sim::paced` (free-running) or `styx_sim::SimCamera` (lock-step).
+  step "one definition of the simulated camera drivers" 60 bash -c '! grep -rn -E "#\[driver\(\"sim-(sensor|receiver|isp)\"" crates --include=*.rs | grep -v "^crates/camera/sim/src/"'
+  # Every tests/*.rs file is built: a crate that lists its test binaries (tests/all.rs) leaves none out.
+  step "every test file is in a test binary" 60 python3 scripts/test-layout.py files
+  # A merged test binary runs its tests as threads of one process under cargo test. A file in one
+  # that installs a global allocator, reads /proc/self, or reaches a sim or test-support module's
+  # process-wide static is its own [[test]], or listed in .config/shared-state.txt with its reason.
+  step "merged test files share no process state unlisted" 60 python3 scripts/test-layout.py shared-state
+  # One copy of the shared ring: every shm-* crate from one version and one source.
+  step "one source for every shm crate" 60 python3 scripts/one-shm.py
+  lane_mark host:checks passed
+}
+checks_pid="" checks_out=""
+if [ "$cargo_lanes" = 1 ]; then
+  checks_out="$step_tmp_root/checks.out"
+  (
+    trap - EXIT
+    step_tmp_root="$step_tmp_root/checks"
+    step_count=0
+    mkdir "$step_tmp_root"
+    checks_lane
+  ) > "$checks_out" 2>&1 &
+  checks_pid=$!
+else
+  checks_lane
 fi
-# Styx's code names no product, board or camera module. Those live in data.
-if compgen -G "crates/*/*/src" > /dev/null; then
-  step "no product names in code" 60 bash -c '! grep -rn -i -E "\b(raze|helios|photonvision|systemcore|roborio|ov9782|cm5)\b" crates/*/*/src'
-fi
-# One lock per outside repository: crates name git dependencies through the workspace only.
-step "git dependencies are named in the workspace only" 60 bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
-# One simulated camera: the sensor, receiver and ISP drivers are defined in styx-sim only (S0/X15);
-# a test needs one from `styx_sim::paced` (free-running) or `styx_sim::SimCamera` (lock-step).
-step "one definition of the simulated camera drivers" 60 bash -c '! grep -rn -E "#\[driver\(\"sim-(sensor|receiver|isp)\"" crates --include=*.rs | grep -v "^crates/camera/sim/src/"'
-# Every tests/*.rs file is built: a crate that lists its test binaries (tests/all.rs) leaves none out.
-step "every test file is in a test binary" 60 python3 scripts/test-layout.py files
-# A merged test binary runs its tests as threads of one process under cargo test. A file in one
-# that installs a global allocator, reads /proc/self, or reaches a sim or test-support module's
-# process-wide static is its own [[test]], or listed in .config/shared-state.txt with its reason.
-step "merged test files share no process state unlisted" 60 python3 scripts/test-layout.py shared-state
-# One copy of the shared ring: every shm-* crate from one version and one source.
-step "one source for every shm crate" 60 python3 scripts/one-shm.py
-lane_mark host:checks passed
 
 # bare: each no_std crate on its own, per target. Slowest green: 28 s (22 checks, both targets).
 bare_lanes() {
@@ -460,6 +486,36 @@ start_bare() {
   ) > "$bare_out" 2>&1 &
   bare_pid=$!
 }
+# host:default: both its steps build default features in a target directory of its own
+# (<target>/default; a library with a C crate type has no feature hash in its file name, so in
+# one directory the two passes overwrote each other's). Beside host:all it runs in a subshell
+# with part of the build jobs, as the bare lanes do: the two passes share no unit and no lock, and
+# one after the other the gate used 2.3 of the cores it could get (2026-11-24: 89 s then 77 s,
+# load 134-151). Its output is printed when host:all ends.
+default_lane() {
+  lane_mark host:default started
+  # Slowest green: 76 s (cold). Tests: 425 s (cold) when it built every default test binary;
+  # since it builds only the default-only crates' tests, the bound stays until a slowest green.
+  step "clippy, default features" 230 cargo clippy --locked --workspace --all-targets -- -D warnings
+  step "tests, default features (the default-only crates: build, list, run)" 1275 default_tests
+  lane_mark host:default passed
+}
+default_pid="" default_out=""
+start_default() {
+  default_out="$step_tmp_root/default.out"
+  local jobs=${CARGO_BUILD_JOBS:-$(nproc)}
+  (
+    trap - EXIT
+    step_tmp_root="$step_tmp_root/default"
+    step_count=0
+    mkdir "$step_tmp_root"
+    start_from "$target_dir" default
+    export CARGO_TARGET_DIR="$target_dir/default" CARGO_BUILD_JOBS=$(( jobs > 3 ? jobs / 2 : 1 ))
+    default_lane
+  ) > "$default_out" 2>&1 &
+  default_pid=$!
+  export CARGO_BUILD_JOBS=$(( jobs > 3 ? jobs - jobs / 2 : 1 ))
+}
 # The workspace glob matches nothing until the first crate lands.
 if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   if [ "$bare_selected" = 1 ]; then
@@ -472,12 +528,11 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   fi
   # host:default. Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
   if selected host:default; then
-    lane_mark host:default started
-    # Slowest green: 76 s (cold). Tests: 425 s (cold) when it built every default test binary;
-    # since it builds only the default-only crates' tests, the bound stays until a slowest green.
-    step "clippy, default features" 230 cargo clippy --locked --workspace --all-targets -- -D warnings
-    step "tests, default features (the default-only crates: build, list, run)" 1275 default_tests
-    lane_mark host:default passed
+    if selected host:all; then
+      start_default
+    else
+      ( start_from "$target_dir" default; export CARGO_TARGET_DIR="$target_dir/default"; default_lane )
+    fi
   fi
   if selected host:all; then
     lane_mark host:all started
@@ -487,6 +542,13 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
     # A test group's filter (.config/nextest.toml), term by term, still names tests. Slowest green: 6 s.
     step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
     lane_mark host:all passed
+  fi
+  if [ -n "$default_pid" ]; then
+    echo "==> host:default (it ran beside host:all):"
+    status=0
+    wait "$default_pid" || status=$?
+    cat "$default_out"
+    [ "$status" = 0 ] || { echo "gate: host:default failed" >&2; exit 1; }
   fi
   if [ -f "$lists/default.json" ] && [ -f "$lists/all.json" ]; then
     lane_mark host:default started
@@ -503,6 +565,13 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   fi
 else
   echo "no crates yet"
+fi
+if [ -n "$checks_pid" ]; then
+  echo "==> host:checks (they ran beside the builds):"
+  status=0
+  wait "$checks_pid" || status=$?
+  cat "$checks_out"
+  [ "$status" = 0 ] || { echo "gate: host:checks failed" >&2; exit 1; }
 fi
 
 if [ -n "${STYX_GATE_NARROW+set}" ]; then

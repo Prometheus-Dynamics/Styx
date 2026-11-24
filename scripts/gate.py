@@ -38,7 +38,8 @@ after a green run.
 
 Record. A run writes, per variant, passed, failed, or not-run (and why) to the records dir
 (STYX_GATE_RECORDS, default ~/.local/state/styx-gate), one line per gate in gates.tsv keyed by
-the tested tree. `gate.sh --trailer` prints the commit trailers of the current tree's green run:
+the tested tree. `gate.sh --trailer` prints the commit trailers of the current tree's green run
+(or of the newest green tree whose code is the same: documentation edits need no new run):
 
   Gate-Lanes: host:checks=passed host:all=passed ... bare:riscv32imac=not-run(behind)
   Gate-Tree: <tree id>
@@ -104,6 +105,9 @@ OUTSIDE_NEED = re.compile(r"\bnot_run\b|\bdma_case\b")
 ENV_PREFIXES = ("STYX_", "VK_", "CARGO_", "RUST", "NEXTEST_", "LD_", "LIBCAMERA_", "PIPEWIRE_")
 # The gate's own variables, by prefix: none may reach a key (Eidos keyed its log folder and lane
 # list, and no run ever matched). reuse-plan fails when a crate's sources read one.
+# Directories a test reads that are keyed by their value: what the tests use in them is in the
+# machine facts (the PipeWire socket) or is a lock file whose content means nothing.
+DIRS_KEYED_BY_VALUE = ("XDG_RUNTIME_DIR",)
 GATE_ENV_PREFIXES = ("STYX_GATE_", "STYX_CHECK_", "STYX_NOT_RUN_LOG", "STYX_TEST_FILTER")
 ENV_SKIP = {"CARGO_BUILD_JOBS", "CARGO_MAKEFLAGS", "CARGO_TARGET_DIR", "TMPDIR"}
 
@@ -706,13 +710,31 @@ def print_behind(rev):
               f"{'  BLOCKED ' + bl[v] if v in bl else ''}")
 
 
+def green_record_same_code(tree, newest=50):
+    """The newest green record whose tree differs from TREE in documentation only (is_text): the
+    code that gate tested is this tree's code, so its result stands (no ceremony run)."""
+    code = None
+    for c in [c for c in reversed(gate_records()) if c[4] == "1"][:newest]:
+        r = subprocess.run(["git", "-C", ROOT, "diff", "--name-only", c[0], tree],
+                           capture_output=True, text=True)
+        if r.returncode:
+            continue  # the recorded tree object is gone
+        differs = r.stdout.split()
+        code = code_files() if code is None else code
+        if not code_changes(differs, code):
+            return c
+    return None
+
+
 def cmd_trailer(a):
     tree = worktree_tree()
-    rec = green_record(tree)
+    rec = green_record(tree) or green_record_same_code(tree)
     if not rec:
-        sys.exit(f"gate: no green gate record for this tree ({tree}): run scripts/gate.sh")
+        sys.exit(f"gate: no green gate record for this tree ({tree}), nor for one with the same code: "
+                 "run scripts/gate.sh")
     print(rec[5])
-    print(f"Gate-Tree: {tree}")
+    # The tested tree: verify-push checks the pushed tree differs from it in documentation only.
+    print(f"Gate-Tree: {rec[0]}")
 
 
 def has_trailers(msg):
@@ -909,7 +931,8 @@ def key_of(crate, binaries, files, cache, ldd_cache, common):
     names.update(k for k in os.environ if k.startswith(ENV_PREFIXES))
     for name in sorted(n for n in names if not gate_var(n)):
         value = os.environ.get(name)
-        if value and not name.startswith(("CARGO", "RUST")) and os.path.exists(value):
+        if value and not name.startswith(("CARGO", "RUST")) and name not in DIRS_KEYED_BY_VALUE \
+                and os.path.exists(value):
             if not os.path.isfile(value):
                 return None, f"{name} names a directory ({value}), whose content is not keyed"
             h.update(b"envfile\0" + digest(value, cache).encode())

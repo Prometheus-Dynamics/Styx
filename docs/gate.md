@@ -27,8 +27,17 @@ type-checked them under default features. It runs only the tests listed in
 `.config/default-only.txt`. That list is empty today, so the gate line records
 `host:default/default-only-tests=not-run(list_empty)` beside it.
 
-The bare lanes run beside the host lanes, in a target directory of their own (`<target>/bare`)
-with two of the build jobs; their output is printed when the host lanes end. One gate runs at a
+Lanes that share no build run side by side, and each one's output is printed when the host lanes
+end:
+- host:checks reads the tree and builds nothing; it runs beside the builds.
+- host:default builds in `<target>/default` with half of the build jobs left after the bare lanes,
+  beside host:all in `<target>` with the other half. One after the other, the gate used 2.3 of
+  the cores it could get.
+- The bare lanes build in `<target>/bare` with two of the build jobs.
+
+styx-capi's `c_proof` links the C static library, built with the package's default features in
+`<target>/debug/c-proof`. The gate builds it beside the all-features test binaries, so the test
+finds it current. One gate runs at a
 time (`STYX_GATE_SLOTS`, default 1): two side by side each took twice as long.
 
 ## Nothing to run is not passed
@@ -67,7 +76,8 @@ In `host:all` each crate's tests are one run with a content key over what its re
 its test binaries' bytes, the shared libraries they load, the files a test can read (the
 repository's files other than other crates' Rust sources and manifests and documentation), the
 environment its sources and its workspace dependencies' sources read (a variable naming a file is
-keyed by the file's content; one naming a directory gives no key), the tools, the gate's own
+keyed by the file's content; one naming a directory gives no key, except `XDG_RUNTIME_DIR`, keyed
+by its value: the tests keep lock files there, and the PipeWire socket is a machine fact), the tools, the gate's own
 scripts and the worktree's path. A crate whose key equals a green run's is printed `REUSED` and not
 run. An edited crate always reruns; its dependents reuse only when their binaries come out
 byte-identical.
@@ -96,7 +106,9 @@ would be tested with that one's code. The record is never part of a seed.
 ## Records
 
 Records live in `STYX_GATE_RECORDS` (default `~/.local/state/styx-gate`). A green run prints the
-trailers to commit with (`scripts/gate.sh --trailer` prints them again):
+trailers to commit with (`scripts/gate.sh --trailer` prints them again; when the tree has no green
+record, it prints those of the newest green tree with the same code, so a documentation edit after
+the gate needs no new run):
 
 ```
 Gate-Lanes: host:checks=passed host:all=passed host:default=not-run(behind) ...
