@@ -55,75 +55,9 @@ key=$( { cat Cargo.lock
 # over the target names the files to keep; only those are copied (by reflink where it can).
 copy_dependencies() {
   local from="$1" to="$2"
-  cargo metadata --locked --format-version 1 --no-deps | python3 -c '
-import fnmatch, json, os, sys
-target = sys.argv[1]
-meta = json.load(sys.stdin)
-pkgs, names = [], []
-for p in meta["packages"]:
-    if p["id"] in meta["workspace_members"]:
-        pkgs.append(p["name"])
-        names += [t["name"].replace("-", "_") for t in p["targets"]]
-# The gate's record of the target's worktree (scripts/gate.sh) holds its path: never in a seed.
-trees = {os.path.join(target, "tmp"), os.path.join(target, "nextest"),
-         os.path.join(target, ".styx-worktree")}
-files = set()
-def listdir(d):
-    try:
-        return os.listdir(d)
-    except OSError:
-        return []
-# A profile directory holds deps/: <profile>/deps or <triple>/<profile>/deps.
-profiles = []
-for a in listdir(target):
-    for b in listdir(os.path.join(target, a)):
-        if b == "deps" and os.path.isdir(os.path.join(target, a, b)) and not os.path.islink(os.path.join(target, a, b)):
-            profiles.append(os.path.join(target, a))
-        for c in listdir(os.path.join(target, a, b)):
-            d = os.path.join(target, a, b, c)
-            if c == "deps" and os.path.isdir(d) and not os.path.islink(d):
-                profiles.append(os.path.join(target, a, b))
-for profile in profiles:
-    for e in listdir(profile):
-        f = os.path.join(profile, e)
-        if os.path.isfile(f) and not os.path.islink(f):
-            files.add(f)
-    trees.update(os.path.join(profile, x) for x in ("examples", "incremental", "c-proof"))
-    deps = listdir(os.path.join(profile, "deps"))
-    fps = listdir(os.path.join(profile, ".fingerprint"))
-    builds = listdir(os.path.join(profile, "build"))
-    tags = set()
-    for name in pkgs:
-        for fp in fps:
-            if fp.startswith(name + "-") and os.path.isdir(os.path.join(profile, ".fingerprint", fp)):
-                tags.add(fp.rsplit("-", 1)[1])
-                trees.add(os.path.join(profile, ".fingerprint", fp))
-        trees.update(os.path.join(profile, "build", e) for e in builds if e.startswith(name + "-"))
-    # A deps/ file of a unit carries "-<hash>" in its name (the glob *-<hash>*): each "-" in a name
-    # is looked up once, for each length a hash has, rather than every name against every hash.
-    sizes = {len(tag) for tag in tags}
-    for e in deps:
-        at = e.find("-")
-        while at >= 0:
-            if any(e[at + 1:at + 1 + n] in tags for n in sizes):
-                files.add(os.path.join(profile, "deps", e))
-                break
-            at = e.find("-", at + 1)
-    for name in names:
-        files.update(os.path.join(profile, "deps", e) for e in deps
-                     if fnmatch.fnmatchcase(e, f"{name}.*") or fnmatch.fnmatchcase(e, f"lib{name}.*"))
-out = sys.stdout.buffer
-for top, dirs, entries in os.walk(target):
-    dirs[:] = [d for d in dirs if os.path.join(top, d) not in trees]
-    kept = 0
-    for e in entries + [d for d in dirs if os.path.islink(os.path.join(top, d))]:
-        f = os.path.join(top, e)
-        if f not in files and f not in trees:
-            out.write(b"F" + os.path.relpath(f, target).encode() + b"\0")
-            kept += 1
-    if not kept and not dirs and top != target:
-        out.write(b"D" + os.path.relpath(top, target).encode() + b"\0")
-' "$from" > "$to.list"
+  cargo metadata --locked --format-version 1 --no-deps | python3 scripts/seed-list.py "$from" > "$to.list"
+  # A list with no file is a fault of the listing, never a target with nothing to keep.
+  grep -qz '^F' "$to.list" || die "not saved: the listing of $from named no file"
   mkdir -p "$to"
   (
     cd "$from"

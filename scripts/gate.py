@@ -20,7 +20,7 @@ unstaged, untracked) selects lanes: by scripts/gate-lanes.map (first matching pa
 file of a crate selects host:all; host:default as well when it holds code compiled only without a
 feature (scripts/affected.py's rule), or when the crate or one built with it builds with a crate whose
 code or dependencies change with a feature (builds_differently_by_feature); bare as well when the crate is no_std or a no_std crate
-depends on it. Documentation that no code or script names selects host:checks; any other file
+depends on it. Documentation that no code or script reads selects host:checks; any other file
 host:all. host:checks always runs. The default also holds every variant more than DRIFT_COMMITS
 commits or DRIFT_DAYS days behind on origin/next, and every blocked variant the change selects
 (a red catch-up): those cannot be dropped. `--lanes` adds lanes; `--drop LANE:REASON` removes a
@@ -42,9 +42,16 @@ the tested tree. `gate.sh --trailer` prints the commit trailers of the current t
   Gate-Lanes: host:checks=passed host:all=passed ... bare:riscv32imac=not-run(behind)
   Gate-Tree: <tree id>
 
-`gate.py verify-push` (scripts/land.sh) refuses a tip with no trailers, trailers that differ from
-the green record of their tree, or a tree that differs from it other than by files origin/next
-moved and the change did not touch.
+`gate.py verify-push` (scripts/land.sh) compares code only: documentation no code or script
+names is left out of every comparison, and a push that changes only such documentation needs no
+gate and no trailers. Otherwise the newest commit since origin/next with trailers carries the gate;
+it refuses when there is none, when its trailers differ from the green record of their tree, or
+when the pushed tree differs from that tree in code other than files origin/next moved and the
+change did not touch.
+
+No gate runs when its result is known: with only such documentation changed since the base, or
+nothing, `gate.sh` (and check.sh) says so and exits 0 with no run and no record. `--lanes` and
+`--catch-up` still run.
 
 Behind. `lanes-behind.sh [REV]` reads the trailers of REV's first-parent history and the
 catch-up records: per variant, the last commit it passed at and how far REV is past it.
@@ -265,17 +272,30 @@ def changed_files(base):
 
 
 def is_text(path, code):
-    """Documentation that no code or script names."""
+    """Documentation that no code or script reads: its name is in no string literal of code (an
+    include_str!("../README.md"), a path a test or script opens). A mention in a comment or a
+    docstring is not a read."""
     if not (path.startswith("docs/") or path.endswith(".md") or path.startswith("LICENSE")):
         return False
-    name = os.path.basename(path)
+    read = re.compile(r"[\"'/]" + re.escape(os.path.basename(path)) + r"[\"']")
     for p in code:
         full = os.path.join(ROOT, p)
         if p != path and os.path.isfile(full):
             with open(full, errors="replace") as f:
-                if name in f.read():
+                if read.search(f.read()):
                     return False
     return True
+
+
+def code_files():
+    """The files whose text decides whether a document is named by code (is_text)."""
+    return git("ls-files", "crates", "scripts", ".config", ".cargo", ".github").split()
+
+
+def code_changes(paths, code=None):
+    """The paths a gate tests: all but documentation no code or script reads."""
+    code = code_files() if code is None else code
+    return sorted(p for p in paths if not is_text(p, code))
 
 
 def select_default(base):
@@ -286,7 +306,7 @@ def select_default(base):
     for name, (_, no_std, _, _) in meta.items():
         if no_std:
             no_std_reach |= closure(name, lib_only=True)
-    code = [p for p in git("ls-files", "crates", "scripts", ".config", ".cargo", ".github").split()]
+    code = code_files()
     picks, crates = {}, set()
 
     def add(lanes, why):
@@ -525,6 +545,18 @@ def cmd_run(a):
     if UPSTREAM.startswith("origin/"):
         git("fetch", "-q", "origin", check=False)
     base = git("merge-base", UPSTREAM, "HEAD").strip()
+    # A gate whose result is already known does not run: nothing it tests changed. Only
+    # documentation that no code or script reads (or nothing) differs from the base, so the base's
+    # result stands. land.sh pushes such a change with no trailers. --lanes still runs what it
+    # names (a run on a changed machine has no known result), and so does --catch-up.
+    if not a.catch_up and not a.lanes:
+        changed = changed_files(base)
+        if not code_changes(changed):
+            shown = " ".join(changed[:5]) + (" ..." if len(changed) > 5 else "")
+            what = f"documentation only ({shown})" if changed else "nothing"
+            print(f"gate: {what} changed since {base[:12]}: nothing a gate tests changed, so no gate"
+                  " runs; scripts/land.sh pushes it without trailers")
+            return 0
     picks, crates = select_default(base)
     behind_now = behind(UPSTREAM)
     narrow = narrowed_crates(base, a.crates) if a.narrow else None
@@ -682,13 +714,32 @@ def cmd_trailer(a):
     print(f"Gate-Tree: {tree}")
 
 
+def has_trailers(msg):
+    lines = msg.splitlines()
+    return any(x.startswith("Gate-Lanes:") for x in lines) and any(x.startswith("Gate-Tree:") for x in lines)
+
+
 def cmd_verify_push(a):
     head = git("rev-parse", a.rev).strip()
-    msg = git("log", "-1", "--format=%B", head)
+    code = code_files()
+    # Only code is compared: documentation that no code or script reads never costs a gate, and
+    # never makes a tested tree differ from the pushed one.
+    if not code_changes(git("diff", "--name-only", a.onto, head).split(), code):
+        print(f"gate: documentation only since {a.onto}: no gate needed")
+        return
+    # The newest commit since the base with trailers carries the gate; commits after it may change
+    # documentation only (checked below as a difference from the tested tree).
+    carrier = None
+    for rev in git("rev-list", "--first-parent", f"{a.onto}..{head}").split():
+        if has_trailers(git("log", "-1", "--format=%B", rev)):
+            carrier = rev
+            break
+    if carrier is None:
+        sys.exit("REFUSED: no commit since the base has Gate-Lanes/Gate-Tree trailers, and the change is "
+                 "not documentation only (scripts/gate.sh --trailer)")
+    msg = git("log", "-1", "--format=%B", carrier)
     lanes_line = [line for line in msg.splitlines() if line.startswith("Gate-Lanes:")]
     tree_line = [line for line in msg.splitlines() if line.startswith("Gate-Tree:")]
-    if not lanes_line or not tree_line:
-        sys.exit("REFUSED: the tip commit has no Gate-Lanes/Gate-Tree trailers (scripts/gate.sh --trailer)")
     tested = tree_line[-1].split(":", 1)[1].strip()
     rec = green_record(tested)
     if not rec:
@@ -702,13 +753,16 @@ def cmd_verify_push(a):
         moved = set(git("diff", "--name-only", base, a.onto).split())
         mine = set(git("diff", "--name-only", base, tested).split())
         differs = set(git("diff", "--name-only", tested, tree).split())
-        if moved & mine:
+        both = code_changes(moved & mine, code)
+        if both:
             sys.exit(f"REFUSED: {a.onto} changed files the change also changes "
-                     f"({' '.join(sorted(moved & mine)[:5])}): run the gate again")
-        if not differs <= moved:
+                     f"({' '.join(both[:5])}): run the gate again")
+        untested = code_changes(differs - moved, code)
+        if untested:
             sys.exit(f"REFUSED: the pushed tree differs from the tested one in files {a.onto} did not move "
-                     f"({' '.join(sorted(differs - moved)[:5])}): run the gate again")
-        print(f"gate: tested tree {tested[:12]}, pushed after a rebase over {len(differs)} files {a.onto} moved")
+                     f"({' '.join(untested[:5])}): run the gate again")
+        print(f"gate: tested tree {tested[:12]}, pushed with {len(differs)} files changed since "
+              f"(moved by {a.onto}, or documentation)")
     bl = blocks()
     for v in bl:
         if f"{v}=passed" not in rec[5] and f"{v}=reused" not in rec[5]:

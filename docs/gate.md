@@ -10,7 +10,7 @@ LANE-SELECT.
 |---|---|
 | `host:checks` | format, no product names, git dependencies in the workspace only, one simulated camera, test files in binaries, shared state, one shm source |
 | `host:all` | clippy and tests with all features (nextest, then the doctests), the test-group filter check |
-| `host:default` | clippy and tests with default features (the build, and the default-only tests) |
+| `host:default` | clippy with default features; the tests of the crates whose tests can differ under default features (build, list, the default-only tests) |
 | `bare:thumbv7em`, `bare:riscv32imac` | the no_std check of every no_std crate for that target |
 | `bare:riscv32imc` | the same on a target with no compare-and-swap: a crate with a `critical-section` feature is checked with it; then styx-frame's tests on the host on its portable-atomic path (`--cfg styx_portable_atomic`) |
 
@@ -18,9 +18,18 @@ A lane name alone means all its variants; `all` means every variant. When `host:
 `host:all` both run, the default-only list check runs too. vivid, PipeWire and lavapipe cases are
 in `host:all` and `host:default`.
 
-`host:default passed` covers clippy and building every default-features test binary. It runs only
-the tests listed in `.config/default-only.txt`. That list is empty today, so the gate line records
+`host:default passed` covers clippy over every target with default features, and building and
+listing the tests of the crates whose tests can differ under default features: a `cfg` or
+`cfg_attr` naming `not(...)` with a feature in it, a build script that reads `CARGO_FEATURE_*`, or a
+crate `.config/default-only.txt` names (`scripts/test-layout.py default-only-crates`, each built as
+itself with `-p`). Every other crate's tests are the all-features pass's, and the clippy step has
+type-checked them under default features. It runs only the tests listed in
+`.config/default-only.txt`. That list is empty today, so the gate line records
 `host:default/default-only-tests=not-run(list_empty)` beside it.
+
+The bare lanes run beside the host lanes, in a target directory of their own (`<target>/bare`)
+with two of the build jobs; their output is printed when the host lanes end. One gate runs at a
+time (`STYX_GATE_SLOTS`, default 1): two side by side each took twice as long.
 
 ## Nothing to run is not passed
 
@@ -44,7 +53,7 @@ pick the lanes:
   feature (a feature of its own or an optional dependency): its default build can break while the
   all-features build passes. It selects `bare` when the crate is no_std or a no_std crate's library
   depends on it.
-- Documentation that no code or script names selects `host:checks`; any other file `host:all`.
+- Documentation that no code or script reads selects `host:checks`; any other file `host:all`.
 - `host:checks` always runs.
 - A variant more than 10 commits or 3 days behind on `origin/next`, and a blocked variant the
   change selects, are always included and cannot be dropped.
@@ -90,10 +99,17 @@ Gate-Lanes: host:checks=passed host:all=passed host:default=not-run(behind) ...
 Gate-Tree: <tree id>
 ```
 
-`scripts/land.sh` pushes to `next`: it refuses a tip without the trailers, with trailers that
-differ from the green record of their tree, or with a tree that differs from the tested one other
-than by files `origin/next` moved and the change did not touch. It pushes only a fast-forward. A
-gate whose files changed while it ran records nothing.
+`scripts/land.sh` pushes to `next`. It compares code only: documentation that no code or script
+names is left out of every comparison, so a push that changes only such documentation needs no
+gate and no trailers. Otherwise the newest commit since `origin/next` with the trailers carries the
+gate, and it refuses when there is none, when the trailers differ from the green record of their
+tree, or when the pushed tree differs from the tested one in code other than files `origin/next`
+moved and the change did not touch. It pushes only a fast-forward. A gate whose files changed
+while it ran records nothing.
+
+No gate runs when its result is known: with only such documentation changed since the base, or
+nothing, `scripts/gate.sh` and `scripts/check.sh` say so and exit 0 with no run and no record.
+`--lanes` and `--catch-up` still run.
 
 ## Behind, catch-up, release
 

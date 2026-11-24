@@ -3,7 +3,7 @@
 # host:default, bare:thumbv7em, bare:riscv32imac). A file no pattern matches: a crate's file selects
 # host:all, plus host:default when it holds not(feature) code or builds with a crate that changes
 # with a feature (scripts/gate.py builds_differently_by_feature), and bare when a no_std crate reaches
-# it; documentation no code or script names selects host:checks; anything else host:all.
+# it; documentation no code or script reads selects host:checks; anything else host:all.
 #
 # `no-reuse` after the lanes: the file measures or selects (the gate's rules, the lane map, the
 # reuse key code, the filter lists, shared test fixtures), so a change to it reuses no crate's
@@ -22,6 +22,7 @@ scripts/affected.py         all no-reuse
 scripts/test-layout.py      all no-reuse
 scripts/one-shm.py          all
 scripts/cargo-seed.sh       all
+scripts/seed-list.py        all
 scripts/lanes-behind.sh     all
 scripts/release-check.sh    all
 scripts/land.sh             all

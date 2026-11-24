@@ -53,17 +53,16 @@ if [ -f "$owner_file" ] && [ "$(cat "$owner_file")" != "$here" ]; then
   exit 1
 fi
 
-# At most two gates of this repository run at once on one machine: every gate links its test
-# binaries in the same minutes, and more than two of them starve each other and whatever else
-# the machine is doing. A gate waits here for one of two slots. STYX_GATE_SLOTS=0 turns it off.
-# The slots are the user's, not a gate's: in $XDG_RUNTIME_DIR, so gates with their own TMPDIR
-# still share them.
-if [ "${STYX_GATE_SLOTS:-2}" != 0 ] && command -v flock > /dev/null; then
+# One gate of this repository runs at a time on one machine: two gates side by side each took
+# twice as long (the same CPU, double the wall: 628-827 s against a 320 s median), so a second gate
+# waits here for the first to end. STYX_GATE_SLOTS=N allows N; 0 turns the wait off. The slots are
+# the user's, not a gate's: in $XDG_RUNTIME_DIR, so gates with their own TMPDIR still share them.
+if [ "${STYX_GATE_SLOTS:-1}" != 0 ] && command -v flock > /dev/null; then
   slots="${XDG_RUNTIME_DIR:-/tmp}/styx-gate-slots"
   mkdir -p "$slots"
   waited=0
   while :; do
-    for n in $(seq 1 "${STYX_GATE_SLOTS:-2}"); do
+    for n in $(seq 1 "${STYX_GATE_SLOTS:-1}"); do
       exec 8> "$slots/$n"
       if flock -n 8; then
         break 2
@@ -90,14 +89,14 @@ fi
 step_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/g.XXX")"
 step_count=0
 step() {
-  local label="$1" bound="$2" start pid timer ended status=0 left tmp before after
+  local label="$1" bound="$2" start pid timer ended status=0 left tmp before after me=$BASHPID
   shift 2
   echo "==> $label"
   start=$SECONDS
   step_count=$((step_count + 1))
   tmp="$step_tmp_root/$step_count"
   mkdir "$tmp"
-  before=$(child_cpu)
+  before=$(child_cpu "$me")
   set -m
   TMPDIR="$tmp" "$@" &
   pid=$!
@@ -119,7 +118,7 @@ step() {
     stop_group "$pid"
     exit 1
   fi
-  after=$(child_cpu)
+  after=$(child_cpu "$me")
   left=$(find "$tmp" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
   rm -rf -- "${tmp:?}"
   if [ -n "$left" ]; then
@@ -130,10 +129,11 @@ step() {
   echo "    $label: $((SECONDS - start)) s, $(awk -v a="$before" -v b="$after" 'BEGIN { printf "%.1f", b - a }') CPU-s"
   return "$status"
 }
-# The CPU seconds (user + system) of this shell's waited-for children so far: cutime and cstime of
-# /proc/<this shell>/stat, read in a command substitution ($$ is still this shell there).
+# The CPU seconds (user + system) of a shell's waited-for children so far: cutime and cstime of
+# /proc/<pid>/stat. The pid is the shell running the step ($BASHPID there: the bare lanes run in
+# a subshell of their own, where $$ is still the gate's).
 child_cpu() {
-  awk -v hz="$(getconf CLK_TCK)" '{ printf "%.2f", ($16 + $17) / hz }' "/proc/$$/stat"
+  awk -v hz="$(getconf CLK_TCK)" '{ printf "%.2f", ($16 + $17) / hz }' "/proc/$1/stat"
 }
 # SIGTERM to a process group, then SIGKILL to what is left of it 5 s later.
 stop_group() {
@@ -256,6 +256,21 @@ if [ -n "${STYX_GATE_NARROW+set}" ] && [ "$nextest" = 0 ]; then
   echo "gate: a narrowed check needs cargo-nextest" >&2
   exit 1
 fi
+# A target directory of its own inside the main one, <main>/<name>, made the first time as a reflink
+# copy of the main one (the same worktree's paths, so cargo finds every unit they share current);
+# without reflinks it starts empty.
+start_from() {
+  local main="$1" name="$2" entry part="$1/$2.part"
+  [ ! -d "$main/$name" ] || return 0
+  rm -rf -- "${part:?}"
+  mkdir "$part"
+  for entry in "$main"/* "$main"/.[!.]*; do
+    [ -e "$entry" ] || continue
+    case "${entry##*/}" in default | default.part | bare | bare.part | tmp | nextest) continue ;; esac
+    cp -a --reflink=always "$entry" "$part/" 2> /dev/null || { rm -rf -- "${part:?}"; mkdir "$part"; break; }
+  done
+  mv "$part" "$main/$name"
+}
 default_tests() {
   # The default pass builds in its own target directory, <target>/default. A library with a C
   # crate type (styx-capi, styx-gst) has no feature hash in its file name, so in one directory
@@ -264,22 +279,23 @@ default_tests() {
   # every unit both passes share current); without reflinks it starts empty.
   local main="${CARGO_TARGET_DIR:-$PWD/target}"
   export CARGO_TARGET_DIR="$main/default"
-  if [ ! -d "$CARGO_TARGET_DIR" ]; then
-    local entry part="$main/default.part"
-    rm -rf -- "${part:?}"
-    mkdir "$part"
-    for entry in "$main"/* "$main"/.[!.]*; do
-      [ -e "$entry" ] || continue
-      case "${entry##*/}" in default | default.part | tmp | nextest) continue ;; esac
-      cp -a --reflink=always "$entry" "$part/" 2> /dev/null || { rm -rf -- "${part:?}"; mkdir "$part"; break; }
-    done
-    mv "$part" "$CARGO_TARGET_DIR"
-  fi
-  if [ "$nextest" = 0 ]; then
-    cargo test --locked --workspace
+  start_from "$main" default
+  # Only the crates whose tests can differ under default features build here (test-layout.py
+  # default-only-crates: a not(feature) cfg, a build script reading CARGO_FEATURE_*, or a line of
+  # .config/default-only.txt). Every other crate's tests are the all-features pass's, and the
+  # clippy step above has type-checked them under default features. Each crate is built as itself
+  # (-p), with its own default features.
+  local crate crates=()
+  while read -r crate; do crates+=(-p "$crate"); done < <(python3 scripts/test-layout.py default-only-crates)
+  if [ "${#crates[@]}" = 0 ]; then
+    step_not_run host:default tests no_default_only_code
     return
   fi
-  cargo nextest list --locked --workspace --message-format json > "$lists/default.json"
+  if [ "$nextest" = 0 ]; then
+    cargo test --locked "${crates[@]}"
+    return
+  fi
+  cargo nextest list --locked "${crates[@]}" --message-format json > "$lists/default.json"
   # Every line of the list names a test this build has: a renamed test would otherwise leave its
   # term matching nothing, hidden behind the others (the comparison below runs only beside host:all).
   python3 scripts/test-layout.py default-only-present "$lists/default.json"
@@ -291,7 +307,7 @@ default_tests() {
   fi
   # A narrowed check may leave none of them (it is not the gate); the gate runs them all.
   [ -z "${STYX_GATE_NARROW+set}" ] || { expr="($expr) & (${narrow_expr:-none()})"; no_tests=pass; }
-  cargo nextest run --locked --workspace --no-fail-fast --no-tests="$no_tests" -E "$expr"
+  cargo nextest run --locked "${crates[@]}" --no-fail-fast --no-tests="$no_tests" -E "$expr"
 }
 all_tests() {
   if [ "$nextest" = 0 ]; then
@@ -387,32 +403,8 @@ step "merged test files share no process state unlisted" 60 python3 scripts/test
 step "one source for every shm crate" 60 python3 scripts/one-shm.py
 lane_mark host:checks passed
 
-# The workspace glob matches nothing until the first crate lands.
-if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
-  # host:default. Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
-  if selected host:default; then
-    lane_mark host:default started
-    # Slowest green: 76 s (cold). Tests: 425 s (cold, building every default test binary).
-    step "clippy, default features" 230 cargo clippy --locked --workspace --all-targets -- -D warnings
-    step "tests, default features (build; the default-only tests)" 1275 default_tests
-    lane_mark host:default passed
-  fi
-  if selected host:all; then
-    lane_mark host:all started
-    # Slowest green: 94 s (cold). Tests: 267 s (fresh worktree), with the doctests.
-    step "clippy, all features" 285 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
-    step "tests, all features" 800 all_tests
-    # A test group's filter (.config/nextest.toml), term by term, still names tests. Slowest green: 6 s.
-    step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
-    lane_mark host:all passed
-  fi
-  if [ -f "$lists/default.json" ] && [ -f "$lists/all.json" ]; then
-    lane_mark host:default started
-    step "every default-only test is in the default-only run" 60 \
-      python3 scripts/test-layout.py default-only "$lists/default.json" "$lists/all.json"
-    lane_mark host:default passed
-  fi
-  # bare: each no_std crate on its own, per target. Slowest green: 28 s (22 checks, both targets).
+# bare: each no_std crate on its own, per target. Slowest green: 28 s (22 checks, both targets).
+bare_lanes() {
   for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf riscv32imc-unknown-none-elf; do
     variant="bare:${target%%-*}"
     if selected "$variant"; then
@@ -430,6 +422,67 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
       lane_mark "$variant" passed
     fi
   done
+}
+# The bare lanes run beside the host lanes, in a subshell with a target directory of their own
+# (<target>/bare: cargo's lock on the host one would make them wait for every host build) and two
+# of the build jobs; the host lanes take the rest. Their output is printed when the host lanes end.
+bare_pid="" bare_out=""
+bare_selected=0
+for v in bare:thumbv7em bare:riscv32imac bare:riscv32imc; do selected "$v" && bare_selected=1; done
+start_bare() {
+  bare_out="$step_tmp_root/bare.out"
+  (
+    trap - EXIT
+    step_tmp_root="$step_tmp_root/bare"
+    step_count=0
+    mkdir "$step_tmp_root"
+    start_from "$target_dir" bare
+    export CARGO_TARGET_DIR="$target_dir/bare" CARGO_BUILD_JOBS=2
+    bare_lanes
+  ) > "$bare_out" 2>&1 &
+  bare_pid=$!
+}
+# The workspace glob matches nothing until the first crate lands.
+if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
+  if [ "$bare_selected" = 1 ]; then
+    if [ "$test_lanes" = 1 ]; then
+      start_bare
+      export CARGO_BUILD_JOBS=$(( ${CARGO_BUILD_JOBS:-$(nproc)} > 3 ? ${CARGO_BUILD_JOBS:-$(nproc)} - 2 : 1 ))
+    else
+      bare_lanes
+    fi
+  fi
+  # host:default. Default features: no libcamera, no FFmpeg, no Orion, no Daedalus. Styx stands alone.
+  if selected host:default; then
+    lane_mark host:default started
+    # Slowest green: 76 s (cold). Tests: 425 s (cold) when it built every default test binary;
+    # since it builds only the default-only crates' tests, the bound stays until a slowest green.
+    step "clippy, default features" 230 cargo clippy --locked --workspace --all-targets -- -D warnings
+    step "tests, default features (the default-only crates: build, list, run)" 1275 default_tests
+    lane_mark host:default passed
+  fi
+  if selected host:all; then
+    lane_mark host:all started
+    # Slowest green: 94 s (cold). Tests: 267 s (fresh worktree), with the doctests.
+    step "clippy, all features" 285 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    step "tests, all features" 800 all_tests
+    # A test group's filter (.config/nextest.toml), term by term, still names tests. Slowest green: 6 s.
+    step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
+    lane_mark host:all passed
+  fi
+  if [ -f "$lists/default.json" ] && [ -f "$lists/all.json" ]; then
+    lane_mark host:default started
+    step "every default-only test is in the default-only run" 60 \
+      python3 scripts/test-layout.py default-only "$lists/default.json" "$lists/all.json"
+    lane_mark host:default passed
+  fi
+  if [ -n "$bare_pid" ]; then
+    echo "==> the bare lanes (they ran beside the host lanes):"
+    status=0
+    wait "$bare_pid" || status=$?
+    cat "$bare_out"
+    [ "$status" = 0 ] || { echo "gate: the bare lanes failed" >&2; exit 1; }
+  fi
 else
   echo "no crates yet"
 fi

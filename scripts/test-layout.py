@@ -20,10 +20,17 @@ or a module of one (a `#[path = "x.rs"]` or `mod x;` in a test file).
        test-layout.py default-only-present <default list>
                                             every line of .config/default-only.txt names a test
                                             the default build has
+       test-layout.py default-only-crates   the crates whose tests can differ under default
+                                            features: the only ones the default pass builds
 
 default-only: tests run in the all-features pass only. A test that exists only under default
 features (cfg(not(feature = ...))) would then never run unless the default pass runs it, so the
 two nextest lists (`--message-format json`) are compared and the difference must be the list.
+Only a crate whose code can drop out under all features can have such a test: a cfg or cfg_attr
+naming not(...) with a feature in it, anywhere in the crate's Rust files, or a build script that
+reads CARGO_FEATURE_* (it can set a cfg by feature); and the crates .config/default-only.txt names.
+The default pass builds and lists those crates' tests only (default-only-crates); every other
+crate's tests run in the all-features pass, and clippy type-checks them under default features.
 
 shared-state: cargo test runs a merged binary's tests as threads of one process (nextest gives
 each test its own). A file of tests/all.rs that installs a global allocator, reads /proc/self, or
@@ -298,6 +305,36 @@ def default_only_present(default_list):
         sys.exit(1)
 
 
+NEGATED_FEATURE = re.compile(r"\bcfg(_attr)?\s*\([^\n]*\bnot\s*\([^\n]*\bfeature\b")
+
+
+def default_only_crates():
+    meta = json.loads(subprocess.run(
+        ["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
+        check=True, capture_output=True, text=True, cwd=ROOT).stdout)
+    named = {binary.split("::", 1)[0] for binary, _ in default_only_entries()}
+    picked = []
+    for p in meta["packages"]:
+        if p["id"] not in meta["workspace_members"]:
+            continue
+        crate_dir = os.path.dirname(p["manifest_path"])
+        hit = p["name"] in named
+        for top, dirs, names in os.walk(crate_dir):
+            dirs[:] = [d for d in dirs if d not in ("target", ".git")]
+            for name in names:
+                if hit:
+                    break
+                if not name.endswith(".rs"):
+                    continue
+                with open(os.path.join(top, name), encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+                if NEGATED_FEATURE.search(text) or (name == "build.rs" and "CARGO_FEATURE" in text):
+                    hit = True
+        if hit:
+            picked.append(p["name"])
+    print("\n".join(sorted(picked)))
+
+
 def default_only_filter():
     terms = [f"(binary_id(={b}) & test(={t}))" for b, t in sorted(default_only_entries())]
     print(" | ".join(terms))
@@ -314,6 +351,8 @@ if __name__ == "__main__":
         shared_state()
     elif sys.argv[1:2] == ["default-only-present"] and len(sys.argv) == 3:
         default_only_present(sys.argv[2])
+    elif sys.argv[1:2] == ["default-only-crates"]:
+        default_only_crates()
     elif sys.argv[1:2] == ["default-only-filter"]:
         default_only_filter()
     else:
