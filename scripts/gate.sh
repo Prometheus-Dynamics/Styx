@@ -358,14 +358,20 @@ all_tests() {
   # the test binaries, the test finds it current; built in the test, it is a cargo build at the
   # tail of the run that every other test has finished waiting for. A different target directory:
   # no lock is shared. A failure here is the test's to report, with its own message.
+  # Each part's time from the step's start, printed at its end (the step's line has the total).
+  local t0=$SECONDS
+  part() { echo "    part: $1 ends at $((SECONDS - t0)) s"; }
   local cproof_pid cproof_out="$lists/c-proof.out"
   CARGO_TARGET_DIR="$target_dir/debug/c-proof" cargo build --locked -p styx-capi --lib > "$cproof_out" 2>&1 &
   cproof_pid=$!
   # The list builds every test binary; the run then builds nothing.
   cargo nextest list --locked --workspace --all-features --message-format json > "$lists/all.json"
+  part "nextest list (builds the test binaries)"
   wait "$cproof_pid" || { echo "==> the C library build for c_proof failed (the test reports it):"; cat "$cproof_out"; }
+  part "the C library for c_proof"
   local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0
   expr=$(python3 scripts/gate.py reuse-plan --list "$lists/all.json" --plan "$lists/plan.json")
+  part "reuse plan"
   # nextest does not run doctests. They run beside the nextest run, not after it: rustdoc compiles
   # and runs each crate's examples one crate after another, mostly waiting (33 s of wall for 9 CPU-s
   # at load 200), and it holds no lock on the build directory while it does. Their output is
@@ -385,10 +391,13 @@ all_tests() {
   else
     step_not_run host:all tests every_crate_reused
   fi
+  part "nextest run"
   # Only after a green run (set -e ends the step on a red one).
   python3 scripts/gate.py reuse-record --plan "$lists/plan.json"
+  part "reuse record"
   if [ -n "$doc_pid" ]; then
     wait "$doc_pid" || doc_status=$?
+    part "doctests"
     echo "==> doctests (they ran beside the nextest run):"
     cat "$doc_out"
     [ "$doc_status" = 0 ] || { echo "gate: the doctests failed" >&2; return 1; }
