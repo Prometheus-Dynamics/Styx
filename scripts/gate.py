@@ -30,9 +30,10 @@ Reuse. In host:all each crate's tests are one run with a content key (`key_of`):
 binaries' bytes, the shared libraries they load, every file a test can read (the repository's
 files other than other crates' Rust sources, manifests and documentation), the environment the
 crate's sources and its workspace dependencies' read, the tools, the gate's own scripts and the
-worktree's path. A crate whose key equals a green run's is reused, not run. A crate whose sources
-declare an outside need (styx_frame::not_run or dma_case: a device, a daemon, a GPU) always runs,
-and so does a crate that gets no key; both are printed with the reason. Keys are recorded only
+worktree's path, and the machine a test with an outside need meets (machine_facts: the C
+compiler, the PipeWire version and socket, the software Vulkan driver, the vivid driver's build,
+the dma-heaps, the kernel). A crate whose key equals a green run's is reused, not run: its result
+is known. A crate that gets no key always runs, printed with the reason. Keys are recorded only
 after a green run.
 
 Record. A run writes, per variant, passed, failed, or not-run (and why) to the records dir
@@ -811,9 +812,45 @@ def shared_libs(binary, cache):
 
 
 def tool_versions(pool):
-    cmds = (["rustc", "-vV"], ["cargo", "-V"], ["cargo", "nextest", "--version"], ["uname", "-r"])
+    cmds = (["rustc", "-vV"], ["cargo", "-V"], ["cargo", "nextest", "--version"], ["uname", "-r"],
+            ["cc", "--version"], ["pipewire", "--version"])
     runs = [pool.submit(subprocess.run, cmd, cwd=ROOT, capture_output=True, text=True) for cmd in cmds]
-    return [r.result().stdout.strip() for r in runs]
+    out = []
+    for r in runs:
+        try:
+            out.append(r.result().stdout.strip())
+        except OSError:
+            out.append("absent")
+    return out
+
+
+def machine_facts(cache):
+    """What a test with an outside need (a device, a daemon, a GPU) meets on this machine, beyond
+    the tools: the software Vulkan driver the gate points every GPU test at (its manifest and the
+    library it names, which is loaded by name, not linked), the vivid test driver's build, the
+    dma-heaps, and whether the PipeWire daemon's socket is there. Any change reruns every crate."""
+    facts = []
+    for var in ("VK_DRIVER_FILES", "VK_ICD_FILENAMES"):
+        for icd in filter(None, os.environ.get(var, "").split(":")):
+            facts.append(f"{var}={icd}:{digest(icd, cache) if os.path.isfile(icd) else 'absent'}")
+            try:
+                with open(icd) as f:
+                    lib = json.load(f)["ICD"]["library_path"]
+                facts.append(f"icd-lib={lib}:{digest(lib, cache) if os.path.isfile(lib) else 'absent'}")
+            except (OSError, ValueError, KeyError):
+                facts.append("icd-lib=unreadable")
+    try:
+        with open("/sys/module/vivid/srcversion") as f:
+            facts.append("vivid=" + f.read().strip())
+    except OSError:
+        facts.append("vivid=absent")
+    try:
+        facts.append("dma-heaps=" + ",".join(sorted(os.listdir("/dev/dma_heap"))))
+    except OSError:
+        facts.append("dma-heaps=absent")
+    runtime = os.environ.get("XDG_RUNTIME_DIR", "")
+    facts.append("pipewire-socket=" + str(bool(runtime) and os.path.exists(os.path.join(runtime, "pipewire-0"))))
+    return facts
 
 
 def load_digests():
@@ -918,7 +955,7 @@ def cmd_reuse_plan(a):
         list(pool.map(lambda b: (digest(b, cache), shared_libs(b, ldd_cache)), binaries))
     if not CI:
         save_digests(cache, set(binaries))
-    common = "\0".join([a.variant, ROOT, scripts_hash(), *versions]).encode()
+    common = "\0".join([a.variant, ROOT, scripts_hash(), *versions, *machine_facts(cache)]).encode()
     # A change to what measures or selects (STYX_GATE_NO_REUSE, from the map's no-reuse lines)
     # reuses nothing: every crate runs, and its new key is recorded after a green run.
     off = os.environ.get("STYX_GATE_NO_REUSE", "").split()
@@ -944,10 +981,7 @@ def cmd_reuse_plan(a):
             run.append(crate)
             continue
         if need:
-            say(f"    {crate:22} runs: an outside need ({need})")
-            run.append(crate)
             outside.append(crate)
-            continue
         key, why = key_of(crate, per_crate[crate], files, cache, ldd_cache, common)
         if key is None:
             say(f"    {crate:22} runs: NO KEY: {why}")
@@ -961,13 +995,13 @@ def cmd_reuse_plan(a):
                   f" ({rec[3]})")
             reused.append(crate)
         else:
-            say(f"    {crate:22} runs: new key")
+            say(f"    {crate:22} runs: new key{f' (an outside need: {need})' if need else ''}")
             run.append(crate)
     with open(a.plan, "w") as f:
         json.dump({c: k for c, k in plan.items() if c in run}, f)
     counts = (f"{len(run) + len(reused)} crates: {len(reused)} reused, {len(run)} run "
-              f"({len(outside)} outside need, {len(unkeyed)} unkeyed, "
-              f"{len(run) - len(outside) - len(unkeyed)} new key)")
+              f"({len(unkeyed)} unkeyed, {len(run) - len(unkeyed)} new key; "
+              f"{len(outside)} with an outside need)")
     say(f"    {a.variant} reuse: {counts}")
     results = os.environ.get("STYX_GATE_RESULTS")
     if results:

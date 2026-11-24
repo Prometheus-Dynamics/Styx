@@ -73,8 +73,12 @@ run. An edited crate always reruns; its dependents reuse only when their binarie
 byte-identical.
 
 A crate whose sources declare an outside need (`styx_frame::not_run` or `dma_case`: a device, a
-daemon, a GPU) always runs, and so does a crate that gets no key; each is printed with the reason.
-Keys are recorded only after a green run, and match only within one worktree path.
+daemon, a GPU) is keyed like any other, with what it meets on this machine in the key as well: the
+kernel, the C compiler, the PipeWire version and whether its socket is there, the software Vulkan
+driver's manifest and library, the vivid driver's build and the dma-heaps. A change to any of them
+reruns every crate. A crate that gets no key always runs, printed with the reason. Keys are
+recorded only after a green run, and match only within one worktree path. A reused crate's
+not-run cases are those of its green run.
 
 A change to what measures or selects reuses nothing: the map's `no-reuse` lines (the gate's
 scripts, the lane map, the reuse key code, `.config/` with the filter lists, `data/`, the

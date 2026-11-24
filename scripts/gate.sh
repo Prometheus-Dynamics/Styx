@@ -31,7 +31,15 @@ step_not_run() {
 if [ -z "${STYX_GATE_SUPERVISOR:-}" ]; then
   exec python3 scripts/gate-supervise.py "$0" "$@"
 fi
-export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+# Incremental builds locally: after an edit to a crate low in the graph (styx-frame) every test
+# binary rebuilt in 6 s and 68 CPU-s with them, 54-74 s and about 400 CPU-s without (2026-11-24,
+# load 5-16). CI builds from a cache without them (less to write). Switching the setting rebuilds
+# every workspace crate, so a worktree keeps one.
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+  export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
+else
+  export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-1}"
+fi
 
 # Cargo.lock is committed, and every cargo step below builds with --locked: the gate builds exactly
 # the versions in it. A manifest changed without its lock fails here, first, with the fix.
@@ -316,8 +324,18 @@ all_tests() {
   fi
   # The list builds every test binary; the run then builds nothing.
   cargo nextest list --locked --workspace --all-features --message-format json > "$lists/all.json"
-  local expr
+  local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0
   expr=$(python3 scripts/gate.py reuse-plan --list "$lists/all.json" --plan "$lists/plan.json")
+  # nextest does not run doctests. They run beside the nextest run, not after it: rustdoc compiles
+  # and runs each crate's examples one crate after another, mostly waiting (33 s of wall for 9 CPU-s
+  # at load 200), and it holds no lock on the build directory while it does. Their output is
+  # printed when they end.
+  if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
+    cargo test --locked --workspace --doc --all-features > "$doc_out" 2>&1 &
+    doc_pid=$!
+  else
+    echo "doctests left out: no changed file holds one (the gate runs them)"
+  fi
   # The expression names only crates with a test that is not #[ignore]: matching nothing is a fault.
   if [ -n "$expr" ]; then
     cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail --all-features -E "$expr"
@@ -328,11 +346,11 @@ all_tests() {
   fi
   # Only after a green run (set -e ends the step on a red one).
   python3 scripts/gate.py reuse-record --plan "$lists/plan.json"
-  # nextest does not run doctests.
-  if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
-    cargo test --locked --workspace --doc --all-features
-  else
-    echo "doctests left out: no changed file holds one (the gate runs them)"
+  if [ -n "$doc_pid" ]; then
+    wait "$doc_pid" || doc_status=$?
+    echo "==> doctests (they ran beside the nextest run):"
+    cat "$doc_out"
+    [ "$doc_status" = 0 ] || { echo "gate: the doctests failed" >&2; return 1; }
   fi
 }
 no_std_checks() {

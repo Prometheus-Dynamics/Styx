@@ -55,11 +55,13 @@ The work is a pre-planned list of PRs into `next`.
 - Repeat runs are set by risk, and the count is stated in the PR: many runs only for a change to
   timing or concurrency; three for a join of branches that each passed, and for an ordinary change.
 - A red landing gate is read and given a named cause. Never rerun it in hope.
-- Heavy jobs stay within the cores they are given: `taskset -c 6-31`, `-j 13`, and the gate's two
-  slots. Don't start a second build beside your own.
+- Heavy jobs stay within the cores they are given: `taskset -c 6-31`, `-j 13`, and the gate's one
+  slot. Don't start a second build beside your own.
 - Start warm. Cargo keys every workspace crate's build on the worktree's absolute path, so a new
   worktree path compiles the whole workspace. Keep worktrees at fixed paths and reuse one, with its
-  `CARGO_TARGET_DIR`, for the next item once the previous one has landed. A new worktree with its
+  `CARGO_TARGET_DIR`, for the next item once the previous one has landed: `scripts/area.sh wt NAME`
+  makes or reuses `<area>/wt/NAME`, and `eval "$(scripts/area.sh env NAME)"` sets its target and
+  limits (the area is `$STYX_AREA`, default `/mnt/nvme-wd/styx`). A new worktree with its
   `CARGO_TARGET_DIR` outside it starts from the seed by default: the dependencies of the last green
   gate (`scripts/cargo-seed.sh`).
 - A fail-before proof that edits a file and restores it leaves a new file time, and cargo then
@@ -98,8 +100,9 @@ The work is a pre-planned list of PRs into `next`.
 - Never claim something works without having run it. Report failures with their output.
 - Never push tags. Never force-push `next` or `dev`. Don't change `dev`.
 - Don't estimate how long anything will take. Describe size by scope and risk.
-- Builds and scratch go on NVMe or SSD, never the Github HDD. Each worktree has its own
-  `CARGO_TARGET_DIR`. Builds use `taskset -c 6-31` and `-j 13`.
+- Builds and scratch go in the area (`scripts/area.sh setup`), never the Github HDD. Each worktree
+  has its own `CARGO_TARGET_DIR`. Builds use `taskset -c 6-31` and `-j 13`. Nothing you rely on
+  lives only in the area: tooling, board steps and evidence are committed.
 
 ## Board runs
 
