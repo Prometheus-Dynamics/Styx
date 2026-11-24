@@ -38,7 +38,8 @@ end:
 styx-capi's `c_proof` links the C static library, built with the package's default features in
 `<target>/debug/c-proof`. The gate builds it beside the all-features test binaries, so the test
 finds it current. One gate runs at a
-time (`STYX_GATE_SLOTS`, default 1): two side by side each took twice as long.
+time (`STYX_GATE_SLOTS`, default 1): two side by side each took twice as long. The gate runs at nice `STYX_NICE` (default 10), the one level every dep's heavy runs use: it raises
+its own level to it, and says so when started above it.
 
 ## Nothing to run is not passed
 

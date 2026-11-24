@@ -19,6 +19,15 @@
 # the file is left as committed. Measurement only: it runs tests only with STYX_AB_RUN=1.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
+# Every heavy run is at one nice level across the deps (STYX_NICE, default 10: the coordinator's
+# rule of 2026-11-24, since mixed levels starve the lower ones). A process can raise its own nice
+# level, not lower it: started above it, the run says so and stays where it is.
+want=${STYX_NICE:-10}
+if [ "$(nice)" -lt "$want" ]; then
+  renice -n "$want" -p $$ > /dev/null
+elif [ "$(nice)" -gt "$want" ]; then
+  echo "$(basename "$0"): at nice $(nice), above $want: started from a lower-priority shell" >&2
+fi
 rounds=${1:?rounds}; shift
 [ $# -ge 2 ] || { echo "ab-target: give two or more targets" >&2; exit 1; }
 targets=("$@") labels=()

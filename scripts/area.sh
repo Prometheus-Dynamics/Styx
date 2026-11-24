@@ -15,7 +15,8 @@
 # evidence live in this repository.
 #
 # Builds stay within the cores they are given: STYX_CPUS (default 6-31) for taskset, and
-# CARGO_BUILD_JOBS (default 13). GPU tests run on the software Vulkan device only.
+# CARGO_BUILD_JOBS (default 13). Every heavy run is at nice STYX_NICE (default 10), one level for
+# every dep: scripts/gate.sh and scripts/ab-target.sh set it themselves, styx_run for the rest. GPU tests run on the software Vulkan device only.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 area=${STYX_AREA:-/mnt/nvme-wd/styx}
@@ -61,7 +62,8 @@ export CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-13}
 export CARGO_INCREMENTAL=${CARGO_INCREMENTAL:-1}
 export VK_DRIVER_FILES=$lvp VK_ICD_FILENAMES=$lvp
 export STYX_CPUS=${STYX_CPUS:-6-31}
-styx_run() { taskset -c "\$STYX_CPUS" "\$@"; }
+export STYX_NICE=${STYX_NICE:-10}
+styx_run() { taskset -c "\$STYX_CPUS" nice -n "\$(( STYX_NICE > \$(nice) ? STYX_NICE - \$(nice) : 0 ))" "\$@"; }
 EOF
     ;;
   *) die "usage: scripts/area.sh setup | wt NAME | env NAME" ;;
