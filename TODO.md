@@ -169,4 +169,13 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
   first (nextest priority; that order was not kept): 2 failures in 8, this one and one whose
   output was not kept. In the usual order: 0 in 3 runs and the day's gates (2026-11-24, load
   89-114). Cause not shown: a reproduction must give that line
-  and message. Held: speed is the only work now.
+  and message. Since the wrong reader was cut, it may be a race in the service's choice of which
+  reader to cut, not only an effect of test order. Held: speed is the only work now.
+- [ ] Q14 `styx-service` `aaa` `the_3a_loop_on_the_simulated_camera` failed once
+  (`crates/out/service/tests/aaa.rs:421`: "the manual exposure, to the line: 16444"): a manual
+  exposure of 3000 us set for frame F (30 frames ahead) was not in effect at the first frame from F,
+  which still had AE's 16444. 1 failure in 3 all-features runs at `--test-threads 78` (load
+  214), 0 at 26 and 52 (2026-11-24). Cause not shown: a
+  reproduction must give that line and message; it may be the set arriving after F under load
+  (a test timing) or the frame-addressed control applied late (the service). Held: speed is the
+  only work now.

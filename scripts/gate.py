@@ -822,6 +822,15 @@ def tracked_files():
     return sorted(p for p in out.split("\0") if p and os.path.isfile(os.path.join(ROOT, p)))
 
 
+def hiding_allowed():
+    """Scripts are hidden only in a gate worktree of the area (scripts/area.sh: <area>/wt/NAME),
+    never in a checkout someone works in, and never as root (root reads a file with no
+    permissions). Elsewhere every script is an input, as before the guard."""
+    area = os.path.realpath(os.environ.get("STYX_AREA") or "/mnt/nvme-wd/styx")
+    return (os.path.realpath(ROOT).startswith(os.path.join(area, "wt") + os.sep)
+            and os.geteuid() != 0 and not CI)
+
+
 def test_readable(files):
     """The files a test can read: all but the scripts that are not inputs. A script is an input
     when a crate's source names it (or a directory of its path) in a string literal, when it is
@@ -840,6 +849,8 @@ def test_readable(files):
                     for part in m.group(1).decode(errors="replace").split("/"):
                         named.add(part)
     scripts = [rel for rel in files if rel.startswith("scripts/")]
+    if not hiding_allowed():
+        return list(files)
     inputs = {rel for rel in scripts
               if rel in GATE_FILES or any(part in named for part in rel.split("/")[1:])}
     grew = True
@@ -867,9 +878,9 @@ def cmd_scripts_hidden(a):
     """--on: the scripts that are no test's input lose every permission while the gate builds and
     tests; --off: every script gets its committed mode back (also after a gate that was killed)."""
     if a.on:
-        if os.geteuid() == 0:
-            sys.exit("gate: as root a script with no permissions can still be read: run the gate "
-                     "as a user (the reuse key leaves out scripts no test may read)")
+        if not hiding_allowed():
+            print("    every script is a test input here (not a gate worktree of the area): none hidden")
+            return
         for rel in not_inputs():
             os.chmod(os.path.join(ROOT, rel), 0)
             print(f"    not readable while the gate runs: {rel}")
@@ -884,6 +895,12 @@ def cmd_scripts_hidden(a):
             full = os.path.join(ROOT, rel)
             if os.path.isfile(full) and os.stat(full).st_mode & 0o777 == 0:
                 os.chmod(full, want)
+        # The exec bit is tracked: after the restore no script's mode differs from the index.
+        changed = [line for line in git("diff", "--summary", "--", "scripts").splitlines()
+                   if "mode change" in line]
+        if changed:
+            sys.exit("gate: scripts' modes differ from the index after the restore:\n  "
+                     + "\n  ".join(changed))
 
 
 def shared_libs(binary, cache):

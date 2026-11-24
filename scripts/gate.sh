@@ -277,6 +277,11 @@ fi
 # tests the default build alone has (.config/default-only.txt: code under cfg(not(feature))). The
 # two passes' test lists are compared: a default-only test missing from that list fails the gate.
 lists=$(mktemp -d "${TMPDIR:-/tmp}/styx-test-lists.XXXXXX")
+# Twice as many tests at once as there are cores: most tests wait (a paced camera, a timeout), so
+# one per core left cores idle. On 26 cores at load 110-215 (2026-11-24): 26 threads 22.9 s
+# (median of 3), 52 threads 18.8 s (median of 13, all green), 78 threads no faster and one failure
+# (TODO Q14). nproc counts the cores this process may use (taskset).
+test_threads=$(( $(nproc) * 2 ))
 nextest=0
 cargo nextest --version > /dev/null 2>&1 && nextest=1
 if [ -n "${STYX_GATE_NARROW+set}" ] && [ "$nextest" = 0 ]; then
@@ -332,7 +337,8 @@ default_tests() {
   fi
   # A narrowed check may leave none of them (it is not the gate); the gate runs them all.
   [ -z "${STYX_GATE_NARROW+set}" ] || { expr="($expr) & (${narrow_expr:-none()})"; no_tests=pass; }
-  cargo nextest run --locked "${crates[@]}" --no-fail-fast --no-tests="$no_tests" -E "$expr"
+  cargo nextest run --locked "${crates[@]}" --no-fail-fast --no-tests="$no_tests" \
+    --test-threads "$test_threads" -E "$expr"
 }
 all_tests() {
   if [ "$nextest" = 0 ]; then
@@ -364,7 +370,8 @@ all_tests() {
   fi
   # The expression names only crates with a test that is not #[ignore]: matching nothing is a fault.
   if [ -n "$expr" ]; then
-    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail --all-features -E "$expr"
+    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail --all-features \
+      --test-threads "$test_threads" -E "$expr"
   elif [ -n "${STYX_GATE_NARROW+set}" ]; then
     echo "no crate's tests to run (narrowed)"
   else

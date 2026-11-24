@@ -86,7 +86,10 @@ other script has no permissions while the lanes build and test (`gate.py scripts
 gives them back when it ends, and at its start after a gate stopped by force). A test that reaches
 one by a path built at run time fails with a permission error, so a script left out of the key
 cannot give a stale green: `scripts/key-guard-proof.sh` plants such a test and checks the run is
-red on it. A gate run as root is refused, since root reads a file with no permissions.
+red on it. Scripts are hidden only in a gate worktree of the area (`<area>/wt/NAME`), never in a
+checkout someone works in, never as root (root reads a file with no permissions) and never in CI;
+there every script is an input. After the restore the gate fails if any script's mode differs
+from the index (the exec bit is tracked).
 
 A crate whose key equals a green run's is printed `REUSED` and not
 run. An edited crate always reruns; its dependents reuse only when their binaries come out
