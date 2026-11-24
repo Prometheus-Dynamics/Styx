@@ -158,3 +158,7 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
 - [ ] Q9 (L-32/33) M33's reattach: the first frame after a reattach with no standby, and its time. **Blocked:** a Raze #2 slot (R-PASS 2 ran one lifetime, so the reattach half was not run).
 - [ ] Q10 (L-34) The lend path's board proof needs a live FE path upstream of the back end. Code is done; **parked** (out of scope, coordinator 2026-11-21).
 - [ ] Q11 (C-T) OV9782 colour tuning (black level, AWB, CCM) from a chart. **Blocked:** the user sets up the chart.
+- [ ] Q12 A rate asked above the camera's ceiling allocates on the frame path. The service's steady test
+  (`crates/out/service/tests/steady.rs`) with `fps_milli = 240000` against the simulated camera (it
+  clamps to 120 fps) counted 953 allocations in 953 steady frames, one in every frame window; at
+  60000 it counts 0 (2026-11-24). Found while shortening tests; held: speed is the only work now.
