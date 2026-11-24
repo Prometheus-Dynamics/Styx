@@ -75,12 +75,20 @@ and records it as not run with the reason; `--dry-run` prints the selection.
 In `host:all` each crate's tests are one run with a content key over what its result depends on:
 its test binaries' bytes, the shared libraries they load, the files a test can read (the
 repository's files other than other crates' Rust sources and manifests, documentation, and the
-scripts no crate's source names in a string literal: a measuring tool edited in `scripts/` reruns
-nothing, and does not widen `scripts/check.sh` to every crate), the
+scripts that are no test's input: a measuring tool edited in `scripts/` reruns nothing, and does
+not widen `scripts/check.sh` to every crate), the
 environment its sources and its workspace dependencies' sources read (a variable naming a file is
 keyed by the file's content; one naming a directory gives no key, except `XDG_RUNTIME_DIR`, keyed
 by its value: the tests keep lock files there, and the PipeWire socket is a machine fact), the tools, the gate's own
-scripts and the worktree's path. A crate whose key equals a green run's is printed `REUSED` and not
+scripts and the worktree's path. A script is a test's input when a crate's source names it (or a directory of its path) in a
+string literal, when it is one of the gate's own files, or when an input program names it. Every
+other script has no permissions while the lanes build and test (`gate.py scripts-hidden`; the gate
+gives them back when it ends, and at its start after a gate stopped by force). A test that reaches
+one by a path built at run time fails with a permission error, so a script left out of the key
+cannot give a stale green: `scripts/key-guard-proof.sh` plants such a test and checks the run is
+red on it. A gate run as root is refused, since root reads a file with no permissions.
+
+A crate whose key equals a green run's is printed `REUSED` and not
 run. An edited crate always reruns; its dependents reuse only when their binaries come out
 byte-identical.
 

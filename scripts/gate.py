@@ -823,10 +823,14 @@ def tracked_files():
 
 
 def test_readable(files):
-    """The files a test can read: all but the scripts no crate names. A script is read by a test
-    only through a path in a string literal of a crate's source (scripts/x.py, "x.py",
-    "../../scripts"); the gate's own scripts are in every key already (GATE_FILES). So a measuring
-    tool edited in scripts/ reruns nothing."""
+    """The files a test can read: all but the scripts that are not inputs. A script is an input
+    when a crate's source names it (or a directory of its path) in a string literal, when it is
+    one of the gate's own files (GATE_FILES), or when an input program (.sh, .py) names it: a
+    script reached through another one is an input too. The rest cannot be read while the gate builds and tests
+    (scripts_hidden): a test that reaches one through a path built at run time (a join, a concat!,
+    a constant of another crate) fails with a permission error instead of passing on a key that
+    left the script out. So a measuring tool edited in scripts/ reruns nothing, and a stale green
+    cannot come of it."""
     named = set()
     lit = re.compile(rb'"([^"\n]{1,200})"')
     for rel in files:
@@ -835,9 +839,51 @@ def test_readable(files):
                 for m in lit.finditer(f.read()):
                     for part in m.group(1).decode(errors="replace").split("/"):
                         named.add(part)
-    return [rel for rel in files
-            if not rel.startswith("scripts/") or rel in GATE_FILES
-            or any(part in named for part in rel.split("/")[1:])]
+    scripts = [rel for rel in files if rel.startswith("scripts/")]
+    inputs = {rel for rel in scripts
+              if rel in GATE_FILES or any(part in named for part in rel.split("/")[1:])}
+    grew = True
+    while grew:
+        grew = False
+        text = b""
+        for rel in sorted(inputs):
+            if rel.endswith((".sh", ".py")):  # programs; the lane map names every script
+                with open(os.path.join(ROOT, rel), "rb") as f:
+                    text += f.read()
+        for rel in scripts:
+            if rel not in inputs and os.path.basename(rel).encode() in text:
+                inputs.add(rel)
+                grew = True
+    return [rel for rel in files if not rel.startswith("scripts/") or rel in inputs]
+
+
+def not_inputs():
+    files = tracked_files()
+    keep = set(test_readable(files))
+    return [rel for rel in files if rel.startswith("scripts/") and rel not in keep]
+
+
+def cmd_scripts_hidden(a):
+    """--on: the scripts that are no test's input lose every permission while the gate builds and
+    tests; --off: every script gets its committed mode back (also after a gate that was killed)."""
+    if a.on:
+        if os.geteuid() == 0:
+            sys.exit("gate: as root a script with no permissions can still be read: run the gate "
+                     "as a user (the reuse key leaves out scripts no test may read)")
+        for rel in not_inputs():
+            os.chmod(os.path.join(ROOT, rel), 0)
+            print(f"    not readable while the gate runs: {rel}")
+    else:
+        modes = {}
+        for line in git("ls-files", "-s", "--", "scripts").splitlines():
+            mode, _, _, rel = line.split(None, 3)
+            modes[rel] = 0o755 if mode == "100755" else 0o644
+        for rel in git("ls-files", "--others", "--exclude-standard", "--", "scripts").split():
+            modes[rel] = 0o755  # not committed yet: a script, so runnable
+        for rel, want in modes.items():
+            full = os.path.join(ROOT, rel)
+            if os.path.isfile(full) and os.stat(full).st_mode & 0o777 == 0:
+                os.chmod(full, want)
 
 
 def shared_libs(binary, cache):
@@ -1093,13 +1139,15 @@ def main():
     rp.add_argument("--list", required=True)
     rp.add_argument("--plan", required=True)
     rp.add_argument("--variant", default="host:all")
+    sh = sub.add_parser("scripts-hidden")
+    sh.add_argument("--on", action="store_true")
     rr = sub.add_parser("reuse-record")
     rr.add_argument("--plan", required=True)
     rr.add_argument("--variant", default="host:all")
     a = p.parse_args()
     if a.cmd == "run" and a.crates and not a.narrow:
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
-    fn = {"run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
+    fn = {"scripts-hidden": cmd_scripts_hidden, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
           "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)

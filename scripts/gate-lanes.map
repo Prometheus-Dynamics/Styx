@@ -30,6 +30,7 @@ scripts/check.sh            all
 scripts/area.sh             host:checks
 scripts/ab-target.sh        host:checks
 scripts/dstate-sample.sh    host:checks
+scripts/key-guard-proof.sh  host:checks
 # Test data any crate's tests may read.
 data/*                      host:all no-reuse
 # Shared test fixtures: the one simulated camera every camera test runs, and the case declarations

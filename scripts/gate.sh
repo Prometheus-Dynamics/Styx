@@ -163,6 +163,11 @@ done
 
 # Slowest green: 1.6 s (restore from a reflink seed, 2.1 GB).
 [ "$cargo_lanes" = 0 ] || step "cargo seed" 60 scripts/cargo-seed.sh restore
+# The scripts that are no test's input (scripts/gate.py test_readable: no crate names them, no
+# input script names them) are left out of every reuse key. While the lanes build and test they
+# cannot be read at all, so a test that reaches one by a path built at run time fails instead of
+# passing on a key without it. A gate stopped by force left them so; this gives them back first.
+python3 scripts/gate.py scripts-hidden
 # The record, after the restore (which starts only an empty target).
 if [ "$cargo_lanes" != 0 ] && [ ! -f "$owner_file" ]; then
   mkdir -p "$target_dir"
@@ -229,10 +234,24 @@ not_run_report() {
   else
     echo "cases NOT RUN: 0"
   fi
+  # A lane that ran beside the host lanes and was not printed (the gate ended on a red step
+  # first): waited for (each of its steps has its bound) and printed whole, so its result is
+  # read, not guessed.
+  local pid out
+  for pid in ${checks_pid:-} ${default_pid:-} ${bare_pid:-}; do
+    wait "$pid" 2> /dev/null || true
+  done
+  for out in "${checks_out:-}" "${default_out:-}" "${bare_out:-}"; do
+    [ -n "$out" ] && [ -f "$out" ] || continue
+    echo "==> $(basename "$out" .out) (beside the host lanes; the gate ended before it was printed):"
+    cat "$out"
+  done
   rm -f "$STYX_NOT_RUN_LOG"
   rm -rf "${lists:-}" "${step_tmp_root:-}"
+  python3 scripts/gate.py scripts-hidden
 }
 trap not_run_report EXIT
+[ "$test_lanes" = 0 ] || python3 scripts/gate.py scripts-hidden --on
 
 # Tests run under cargo-nextest: each test in its own process, tests of every binary side by side
 # (.config/nextest.toml groups the ones that share a device or a daemon). nextest does not run
@@ -547,7 +566,7 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
     echo "==> host:default (it ran beside host:all):"
     status=0
     wait "$default_pid" || status=$?
-    cat "$default_out"
+    cat "$default_out"; default_out=""
     [ "$status" = 0 ] || { echo "gate: host:default failed" >&2; exit 1; }
   fi
   if [ -f "$lists/default.json" ] && [ -f "$lists/all.json" ]; then
@@ -560,7 +579,7 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
     echo "==> the bare lanes (they ran beside the host lanes):"
     status=0
     wait "$bare_pid" || status=$?
-    cat "$bare_out"
+    cat "$bare_out"; bare_out=""
     [ "$status" = 0 ] || { echo "gate: the bare lanes failed" >&2; exit 1; }
   fi
 else
@@ -570,7 +589,7 @@ if [ -n "$checks_pid" ]; then
   echo "==> host:checks (they ran beside the builds):"
   status=0
   wait "$checks_pid" || status=$?
-  cat "$checks_out"
+  cat "$checks_out"; checks_out=""
   [ "$status" = 0 ] || { echo "gate: host:checks failed" >&2; exit 1; }
 fi
 

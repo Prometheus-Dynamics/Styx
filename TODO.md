@@ -162,3 +162,11 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
   (`crates/out/service/tests/steady.rs`) with `fps_milli = 240000` against the simulated camera (it
   clamps to 120 fps) counted 953 allocations in 953 steady frames, one in every frame window; at
   60000 it counts 0 (2026-11-24). Found while shortening tests; held: speed is the only work now.
+- [ ] Q13 `styx-measure` `readers::keep_and_stall_readers_against_the_share_of_two` failed once
+  (`crates/tools/measure/tests/readers.rs:126`: "the reader keeping 2 runs on ... it held a frame
+  past the keep window ... after 290 frames delivered; frames held at the cut: 2"): the pair's
+  reader keeping 2 was cut, not the stalled one. All-features runs with the slow tests started
+  first (nextest priority; that order was not kept): 2 failures in 8, this one and one whose
+  output was not kept. In the usual order: 0 in 3 runs and the day's gates (2026-11-24, load
+  89-114). Cause not shown: a reproduction must give that line
+  and message. Held: speed is the only work now.
