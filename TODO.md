@@ -175,7 +175,11 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
   (`crates/out/service/tests/aaa.rs:421`: "the manual exposure, to the line: 16444"): a manual
   exposure of 3000 us set for frame F (30 frames ahead) was not in effect at the first frame from F,
   which still had AE's 16444. 1 failure in 3 all-features runs at `--test-threads 78` (load
-  214), 0 at 26 and 52 (2026-11-24). Cause not shown: a
+  214), 0 at 26 and 52 (2026-11-24). Starved (5 cores, `taskset -c 6-10`) at 52 threads it failed
+  1 of 3 one assertion later (`aaa.rs:452`, "every frame from F has the manual gain": frame F
+  had the old gain 8000, the 1500 began one frame after F); at 26 threads 0 of 5. Both are a
+  frame-addressed control one frame late, as proof 2's fix 4 was on the board (+1 frame); not
+  shown to be the same cause. The gate runs one test per core because of it. Cause not shown: a
   reproduction must give that line and message; it may be the set arriving after F under load
   (a test timing) or the frame-addressed control applied late (the service). Held: speed is the
   only work now.

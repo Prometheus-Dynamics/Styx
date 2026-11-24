@@ -277,11 +277,10 @@ fi
 # tests the default build alone has (.config/default-only.txt: code under cfg(not(feature))). The
 # two passes' test lists are compared: a default-only test missing from that list fails the gate.
 lists=$(mktemp -d "${TMPDIR:-/tmp}/styx-test-lists.XXXXXX")
-# Twice as many tests at once as there are cores: most tests wait (a paced camera, a timeout), so
-# one per core left cores idle. On 26 cores at load 110-215 (2026-11-24): 26 threads 22.9 s
-# (median of 3), 52 threads 18.8 s (median of 13, all green), 78 threads no faster and one failure
-# (TODO Q14). nproc counts the cores this process may use (taskset).
-test_threads=$(( $(nproc) * 2 ))
+# One test at a time per core. Twice that was faster (26 cores at load 110-215, 2026-11-24: 18.8 s
+# against 22.9 s) but not safe when starved: on 5 cores, 52 threads failed TODO Q14 in 1 of 3 runs,
+# 26 threads in none of 5. nproc counts the cores this process may use (taskset).
+test_threads=$(nproc)
 nextest=0
 cargo nextest --version > /dev/null 2>&1 && nextest=1
 if [ -n "${STYX_GATE_NARROW+set}" ] && [ "$nextest" = 0 ]; then
