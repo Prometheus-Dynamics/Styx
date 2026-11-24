@@ -5,7 +5,8 @@
 #   scripts/cargo-seed.sh restore   an absent or empty target directory starts from the seed for this
 #                                   key (or the newest seed: cargo rebuilds whatever differs)
 #   scripts/cargo-seed.sh save      after a green gate: keep this target's dependencies as the seed
-#                                   for its key, unless one exists
+#                                   for its key, unless one exists or the target was not built
+#                                   from empty
 #
 # On by default for a target directory kept outside its worktree (CARGO_TARGET_DIR, one per worktree,
 # on the targets' filesystem): the seeds are kept beside it, in <its parent>/seeds, so a copy is a
@@ -79,11 +80,15 @@ case ${1:-} in
           if [ -f "$d/.seed-complete" ]; then src=${d%/}; break; fi
         done
       fi
-      if [ -z "$src" ]; then echo "cargo-seed: no seed yet: a cold build" >&2; exit 0; fi
-      mkdir -p "$(dirname "$target")"
+      mkdir -p "$target"
+      if [ -z "$src" ]; then
+        echo empty > "$target/.styx-built-from"
+        echo "cargo-seed: no seed yet: a cold build" >&2; exit 0
+      fi
       rm -rf "$target"
       cp -a --reflink=auto "$src" "$target"
       rm -f "$target/.seed-complete"
+      basename "$src" > "$target/.styx-built-from"
       other=""
       [ "$(basename "$src")" = "$key" ] || other=" (another key: cargo rebuilds what differs)"
       echo "cargo-seed: $target starts from the seed $(basename "$src")$other" >&2
@@ -91,6 +96,15 @@ case ${1:-} in
     ;;
   save)
     [ -d "$target" ] || exit 0
+    # Only a target built from empty is a seed: one started from a seed, or built through several
+    # Cargo.lock versions, holds dependency files no build uses any more, and rustc lists deps/ on
+    # every call (2026-11-24: 3014 entries in a seed saved from a worked-in target, 1941 from one
+    # built from empty; Orion measured 66 s against 46 s for 40906 against 1264 entries).
+    if [ "$(cat "$target/.styx-built-from" 2>/dev/null)" != empty ]; then
+      [ -f "$seeds/$key/.seed-complete" ] ||
+        echo "cargo-seed: no seed for $key kept: $target was not built from empty" >&2
+      exit 0
+    fi
     (
       flock -w 600 9 || die "the seed lock was not free in 600 s"
       [ -f "$seeds/$key/.seed-complete" ] && exit 0
