@@ -185,3 +185,14 @@ no changed file holds one. Lanes behind on `origin/next` are not added. It recor
 the keys of crates whose runs were green, which a later gate can reuse. Green there is not the gate.
 
 Continuous integration runs every lane, reuses nothing and records nothing.
+
+CI compiles the workspace crates through sccache on the Actions cache (`.github/workflows/next.yml`:
+the action pinned by commit, the binary's sha256 checked before use, `sccache --show-stats` at the
+end of every run). sccache keys on content, so a cached compile can never stand in for a changed
+source. A cache of the whole target directory was measured beside it and declined (2026-11-27,
+branch ci-exp/cache): it is fast when it restores (gate 63-65 s), but cargo trusts mtimes, so it
+needs a guard (every file at one old time, the files changed since the cached commit at now), and
+what build scripts read outside git (pkg-config, system headers) must key the cache. Keyed on the
+runner image and the installed packages, it missed 4 of 9 runs: hosted runners under one image
+label (ubuntu26 20261116.202.1) came with three different package sets, and each miss was a full
+cold build (705-1010 s), at 1.1 GB per save against the repository's 10 GB.

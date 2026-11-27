@@ -30,6 +30,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+      # The workspace crates' compiles go through sccache on the Actions cache, keyed by content
+      # (rust-cache keeps only the dependencies and cleans the workspace's units, so every push
+      # compiled all 52 crates: 259-348 s of a 346-461 s gate step, 2026-11-27). Measured on a
+      # branch against the same runs: gate 218-256 s for no change, a leaf and styx-format.
+      # The action is pinned by commit, and the binary it installs is checked before any use.
+      # RUSTC_WRAPPER is set on the gate step only: rust-cache's key hashes the RUST* variables,
+      # and a wrapper leaves cargo's fingerprints alone, so the dependencies still restore.
+      - uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+        with:
+          version: v0.19.0
+      - name: sccache binary
+        run: |
+          echo "0b44834be857e21b026f7db49a7762023fedb5eb5ed60725a66f698d8d79a34b  $SCCACHE_PATH" | sha256sum -c -
+          "$SCCACHE_PATH" --version
       # The gate runs its tests under cargo-nextest (scripts/gate.sh, .config/nextest.toml).
       - uses: taiki-e/install-action@v2
         with:
@@ -81,8 +95,14 @@ jobs:
       # reported in the job summary (scripts/gate.sh), not failed and not green as tested.
       - run: ./scripts/gate.sh
         env:
+          RUSTC_WRAPPER: sccache
+          SCCACHE_GHA_ENABLED: "true"
           STYX_REQUIRE_DMA_HEAP: "0"
           STYX_REQUIRE_PIPEWIRE: "1"
           STYX_REQUIRE_CC: "1"
           STYX_REQUIRE_GPU: "0"
           STYX_REQUIRE_VIVID: "0"
+      # Every run shows its hit rate.
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
