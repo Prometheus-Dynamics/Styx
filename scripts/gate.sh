@@ -20,6 +20,12 @@ if [ -z "${STYX_GATE_SELECTED:-}" ]; then
   [ "${1:-}" != --trailer ] || exec python3 scripts/gate.py trailer
   exec python3 scripts/gate.py run "$@"
 fi
+# The gate's time outside its steps, phase by phase (diagnostic): seconds since gate.py run
+# started (STYX_GATE_T0). About 10-14 s of a gate was outside every step and untimed (2026-11-27).
+mark() {
+  [ -z "${STYX_GATE_T0:-}" ] || awk -v t0="$STYX_GATE_T0" -v now="$EPOCHREALTIME" -v what="$1" \
+    'BEGIN { printf "gate: at %.1f s: %s\n", now - t0, what }'
+}
 # A lane's steps run when it is selected; the lane is recorded as started, then passed.
 selected() {
   case " $STYX_GATE_SELECTED " in *" $1 "*) return 0 ;; esac
@@ -54,6 +60,7 @@ fi
 # the versions in it. A manifest changed without its lock fails here, first, with the fix.
 # (Not in a dry gate, scripts/gate-selftest.sh: it builds nothing, and its twelve dry gates queued on
 # cargo's package cache lock behind a real gate's builds, past the self-test's bound.)
+mark "gate.sh started under the supervisor"
 if [ -z "${STYX_GATE_DRY:-}" ] && ! cargo metadata --locked --format-version 1 > /dev/null; then
   echo "gate: Cargo.lock does not match the manifests: run \`cargo update --workspace\` (it changes only what the manifests need) and commit Cargo.lock" >&2
   exit 1
@@ -105,6 +112,7 @@ fi
 # a step that leaves anything in it fails, naming what: a test that leaks into a shared TMPDIR
 # fills it, and a later run fails on something unrelated. The step's wall and CPU time (its
 # processes', user + system) are printed beside its name.
+mark "Cargo.lock checked, gate slot taken"
 step_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/g.XXX")"
 step_count=0
 step() {
@@ -213,6 +221,7 @@ done
 { selected host:all || selected host:default; } && test_lanes=1
 
 # Slowest green: 1.6 s (restore from a reflink seed, 2.1 GB).
+mark "setup done"
 [ "$cargo_lanes" = 0 ] || step "cargo seed" 60 scripts/cargo-seed.sh restore
 # The scripts that are no test's input (scripts/gate.py test_readable: no crate names them, no
 # input script names them) are left out of every reuse key. While the lanes build and test they
@@ -303,9 +312,11 @@ not_run_report() {
   rm -f "$STYX_NOT_RUN_LOG"
   rm -rf "${lists:-}" "${step_tmp_root:-}"
   [ -n "${STYX_GATE_DRY:-}" ] || python3 scripts/gate.py scripts-hidden
+  mark "gate.sh ends (files removed, scripts restored)"
 }
 trap not_run_report EXIT
 [ "$test_lanes" = 0 ] || [ -n "${STYX_GATE_DRY:-}" ] || python3 scripts/gate.py scripts-hidden --on
+mark "scripts hidden; lanes start"
 
 # Tests run under cargo-nextest: each test in its own process, tests of every binary side by side
 # (.config/nextest.toml groups the ones that share a device or a daemon). nextest does not run
@@ -718,6 +729,7 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
     # A test group's filter (.config/nextest.toml), term by term, still names tests. Slowest green: 6 s.
     step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
     lane_mark host:all passed
+    mark "host:all done"
   fi
   if [ -n "$default_pid" ]; then
     echo "==> host:default (it ran beside host:all):"
@@ -750,6 +762,7 @@ if [ -n "$checks_pid" ]; then
   [ "$status" = 0 ] || { echo "gate: host:checks failed" >&2; exit 1; }
 fi
 
+mark "every lane waited for and printed"
 if [ -n "${STYX_GATE_NARROW+set}" ]; then
   echo "check passed, tests narrowed to ${narrow_expr:-no crate}: not the gate"
 else

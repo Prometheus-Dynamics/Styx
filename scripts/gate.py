@@ -669,7 +669,15 @@ def narrowed_crates(base, named):
     return sorted(crates)
 
 
+def mark(what):
+    """The gate's time outside its steps (diagnostic): seconds since gate.py run started."""
+    t0 = os.environ.get("STYX_GATE_T0")
+    if t0:
+        print(f"gate: at {time.time() - float(t0):.1f} s: {what}", flush=True)
+
+
 def cmd_run(a):
+    os.environ["STYX_GATE_T0"] = repr(time.time())
     if CI:
         selected = list(ALL)
         print("gate: CI runs every lane, reuses nothing and records nothing")
@@ -678,6 +686,7 @@ def cmd_run(a):
         return rc
     if UPSTREAM.startswith("origin/"):
         git("fetch", "-q", "origin", check=False)
+    mark("fetched")
     base = git("merge-base", UPSTREAM, "HEAD").strip()
     # A gate whose result is already known does not run: nothing it tests changed. Only
     # documentation that no code or script reads (or nothing) differs from the base, so the base's
@@ -756,7 +765,9 @@ def cmd_run(a):
     if narrow is not None:
         doctests = any(affected.holds_doctest(os.path.join(ROOT, p)) for p in changed_files(base))
     tree = worktree_tree()
+    mark("lanes chosen, tree hashed")
     status, rc = run_gate(selected, tree, narrow, doctests, no_reuse)
+    mark("gate.sh ended")
     for v, reason in dropped.items():
         status[v] = "not-run(dropped:" + re.sub(r"[^A-Za-z0-9_.,/-]+", "_", reason) + ")"
     for v in ALL:
@@ -788,6 +799,7 @@ def cmd_run(a):
                 clear_block(v)
     trailer = trailer_of(status)
     write_record(tree, base, trailer, green)
+    mark("recorded")
     print(f"GATE {'green' if green else 'RED'}{' (partial)' if partial and green else ''}: {summary}")
     if green and not a.catch_up:
         print("Commit with these trailers (scripts/gate.sh --trailer prints them again):")
