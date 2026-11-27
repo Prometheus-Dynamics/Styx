@@ -117,7 +117,8 @@ cannot give a stale green: `scripts/key-guard-proof.sh` plants such a test and c
 red on it. Scripts are hidden only in a gate worktree of the area (`<area>/wt/NAME`), never in a
 checkout someone works in, never as root (root reads a file with no permissions) and never in CI;
 there every script is an input. After the restore the gate fails if any script's mode differs
-from the index (the exec bit is tracked).
+from the index (the exec bit is tracked), read with a stat against `git ls-files -s`: `git diff`
+would refresh the index after the hide and restore and write all of it back at every gate's end.
 
 A crate whose key equals a green run's is printed `REUSED` and not
 run. An edited crate always reruns; its dependents reuse only when their test binaries load the

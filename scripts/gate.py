@@ -75,6 +75,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import struct
 import subprocess
 import sys
@@ -1033,11 +1034,40 @@ def cmd_scripts_hidden(a):
             if os.path.isfile(full) and os.stat(full).st_mode & 0o777 == 0:
                 os.chmod(full, want)
         # The exec bit is tracked: after the restore no script's mode differs from the index.
-        changed = [line for line in git("diff", "--summary", "--", "scripts").splitlines()
-                   if "mode change" in line]
+        changed = script_mode_drift(ROOT)
         if changed:
             sys.exit("gate: scripts' modes differ from the index after the restore:\n  "
                      + "\n  ".join(changed))
+
+
+def script_mode_drift(root):
+    """Each tracked script whose exec bit differs from its mode in the index, as `git diff` names a
+    mode change: read with a stat against `git ls-files -s`, which writes nothing. `git diff` would
+    refresh the index (the hide and restore moved the scripts' ctime) and write all of it back, at
+    every gate's end, to wherever the worktree's git directory is (2026-11-27: 97 KB, on another
+    disk). A script deleted from the worktree is not a mode change, for either; one added to or
+    removed from the index during the gate is checked against the index as it is now."""
+    out = []
+    for line in git("ls-files", "-s", "--", "scripts", cwd=root).splitlines():
+        mode, _, _, rel = line.split(None, 3)
+        if mode not in ("100644", "100755"):
+            continue
+        try:
+            st = os.lstat(os.path.join(root, rel))
+        except FileNotFoundError:
+            continue
+        if not stat.S_ISREG(st.st_mode):
+            continue
+        have = "100755" if st.st_mode & stat.S_IXUSR else "100644"
+        if have != mode:
+            out.append(f"mode change {mode} => {have} {rel}")
+    return out
+
+
+def cmd_script_mode_drift(a):
+    changed = script_mode_drift(os.path.realpath(a.root))
+    print("\n".join(changed))
+    sys.exit(1 if changed else 0)
 
 
 def shared_libs(binary, cache):
@@ -1418,6 +1448,7 @@ def main():
     rp.add_argument("--doc")
     sh = sub.add_parser("scripts-hidden")
     sh.add_argument("--on", action="store_true")
+    sub.add_parser("script-mode-drift").add_argument("--root", default=ROOT)
     sk = sub.add_parser("selftest-key")
     sk.add_argument("--root")
     sr = sub.add_parser("selftest-reuse")
@@ -1435,7 +1466,7 @@ def main():
     if a.cmd == "run" and a.crates and not a.narrow:
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
     fn = {"selftest-key": cmd_selftest_key, "selftest-reuse": cmd_selftest_reuse,
-          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
+          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "script-mode-drift": cmd_script_mode_drift, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
           "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan, "alloc-selftest": cmd_alloc_selftest,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)

@@ -123,6 +123,41 @@ ri t1 "{\"$ri_dir/gone\": [0, 0, 0]}" "is gone since they were made"
 ri t1 "{\"$ri_dir/bin\": [0, 1, 1]}" "changed since they were made"
 rm -rf -- "${ri_dir:?}"
 echo "    filter check: stale reuse inputs refused (another tree, a binary gone, a binary changed)"
+# The restore's mode check (gate.py script_mode_drift): a tracked script whose exec bit differs
+# from the index is named, after the hide and restore nothing is, and the check writes nothing to
+# the index (`git diff` rewrote all of it at every gate's end). A script added to the index during
+# the gate is checked against it; one removed from it is no tracked script (the restore gives it
+# 0755 as any untracked one). 2026-11-27 plant: the old `git diff --summary` check, index rewritten.
+md=$(mktemp -d "${TMPDIR:-/tmp}/md.XXX")
+mkdir "$md/scripts"
+printf '#!/bin/sh\n' > "$md/scripts/a.sh"; chmod 755 "$md/scripts/a.sh"
+printf 'x = 1\n' > "$md/scripts/b.py"; chmod 644 "$md/scripts/b.py"
+printf '#!/bin/sh\n' > "$md/scripts/c.sh"; chmod 755 "$md/scripts/c.sh"
+git -C "$md" init -q
+git -C "$md" add scripts/a.sh scripts/b.py
+git -C "$md" -c user.name=t -c user.email=t@t commit -q -m t
+md_fail() { echo "gate-selftest: FAILED: the restore's mode check: $1" >&2; rm -rf -- "${md:?}"; exit 1; }
+md_drift() { python3 scripts/gate.py script-mode-drift --root "$md" 2>&1; }
+idx() { stat -c '%y %i' "$md/.git/index"; }
+sleep 1.1  # an index older than the files' change, so a refresh would write it
+before=$(idx)
+chmod 0 "$md/scripts/a.sh" "$md/scripts/b.py"; chmod 755 "$md/scripts/a.sh"; chmod 644 "$md/scripts/b.py"
+out=$(md_drift) || md_fail "the hide and restore left a drift: $out"
+[ "$(idx)" = "$before" ] || md_fail "the check wrote the index"
+chmod +x "$md/scripts/b.py"
+out=$(md_drift) && md_fail "an exec bit added was not named"
+[[ $out == "mode change 100644 => 100755 scripts/b.py" ]] || md_fail "an exec bit added: $out"
+chmod 644 "$md/scripts/b.py"; chmod 644 "$md/scripts/a.sh"
+out=$(md_drift) && md_fail "an exec bit lost was not named"
+[[ $out == "mode change 100755 => 100644 scripts/a.sh" ]] || md_fail "an exec bit lost: $out"
+chmod 755 "$md/scripts/a.sh"
+git -C "$md" add --chmod=-x scripts/c.sh
+out=$(md_drift) && md_fail "a script added to the index during the gate was not checked"
+[[ $out == "mode change 100644 => 100755 scripts/c.sh" ]] || md_fail "a script added: $out"
+git -C "$md" rm -q -f --cached scripts/c.sh
+out=$(md_drift) || md_fail "a script removed from the index was checked: $out"
+rm -rf -- "${md:?}"
+echo "    restore's mode check: drift named (bit added, lost, a script added); nothing after a restore; no index write"
 # scripts/rustdoc-only.sh, the doctests' rustdoc off CI: a listed crate's --test run and every
 # fall-through reach the real rustdoc; an unlisted crate's --test run is skipped and named.
 rd_dir="$(mktemp -d "${TMPDIR:-/tmp}/rd.XXX")"
