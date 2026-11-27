@@ -123,9 +123,11 @@ scripts, the lane map, the reuse key code, `.config/` with the filter lists, `da
 simulated camera in `crates/camera/sim`, and the case declarations in `styx_frame::not_run`).
 The gate prints `reuse off` with the files, and every crate's tests run. The gate's own files are
 also in every key, so a key made under other gate rules never matches. The doctests follow the
-same keys: a crate reused by key reuses its doctest verdict, and every other crate with a doctest
-target runs them (a moved key, no key, or no nextest test to key). A key is recorded only after
-both its nextest run and the doctests are green. Clippy, the default-features pass and the no_std
+same keys: when every crate is reused by key they reuse its doctest verdict too; when any crate
+with a doctest target has a moved key, no key or no nextest test to key, the doctests run over the
+whole workspace (`-p` for the moved crates alone unifies features over those crates only, and
+rebuilt dependencies for 71 s; cargo's workspace feature unification is unstable). A key is
+recorded only after both its nextest run and the doctests are green. Clippy, the default-features pass and the no_std
 checks always run (cargo's own freshness makes the unchanged ones cheap).
 
 A target directory belongs to one worktree: the gate records the worktree that first built in it

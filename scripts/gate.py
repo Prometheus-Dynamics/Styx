@@ -1115,10 +1115,12 @@ def doctest_crates():
 def cmd_reuse_plan(a):
     """From a nextest list of the lane's build: which crates run and which reuse a green run. Writes
     the plan (crate -> key) to --plan and prints the filterset of the crates to run ("" = none).
-    With --doc FILE, also writes the crates whose doctests run, one per line: the doctests follow
-    the same keys. A crate whose key matched a green run reuses its doctest verdict with the rest of
-    its tests (the record is written only after both the nextest run and the doctests are green); every
-    other crate with a doctest target runs them: a moved key, no key, or no nextest test to key."""
+    With --doc FILE, also writes the crates whose doctests must run, one per line: the doctests
+    follow the same keys. A crate whose key matched a green run reuses its doctest verdict with the
+    rest of its tests (the record is written only after both the nextest run and the doctests are
+    green); every other crate with a doctest target needs them: a moved key, no key, or no nextest
+    test to key. gate.sh runs them over the whole workspace when the list is not empty (a -p
+    selection would unify features differently and rebuild dependencies)."""
     with open(a.list) as f:
         suites = json.load(f)["rust-suites"]
     per_crate = {}
@@ -1199,8 +1201,8 @@ def cmd_reuse_plan(a):
                 and (narrow is None or closure(c) & narrow)]
         with open(a.doc, "w") as f:
             f.write("".join(c + "\n" for c in docs))
-        say(f"    {a.variant} doctests: {len(docs)} of {len(doctest_crates())} crates run"
-            f" ({len(doctest_crates()) - len(docs)} reuse their verdict)")
+        say(f"    {a.variant} doctests: {len(docs)} of {len(doctest_crates())} crates need them"
+            f" ({'none: every verdict reused' if not docs else 'the whole workspace runs them'})")
     print(" | ".join(f"package(={c})" for c in run))
 
 

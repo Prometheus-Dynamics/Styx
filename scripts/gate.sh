@@ -398,23 +398,25 @@ all_tests() {
   part "nextest list (builds the test binaries)"
   wait "$cproof_pid" || { echo "==> the C library build for c_proof failed (the test reports it):"; cat "$cproof_out"; }
   part "the C library for c_proof"
-  local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0 crate doc_crates=()
+  local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0
   expr=$(python3 scripts/gate.py reuse-plan --list "$lists/all.json" --plan "$lists/plan.json" \
     --doc "$lists/doc-crates")
   part "reuse plan"
   # nextest does not run doctests. They run beside the nextest run, not after it: rustdoc compiles
   # and runs each crate's examples one crate after another, mostly waiting (33 s of wall for 9 CPU-s
   # at load 200), and it holds no lock on the build directory while it does. Their output is
-  # printed when they end. They follow the crates' reuse keys (the plan's --doc list): a crate
-  # reused by key reuses its doctest verdict; every other crate with a doctest target runs them.
-  # 5 s of a core change's 40 s test step went to the doctests of 52 crates, 47 with none.
-  while read -r crate; do doc_crates+=(-p "$crate"); done < "$lists/doc-crates"
+  # printed when they end. They follow the crates' reuse keys (the plan's --doc list): when every
+  # crate reused a green run (whose record waited for its doctests), they reuse that verdict too.
+  # Otherwise they run over the whole workspace, not the moved crates alone: a -p selection
+  # unifies features over those crates only and rebuilt dependencies for 71 s, holding the build
+  # directory from the nextest run (2026-11-27, -p styx-focus; cargo 1.99's workspace feature
+  # unification is still unstable).
   if [ "${STYX_CHECK_DOCTESTS:-1}" != 1 ]; then
     echo "doctests left out: no changed file holds one (the gate runs them)"
-  elif [ "${#doc_crates[@]}" = 0 ]; then
+  elif [ ! -s "$lists/doc-crates" ]; then
     step_not_run host:all doctests every_crate_reused
   else
-    cargo test --locked "${doc_crates[@]}" --doc --all-features > "$doc_out" 2>&1 &
+    cargo test --locked --workspace --doc --all-features > "$doc_out" 2>&1 &
     doc_pid=$!
   fi
   # The expression names only crates with a test that is not #[ignore]: matching nothing is a fault.
