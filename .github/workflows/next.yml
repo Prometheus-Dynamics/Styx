@@ -22,12 +22,36 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      # rust-toolchain.toml selects the toolchain and its components.
-      - uses: dtolnay/rust-toolchain@stable
+      # The toolchain is rust-toolchain.toml's pin, with its components and targets, and the
+      # default too: nothing else. `dtolnay/rust-toolchain@stable` installed and defaulted the
+      # current stable, which no build used (the pin overrides it in the checkout), yet its version
+      # is in rust-cache's key: every stable point release moved the key and left a cold cache
+      # (1.100.0 -> 1.100.1, run 46062199446: clippy past its bound compiling every dependency).
+      - name: Rust toolchain (the pin in rust-toolchain.toml)
+        run: |
+          read -r pin components targets < <(python3 -c '
+          import tomllib
+          t = tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]
+          print(t["channel"], ",".join(t.get("components", [])) or "-", ",".join(t.get("targets", [])) or "-")')
+          args=(--profile minimal --no-self-update)
+          [ "$components" = - ] || args+=(--component "$components")
+          [ "$targets" = - ] || args+=(--target "$targets")
+          rustup toolchain install "$pin" "${args[@]}"
+          rustup default "$pin"
+      # The active rustc is the pin, in the checkout and outside it (the default), or the job stops.
+      - name: The active rustc is the pin
+        run: |
+          pin=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+          here=$(rustc -vV | sed -n 's/^release: //p')
+          default=$(cd / && rustc -vV | sed -n 's/^release: //p')
+          rustc -vV
+          [ "$here" = "$pin" ] && [ "$default" = "$pin" ] || {
+            echo "::error::active rustc $here (default $default), rust-toolchain.toml pins $pin"; exit 1; }
       # The cache's key is made from the committed lock file and the manifests: the build uses
       # exactly that lock (the gate runs every cargo step with --locked). The root manifest (its
       # profiles change every artifact) is in the key too.
       - uses: Swatinem/rust-cache@v2
+        id: rust-cache
         with:
           key: ${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
       # The workspace crates' compiles go through sccache on the Actions cache, keyed by content
@@ -83,6 +107,22 @@ jobs:
           ./scripts/ci-libcamera.sh "$HOME/libcamera-prefix"
           echo "PKG_CONFIG_PATH=$HOME/libcamera-prefix/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$HOME/libcamera-prefix/lib" >> "$GITHUB_ENV"
+      # A cold cache (no entry for this key: a new pin, lock or manifest) is seeded before the
+      # gate, after the system libraries it links and outside the gate's bounds, as
+      # scripts/seed-bake.sh does locally: the dependencies of host:all's clippy and test build
+      # and of host:default's clippy. Cold, clippy alone passed its 285 s bound (run
+      # 46062199446). The gate then runs on them warm, and its green run saves them under the
+      # key. A warm run (an exact hit) skips this.
+      - name: Dependency seed (a cold cache only)
+        if: steps.rust-cache.outputs.cache-hit != 'true'
+        run: |
+          s=$SECONDS
+          cargo clippy --locked --workspace --all-targets --all-features --quiet
+          echo "seed: clippy, all features: $((SECONDS - s)) s"; s=$SECONDS
+          cargo test --locked --workspace --all-features --no-run --quiet
+          echo "seed: test build, all features: $((SECONDS - s)) s"; s=$SECONDS
+          cargo clippy --locked --workspace --all-targets --quiet
+          echo "seed: clippy, default features: $((SECONDS - s)) s"
       # The proofs with a real PipeWire consumer need a daemon and a session manager. The gate
       # then refuses to pass them over (STYX_REQUIRE_PIPEWIRE), as it does the C caller's proof
       # (STYX_REQUIRE_CC: the runner has a C compiler). The local gate's other required needs are
