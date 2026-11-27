@@ -34,6 +34,12 @@ wall went 99.8 s to 83.7 s over 4 alternating pairs (load 42-116, nice 10), at a
 CPU-s and 1.5 GB of disk for the second target. A clippy failure still fails `host:all`, named,
 after the tests are awaited. CI keeps one target (it is the independent clean check).
 
+The test-group filter check (`scripts/test-layout.py filters`) lists the tests step's binaries
+through nextest's reuse-build inputs (`reuse-inputs`: binaries-metadata from the step's own list,
+the workspace metadata, and the tree and each binary's size, mtime and inode), so it starts no
+cargo and waits on no cargo lock. Inputs made for another tree, or whose binaries changed since,
+are refused loudly; with no inputs it builds and lists with cargo as before.
+
 Lanes that share no build run side by side, and each one's output is printed when the host lanes
 end:
 - host:checks reads the tree and builds nothing; it runs beside the builds.

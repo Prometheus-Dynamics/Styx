@@ -425,6 +425,8 @@ all_tests() {
   # The list builds every test binary; the run then builds nothing.
   cargo nextest list --locked --workspace --all-features --message-format json > "$lists/all.json"
   part "nextest list (builds the test binaries)"
+  # The filter check lists these binaries again with no cargo (test-layout.py reuse-inputs).
+  python3 scripts/test-layout.py reuse-inputs "$lists/all.json" "$lists/reuse"
   wait "$cproof_pid" || { echo "==> the C library build for c_proof failed (the test reports it):"; cat "$cproof_out"; }
   part "the C library for c_proof"
   local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0
@@ -727,7 +729,10 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
       [ "$status" = 0 ] || { echo "gate: \"clippy, all features\" failed: host:all fails" >&2; exit 1; }
     fi
     # A test group's filter (.config/nextest.toml), term by term, still names tests. Slowest green: 6 s.
-    step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
+    # On the tests step's binaries (STYX_FILTER_REUSE), refused when stale: no cargo, no cargo lock
+    # (5-8 s of waits per list on it, 2026-11-27).
+    STYX_FILTER_REUSE="$lists/reuse" \
+      step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
     lane_mark host:all passed
     mark "host:all done"
   fi

@@ -47,6 +47,7 @@ import json
 import os
 import re
 import concurrent.futures
+import shutil
 import subprocess
 import sys
 import threading
@@ -132,6 +133,68 @@ def timed_run(cmd):
     return out
 
 
+REUSE_FIELDS = ["binary-id", "binary-name", "package-id", "kind", "binary-path", "build-platform"]
+
+
+def current_tree():
+    """The tree the gate runs on (STYX_GATE_TREE), else the working tree's (gate.py)."""
+    if os.environ.get("STYX_GATE_TREE"):
+        return os.environ["STYX_GATE_TREE"]
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import gate
+    return gate.worktree_tree()
+
+
+def stamp(path):
+    st = os.stat(path)
+    return [st.st_size, st.st_mtime_ns, st.st_ino]
+
+
+def reuse_inputs(test_list, out):
+    """From a full `cargo nextest list --message-format json` (the tests step's): nextest's
+    reuse-build inputs, so the filter check lists the built binaries with no cargo (cargo's
+    package-cache lock was most of its time, 2026-11-27). binaries.json is nextest's
+    binaries-metadata, cargo-metadata.json the workspace's metadata, and inputs.json the tree they
+    were built for and each binary's size, mtime and inode: the check refuses inputs that are not
+    the tree's or whose binaries changed since."""
+    with open(test_list) as f:
+        listed = json.load(f)
+    os.makedirs(out, exist_ok=True)
+    binaries = {k: {f: s[f] for f in REUSE_FIELDS} for k, s in listed["rust-suites"].items()}
+    with open(os.path.join(out, "binaries.json"), "w") as f:
+        json.dump({"rust-build-meta": listed["rust-build-meta"], "rust-binaries": binaries}, f)
+    meta = os.environ.get("STYX_GATE_META")
+    if meta and os.path.isfile(meta):
+        with open(meta) as f:
+            text = f.read()
+    else:
+        text = subprocess.run(["cargo", "metadata", "--locked", "--format-version", "1", "--all-features"],
+                              cwd=ROOT, check=True, capture_output=True, text=True).stdout
+    with open(os.path.join(out, "cargo-metadata.json"), "w") as f:
+        f.write(text)
+    with open(os.path.join(out, "inputs.json"), "w") as f:
+        json.dump({"tree": current_tree(),
+                   "stamps": {b["binary-path"]: stamp(b["binary-path"]) for b in binaries.values()}}, f)
+
+
+def reuse_checked(out):
+    """The reuse inputs in OUT, refused loudly when stale: made for another tree, or a binary
+    changed (rebuilt, removed) since they were made. Listing a stale binary would leave out a test
+    added since, silently."""
+    with open(os.path.join(out, "inputs.json")) as f:
+        inputs = json.load(f)
+    tree = current_tree()
+    if inputs["tree"] != tree:
+        sys.exit(f"stale reuse inputs in {out}: built for tree {inputs['tree']}, the tree is {tree}: "
+                 "the filter check refuses to list them")
+    for path, want in sorted(inputs["stamps"].items()):
+        have = stamp(path) if os.path.exists(path) else None
+        if have != want:
+            sys.exit(f"stale reuse inputs in {out}: {path} {'is gone' if have is None else 'changed'} "
+                     "since they were made: the filter check refuses to list it")
+    return os.path.join(out, "binaries.json"), os.path.join(out, "cargo-metadata.json")
+
+
 def filters(cargo_args):
     with open(os.path.join(ROOT, ".config", "nextest.toml"), "rb") as f:
         config = tomllib.load(f)
@@ -148,11 +211,24 @@ def filters(cargo_args):
     # Each call's wall time and its cargo lock waits are printed, so a slow check in the gate log
     # says what it waited on: a lock line's wait runs until cargo's next stderr line.
     start = time.monotonic()
+    # With the tests step's build (STYX_FILTER_REUSE: reuse_inputs' folder), nextest lists those
+    # binaries itself, with no cargo, so no cargo lock either; without it, cargo builds and lists.
+    reuse = os.environ.get("STYX_FILTER_REUSE")
+    if reuse:
+        binaries, cargo_meta = reuse_checked(reuse)
+        nextest = shutil.which("cargo-nextest") or sys.exit("cargo-nextest is not on PATH")
+        print(f"  listing the tests step's binaries ({reuse}): no cargo")
+
+    def command(term):
+        if reuse:
+            return [nextest, "nextest", "list", "--binaries-metadata", binaries,
+                    "--cargo-metadata", cargo_meta, "-E", term, "--message-format", "json"]
+        return ["cargo", "nextest", "list", "--locked", "--workspace", *cargo_args,
+                "-E", term, "--message-format", "json"]
 
     def listed(term):
         t0 = time.monotonic()
-        out = timed_run(["cargo", "nextest", "list", "--locked", "--workspace", *cargo_args,
-                         "-E", term[1], "--message-format", "json"])
+        out = timed_run(command(term[1]))
         out.wall = time.monotonic() - t0
         out.began = t0 - start
         return out
@@ -386,6 +462,8 @@ if __name__ == "__main__":
         files()
     elif sys.argv[1:2] == ["filters"]:
         filters(sys.argv[2:])
+    elif sys.argv[1:2] == ["reuse-inputs"] and len(sys.argv) == 4:
+        reuse_inputs(sys.argv[2], sys.argv[3])
     elif sys.argv[1:2] == ["default-only"] and len(sys.argv) == 4:
         default_only(sys.argv[2], sys.argv[3])
     elif sys.argv[1:2] == ["shared-state"]:

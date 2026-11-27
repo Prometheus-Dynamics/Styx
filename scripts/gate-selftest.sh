@@ -105,6 +105,24 @@ if wrong:
     sys.exit("gate-selftest: FAILED: the doctests' list: " + "; ".join(wrong))
 print("    doctests' list: a moved crate and its dependents; not the rest; nothing when nothing moved")
 PY
+# The filter check on the tests step's binaries (test-layout.py STYX_FILTER_REUSE) refuses stale
+# reuse inputs loudly, never lists them: made for another tree, a binary gone, a binary changed.
+ri_dir="$(mktemp -d "${TMPDIR:-/tmp}/ri.XXX")"
+: > "$ri_dir/bin"
+ri() { # tree, stamps json, expected message
+  printf '{"tree": "%s", "stamps": %s}' "$1" "$2" > "$ri_dir/inputs.json"
+  local got rc=0
+  got=$(STYX_GATE_TREE=t1 STYX_FILTER_REUSE="$ri_dir" python3 scripts/test-layout.py filters 2>&1) || rc=$?
+  if [ "$rc" = 0 ] || [[ $got != *"$3"* ]]; then
+    echo "gate-selftest: FAILED: stale reuse inputs ($3) were not refused: exit $rc: $got" >&2
+    rm -rf -- "${ri_dir:?}"; exit 1
+  fi
+}
+ri t0 '{}' "built for tree t0, the tree is t1"
+ri t1 "{\"$ri_dir/gone\": [0, 0, 0]}" "is gone since they were made"
+ri t1 "{\"$ri_dir/bin\": [0, 1, 1]}" "changed since they were made"
+rm -rf -- "${ri_dir:?}"
+echo "    filter check: stale reuse inputs refused (another tree, a binary gone, a binary changed)"
 # scripts/rustdoc-only.sh, the doctests' rustdoc off CI: a listed crate's --test run and every
 # fall-through reach the real rustdoc; an unlisted crate's --test run is skipped and named.
 rd_dir="$(mktemp -d "${TMPDIR:-/tmp}/rd.XXX")"
