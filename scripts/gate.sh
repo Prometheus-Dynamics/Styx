@@ -109,6 +109,7 @@ step_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/g.XXX")"
 step_count=0
 step() {
   local label="$1" bound="$2" start pid timer over status=0 left tmp before after me=$BASHPID
+  local end_mark t_end t_wait t_timer t_pgrep t_cpu t_check t_rm
   shift 2
   # The gate's own false-pass check (scripts/gate-selftest.sh) runs it dry: every step runs `true`
   # in place of its command, except the one labelled STYX_GATE_PLANT, which runs planted_failure.
@@ -124,8 +125,12 @@ step() {
   tmp="$step_tmp_root/$step_count"
   mkdir "$tmp"
   before=$(child_cpu "$me")
+  # The body's last moment, for the epilogue line below (diagnostic: a 14-30 s gap after a step's
+  # last part was seen in 3 of 18 gates, 2026-11-27, and the log could not say where). A red body
+  # ends the subshell at once (errexit) and leaves no mark.
+  end_mark="$step_tmp_root/$step_count.end"
   set -m
-  TMPDIR="$tmp" "$@" &
+  { TMPDIR="$tmp" "$@"; printf '%s' "$EPOCHREALTIME" > "$end_mark"; } &
   pid=$!
   set +m
   # The bound: a timer that marks the step over it and stops its group, so the wait below ends.
@@ -141,7 +146,9 @@ step() {
       sleep 0.05; done' timer "$bound" "$over" "$pid" &
   timer=$!
   wait "$pid" || status=$?
+  t_wait=$EPOCHREALTIME
   wait "$timer" 2> /dev/null || true
+  t_timer=$EPOCHREALTIME
   if [ -e "$over" ]; then
     rm -f "$over"
     echo "gate: step \"$label\" passed its bound of $bound s: stopping it" >&2
@@ -149,6 +156,7 @@ step() {
     exit 1
   fi
   left=$(pgrep -a -g "$pid" || true)
+  t_pgrep=$EPOCHREALTIME
   if [ -n "$left" ]; then
     echo "gate: step \"$label\" left processes running:" >&2
     echo "$left" | sed 's/^/    /' >&2
@@ -156,8 +164,16 @@ step() {
     exit 1
   fi
   after=$(child_cpu "$me")
+  t_cpu=$EPOCHREALTIME
   left=$(find "$tmp" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  t_check=$EPOCHREALTIME
   rm -rf -- "${tmp:?}"
+  t_rm=$EPOCHREALTIME
+  t_end=$(cat "$end_mark" 2> /dev/null || echo "$t_wait")
+  rm -f "$end_mark"
+  awk -v e="$t_end" -v w="$t_wait" -v t="$t_timer" -v p="$t_pgrep" -v c="$t_cpu" -v k="$t_check" -v r="$t_rm" 'BEGIN {
+    printf "    epilogue: body end to wait %.2f s, timer wait %.2f, pgrep %.2f, child_cpu %.2f, TMPDIR check %.2f, rm %.2f\n",
+      w - e, t - w, p - t, c - p, k - c, r - k }'
   if [ -n "$left" ]; then
     echo "gate: step \"$label\" left files in its TMPDIR:" >&2
     echo "$left" | sed 's/^/    /' >&2
