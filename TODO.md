@@ -183,3 +183,12 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
   reproduction must give that line and message; it may be the set arriving after F under load
   (a test timing) or the frame-addressed control applied late (the service). Held: speed is the
   only work now.
+
+- [ ] Q15 `styx-service` `aaa` `the_3a_loop_on_the_simulated_camera` failed once at
+  `crates/out/service/tests/aaa.rs:528` ("the ISP thread allocates nothing per frame": left 6,
+  right 0; "passes=60 isp_thread_allocations=6", wb_gains 1000/1000), 3.5 s in, in a gate at load
+  75-109, nice 10, one test per core (2026-11-27, logs/b13-gate2.log; the change gated touched only
+  the gate's scripts). A third line of the same test after Q14's two; first seen. Held: a product
+  fault, and speed is the only work. Cause not shown: a reproduction must give that line and count.
+  Since then the test prints, when this check fails, each ISP-thread allocation of the checked
+  window with its size, the frame the test was waiting for and a backtrace (test-only).

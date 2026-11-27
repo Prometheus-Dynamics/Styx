@@ -52,7 +52,9 @@ fi
 
 # Cargo.lock is committed, and every cargo step below builds with --locked: the gate builds exactly
 # the versions in it. A manifest changed without its lock fails here, first, with the fix.
-if ! cargo metadata --locked --format-version 1 > /dev/null; then
+# (Not in a dry gate, scripts/gate-selftest.sh: it builds nothing, and its twelve dry gates queued on
+# cargo's package cache lock behind a real gate's builds, past the self-test's bound.)
+if [ -z "${STYX_GATE_DRY:-}" ] && ! cargo metadata --locked --format-version 1 > /dev/null; then
   echo "gate: Cargo.lock does not match the manifests: run \`cargo update --workspace\` (it changes only what the manifests need) and commit Cargo.lock" >&2
   exit 1
 fi
@@ -316,7 +318,7 @@ lists=$(mktemp -d "${TMPDIR:-/tmp}/styx-test-lists.XXXXXX")
 # 26 threads in none of 5. nproc counts the cores this process may use (taskset).
 test_threads=$(nproc)
 nextest=0
-cargo nextest --version > /dev/null 2>&1 && nextest=1
+if [ -n "${STYX_GATE_DRY:-}" ] || cargo nextest --version > /dev/null 2>&1; then nextest=1; fi
 if [ -n "${STYX_GATE_NARROW+set}" ] && [ "$nextest" = 0 ]; then
   echo "gate: a narrowed check needs cargo-nextest" >&2
   exit 1
@@ -492,6 +494,16 @@ sim_drivers_outside_sim() {
   out=$(awk '!/^crates\/camera\/sim\/src\// && NF' <<< "$out")
   [ -z "$out" ] || { echo "$out"; return 1; }
 }
+gate_selftest() {
+  local key
+  key=$(python3 scripts/gate.py selftest-key)
+  if python3 scripts/gate.py selftest-reuse "$key"; then
+    [ -z "${STYX_GATE_RESULTS:-}" ] || echo "host:checks note gate-selftest reused($key)" >> "$STYX_GATE_RESULTS"
+    return 0
+  fi
+  scripts/gate-selftest.sh
+  python3 scripts/gate.py selftest-record "$key"
+}
 checks_lane() {
   lane_mark host:checks started
   if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
@@ -516,8 +528,10 @@ checks_lane() {
   # One copy of the shared ring: every shm-* crate from one version and one source.
   step "one source for every shm crate" 60 python3 scripts/one-shm.py
   # The gate itself: a planted failing step fails its lane and the gate, in every lane, at its
-  # first step and at its last (Atlas's two false passes, 2026-11-24). Slowest green: 12 s.
-  step "a failing step fails its lane (scripts/gate-selftest.sh)" 60 scripts/gate-selftest.sh
+  # first step and at its last (Atlas's two false passes, 2026-11-24). Slowest green: 18 s. Keyed
+  # on the files it tests (gate.py SELFTEST_FILES): reused after a green run with the same key,
+  # never in CI or with reuse off.
+  step "a failing step fails its lane (scripts/gate-selftest.sh)" 60 gate_selftest
   lane_mark host:checks passed
 }
 checks_pid="" checks_out=""

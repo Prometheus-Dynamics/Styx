@@ -169,6 +169,59 @@ def scripts_hash():
     return h.hexdigest()[:16]
 
 
+# The gate's self-test (scripts/gate-selftest.sh) tests these and nothing else: it runs again when
+# one changes, and its green run is reused otherwise, like a lane's crate.
+SELFTEST_FILES = ["scripts/gate.sh", "scripts/gate.py", "scripts/gate-selftest.sh",
+                  "scripts/gate-supervise.py"]
+
+
+def selftest_key(root=ROOT):
+    h = hashlib.sha256()
+    for rel in SELFTEST_FILES:
+        full = os.path.join(root, rel)
+        h.update(rel.encode() + b"\0")
+        if os.path.isfile(full):
+            with open(full, "rb") as f:
+                h.update(hashlib.sha256(f.read()).digest())
+        else:
+            h.update(b"missing")
+    # The shells it runs under.
+    for tool in (["bash", "--version"], [sys.executable, "--version"]):
+        out = subprocess.run(tool, capture_output=True, text=True).stdout.splitlines()
+        h.update((out[0] if out else tool[0]).encode() + b"\0")
+    return h.hexdigest()[:16]
+
+
+def cmd_selftest_key(a):
+    print(selftest_key(a.root or ROOT))
+
+
+def cmd_selftest_reuse(a):
+    """Exit 0 (and say so) when the self-test was green with this key; 1 when it must run."""
+    if CI:
+        sys.exit("    gate self-test: runs (CI always runs it)")
+    if os.environ.get("STYX_GATE_NO_REUSE"):
+        sys.exit("    gate self-test: runs (reuse off: the change measures or selects)")
+    path = os.path.join(records_dir(), "selftest.tsv")
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                c = line.rstrip("\n").split("\t")
+                if len(c) >= 2 and c[0] == a.key:
+                    print(f"    gate self-test: REUSED: green at {c[1]} with key {a.key} (gate.sh, gate.py, "
+                          "gate-selftest.sh, gate-supervise.py, bash and python unchanged)")
+                    return
+    sys.exit(f"    gate self-test: runs (no green run with key {a.key})")
+
+
+def cmd_selftest_record(a):
+    if CI:
+        return
+    with open(os.path.join(records_dir(), "selftest.tsv"), "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(f"{a.key}\t{time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
+
+
 # --- the workspace ---------------------------------------------------------------
 
 _meta = None
@@ -1172,6 +1225,12 @@ def main():
     rp.add_argument("--variant", default="host:all")
     sh = sub.add_parser("scripts-hidden")
     sh.add_argument("--on", action="store_true")
+    sk = sub.add_parser("selftest-key")
+    sk.add_argument("--root")
+    sr = sub.add_parser("selftest-reuse")
+    sr.add_argument("key")
+    sc = sub.add_parser("selftest-record")
+    sc.add_argument("key")
     ls = sub.add_parser("lane-status")
     ls.add_argument("--results", required=True)
     ls.add_argument("--rc", type=int, required=True)
@@ -1182,7 +1241,8 @@ def main():
     a = p.parse_args()
     if a.cmd == "run" and a.crates and not a.narrow:
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
-    fn = {"lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
+    fn = {"selftest-key": cmd_selftest_key, "selftest-reuse": cmd_selftest_reuse,
+          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
           "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)

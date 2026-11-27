@@ -50,7 +50,10 @@ exit status (scripts/gate.py lane_status). host:checks runs scripts/gate-selftes
 (STYX_GATE_DRY) runs each step as `true` except one planted to fail (a failing command, then a
 passing one), through the same lanes, subshells and waits, at each lane's first and last step; the
 planted lane must come out failed and the gate red, and an unplanted dry gate green in every lane.
-`gate.py run` refuses a dry gate, so one never records anything.
+`gate.py run` refuses a dry gate, so one never records anything. The self-test is keyed on the files
+it tests (gate.py SELFTEST_FILES, with the bash and python versions): after a green run with the
+same key it is reused (`host:checks/gate-selftest=reused(<key>)` on the gate line), and it always
+runs in CI and when reuse is off. It checks its own key first: a changed gate.sh must run it again.
 
 ## Nothing to run is not passed
 
@@ -127,6 +130,14 @@ A target directory belongs to one worktree: the gate records the worktree that f
 (`<target>/.styx-worktree`) and refuses to run in it from any other. In a shared target, cargo
 takes a workspace crate another worktree built from its newer files as current, and this tree
 would be tested with that one's code. The record is never part of a seed.
+
+A seed (scripts/cargo-seed.sh) is saved only from a target built from empty. A new toolchain
+(rust-toolchain.toml, `rustc -vV`) leaves no seed any build can use, so its seed is baked outside
+the gate: scripts/land.sh starts scripts/seed-bake.sh in the background when no seed has the
+toolchain, and it builds clippy and the test binaries (all features and the defaults) at the landed
+commit in a worktree and an empty target of its own, at nice 10, then saves the seed. The gate
+never starts it (its supervisor stops whatever a step leaves running). Proven 2026-11-27: 636 s,
+2196 + 243 CPU-s at load 96-121, a seed of 2048 deps/ entries.
 
 ## Records
 

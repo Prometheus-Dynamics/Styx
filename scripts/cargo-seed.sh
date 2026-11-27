@@ -7,6 +7,10 @@
 #   scripts/cargo-seed.sh save      after a green gate: keep this target's dependencies as the seed
 #                                   for its key, unless one exists or the target was not built
 #                                   from empty
+#   scripts/cargo-seed.sh toolchain-seeded
+#                                   exit 0 when a seed was built with this toolchain
+#                                   (rust-toolchain.toml and `rustc -vV`); 1 when a new one needs
+#                                   scripts/seed-bake.sh
 #
 # On by default for a target directory kept outside its worktree (CARGO_TARGET_DIR, one per worktree,
 # on the targets' filesystem): the seeds are kept beside it, in <its parent>/seeds, so a copy is a
@@ -46,6 +50,16 @@ key=$( { cat Cargo.lock
          awk '/^\[/{p = ($0 ~ /^\[profile/)} p' Cargo.toml
          cat .cargo/config.toml rust-toolchain.toml 2>/dev/null || true
          rustc -vV; } | sha256sum | cut -c1-16)
+# The toolchain's part of it: a seed of another toolchain saves nothing (every unit rebuilds), so a
+# new one is baked (scripts/seed-bake.sh); a seed of another Cargo.lock still saves most of a build.
+toolchain=$( { cat rust-toolchain.toml 2>/dev/null || true; rustc -vV; } | sha256sum | cut -c1-16)
+toolchain_seeded() {
+  local d
+  for d in "$seeds"/*/; do
+    [ -f "$d/.seed-complete" ] && [ "$(cat "$d/.seed-toolchain" 2>/dev/null)" = "$toolchain" ] && return 0
+  done
+  return 1
+}
 
 # Copies a target directory's dependency build products into a new directory: every file but the
 # workspace's. A workspace package's units go by its .fingerprint/<package>-<hash> directory: that
@@ -81,6 +95,7 @@ case ${1:-} in
         done
       fi
       mkdir -p "$target"
+      toolchain_seeded || echo "cargo-seed: no seed of this toolchain yet: scripts/land.sh starts scripts/seed-bake.sh in the background after the landing (or run scripts/seed-bake.sh --background)" >&2
       if [ -z "$src" ]; then
         echo empty > "$target/.styx-built-from"
         echo "cargo-seed: no seed yet: a cold build" >&2; exit 0
@@ -117,6 +132,7 @@ case ${1:-} in
         rm -rf "$tmp"
         die "not saved: $(echo "$left" | wc -l) files still name $worktree, e.g. $(echo "$left" | head -3 | tr '\n' ' ')"
       fi
+      echo "$toolchain" > "$tmp/.seed-toolchain"
       touch "$tmp/.seed-complete"
       rm -rf "${seeds:?}/$key"
       mv "$tmp" "$seeds/$key"
@@ -125,5 +141,8 @@ case ${1:-} in
       echo "cargo-seed: kept the dependencies of $target as the seed $key ($(du -sh "$seeds/$key" | cut -f1))" >&2
     ) 9> "$seeds/.lock"
     ;;
-  *) die "usage: cargo-seed.sh restore|save" ;;
+  toolchain-seeded)
+    toolchain_seeded
+    ;;
+  *) die "usage: cargo-seed.sh restore|save|toolchain-seeded" ;;
 esac

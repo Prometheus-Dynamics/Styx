@@ -11,12 +11,14 @@ use styx_sim::paced as sim;
 use styx_sim::pisp_be;
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::backtrace::Backtrace;
 use std::cell::Cell;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use lemnos_host::board::parse;
@@ -35,8 +37,38 @@ thread_local! {
     static IN_ALLOC: Cell<bool> = const { Cell::new(false) };
 }
 static ISP_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+// While set, each ISP-thread allocation is also recorded (TODO Q15): its size, the frame the test
+// was taking (FRAME_INDEX) and where it came from, printed when the check fails. Recording happens
+// under IN_ALLOC, so its own allocations are not counted; it is on only for the checked window.
+static RECORD: AtomicBool = AtomicBool::new(false);
+static FRAME_INDEX: AtomicU64 = AtomicU64::new(0);
+static RECORDED: Mutex<Vec<Recorded>> = Mutex::new(Vec::new());
 
-fn count() {
+struct Recorded {
+    what: &'static str,
+    size: usize,
+    frame: u64,
+    backtrace: Backtrace,
+}
+
+fn record(what: &'static str, size: usize) {
+    let _ = IN_ALLOC.try_with(|busy| {
+        busy.set(true);
+        let entry = Recorded {
+            what,
+            size,
+            frame: FRAME_INDEX.load(Ordering::Relaxed),
+            backtrace: Backtrace::force_capture(),
+        };
+        RECORDED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(entry);
+        busy.set(false);
+    });
+}
+
+fn count(what: &'static str, size: usize) {
     if IN_ALLOC.try_with(Cell::get).unwrap_or(true) {
         return;
     }
@@ -58,16 +90,21 @@ fn count() {
         .unwrap_or(false);
     if isp {
         ISP_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        if RECORD.load(Ordering::Relaxed) {
+            record(what, size);
+        }
     }
 }
 
 struct Counting;
 
 // SAFETY: every call forwards to the system allocator with the same arguments; the only addition
-// is a count kept in const-initialised thread-locals and an atomic, which do not allocate.
+// is a count kept in const-initialised thread-locals and an atomic, which do not allocate, and,
+// while RECORD is set, a record made with IN_ALLOC set (its own allocations reach `alloc` again,
+// return at once from `count`, and go to the system allocator).
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        count();
+        count("alloc", layout.size());
         // SAFETY: the caller upholds GlobalAlloc's contract for `layout`; forwarded unchanged.
         unsafe { System.alloc(layout) }
     }
@@ -78,7 +115,7 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        count();
+        count("realloc", new_size);
         // SAFETY: `ptr` came from `alloc` above with this `layout`; forwarded unchanged.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
@@ -507,11 +544,19 @@ fn pisp_back_end_counts_statistics_in_its_input_pass_and_allocates_nothing() {
             .expect("the pisp-be-input copy line")
     };
     let before = copy(&rig);
+    RECORDED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+    FRAME_INDEX.store(0, Ordering::Relaxed);
+    RECORD.store(true, Ordering::Relaxed);
     let before_alloc = ISP_ALLOCATIONS.load(Ordering::Relaxed);
-    for _ in 0..60 {
+    for i in 0..60 {
+        FRAME_INDEX.store(i, Ordering::Relaxed);
         let _ = take(&mut reader);
     }
     let after_alloc = ISP_ALLOCATIONS.load(Ordering::Relaxed);
+    RECORD.store(false, Ordering::Relaxed);
     let after = copy(&rig);
     let passes = after.copies - before.copies;
     // The paced camera's first mode: 320x40 RAW10 in, 16-bit out; nothing more for the statistics.
@@ -525,6 +570,23 @@ fn pisp_back_end_counts_statistics_in_its_input_pass_and_allocates_nothing() {
         "proof: back end with 3A: passes={passes} isp_thread_allocations={allocations} {}",
         field(&line, "wb_gains").unwrap_or("-")
     );
+    if allocations != 0 {
+        // What allocated, for TODO Q15: the frame is the index of the frame the test was waiting
+        // for when the ISP thread allocated (0-59 of the checked window).
+        let recorded = RECORDED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        eprintln!(
+            "the ISP thread's allocations in the checked window: {} recorded",
+            recorded.len()
+        );
+        for (n, r) in recorded.iter().enumerate() {
+            eprintln!(
+                "allocation {n}: {} of {} bytes while waiting for frame {}\n{}",
+                r.what, r.size, r.frame, r.backtrace
+            );
+        }
+    }
     assert_eq!(allocations, 0, "the ISP thread allocates nothing per frame");
 }
 
