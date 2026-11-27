@@ -114,7 +114,9 @@ step() {
   # in place of its command, except the one labelled STYX_GATE_PLANT, which runs planted_failure.
   # Lanes, subshells, waits and pass marks are the gate's own. scripts/gate.py run refuses a dry gate.
   if [ -n "${STYX_GATE_DRY:-}" ]; then
-    if [ "$label" = "${STYX_GATE_PLANT:-}" ]; then set -- planted_failure; else set -- true; fi
+    if [ "$label" = "${STYX_GATE_PLANT:-}" ]; then set -- planted_failure
+    elif [ "$label" = "${STYX_GATE_DRY_SLOW:-}" ]; then set -- sleep 3
+    else set -- true; fi
   fi
   echo "==> $label"
   start=$SECONDS
@@ -333,7 +335,7 @@ start_from() {
   mkdir "$part"
   for entry in "$main"/* "$main"/.[!.]*; do
     [ -e "$entry" ] || continue
-    case "${entry##*/}" in default | default.part | bare | bare.part | tmp | nextest) continue ;; esac
+    case "${entry##*/}" in default | default.part | bare | bare.part | clippy | clippy.part | tmp | nextest) continue ;; esac
     cp -a --reflink=always "$entry" "$part/" 2> /dev/null || { rm -rf -- "${part:?}"; mkdir "$part"; break; }
   done
   mv "$part" "$main/$name"
@@ -611,6 +613,32 @@ default_lane() {
   step "tests, default features (the default-only crates: build, list, run)" 1275 default_tests
   lane_mark host:default passed
 }
+# host:all's clippy. Locally it runs beside the lane's test build, in a target directory of its
+# own (<target>/clippy, started as a reflink copy like default/): in one directory cargo
+# serialized the two on the build directory's lock, clippy's 17-27 s (load 46-92) then the build's
+# 31-42 s. A clippy that fails is named and fails host:all when the tests' step ends (a test step
+# that fails first ends the gate, and the supervisor stops clippy). CI keeps them in series
+# (GITHUB_ACTIONS: four cores, nothing to overlap into), and STYX_GATE_CLIPPY_BESIDE=0 does too.
+clippy_all() {
+  step "clippy, all features" 285 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+}
+clippy_beside() {
+  [ -z "${GITHUB_ACTIONS:-}" ] && [ "${STYX_GATE_CLIPPY_BESIDE:-1}" = 1 ]
+}
+clippy_pid="" clippy_out=""
+start_clippy_all() {
+  clippy_out="$step_tmp_root/clippy.out"
+  (
+    trap - EXIT
+    step_tmp_root="$step_tmp_root/clippy"
+    step_count=0
+    mkdir "$step_tmp_root"
+    start_from "$target_dir" clippy
+    export CARGO_TARGET_DIR="$target_dir/clippy"
+    clippy_all
+  ) > "$clippy_out" 2>&1 &
+  clippy_pid=$!
+}
 default_pid="" default_out=""
 start_default() {
   default_out="$step_tmp_root/default.out"
@@ -648,8 +676,19 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
   if selected host:all; then
     lane_mark host:all started
     # Slowest green: 94 s (cold). Tests: 267 s (fresh worktree), with the doctests.
-    step "clippy, all features" 285 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+    if clippy_beside; then
+      start_clippy_all
+    else
+      clippy_all
+    fi
     step "tests, all features" 800 all_tests
+    if [ -n "$clippy_pid" ]; then
+      echo "==> clippy, all features (it ran beside the tests):"
+      status=0
+      wait "$clippy_pid" || status=$?
+      cat "$clippy_out"; clippy_out=""
+      [ "$status" = 0 ] || { echo "gate: \"clippy, all features\" failed: host:all fails" >&2; exit 1; }
+    fi
     # A test group's filter (.config/nextest.toml), term by term, still names tests. Slowest green: 6 s.
     step "every test group filter matches a test" 60 python3 scripts/test-layout.py filters --all-features
     lane_mark host:all passed

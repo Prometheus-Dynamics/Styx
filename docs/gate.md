@@ -27,6 +27,13 @@ type-checked them under default features. It runs only the tests listed in
 `.config/default-only.txt`. That list is empty today, so the gate line records
 `host:default/default-only-tests=not-run(list_empty)` beside it.
 
+Off CI (no `GITHUB_ACTIONS`), `host:all`'s clippy runs beside its tests in `<target>/clippy`,
+started as a reflink copy of the target (`STYX_GATE_CLIPPY_BESIDE=0` puts it back in front). In
+one target the two serialize on cargo's build lock; side by side, the doc-line core shape's median
+wall went 99.8 s to 83.7 s over 4 alternating pairs (load 42-116, nice 10), at about 30 more
+CPU-s and 1.5 GB of disk for the second target. A clippy failure still fails `host:all`, named,
+after the tests are awaited. CI keeps one target (it is the independent clean check).
+
 Lanes that share no build run side by side, and each one's output is printed when the host lanes
 end:
 - host:checks reads the tree and builds nothing; it runs beside the builds.

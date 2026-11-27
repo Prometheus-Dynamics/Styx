@@ -98,14 +98,24 @@ cases=(
   "no_std checks on riscv32imc-unknown-none-elf|bare:riscv32imc"
   "styx-frame tests on the portable-atomic path|bare:riscv32imc"
   "cargo seed|"
+  "tests, all features|host:all"
+  "clippy, all features|host:all|beside-slow"
+  "clippy, all features|host:all|serial"
 )
 # One dry gate; prints "<exit status> <Gate-Lanes trailer>" and keeps its log as $scratch/<n>.log.
+# A case's third field: "beside-slow" runs host:all's clippy beside its tests (as locally, even
+# on CI) with the tests' step slowed to 3 s, so the planted clippy fails while they still run;
+# "serial" runs them one after the other (as CI does, even locally).
 dry_gate() {
-  local n=$1 plant=$2 res="$scratch/$1.res" rc=0
+  local n=$1 plant=$2 mode=${3:-} res="$scratch/$1.res" rc=0 how=()
   : > "$res"
   mkdir -p "$scratch/tmp-$n"
+  case "$mode" in
+    beside-slow) how=(-u GITHUB_ACTIONS STYX_GATE_CLIPPY_BESIDE=1 "STYX_GATE_DRY_SLOW=tests, all features") ;;
+    serial) how=(STYX_GATE_CLIPPY_BESIDE=0) ;;
+  esac
   env -u STYX_GATE_SUPERVISOR -u STYX_GATE_NARROW -u STYX_GATE_TREE -u STYX_GATE_META \
-    -u STYX_GATE_RECORDS -u STYX_GATE_NO_REUSE -u STYX_CHECK_DOCTESTS \
+    -u STYX_GATE_RECORDS -u STYX_GATE_NO_REUSE -u STYX_CHECK_DOCTESTS "${how[@]}" \
     STYX_GATE_DRY=1 STYX_GATE_PLANT="$plant" STYX_GATE_SELECTED="${lanes[*]}" \
     STYX_GATE_RESULTS="$res" STYX_GATE_SLOTS=0 STYX_REQUIRE_VIVID=0 \
     CARGO_TARGET_DIR="$scratch/target-$n" TMPDIR="$scratch/tmp-$n" \
@@ -121,7 +131,8 @@ t0=$SECONDS
 pids=()
 { dry_gate clean "" > "$scratch/clean.out"; echo "    dry gate unplanted ended at $((SECONDS - t0)) s"; } & pids+=($!)
 for i in "${!cases[@]}"; do
-  { dry_gate "$i" "${cases[$i]%%|*}" > "$scratch/$i.out"; echo "    dry gate $i ended at $((SECONDS - t0)) s"; } & pids+=($!)
+  IFS='|' read -r label _ mode <<< "${cases[$i]}"
+  { dry_gate "$i" "$label" "$mode" > "$scratch/$i.out"; echo "    dry gate $i ended at $((SECONDS - t0)) s"; } & pids+=($!)
 done
 for p in "${pids[@]}"; do wait "$p"; done
 read -r rc trailer < "$scratch/clean.out"
@@ -130,7 +141,7 @@ for v in "${lanes[@]}"; do
 done
 [ "$rc" = 0 ] || bad "unplanted: the gate exited $rc" clean
 for i in "${!cases[@]}"; do
-  label=${cases[$i]%%|*} lane=${cases[$i]#*|}
+  IFS='|' read -r label lane mode <<< "${cases[$i]}"
   read -r rc trailer < "$scratch/$i.out"
   [ "$rc" != 0 ] || { bad "\"$label\": the gate exited 0 ($trailer)" "$i"; continue; }
   if grep -q 'planted: ran past its failing command' "$scratch/$i.log"; then
@@ -141,7 +152,14 @@ for i in "${!cases[@]}"; do
   else
     [[ " $trailer " != *"=passed "* ]] || { bad "\"$label\": a lane passed ($trailer)" "$i"; continue; }
   fi
-  echo "    red as it should be: \"$label\" -> ${lane:-every lane} ($trailer)"
+  if [ "$mode" = beside-slow ]; then
+    # Named, and only after the tests' step (still running when clippy failed) had ended.
+    grep -q 'gate: "clippy, all features" failed: host:all fails' "$scratch/$i.log" ||
+      { bad "\"$label\" beside the tests: its failure is not named" "$i"; continue; }
+    grep -q '^==> clippy, all features (it ran beside the tests):' "$scratch/$i.log" ||
+      { bad "\"$label\" beside the tests: it did not run beside them" "$i"; continue; }
+  fi
+  echo "    red as it should be: \"$label\"${mode:+ ($mode)} -> ${lane:-every lane} ($trailer)"
 done
 [ "$failed" = 0 ] || exit 1
 echo "gate-selftest: every planted failure failed its lane and the gate; the unplanted run passed every lane"

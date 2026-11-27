@@ -49,6 +49,8 @@ import re
 import concurrent.futures
 import subprocess
 import sys
+import threading
+import time
 import tomllib
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -104,6 +106,32 @@ def alternatives(expr):
     return terms
 
 
+def timed_run(cmd):
+    """subprocess.run with stderr read line by line: each cargo lock line ("Blocking waiting for
+    file lock on ...") is timed until the next stderr line, kept in .waits as (lock, seconds)."""
+    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    lines, waits, chunks = [], [], []
+    reader = threading.Thread(target=lambda: chunks.append(proc.stdout.read()))
+    reader.start()
+    pending = None
+    for line in proc.stderr:
+        now = time.monotonic()
+        if pending:
+            waits.append((pending[0], now - pending[1]))
+            pending = None
+        m = re.search(r"Blocking waiting for file lock on (.+)", line)
+        if m:
+            pending = (m.group(1).strip(), now)
+        lines.append(line)
+    proc.wait()
+    reader.join()
+    if pending:
+        waits.append((pending[0], time.monotonic() - pending[1]))
+    out = subprocess.CompletedProcess(cmd, proc.returncode, "".join(chunks), "".join(lines))
+    out.waits = waits
+    return out
+
+
 def filters(cargo_args):
     with open(os.path.join(ROOT, ".config", "nextest.toml"), "rb") as f:
         config = tomllib.load(f)
@@ -117,15 +145,28 @@ def filters(cargo_args):
     terms = [(profile, term) for profile, expr in found for term in alternatives(expr)]
     # The terms are listed side by side: each list runs every test binary's --list, and one at a
     # time they were most of this check's time. Results are printed in the terms' order.
+    # Each call's wall time and its cargo lock waits are printed, so a slow check in the gate log
+    # says what it waited on: a lock line's wait runs until cargo's next stderr line.
+    start = time.monotonic()
+
     def listed(term):
-        return subprocess.run(
-            ["cargo", "nextest", "list", "--locked", "--workspace", *cargo_args,
-             "-E", term[1], "--message-format", "json"],
-            cwd=ROOT, capture_output=True, text=True,
-        )
+        t0 = time.monotonic()
+        out = timed_run(["cargo", "nextest", "list", "--locked", "--workspace", *cargo_args,
+                         "-E", term[1], "--message-format", "json"])
+        out.wall = time.monotonic() - t0
+        out.began = t0 - start
+        return out
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=len(terms) or 1) as pool:
         outs = list(pool.map(listed, terms))
+    for (profile, expr), out in zip(terms, outs):
+        waits = getattr(out, "waits", [])
+        total = {}
+        for what, secs in waits:
+            n, t = total.get(what, (0, 0.0))
+            total[what] = (n + 1, t + secs)
+        said = ", ".join(f"{what} lock {t:.1f} s in {n}" for what, (n, t) in total.items()) or "no lock wait"
+        print(f"  nextest list for {expr}: {out.wall:.1f} s from {out.began:.1f} s ({said})")
     bad = 0
     for (profile, expr), out in zip(terms, outs):
         if out.returncode != 0:
