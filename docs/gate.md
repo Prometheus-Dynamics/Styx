@@ -150,7 +150,12 @@ CI, `scripts/rustdoc-only.sh` stands in for rustdoc: it runs the doctests of eac
 moved and of every workspace crate that builds with one (transitively, dev-dependencies
 included), and names each crate it skips. The list comes from the change, not from which crates
 have doctests today. With no list, or a call that is not a crate's `--test` run, it is plain
-rustdoc; CI runs every crate's doctests. A key is
+rustdoc; CI runs every crate's doctests. The listed crates' calls are not run one after the other
+as cargo reaches them: the wrapper writes each call down (`STYX_DOC_COLLECT`), and once cargo ends
+`gate.py doctests-run` runs them side by side, the lane's build jobs at a time, without cargo's
+jobserver (gone by then), and prints each crate's output whole, in crate order. A call that fails,
+a listed crate with no call, and a call that cannot be replayed (its record, directory or rustdoc
+gone) each fail the step. A key is
 recorded only after both its nextest run and the doctests are green. Clippy, the default-features pass and the no_std
 checks always run (cargo's own freshness makes the unchanged ones cheap).
 

@@ -75,6 +75,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import struct
 import subprocess
@@ -1070,6 +1071,97 @@ def cmd_script_mode_drift(a):
     sys.exit(1 if changed else 0)
 
 
+# The jobserver cargo hands its children (pipe fds or a FIFO): gone once cargo has returned, so a
+# collected call runs without it and rustdoc takes its own threads; the runner bounds how many run.
+JOBSERVER_VARS = ("CARGO_MAKEFLAGS", "MAKEFLAGS", "MFLAGS")
+
+
+def doctest_calls(calls_dir, expect):
+    """The doctest calls scripts/rustdoc-only.sh collected (STYX_DOC_COLLECT), one per crate of
+    the list, and every reason one cannot be replayed: a listed crate with no call, a call of a
+    crate not listed, a record that cannot be read, a rustdoc or a directory that is gone."""
+    with open(expect) as f:
+        want = sorted({line.strip() for line in f if line.strip()})
+    got = sorted(os.listdir(calls_dir)) if os.path.isdir(calls_dir) else []
+    problems = []
+    missing = sorted(set(want) - set(got))
+    extra = sorted(set(got) - set(want))
+    if missing:
+        problems.append("listed, but no call was collected (cargo did not reach their rustdoc): "
+                        + " ".join(missing))
+    if extra:
+        problems.append("collected, but not listed: " + " ".join(extra))
+    calls = []
+    for name in sorted(set(want) & set(got)):
+        d = os.path.join(calls_dir, name)
+        try:
+            with open(os.path.join(d, "argv"), "rb") as f:
+                argv = [os.fsdecode(x) for x in f.read().split(b"\0")[:-1]]
+            with open(os.path.join(d, "env"), "rb") as f:
+                env = dict(os.fsdecode(kv).split("=", 1) for kv in f.read().split(b"\0") if b"=" in kv)
+            with open(os.path.join(d, "cwd"), "rb") as f:
+                cwd = os.fsdecode(f.read())
+        except OSError as e:
+            problems.append(f"{name}: its call cannot be replayed: {e}")
+            continue
+        for k in JOBSERVER_VARS + ("STYX_DOC_COLLECT",):
+            env.pop(k, None)
+        exe = None
+        if argv:
+            exe = argv[0] if "/" in argv[0] else shutil.which(argv[0], path=env.get("PATH"))
+        if not exe or not os.access(exe, os.X_OK):
+            problems.append(f"{name}: its call cannot be replayed: no rustdoc at {argv[:1]}")
+            continue
+        if not os.path.isdir(cwd):
+            problems.append(f"{name}: its call cannot be replayed: its directory {cwd} is gone")
+            continue
+        calls.append((name, [exe] + argv[1:], env, cwd))
+    return calls, problems
+
+
+def cmd_doctests_run(a):
+    """Every collected doctest call, `--jobs` at a time; each one's output printed whole, in crate
+    order, when all have ended. Fails on any call that fails or cannot be replayed (never a pass:
+    a crate with no call, a record that cannot be read, a rustdoc that cannot start)."""
+    calls, problems = doctest_calls(a.calls, a.expect)
+    jobs = a.jobs or int(os.environ.get("CARGO_BUILD_JOBS") or os.cpu_count() or 1)
+    out_dir = tempfile.mkdtemp(prefix="doctests.")
+    t0 = time.monotonic()
+
+    def run(call):
+        name, argv, env, cwd = call
+        path = os.path.join(out_dir, name)
+        try:
+            with open(path, "wb") as out:
+                r = subprocess.run(argv, cwd=cwd, env=env, stdout=out, stderr=subprocess.STDOUT,
+                                   stdin=subprocess.DEVNULL)
+            return name, r.returncode, path, None
+        except OSError as e:
+            return name, None, path, str(e)
+
+    with concurrent.futures.ThreadPoolExecutor(max(1, jobs)) as ex:
+        results = list(ex.map(run, calls))
+    failed = []
+    for name, rc, path, err in results:
+        print(f"==> doctests of {name}" + ("" if rc == 0 else f" (exit {rc if err is None else err})") + ":")
+        try:
+            with open(path, "rb") as f:
+                sys.stdout.write(f.read().decode(errors="replace"))
+        except OSError:
+            pass
+        sys.stdout.flush()
+        if rc != 0:
+            failed.append(name)
+    shutil.rmtree(out_dir, ignore_errors=True)
+    print(f"    doctests: {len(results)} crates' calls, {jobs} at a time: {time.monotonic() - t0:.1f} s")
+    for p in problems:
+        print(f"gate: doctests: {p}", file=sys.stderr)
+    if failed:
+        print("gate: doctests failed: " + " ".join(failed), file=sys.stderr)
+    if failed or problems:
+        sys.exit(1)
+
+
 def shared_libs(binary, cache):
     """The shared libraries a binary loads, by path and file identity (a package update moves them)."""
     if binary in cache:
@@ -1449,6 +1541,10 @@ def main():
     sh = sub.add_parser("scripts-hidden")
     sh.add_argument("--on", action="store_true")
     sub.add_parser("script-mode-drift").add_argument("--root", default=ROOT)
+    dr = sub.add_parser("doctests-run")
+    dr.add_argument("--calls", required=True)
+    dr.add_argument("--expect", required=True)
+    dr.add_argument("--jobs", type=int, default=0)
     sk = sub.add_parser("selftest-key")
     sk.add_argument("--root")
     sr = sub.add_parser("selftest-reuse")
@@ -1466,7 +1562,7 @@ def main():
     if a.cmd == "run" and a.crates and not a.narrow:
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
     fn = {"selftest-key": cmd_selftest_key, "selftest-reuse": cmd_selftest_reuse,
-          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "script-mode-drift": cmd_script_mode_drift, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
+          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "script-mode-drift": cmd_script_mode_drift, "doctests-run": cmd_doctests_run, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
           "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan, "alloc-selftest": cmd_alloc_selftest,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)

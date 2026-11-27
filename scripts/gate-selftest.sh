@@ -183,8 +183,56 @@ rd real STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name styx_format x.rs
 rd real STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name=styx_format x.rs
 rd skip STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name styx_frame x.rs
 rd skip STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name=styx_formats x.rs
+rd skip STYX_DOC_ONLY="$rd_dir/list" STYX_DOC_COLLECT="$rd_dir/none" -- --test --crate-name styx_frame x.rs
+rd real STYX_DOC_ONLY="$rd_dir/list" STYX_DOC_COLLECT="$rd_dir/none" -- --crate-name styx_format x.rs
 rm -rf -- "${rd_dir:?}"
 echo "    rustdoc-only.sh: listed and fall-through runs reach rustdoc; an unlisted crate is skipped and named"
+# Collected doctests (rustdoc-only.sh STYX_DOC_COLLECT, gate.py doctests-run): a listed crate's
+# call is written, not run; the runner runs every call, prints each output whole in crate order,
+# strips cargo's jobserver, and fails on a failing call, a listed crate with no call, and a call
+# that cannot be replayed (a record gone, its directory gone, its rustdoc gone). Never a pass.
+dc=$(mktemp -d "${TMPDIR:-/tmp}/dc.XXX")
+dc_fail() { echo "gate-selftest: FAILED: collected doctests: $1" >&2; rm -rf -- "${dc:?}"; exit 1; }
+cat > "$dc/rustdoc" <<'RD'
+#!/bin/sh
+name=$3
+echo "$name one jobserver=${CARGO_MAKEFLAGS:-}${MAKEFLAGS:-}${MFLAGS:-}"
+sleep 0.3
+echo "$name two"
+case " $* " in *" FAIL "*) exit 101 ;; esac
+RD
+chmod +x "$dc/rustdoc"
+printf 'crate_a\ncrate_b\n' > "$dc/list"
+collect() { # dir, crate, extra args
+  mkdir -p "$1"
+  (cd "$dc" && env STYX_RUSTDOC="$dc/rustdoc" STYX_DOC_ONLY="$dc/list" STYX_DOC_COLLECT="$1" \
+    CARGO_MAKEFLAGS="-j --jobserver-fds=8,9" MAKEFLAGS="-j --jobserver-auth=fifo:$dc/gone" \
+    "$OLDPWD/scripts/rustdoc-only.sh" --test --crate-name "$2" ${3:-}) || dc_fail "collecting $2"
+}
+runner() { python3 scripts/gate.py doctests-run --calls "$1" --expect "$dc/list" --jobs 2 2>&1; }
+collect "$dc/ok" crate_b; collect "$dc/ok" crate_a
+[ -s "$dc/ok/crate_a/argv" ] || dc_fail "no call written"
+out=$(runner "$dc/ok") || dc_fail "two passing calls failed: $out"
+blocks=$(grep -E '^(==>|crate_)' <<< "$out" | tr '\n' '|')
+[ "$blocks" = "==> doctests of crate_a:|crate_a one jobserver=|crate_a two|==> doctests of crate_b:|crate_b one jobserver=|crate_b two|" ] \
+  || dc_fail "outputs not whole, in crate order, or the jobserver kept: $blocks"
+collect "$dc/red" crate_a; collect "$dc/red" crate_b FAIL
+out=$(runner "$dc/red") && dc_fail "a failing call passed"
+[[ $out == *"doctests failed: crate_b"* ]] || dc_fail "a failing call not named: $out"
+collect "$dc/short" crate_a
+out=$(runner "$dc/short") && dc_fail "a listed crate with no call passed"
+[[ $out == *"no call was collected"*crate_b* ]] || dc_fail "a missing call not named: $out"
+collect "$dc/rec" crate_a; collect "$dc/rec" crate_b; rm "$dc/rec/crate_b/env"
+out=$(runner "$dc/rec") && dc_fail "a call whose record is gone passed"
+[[ $out == *"crate_b: its call cannot be replayed"* ]] || dc_fail "an unreadable record not named: $out"
+collect "$dc/dir" crate_a; collect "$dc/dir" crate_b; printf '%s' "$dc/gone" > "$dc/dir/crate_b/cwd"
+out=$(runner "$dc/dir") && dc_fail "a call whose directory is gone passed"
+[[ $out == *"crate_b: its call cannot be replayed"*"is gone"* ]] || dc_fail "a gone directory not named: $out"
+collect "$dc/exe" crate_a; collect "$dc/exe" crate_b; chmod -x "$dc/rustdoc"
+out=$(runner "$dc/exe") && dc_fail "a call whose rustdoc cannot start passed"
+[[ $out == *"cannot be replayed: no rustdoc"* ]] || dc_fail "a rustdoc gone not named: $out"
+rm -rf -- "${dc:?}"
+echo "    collected doctests: whole outputs in crate order, no jobserver; a failing, missing or unreplayable call fails"
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(

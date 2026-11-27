@@ -451,7 +451,20 @@ all_tests() {
   elif [ ! -s "$lists/doc-crates" ]; then
     step_not_run host:all doctests every_crate_reused
   else
-    if [ -z "${GITHUB_ACTIONS:-}" ]; then
+    if [ -z "${GITHUB_ACTIONS:-}" ] && [ -f "$lists/doc-crates.libs" ]; then
+      # The listed crates' rustdoc calls are collected while cargo walks the crates, then run side
+      # by side (gate.py doctests-run, the lane's build jobs at a time): one after the other they
+      # were 4-6.5 s of one rustdoc at a time, side by side 0.6-1.0 s for the same CPU-s
+      # (2026-11-27, 52 crates, 6 doctests). Each call's output is printed whole, in crate order;
+      # a call that fails or cannot be replayed fails the step.
+      mkdir "$lists/doc-calls"
+      (
+        STYX_RUSTDOC="${RUSTDOC:-rustdoc}" STYX_DOC_ONLY="$lists/doc-crates.libs" \
+          STYX_DOC_COLLECT="$lists/doc-calls" RUSTDOC="$PWD/scripts/rustdoc-only.sh" \
+          cargo test --locked --workspace --doc --all-features --no-fail-fast &&
+          python3 scripts/gate.py doctests-run --calls "$lists/doc-calls" --expect "$lists/doc-crates.libs"
+      ) > "$doc_out" 2>&1 &
+    elif [ -z "${GITHUB_ACTIONS:-}" ]; then
       STYX_RUSTDOC="${RUSTDOC:-rustdoc}" STYX_DOC_ONLY="$lists/doc-crates.libs" \
         RUSTDOC="$PWD/scripts/rustdoc-only.sh" \
         cargo test --locked --workspace --doc --all-features --no-fail-fast > "$doc_out" 2>&1 &
