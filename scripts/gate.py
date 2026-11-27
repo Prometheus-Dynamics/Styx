@@ -75,6 +75,7 @@ import hashlib
 import json
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -157,6 +158,63 @@ def digest(path, cache):
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 h.update(chunk)
         cache[tag] = h.hexdigest()
+    return cache[tag]
+
+
+SHF_ALLOC, SHT_NOBITS = 0x2, 8
+
+
+def elf_alloc_digest(data):
+    """The sha256 of what a program loads: every SHF_ALLOC section's name, address, flags and bytes
+    (a NOBITS section by its size), without .note.gnu.build-id. None when DATA is not a well-formed
+    64-bit little-endian ELF: the caller then keys the whole file, so a file this cannot read never
+    reuses a run it should not. Debug info, symbol tables and comments are not loaded: they moved
+    on 68 of 131 test binaries rebuilt from an identical source after other edits (incremental
+    codegen), which keyed on the whole file reran 39 crates that had not changed (2026-11-27)."""
+    try:
+        if len(data) < 64 or data[:6] != b"\x7fELF\x02\x01":
+            return None
+        shoff, = struct.unpack_from("<Q", data, 0x28)
+        shentsize, shnum, shstrndx = struct.unpack_from("<HHH", data, 0x3A)
+        if shentsize != 64 or shnum == 0 or shstrndx >= shnum or shoff + shnum * 64 > len(data):
+            return None
+        secs = [struct.unpack_from("<IIQQQQ", data, shoff + i * 64) for i in range(shnum)]
+        stroff, strsize = secs[shstrndx][4], secs[shstrndx][5]
+        if stroff + strsize > len(data):
+            return None
+        h, alloc = hashlib.sha256(), 0
+        for name, typ, flags, addr, off, size in secs:
+            if not flags & SHF_ALLOC:
+                continue
+            if name >= strsize:
+                return None
+            end = data.index(b"\0", stroff + name, stroff + strsize)
+            n = data[stroff + name:end]
+            if n == b".note.gnu.build-id":
+                continue
+            h.update(n + b"\0" + struct.pack("<QQ", addr, flags))
+            if typ == SHT_NOBITS:
+                h.update(struct.pack("<Q", size))
+            else:
+                if off + size > len(data):
+                    return None
+                h.update(data[off:off + size])
+            alloc += 1
+        return h.hexdigest() if alloc else None
+    except (struct.error, ValueError):
+        return None
+
+
+def binary_digest(path, cache):
+    """A test binary's part of a key: "alloc:" and its loaded sections' digest, or "file:" and the
+    whole file's when it is not an ELF this reads (the two never match each other)."""
+    st = os.stat(path)
+    tag = (path, st.st_size, st.st_mtime_ns, st.st_ino, "alloc")
+    if tag not in cache:
+        with open(path, "rb") as f:
+            data = f.read()
+        a = elf_alloc_digest(data)
+        cache[tag] = "alloc:" + a if a else "file:" + hashlib.sha256(data).hexdigest()
     return cache[tag]
 
 
@@ -1052,9 +1110,9 @@ def key_of(crate, binaries, files, cache, ldd_cache, common):
     reach = closure(crate)
     other_rust = {meta[n][0] for n in meta if n != crate}
     h = hashlib.sha256()
-    h.update(b"styx-gate-key-v1\0" + common)
+    h.update(b"styx-gate-key-v2\0" + common)
     for b in sorted(binaries):
-        h.update(b"binary\0" + os.path.basename(b).encode() + b"\0" + digest(b, cache).encode())
+        h.update(b"binary\0" + os.path.basename(b).encode() + b"\0" + binary_digest(b, cache).encode())
         for lib in shared_libs(b, ldd_cache):
             h.update(b"lib\0" + lib.encode() + b"\0")
     names = set()
@@ -1141,7 +1199,7 @@ def cmd_reuse_plan(a):
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
         versions = tool_versions(pool)
         # Hashing and ldd per binary, side by side (both wait on the disk or a child process).
-        list(pool.map(lambda b: (digest(b, cache), shared_libs(b, ldd_cache)), binaries))
+        list(pool.map(lambda b: (binary_digest(b, cache), shared_libs(b, ldd_cache)), binaries))
     if not CI:
         save_digests(cache, set(binaries))
     common = "\0".join([a.variant, ROOT, scripts_hash(), *versions, *machine_facts(cache)]).encode()
@@ -1206,6 +1264,85 @@ def cmd_reuse_plan(a):
     print(" | ".join(f"package(={c})" for c in run))
 
 
+def cmd_alloc_selftest(a):
+    """The alloc key's mutants, on a copy of ELF (default: this Python's own executable, an ELF on
+    every Linux host and runner), through objcopy: a non-alloc section added keeps the key, the same
+    section made alloc moves it, a .rodata byte changed moves it, and a truncated or malformed file
+    keys its whole bytes (it never matches the original's alloc key). Exit 1 on any miss."""
+    src = a.elf or os.path.realpath(sys.executable)
+    fails = []
+    with tempfile.TemporaryDirectory() as tmp:
+        def path(n):
+            return os.path.join(tmp, n)
+        with open(src, "rb") as f:
+            base = f.read()
+        with open(path("base"), "wb") as f:
+            f.write(base)
+        with open(path("payload"), "wb") as f:
+            f.write(b"styx gate alloc self-test\n" * 8)
+
+        def key(n):
+            return binary_digest(path(n), {})
+
+        def objcopy(out, *args):
+            subprocess.run(["objcopy", *args, path("base"), path(out)], check=True, capture_output=True)
+        k0 = key("base")
+
+        def check(what, ok):
+            print(f"    alloc key: {what}: {'ok' if ok else 'MISSED'}")
+            if not ok:
+                fails.append(what)
+        check("the original is keyed by its loaded sections", k0.startswith("alloc:"))
+        objcopy("note", "--add-section", f".styx-probe={path('payload')}")
+        check("a non-alloc section added keeps the key", key("note") == k0)
+        objcopy("alloc", "--add-section", f".styx-probe={path('payload')}",
+                "--set-section-flags", ".styx-probe=alloc,contents,load,readonly")
+        check("the same section set alloc moves the key", key("alloc") != k0)
+        shoff, = struct.unpack_from("<Q", base, 0x28)
+        shnum, shstrndx = struct.unpack_from("<HH", base, 0x3C)
+        secs = [struct.unpack_from("<IIQQQQ", base, shoff + i * 64) for i in range(shnum)]
+        stroff = secs[shstrndx][4]
+        rodata = [sec for sec in secs if base[stroff + sec[0]:base.index(b"\0", stroff + sec[0])] == b".rodata"]
+        if not rodata or rodata[0][5] == 0:
+            check("the copy has a .rodata to change", False)
+        else:
+            off = rodata[0][4] + rodata[0][5] // 2
+            changed = bytearray(base)
+            changed[off] ^= 0xFF
+            with open(path("rodata"), "wb") as f:
+                f.write(changed)
+            check("a .rodata byte changed moves the key", key("rodata") != k0)
+        with open(path("short"), "wb") as f:
+            f.write(base[:len(base) // 2])
+        k = key("short")
+        check("a truncated file keys its whole bytes", k.startswith("file:") and k != k0)
+        bad = bytearray(base)
+        struct.pack_into("<Q", bad, 0x28, len(base) * 4)
+        with open(path("bad"), "wb") as f:
+            f.write(bad)
+        k = key("bad")
+        check("a malformed section table keys the whole bytes", k.startswith("file:") and k != k0)
+        # The headers intact, one alloc section's size past the end of the file.
+        if rodata:
+            i = secs.index(rodata[0])
+            past = bytearray(base)
+            struct.pack_into("<Q", past, shoff + i * 64 + 0x20, len(base) * 2)
+            with open(path("past"), "wb") as f:
+                f.write(past)
+            k = key("past")
+            check("a section past the end keys the whole bytes", k.startswith("file:") and k != k0)
+        # The section names cut inside an alloc section's name (a read that raises).
+        first = next(sec for sec in secs if sec[2] & SHF_ALLOC)
+        cut = bytearray(base)
+        struct.pack_into("<Q", cut, shoff + shstrndx * 64 + 0x20, first[0] + 1)
+        with open(path("cut"), "wb") as f:
+            f.write(cut)
+        k = key("cut")
+        check("unreadable section names key the whole bytes", k.startswith("file:") and k != k0)
+    if fails:
+        sys.exit(f"gate: the alloc key self-test missed: {'; '.join(fails)}")
+
+
 def cmd_reuse_record(a):
     """After a green run: record the keys of the crates that ran."""
     if CI:
@@ -1240,6 +1377,7 @@ def main():
     b.add_argument("rev", nargs="?", default=UPSTREAM)
     rc = sub.add_parser("release-check")
     rc.add_argument("commit")
+    sub.add_parser("alloc-selftest").add_argument("--elf")
     rp = sub.add_parser("reuse-plan")
     rp.add_argument("--list", required=True)
     rp.add_argument("--plan", required=True)
@@ -1265,7 +1403,7 @@ def main():
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
     fn = {"selftest-key": cmd_selftest_key, "selftest-reuse": cmd_selftest_reuse,
           "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
-          "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan,
+          "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan, "alloc-selftest": cmd_alloc_selftest,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)
 

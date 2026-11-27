@@ -16,6 +16,8 @@
 # side lanes' subshells under `set +e` (a lane's status is its last step's: Atlas's second), the 8
 # planted in the side lanes red. Green: 5.5-11.8 s at load 52-74, nice 10. The key check
 # (2026-11-27): with gate.sh left out of SELFTEST_FILES, red ("a changed gate.sh keeps the key").
+# The alloc key's check: green on this Python's executable; red on each of its four one-line
+# mutants and on the old whole-file key (2026-11-27).
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/gate-selftest.XXX")
@@ -40,6 +42,48 @@ if "${key_env[@]}" python3 scripts/gate.py selftest-reuse "$k_changed" 2> /dev/n
   echo "gate-selftest: FAILED: the changed gate.sh's key $k_changed was reused"; exit 1
 fi
 echo "    red as it should be: a changed gate.sh keys $k_changed, not $k_same: the self-test runs again"
+# The reuse key's binary part (gate.py elf_alloc_digest): its mutants on a real ELF, then the same
+# check with five broken digests put in its place, each of which it must catch.
+python3 scripts/gate.py alloc-selftest
+python3 - << 'PY'
+import argparse, hashlib, inspect, sys
+sys.path.insert(0, "scripts")
+import gate
+real = gate.elf_alloc_digest
+src = inspect.getsource(real)
+# Each mutant is the real function with one line changed: the property it breaks must go red.
+edits = {
+    "non-alloc sections in the key": ("if not flags & SHF_ALLOC:", "if False:"),
+    "section bytes left out": ("h.update(data[off:off + size])", "pass"),
+    "a section past the end skipped, not refused": ("if off + size > len(data):\n                    return None",
+                                                     "if off + size > len(data):\n                    continue"),
+    "a parse error keyed as a constant": ("except (struct.error, ValueError):\n        return None",
+                                          "except (struct.error, ValueError):\n        return '0' * 64"),
+}
+mutants = {name: (src.replace(a, b, 1), a in src) for name, (a, b) in edits.items()}
+missed = []
+for name, (text, found) in mutants.items():
+    if not found:
+        missed.append(f"{name} (its line is gone from elf_alloc_digest)")
+        continue
+    space = dict(vars(gate))
+    exec(text, space)
+    gate.elf_alloc_digest = space["elf_alloc_digest"]
+    try:
+        gate.cmd_alloc_selftest(argparse.Namespace(elf=None))
+        missed.append(name)
+    except SystemExit:
+        print(f"    red as it should be: an alloc key with {name}")
+gate.elf_alloc_digest = lambda d: hashlib.sha256(d).hexdigest()
+try:
+    gate.cmd_alloc_selftest(argparse.Namespace(elf=None))
+    missed.append("the whole file")
+except SystemExit:
+    print("    red as it should be: the whole file as the key (the old key)")
+gate.elf_alloc_digest = real
+if missed:
+    sys.exit(f"gate-selftest: FAILED: the alloc key self-test passed a broken digest: {'; '.join(missed)}")
+PY
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(

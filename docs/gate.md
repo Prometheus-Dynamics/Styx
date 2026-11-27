@@ -107,8 +107,13 @@ there every script is an input. After the restore the gate fails if any script's
 from the index (the exec bit is tracked).
 
 A crate whose key equals a green run's is printed `REUSED` and not
-run. An edited crate always reruns; its dependents reuse only when their binaries come out
-byte-identical.
+run. An edited crate always reruns; its dependents reuse only when their test binaries load the
+same bytes: a binary is keyed by its allocated (SHF_ALLOC) sections, each by name, address, flags
+and bytes (a NOBITS section by its size), without the build-id, so debug info and symbol tables
+do not move a key. Keyed on the whole file, 68 of 131 binaries rebuilt from an identical source
+after other edits differed (incremental codegen), and 39 crates would have rerun for nothing. A
+file that is not a readable 64-bit ELF is keyed by all its bytes, which never match an ELF's key.
+The gate self-test checks this on a real ELF and on four broken versions of the digest.
 
 A crate whose sources declare an outside need (`styx_frame::not_run` or `dma_case`: a device, a
 daemon, a GPU) is keyed like any other, with what it meets on this machine in the key as well: the
