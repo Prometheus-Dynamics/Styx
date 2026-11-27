@@ -182,7 +182,9 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
   shown to be the same cause. The gate runs one test per core because of it. Cause not shown: a
   reproduction must give that line and message; it may be the set arriving after F under load
   (a test timing) or the frame-addressed control applied late (the service). Held: speed is the
-  only work now.
+  only work now. Also alone (2026-11-27, 20 runs of this test only, load 71-109, nice 10, not
+  starved): the first line again ("the manual exposure, to the line: 16444", aaa.rs:458 since the
+  Q15 diagnostics moved it) in 2 of 20 (logs/q15/run-15.log, run-20.log), about 1 s in.
 
 - [ ] Q15 `styx-service` `aaa` `the_3a_loop_on_the_simulated_camera` failed once at
   `crates/out/service/tests/aaa.rs:528` ("the ISP thread allocates nothing per frame": left 6,
@@ -192,3 +194,9 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
   fault, and speed is the only work. Cause not shown: a reproduction must give that line and count.
   Since then the test prints, when this check fails, each ISP-thread allocation of the checked
   window with its size, the frame the test was waiting for and a backtrace (test-only).
+  Cause named (2026-11-27, logs/q15/run-6.log: the test alone, 20 runs at load 71-109, nice 10;
+  1 failure, the same check and count, 6): product code. A frame the ISP thread missed under load
+  (`missed > 0 || !made` in the pace, `crates/out/service/src/isp.rs`) starts the "ISP short"
+  status: `write!` into the pace's text grows it from empty (8, 16, 32, 64, 134 bytes, isp.rs:472),
+  and `Slot::set_text` copies it with `to_string` (134 bytes, slot.rs:417, from isp.rs:840). All 6
+  while waiting for frame 49. Held for the user with Q12-Q14: not fixed.
