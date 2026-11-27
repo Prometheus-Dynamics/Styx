@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
@@ -69,6 +69,9 @@ pub(crate) struct Shared {
     pub(crate) scan_wake: Mutex<()>,
     pub(crate) scan_cv: Condvar,
     pub(crate) workers: Mutex<Vec<JoinHandle<()>>>,
+    /// How long a control connection may sit idle, in milliseconds ([`crate::control::IDLE`]
+    /// unless a test shortened it with [`Service::set_control_idle`]).
+    pub(crate) control_idle_ms: AtomicU64,
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -145,6 +148,7 @@ impl Service {
             scan_wake: Mutex::new(()),
             scan_cv: Condvar::new(),
             workers: Mutex::new(Vec::new()),
+            control_idle_ms: AtomicU64::new(crate::control::IDLE.as_millis() as u64),
         });
         for id in &config.cameras {
             ensure_slot(&shared, id).map_err(Error::Io)?;
@@ -167,6 +171,15 @@ impl Service {
             supervisor: Some(supervisor),
             server: Some(server),
         })
+    }
+
+    /// Test only: how long a control connection may sit idle before the service hangs up
+    /// (2 s otherwise). For a test of the hang-up that should not wait 2 s; it applies to
+    /// connections accepted after the call.
+    #[doc(hidden)]
+    pub fn set_control_idle(&self, idle: Duration) {
+        let ms = u64::try_from(idle.as_millis()).unwrap_or(u64::MAX).max(1);
+        self.shared.control_idle_ms.store(ms, Ordering::Relaxed);
     }
 
     /// The control socket's path.

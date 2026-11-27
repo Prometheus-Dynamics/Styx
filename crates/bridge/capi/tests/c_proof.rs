@@ -645,9 +645,10 @@ fn controls_proof(mode: &str, camera: *mut styx_capi::Camera) {
             "{mode}: a control the camera does not have"
         );
 
-        // The service hangs up on a connection idle for 2 s; a camera kept open longer still
-        // reaches it, since each request has its own connection.
-        std::thread::sleep(std::time::Duration::from_millis(2_500));
+        // The service hangs up on a connection idle for its idle time (2 s; this test's service
+        // is set to IDLE_MS); a camera kept open longer still reaches it, since each request has
+        // its own connection. Both modes wait the same.
+        std::thread::sleep(std::time::Duration::from_millis(IDLE_MS + 500));
         let mut again = std::ptr::null_mut();
         ok(
             styx_camera_controls(camera, &mut again),
@@ -660,6 +661,11 @@ fn controls_proof(mode: &str, camera: *mut styx_capi::Camera) {
         );
     }
 }
+
+/// The service test's control idle time (`Service::set_control_idle`): the hang-up is the same at
+/// 500 ms as at the service's 2 s, and the wait past it is 1 s, not 2.5 s. Not shorter: a client
+/// stalled by a loaded machine between connecting and its request would be hung up on.
+const IDLE_MS: u64 = 500;
 
 fn gain_value(value: u32) -> styx_capi::StyxControlValue {
     styx_capi::StyxControlValue {
@@ -701,6 +707,7 @@ fn the_c_surface_opens_the_same_camera_over_the_service_socket_and_gets_ordered_
         outlets: Arc::new(Discard),
     };
     let service = Service::start(Config::parse(&text).expect("config"), deps).expect("service");
+    service.set_control_idle(std::time::Duration::from_millis(IDLE_MS));
     let control = service.control_socket().to_path_buf();
     wait_until_listed(&control, CAMERA);
     c_caller(dir.path(), "service", &control);

@@ -95,8 +95,9 @@ pub const MAX_LINE: usize = 256;
 pub const MAX_TOKENS: usize = 8;
 /// The longest camera id a request may name.
 pub const MAX_ID: usize = 128;
-/// How long a connection may sit idle, and how long a camera may take to answer a `set`.
-const IDLE: Duration = Duration::from_secs(2);
+/// How long a connection may sit idle (a test may shorten it: `Service::set_control_idle`), and
+/// how long a camera may take to answer a `set`.
+pub(crate) const IDLE: Duration = Duration::from_secs(2);
 const ANSWER: Duration = Duration::from_secs(2);
 
 /// Accepts connections until shutdown. Connections are served one at a time: the protocol is
@@ -114,8 +115,9 @@ pub(crate) fn serve(listener: &UnixListener, shared: &Arc<Shared>) {
 
 fn connection(stream: UnixStream, shared: &Arc<Shared>) -> io::Result<()> {
     stream.set_nonblocking(false)?;
-    stream.set_read_timeout(Some(IDLE))?;
-    stream.set_write_timeout(Some(IDLE))?;
+    let idle = Duration::from_millis(shared.control_idle_ms.load(Ordering::Relaxed));
+    stream.set_read_timeout(Some(idle))?;
+    stream.set_write_timeout(Some(idle))?;
     let mut writer = stream.try_clone()?;
     let mut reader = BufReader::new(stream.take(0));
     loop {
