@@ -54,6 +54,12 @@ jobs:
             libpipewire-0.3-dev libspa-0.2-dev libclang-dev \
             pipewire pipewire-bin wireplumber gstreamer1.0-pipewire dbus \
             meson ninja-build pkg-config python3-yaml python3-ply python3-jinja2 libyaml-dev
+          # apt leaves its lock and partial/ owned by root: the cache's save (tar as the runner
+          # user) failed on them every run, so the archives were never saved and every run
+          # downloaded the packages again (20 misses in 20 runs, 2026-11-27). Only the .debs are
+          # kept.
+          sudo rm -rf ~/apt-archives/partial ~/apt-archives/lock
+          sudo chown -R "$(id -u):$(id -g)" ~/apt-archives
       - uses: actions/cache@v4
         with:
           path: ~/libcamera-prefix
