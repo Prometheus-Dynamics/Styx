@@ -398,18 +398,24 @@ all_tests() {
   part "nextest list (builds the test binaries)"
   wait "$cproof_pid" || { echo "==> the C library build for c_proof failed (the test reports it):"; cat "$cproof_out"; }
   part "the C library for c_proof"
-  local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0
-  expr=$(python3 scripts/gate.py reuse-plan --list "$lists/all.json" --plan "$lists/plan.json")
+  local expr doc_pid="" doc_out="$lists/doctests.out" doc_status=0 crate doc_crates=()
+  expr=$(python3 scripts/gate.py reuse-plan --list "$lists/all.json" --plan "$lists/plan.json" \
+    --doc "$lists/doc-crates")
   part "reuse plan"
   # nextest does not run doctests. They run beside the nextest run, not after it: rustdoc compiles
   # and runs each crate's examples one crate after another, mostly waiting (33 s of wall for 9 CPU-s
   # at load 200), and it holds no lock on the build directory while it does. Their output is
-  # printed when they end.
-  if [ "${STYX_CHECK_DOCTESTS:-1}" = 1 ]; then
-    cargo test --locked --workspace --doc --all-features > "$doc_out" 2>&1 &
-    doc_pid=$!
-  else
+  # printed when they end. They follow the crates' reuse keys (the plan's --doc list): a crate
+  # reused by key reuses its doctest verdict; every other crate with a doctest target runs them.
+  # 5 s of a core change's 40 s test step went to the doctests of 52 crates, 47 with none.
+  while read -r crate; do doc_crates+=(-p "$crate"); done < "$lists/doc-crates"
+  if [ "${STYX_CHECK_DOCTESTS:-1}" != 1 ]; then
     echo "doctests left out: no changed file holds one (the gate runs them)"
+  elif [ "${#doc_crates[@]}" = 0 ]; then
+    step_not_run host:all doctests every_crate_reused
+  else
+    cargo test --locked "${doc_crates[@]}" --doc --all-features > "$doc_out" 2>&1 &
+    doc_pid=$!
   fi
   # The expression names only crates with a test that is not #[ignore]: matching nothing is a fault.
   if [ -n "$expr" ]; then
@@ -421,9 +427,6 @@ all_tests() {
     step_not_run host:all tests every_crate_reused
   fi
   part "nextest run"
-  # Only after a green run (set -e ends the step on a red one).
-  python3 scripts/gate.py reuse-record --plan "$lists/plan.json"
-  part "reuse record"
   if [ -n "$doc_pid" ]; then
     wait "$doc_pid" || doc_status=$?
     part "doctests"
@@ -431,6 +434,10 @@ all_tests() {
     cat "$doc_out"
     [ "$doc_status" = 0 ] || { echo "gate: the doctests failed" >&2; return 1; }
   fi
+  # Only after a green nextest run and green doctests (set -e ends the step on a red one): a key
+  # recorded here reuses both verdicts.
+  python3 scripts/gate.py reuse-record --plan "$lists/plan.json"
+  part "reuse record"
 }
 no_std_checks() {
   # A crate that must build without std says so in its manifest:
