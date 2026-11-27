@@ -425,16 +425,26 @@ all_tests() {
   # at load 200), and it holds no lock on the build directory while it does. Their output is
   # printed when they end. They follow the crates' reuse keys (the plan's --doc list): when every
   # crate reused a green run (whose record waited for its doctests), they reuse that verdict too.
-  # Otherwise they run over the whole workspace, not the moved crates alone: a -p selection
-  # unifies features over those crates only and rebuilt dependencies for 71 s, holding the build
-  # directory from the nextest run (2026-11-27, -p styx-focus; cargo 1.99's workspace feature
-  # unification is still unstable).
+  # Otherwise cargo runs them over the whole workspace, not with -p: a -p (or --exclude)
+  # selection unifies features over those crates only and rebuilt dependencies for 71 s, holding
+  # the build directory from the nextest run (2026-11-27, -p styx-focus; cargo 1.99's workspace
+  # feature unification is still unstable). Off CI, scripts/rustdoc-only.sh stands in for rustdoc
+  # and runs the listed crates' doctests alone (a moved key or a dependent of one); each other
+  # crate is named as skipped. rustdoc ran one crate after another, 0.33 s each, 10.7 of 16.9 s
+  # in the 47 crates with no doctest (2026-11-27). CI runs every crate's. --no-fail-fast: every
+  # failing crate is reported, not the first.
   if [ "${STYX_CHECK_DOCTESTS:-1}" != 1 ]; then
     echo "doctests left out: no changed file holds one (the gate runs them)"
   elif [ ! -s "$lists/doc-crates" ]; then
     step_not_run host:all doctests every_crate_reused
   else
-    cargo test --locked --workspace --doc --all-features > "$doc_out" 2>&1 &
+    if [ -z "${GITHUB_ACTIONS:-}" ]; then
+      STYX_RUSTDOC="${RUSTDOC:-rustdoc}" STYX_DOC_ONLY="$lists/doc-crates.libs" \
+        RUSTDOC="$PWD/scripts/rustdoc-only.sh" \
+        cargo test --locked --workspace --doc --all-features --no-fail-fast > "$doc_out" 2>&1 &
+    else
+      cargo test --locked --workspace --doc --all-features --no-fail-fast > "$doc_out" 2>&1 &
+    fi
     doc_pid=$!
   fi
   # The expression names only crates with a test that is not #[ignore]: matching nothing is a fault.

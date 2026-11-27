@@ -27,7 +27,7 @@ trap 'rm -rf -- "${scratch:?}"' EXIT
 # old key is reused while the new key runs. CI and reuse-off are left out here: both always run.
 keyroot=$scratch/keyroot
 mkdir -p "$keyroot/scripts"
-cp scripts/gate.sh scripts/gate.py scripts/gate-selftest.sh scripts/gate-supervise.py "$keyroot/scripts/"
+cp scripts/gate.sh scripts/gate.py scripts/gate-selftest.sh scripts/gate-supervise.py scripts/rustdoc-only.sh "$keyroot/scripts/"
 k_same=$(python3 scripts/gate.py selftest-key --root "$keyroot")
 [ "$k_same" = "$(python3 scripts/gate.py selftest-key)" ] ||
   { echo "gate-selftest: FAILED: an unchanged copy keys $k_same, the tree $(python3 scripts/gate.py selftest-key)"; exit 1; }
@@ -84,6 +84,54 @@ gate.elf_alloc_digest = real
 if missed:
     sys.exit(f"gate-selftest: FAILED: the alloc key self-test passed a broken digest: {'; '.join(missed)}")
 PY
+# The doctests' list (gate.py doctests_needed): a moved crate's dependents run theirs (a doctest
+# can exercise the changed crate; their own keys are reused when only the dependency changed), a
+# crate that does not build with it does not, and nothing moved runs nothing. 2026-11-27 plant:
+# styx-frame reused by key, its doctest broken by a styx-format change, red.
+python3 - <<'PY'
+import sys
+sys.path.insert(0, "scripts")
+import gate
+crates = set(gate.metadata())
+need = set(gate.doctests_needed(crates - {"styx-format"}))
+wrong = []
+if not {"styx-format", "styx-frame"} <= need:
+    wrong.append(f"a styx-format change leaves out {sorted({'styx-format', 'styx-frame'} - need)}")
+if "styx-math" in need:
+    wrong.append("a styx-format change runs styx-math's doctests (it does not build with it)")
+if gate.doctests_needed(crates):
+    wrong.append("nothing moved, yet doctests run")
+if wrong:
+    sys.exit("gate-selftest: FAILED: the doctests' list: " + "; ".join(wrong))
+print("    doctests' list: a moved crate and its dependents; not the rest; nothing when nothing moved")
+PY
+# scripts/rustdoc-only.sh, the doctests' rustdoc off CI: a listed crate's --test run and every
+# fall-through reach the real rustdoc; an unlisted crate's --test run is skipped and named.
+rd_dir="$(mktemp -d "${TMPDIR:-/tmp}/rd.XXX")"
+printf '#!/bin/sh\necho REAL "$@"\n' > "$rd_dir/rustdoc"
+chmod +x "$rd_dir/rustdoc"
+printf 'styx_format\n' > "$rd_dir/list"
+rd() { # expectation, env..., -- args...
+  local want=$1 got; shift
+  local envs=()
+  while [ "$1" != -- ]; do envs+=("$1"); shift; done
+  shift
+  got=$(env STYX_RUSTDOC="$rd_dir/rustdoc" "${envs[@]}" scripts/rustdoc-only.sh "$@" 2>&1) || got="exit $?: $got"
+  case $want in
+    real) [[ $got == REAL* ]] ;;
+    skip) [[ $got == "doctests skipped: "* ]] ;;
+  esac || { echo "gate-selftest: FAILED: rustdoc-only.sh ${envs[*]} $*: wanted $want, got: $got" >&2; rm -rf -- "${rd_dir:?}"; exit 1; }
+}
+rd real -- --test --crate-name styx_frame x.rs
+rd real STYX_DOC_ONLY="$rd_dir/missing" -- --test --crate-name styx_frame x.rs
+rd real STYX_DOC_ONLY="$rd_dir/list" -- --crate-name styx_frame x.rs
+rd real STYX_DOC_ONLY="$rd_dir/list" -- --test x.rs
+rd real STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name styx_format x.rs
+rd real STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name=styx_format x.rs
+rd skip STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name styx_frame x.rs
+rd skip STYX_DOC_ONLY="$rd_dir/list" -- --test --crate-name=styx_formats x.rs
+rm -rf -- "${rd_dir:?}"
+echo "    rustdoc-only.sh: listed and fall-through runs reach rustdoc; an unlisted crate is skipped and named"
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(

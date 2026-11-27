@@ -97,8 +97,8 @@ STATUS_OK = ("passed", "reused")
 CI = bool(os.environ.get("CI"))
 # The gate's own files: a record or key made by other gate rules is not trusted.
 GATE_FILES = ["scripts/gate.sh", "scripts/gate.py", "scripts/gate-lanes.map", "scripts/affected.py",
-              "scripts/test-layout.py", "scripts/gate-supervise.py", ".config/nextest.toml",
-              ".config/default-only.txt"]
+              "scripts/test-layout.py", "scripts/gate-supervise.py", "scripts/rustdoc-only.sh",
+              ".config/nextest.toml", ".config/default-only.txt"]
 # How a test says it needs something outside its process (styx_frame::not_run, dma_case).
 OUTSIDE_NEED = re.compile(r"\bnot_run\b|\bdma_case\b")
 # Variables a test may read: the ones its crate's sources name, and these prefixes. Not the gate's
@@ -230,7 +230,7 @@ def scripts_hash():
 # The gate's self-test (scripts/gate-selftest.sh) tests these and nothing else: it runs again when
 # one changes, and its green run is reused otherwise, like a lane's crate.
 SELFTEST_FILES = ["scripts/gate.sh", "scripts/gate.py", "scripts/gate-selftest.sh",
-                  "scripts/gate-supervise.py"]
+                  "scripts/gate-supervise.py", "scripts/rustdoc-only.sh"]
 
 
 def selftest_key(root=ROOT):
@@ -1162,12 +1162,26 @@ def key_records():
     return out
 
 
-def doctest_crates():
-    """Workspace crates with a library target that rustdoc tests (cargo metadata's doctest flag)."""
+def doctest_targets():
+    """Workspace crates with a library target that rustdoc tests (cargo metadata's doctest flag):
+    crate -> that target's name (what rustdoc gets as --crate-name)."""
     metadata()
     m = json.loads(_meta_text)
-    return sorted(p["name"] for p in m["packages"] if p["id"] in m["workspace_members"]
-                  and any(t.get("doctest") for t in p["targets"]))
+    return {p["name"]: t["name"] for p in m["packages"] if p["id"] in m["workspace_members"]
+            for t in p["targets"] if t.get("doctest")}
+
+
+def doctest_crates():
+    return sorted(doctest_targets())
+
+
+def doctests_needed(reused, narrow=None):
+    """The crates whose doctests run: each with a doctest target whose key moved or that builds
+    with (closure: transitively, dev-dependencies included) a workspace crate whose key moved. A
+    crate never keyed (no nextest test) is never reused, so it counts as moved."""
+    moved = set(metadata()) - set(reused)
+    return [c for c in doctest_crates() if closure(c) & moved
+            and (narrow is None or closure(c) & narrow)]
 
 
 def cmd_reuse_plan(a):
@@ -1255,12 +1269,19 @@ def cmd_reuse_plan(a):
         with open(results, "a") as f:
             f.write(f"{a.variant} reuse {counts}\n")
     if a.doc:
-        docs = [c for c in doctest_crates() if c not in reused
-                and (narrow is None or closure(c) & narrow)]
+        # A dependent's doctest can exercise the changed crate (doctests_needed). The list is from
+        # the change, never a fixed list of crates that have doctests: a crate that gains its
+        # first doctest runs it.
+        targets = doctest_targets()
+        docs = doctests_needed(reused, narrow)
         with open(a.doc, "w") as f:
             f.write("".join(c + "\n" for c in docs))
-        say(f"    {a.variant} doctests: {len(docs)} of {len(doctest_crates())} crates need them"
-            f" ({'none: every verdict reused' if not docs else 'the whole workspace runs them'})")
+        # The same crates by the name rustdoc is given (--crate-name: the library target's name),
+        # for scripts/rustdoc-only.sh.
+        with open(a.doc + ".libs", "w") as f:
+            f.write("".join(targets[c] + "\n" for c in docs))
+        say(f"    {a.variant} doctests: {len(docs)} of {len(targets)} crates need them (a moved key,"
+            f" or a dependent of one){': none, every verdict reused' if not docs else ''}")
     print(" | ".join(f"package(={c})" for c in run))
 
 

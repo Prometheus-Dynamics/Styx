@@ -136,9 +136,14 @@ simulated camera in `crates/camera/sim`, and the case declarations in `styx_fram
 The gate prints `reuse off` with the files, and every crate's tests run. The gate's own files are
 also in every key, so a key made under other gate rules never matches. The doctests follow the
 same keys: when every crate is reused by key they reuse its doctest verdict too; when any crate
-with a doctest target has a moved key, no key or no nextest test to key, the doctests run over the
-whole workspace (`-p` for the moved crates alone unifies features over those crates only, and
-rebuilt dependencies for 71 s; cargo's workspace feature unification is unstable). A key is
+with a doctest target has a moved key, no key or no nextest test to key, cargo runs the doctests over
+the whole workspace (`-p`, or `--exclude` for the rest, unifies features over the selected crates
+only, and rebuilt dependencies for 71 s; cargo's workspace feature unification is unstable). Off
+CI, `scripts/rustdoc-only.sh` stands in for rustdoc: it runs the doctests of each crate whose key
+moved and of every workspace crate that builds with one (transitively, dev-dependencies
+included), and names each crate it skips. The list comes from the change, not from which crates
+have doctests today. With no list, or a call that is not a crate's `--test` run, it is plain
+rustdoc; CI runs every crate's doctests. A key is
 recorded only after both its nextest run and the doctests are green. Clippy, the default-features pass and the no_std
 checks always run (cargo's own freshness makes the unchanged ones cheap).
 
