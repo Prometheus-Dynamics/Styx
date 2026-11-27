@@ -448,9 +448,20 @@ def run_gate(selected, tree, narrow=None, doctests=True, no_reuse=()):
     if no_reuse:
         env["STYX_GATE_NO_REUSE"] = " ".join(no_reuse)
     sys.stdout.flush()
+    if os.environ.get("STYX_GATE_DRY"):
+        sys.exit("gate: STYX_GATE_DRY is scripts/gate-selftest.sh's: a dry gate runs no step and records nothing")
     rc = subprocess.run([os.path.join(ROOT, "scripts", "gate.sh")], cwd=ROOT, env=env).returncode
+    status = lane_status(results.name, selected, rc)
+    os.unlink(results.name)
+    os.unlink(meta_file)
+    return status, rc
+
+
+def lane_status(results_path, selected, rc):
+    """{variant: status} from gate.sh's lane marks and its exit status. A lane passed when it
+    marked itself passed (after its last step); a red gate whose lanes all say passed fails them all."""
     started, passed, counted, notes = set(), set(), set(), {}
-    with open(results.name) as f:
+    with open(results_path) as f:
         for line in f:
             v, _, what = line.strip().partition(" ")
             if what.startswith("reuse "):
@@ -462,8 +473,6 @@ def run_gate(selected, tree, narrow=None, doctests=True, no_reuse=()):
                 notes[f"{v}/{step}"] = state
             else:
                 (passed if what == "passed" else started).add(v)
-    os.unlink(results.name)
-    os.unlink(meta_file)
     for v in selected:
         if v not in counted and v in started | passed:
             print(f"gate: {v} reuse: none (no keyed runs: its steps always run)")
@@ -482,7 +491,12 @@ def run_gate(selected, tree, narrow=None, doctests=True, no_reuse=()):
     for key, state in notes.items():
         if key.split("/")[0] in selected:
             status[key] = state
-    return status, rc
+    return status
+
+
+def cmd_lane_status(a):
+    """The Gate-Lanes trailer that a gate.sh run's lane marks and exit status give (gate-selftest.sh)."""
+    print(trailer_of(lane_status(a.results, a.variants, a.rc)))
 
 
 def trailer_of(status):
@@ -1158,13 +1172,17 @@ def main():
     rp.add_argument("--variant", default="host:all")
     sh = sub.add_parser("scripts-hidden")
     sh.add_argument("--on", action="store_true")
+    ls = sub.add_parser("lane-status")
+    ls.add_argument("--results", required=True)
+    ls.add_argument("--rc", type=int, required=True)
+    ls.add_argument("variants", nargs="+")
     rr = sub.add_parser("reuse-record")
     rr.add_argument("--plan", required=True)
     rr.add_argument("--variant", default="host:all")
     a = p.parse_args()
     if a.cmd == "run" and a.crates and not a.narrow:
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
-    fn = {"scripts-hidden": cmd_scripts_hidden, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
+    fn = {"lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
           "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)

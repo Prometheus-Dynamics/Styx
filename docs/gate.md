@@ -39,7 +39,18 @@ styx-capi's `c_proof` links the C static library, built with the package's defau
 `<target>/debug/c-proof`. The gate builds it beside the all-features test binaries, so the test
 finds it current. One gate runs at a
 time (`STYX_GATE_SLOTS`, default 1): two side by side each took twice as long. The gate runs at nice `STYX_NICE` (default 10), the one level every dep's heavy runs use: it raises
-its own level to it, and says so when started above it.
+its own level to it, and says so when started above it. Between systemd scopes and services the
+share is set by CPUWeight, not nice: a heavy run stays in a unit at the default weight (100), and no
+Styx script sets CPUWeight, CPUQuota or IOWeight (checked 2026-11-27).
+
+## A failing step fails its lane
+
+Every lane's status comes from its own pass mark, written after its last step, and from the gate's
+exit status (scripts/gate.py lane_status). host:checks runs scripts/gate-selftest.sh: a dry gate
+(STYX_GATE_DRY) runs each step as `true` except one planted to fail (a failing command, then a
+passing one), through the same lanes, subshells and waits, at each lane's first and last step; the
+planted lane must come out failed and the gate red, and an unplanted dry gate green in every lane.
+`gate.py run` refuses a dry gate, so one never records anything.
 
 ## Nothing to run is not passed
 

@@ -106,8 +106,14 @@ fi
 step_tmp_root="$(mktemp -d "${TMPDIR:-/tmp}/g.XXX")"
 step_count=0
 step() {
-  local label="$1" bound="$2" start pid timer ended status=0 left tmp before after me=$BASHPID
+  local label="$1" bound="$2" start pid timer over status=0 left tmp before after me=$BASHPID
   shift 2
+  # The gate's own false-pass check (scripts/gate-selftest.sh) runs it dry: every step runs `true`
+  # in place of its command, except the one labelled STYX_GATE_PLANT, which runs planted_failure.
+  # Lanes, subshells, waits and pass marks are the gate's own. scripts/gate.py run refuses a dry gate.
+  if [ -n "${STYX_GATE_DRY:-}" ]; then
+    if [ "$label" = "${STYX_GATE_PLANT:-}" ]; then set -- planted_failure; else set -- true; fi
+  fi
   echo "==> $label"
   start=$SECONDS
   step_count=$((step_count + 1))
@@ -118,16 +124,26 @@ step() {
   TMPDIR="$tmp" "$@" &
   pid=$!
   set +m
-  sleep "$bound" &
+  # The bound: a timer that marks the step over it and stops its group, so the wait below ends.
+  # `wait PID`, not `wait -n` on the step and a timer: `wait -n` missed a step that ended within
+  # milliseconds of starting (each step of a dry gate, scripts/gate-selftest.sh) and waited out
+  # the whole bound. The timer is never signalled: a signal sent between its fork and its exec,
+  # or before its trap was set, was lost, and the gate waited on it for the whole bound. It is a
+  # new shell (not a subshell, which would hold the gate's EXIT trap) that watches the step every
+  # 50 ms and ends by itself once the step has.
+  over="$step_tmp_root/$step_count.over"
+  bash -c 'end=$((SECONDS + $1)); while kill -0 "$3" 2> /dev/null; do
+      if [ "$SECONDS" -ge "$end" ]; then : > "$2"; kill -TERM -- "-$3" 2> /dev/null; exit 0; fi
+      sleep 0.05; done' timer "$bound" "$over" "$pid" &
   timer=$!
-  wait -n -p ended "$pid" "$timer" || status=$?
-  if [ "$ended" = "$timer" ]; then
+  wait "$pid" || status=$?
+  wait "$timer" 2> /dev/null || true
+  if [ -e "$over" ]; then
+    rm -f "$over"
     echo "gate: step \"$label\" passed its bound of $bound s: stopping it" >&2
     stop_group "$pid"
     exit 1
   fi
-  kill "$timer" 2> /dev/null || true
-  wait "$timer" 2> /dev/null || true
   left=$(pgrep -a -g "$pid" || true)
   if [ -n "$left" ]; then
     echo "gate: step \"$label\" left processes running:" >&2
@@ -145,6 +161,12 @@ step() {
   fi
   echo "    $label: $((SECONDS - start)) s, $(awk -v a="$before" -v b="$after" 'BEGIN { printf "%.1f", b - a }') CPU-s"
   return "$status"
+}
+# A failing command, then a passing one: a step's status must be the failing one's (errexit inside
+# the step, and the step returning it), never the last command's.
+planted_failure() {
+  false
+  echo "planted: ran past its failing command"
 }
 # The CPU seconds (user + system) of a shell's waited-for children so far: cutime and cstime of
 # /proc/<pid>/stat. The pid is the shell running the step ($BASHPID there: the bare lanes run in
@@ -176,7 +198,7 @@ done
 # input script names them) are left out of every reuse key. While the lanes build and test they
 # cannot be read at all, so a test that reaches one by a path built at run time fails instead of
 # passing on a key without it. A gate stopped by force left them so; this gives them back first.
-python3 scripts/gate.py scripts-hidden
+[ -n "${STYX_GATE_DRY:-}" ] || python3 scripts/gate.py scripts-hidden
 # The record, after the restore (which starts only an empty target).
 if [ "$cargo_lanes" != 0 ] && [ ! -f "$owner_file" ]; then
   mkdir -p "$target_dir"
@@ -218,6 +240,9 @@ fi
 STYX_NOT_RUN_LOG="$(mktemp "${TMPDIR:-/tmp}/styx-not-run.XXXXXX")"
 export STYX_NOT_RUN_LOG
 not_run_report() {
+  # Only the gate's own shell. A child forked from it (a step's subshell, the timer before its exec)
+  # and stopped by a signal runs this trap too, and would remove the gate's files under it.
+  [ "$BASHPID" = "$$" ] || return 0
   local n dma
   n=$(sort -u "$STYX_NOT_RUN_LOG" | grep -c . || true)
   dma=$(sort -u "$STYX_NOT_RUN_LOG" | grep -c '^NOT RUN \[dma-heap\]' || true)
@@ -257,10 +282,10 @@ not_run_report() {
   done
   rm -f "$STYX_NOT_RUN_LOG"
   rm -rf "${lists:-}" "${step_tmp_root:-}"
-  python3 scripts/gate.py scripts-hidden
+  [ -n "${STYX_GATE_DRY:-}" ] || python3 scripts/gate.py scripts-hidden
 }
 trap not_run_report EXIT
-[ "$test_lanes" = 0 ] || python3 scripts/gate.py scripts-hidden --on
+[ "$test_lanes" = 0 ] || [ -n "${STYX_GATE_DRY:-}" ] || python3 scripts/gate.py scripts-hidden --on
 
 # Tests run under cargo-nextest: each test in its own process, tests of every binary side by side
 # (.config/nextest.toml groups the ones that share a device or a daemon). nextest does not run
@@ -323,8 +348,10 @@ default_tests() {
   # .config/default-only.txt). Every other crate's tests are the all-features pass's, and the
   # clippy step above has type-checked them under default features. Each crate is built as itself
   # (-p), with its own default features.
-  local crate crates=()
-  while read -r crate; do crates+=(-p "$crate"); done < <(python3 scripts/test-layout.py default-only-crates)
+  # An assignment, not `< <(...)`: a failing list must fail the step, not leave it with no crates.
+  local crate crates=() names
+  names=$(python3 scripts/test-layout.py default-only-crates)
+  for crate in $names; do crates+=(-p "$crate"); done
   if [ "${#crates[@]}" = 0 ]; then
     step_not_run host:default tests no_default_only_code
     return
@@ -450,6 +477,21 @@ no_std_checks() {
 # nothing, so they run beside the builds in a subshell of their own: one after the other they took
 # 28 s of wall for 6 CPU-s at load 140 (2026-11-24), all of it before the first build began. Their
 # output is printed when the host lanes end; a failure fails the gate there.
+# Passes when grep finds nothing (status 1). A match (0) fails, and so does an error (2: a file it
+# could not read, a bad pattern), which `! grep` would have taken as a pass.
+no_match() {
+  local s=0
+  grep "$@" || s=$?
+  [ "$s" = 1 ] || { [ "$s" = 0 ] || echo "gate: grep failed (status $s)" >&2; return 1; }
+}
+# Every simulated camera driver definition outside styx-sim (the grep's errors fail it, as above).
+sim_drivers_outside_sim() {
+  local out s=0
+  out=$(grep -rn -E '#\[driver\("sim-(sensor|receiver|isp)"' crates --include=*.rs) || s=$?
+  [ "$s" -le 1 ] || { echo "gate: grep failed (status $s)" >&2; return 1; }
+  out=$(awk '!/^crates\/camera\/sim\/src\// && NF' <<< "$out")
+  [ -z "$out" ] || { echo "$out"; return 1; }
+}
 checks_lane() {
   lane_mark host:checks started
   if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
@@ -458,13 +500,13 @@ checks_lane() {
   fi
   # Styx's code names no product, board or camera module. Those live in data.
   if compgen -G "crates/*/*/src" > /dev/null; then
-    step "no product names in code" 60 bash -c '! grep -rn -i -E "\b(raze|helios|photonvision|systemcore|roborio|ov9782|cm5)\b" crates/*/*/src'
+    step "no product names in code" 60 no_match -rn -i -E '\b(raze|helios|photonvision|systemcore|roborio|ov9782|cm5)\b' crates/*/*/src
   fi
   # One lock per outside repository: crates name git dependencies through the workspace only.
-  step "git dependencies are named in the workspace only" 60 bash -c '! grep -n -E "(git|rev) = " crates/*/*/Cargo.toml'
+  step "git dependencies are named in the workspace only" 60 no_match -n -E '(git|rev) = ' crates/*/*/Cargo.toml
   # One simulated camera: the sensor, receiver and ISP drivers are defined in styx-sim only (S0/X15);
   # a test needs one from `styx_sim::paced` (free-running) or `styx_sim::SimCamera` (lock-step).
-  step "one definition of the simulated camera drivers" 60 bash -c '! grep -rn -E "#\[driver\(\"sim-(sensor|receiver|isp)\"" crates --include=*.rs | grep -v "^crates/camera/sim/src/"'
+  step "one definition of the simulated camera drivers" 60 sim_drivers_outside_sim
   # Every tests/*.rs file is built: a crate that lists its test binaries (tests/all.rs) leaves none out.
   step "every test file is in a test binary" 60 python3 scripts/test-layout.py files
   # A merged test binary runs its tests as threads of one process under cargo test. A file in one
@@ -473,6 +515,9 @@ checks_lane() {
   step "merged test files share no process state unlisted" 60 python3 scripts/test-layout.py shared-state
   # One copy of the shared ring: every shm-* crate from one version and one source.
   step "one source for every shm crate" 60 python3 scripts/one-shm.py
+  # The gate itself: a planted failing step fails its lane and the gate, in every lane, at its
+  # first step and at its last (Atlas's two false passes, 2026-11-24). Slowest green: 12 s.
+  step "a failing step fails its lane (scripts/gate-selftest.sh)" 60 scripts/gate-selftest.sh
   lane_mark host:checks passed
 }
 checks_pid="" checks_out=""
