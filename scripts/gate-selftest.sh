@@ -345,6 +345,8 @@ cases=(
   "tests, all features|host:all"
   "clippy, all features|host:all|beside-slow"
   "clippy, all features|host:all|serial"
+  "format|host:checks|leftover"
+  "format|host:checks|orphan"
 )
 # One dry gate; prints "<exit status> <Gate-Lanes trailer>" and keeps its log as $scratch/<n>.log.
 # A case's third field: "beside-slow" runs host:all's clippy beside its tests (as locally, even
@@ -358,6 +360,9 @@ dry_gate() {
     beside-slow) how=(-u GITHUB_ACTIONS STYX_GATE_CLIPPY_BESIDE=1 "STYX_GATE_DRY_SLOW=tests, all features") ;;
     serial) how=(STYX_GATE_CLIPPY_BESIDE=0) ;;
     nohome) how=(STYX_GATE_CARGO_HOMES="$scratch/no-homes") ;;
+    leftover) how=(STYX_GATE_PLANT_KIND=leftover) ;;
+    orphan) how=(STYX_GATE_PLANT_KIND=orphan) ;;
+    fixture) how=("STYX_GATE_DRY_STAT_DIR=$scratch/stat") ;;
   esac
   env -u STYX_GATE_SUPERVISOR -u STYX_GATE_NARROW -u STYX_GATE_TREE -u STYX_GATE_META \
     -u STYX_GATE_RECORDS -u STYX_GATE_NO_REUSE -u STYX_CHECK_DOCTESTS "${how[@]}" \
@@ -374,7 +379,21 @@ bad() { echo "gate-selftest: FAILED: $1"; sed 's/^/    /' "$scratch/$2.log" | ta
 # shows which ones had ended and when).
 t0=$SECONDS
 pids=()
-{ dry_gate clean "" > "$scratch/clean.out"; echo "    dry gate unplanted ended at $((SECONDS - t0)) s"; } & pids+=($!)
+# Two steps of the unplanted run read fixture stat files before and after (gate.sh child_cpu): the
+# children's ticks (fields 16 and 17) grow by 175 for "format" and by 172 for the shm check (one
+# rounds up, one down: a truncation and an always-up both show); a command name with spaces and
+# parentheses; the process's own ticks (14 and 15) differ, so reading the wrong fields shows.
+clk=$(getconf CLK_TCK)
+fixture() { # label, children's ticks after (from 100 + 23)
+  mkdir -p "$scratch/stat/$1"
+  echo '4242 (a (b) c) S 1 4242 4242 0 -1 0 0 0 0 0 900 77 100 23 20 0 1 0 1 0 0' > "$scratch/stat/$1/before"
+  echo "4242 (a (b) c) S 1 4242 4242 0 -1 0 0 0 0 0 990 88 $2 48 20 0 1 0 1 0 0" > "$scratch/stat/$1/after"
+  local t=$(( (($2 + 48 - 123) * 10 + clk / 2) / clk ))
+  echo "$((t / 10)).$((t % 10))"
+}
+fixture_format=$(fixture format 250)
+fixture_shm=$(fixture "one source for every shm crate" 247)
+{ dry_gate clean "" fixture > "$scratch/clean.out"; echo "    dry gate unplanted ended at $((SECONDS - t0)) s"; } & pids+=($!)
 { dry_gate nohome "" nohome > "$scratch/nohome.out"; echo "    dry gate with no lane homes ended at $((SECONDS - t0)) s"; } & pids+=($!)
 for i in "${!cases[@]}"; do
   IFS='|' read -r label _ mode <<< "${cases[$i]}"
@@ -386,6 +405,19 @@ for v in "${lanes[@]}"; do
   [[ " ${trailer#Gate-Lanes: } " == *" $v=passed "* ]] || { bad "unplanted: $v is not passed (exit $rc: $trailer)" clean; break; }
 done
 [ "$rc" = 0 ] || bad "unplanted: the gate exited $rc" clean
+# step()'s own lines, from builtins (gate.sh child_cpu, us2): every step's CPU-s (from the real
+# /proc: a number, never negative) and epilogue line in its format, and the fixture step's exact.
+steps_seen=$(grep -c '^==> .*[^:]$' "$scratch/clean.log")  # a lane's heading ends in ":"
+[ "$(grep -cE '^    .+: [0-9]+ s, [0-9]+\.[0-9] CPU-s$' "$scratch/clean.log")" = "$steps_seen" ] ||
+  bad "unplanted: not every step printed its time and CPU-s line" clean
+[ "$(grep -cE '^    epilogue: body end to wait -?[0-9]+\.[0-9]{2} s, timer wait -?[0-9]+\.[0-9]{2}, pgrep -?[0-9]+\.[0-9]{2}, child_cpu -?[0-9]+\.[0-9]{2}, TMPDIR check -?[0-9]+\.[0-9]{2}, rm -?[0-9]+\.[0-9]{2}$' "$scratch/clean.log")" = "$steps_seen" ] ||
+  bad "unplanted: not every step printed its epilogue line" clean
+for fx in "format|$fixture_format" "one source for every shm crate|$fixture_shm"; do
+  IFS='|' read -r fx_label fx_cpu <<< "$fx"
+  fx_seen=$(grep -F "    $fx_label: " "$scratch/clean.log" | sed -n 's/^.*: [0-9]* s, \([0-9]*\.[0-9]\) CPU-s$/\1/p')
+  [ "$fx_seen" = "$fx_cpu" ] ||
+    bad "unplanted: the fixture step \"$fx_label\" reported ${fx_seen:-no} CPU-s, not $fx_cpu (child_cpu)" clean
+done
 read -r rc trailer < "$scratch/nohome.out"
 if [ "$rc" = 0 ]; then bad "no lane homes: the gate exited 0 ($trailer)" nohome
 elif ! grep -q 'gate: the checks lane has no CARGO_HOME' "$scratch/nohome.log"; then bad "no lane homes: the lane is not named" nohome
@@ -401,6 +433,14 @@ for i in "${!cases[@]}"; do
     [[ " ${trailer#Gate-Lanes: } " == *" $lane=failed "* ]] || { bad "\"$label\": $lane is not failed ($trailer)" "$i"; continue; }
   else
     [[ " $trailer " != *"=passed "* ]] || { bad "\"$label\": a lane passed ($trailer)" "$i"; continue; }
+  fi
+  if [ "$mode" = leftover ]; then
+    grep -q "gate: step \"$label\" left files in its TMPDIR:" "$scratch/$i.log" && grep -q '^    planted-leftover$' "$scratch/$i.log" ||
+      { bad "\"$label\" leaving a file in its TMPDIR: not named" "$i"; continue; }
+  fi
+  if [ "$mode" = orphan ]; then
+    grep -A1 "gate: step \"$label\" left processes running:" "$scratch/$i.log" | grep -qE '^    ([0-9]+ sleep 30|process group [0-9]+ \(pgrep listed none\))$' ||
+      { bad "\"$label\" leaving a process running: not named" "$i"; continue; }
   fi
   if [ "$mode" = beside-slow ]; then
     # Named, and only after the tests' step (still running when clippy failed) had ended.

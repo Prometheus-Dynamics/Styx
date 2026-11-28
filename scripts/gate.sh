@@ -123,7 +123,7 @@ step() {
   # in place of its command, except the one labelled STYX_GATE_PLANT, which runs planted_failure.
   # Lanes, subshells, waits and pass marks are the gate's own. scripts/gate.py run refuses a dry gate.
   if [ -n "${STYX_GATE_DRY:-}" ]; then
-    if [ "$label" = "${STYX_GATE_PLANT:-}" ]; then set -- planted_failure
+    if [ "$label" = "${STYX_GATE_PLANT:-}" ]; then set -- "planted_${STYX_GATE_PLANT_KIND:-failure}"
     elif [ "$label" = "${STYX_GATE_DRY_SLOW:-}" ]; then set -- sleep 3
     else set -- true; fi
   fi
@@ -132,7 +132,13 @@ step() {
   step_count=$((step_count + 1))
   tmp="$step_tmp_root/$step_count"
   mkdir "$tmp"
-  before=$(child_cpu "$me")
+  # In a dry gate, a step with a folder of its label in STYX_GATE_DRY_STAT_DIR reads its "before"
+  # and "after" stat files from it (scripts/gate-selftest.sh), for a known CPU-s line.
+  local stat_before="/proc/$me/stat" stat_after="/proc/$me/stat"
+  if [ -n "${STYX_GATE_DRY:-}" ] && [ -n "${STYX_GATE_DRY_STAT_DIR:-}" ] && [ -d "$STYX_GATE_DRY_STAT_DIR/$label" ]; then
+    stat_before="$STYX_GATE_DRY_STAT_DIR/$label/before" stat_after="$STYX_GATE_DRY_STAT_DIR/$label/after"
+  fi
+  child_cpu "$stat_before" before
   # The body's last moment, for the epilogue line below (diagnostic: a 14-30 s gap after a step's
   # last part was seen in 3 of 18 gates, 2026-11-27, and the log could not say where). A red body
   # ends the subshell at once (errexit) and leaves no mark.
@@ -163,7 +169,16 @@ step() {
     stop_group "$pid"
     exit 1
   fi
-  left=$(pgrep -a -g "$pid" || true)
+  # Anything left in the step's process group: `kill -0` on the group (a builtin) answers it; pgrep,
+  # which reads every process in /proc (0.08 CPU-s at load 450; 19 per dry gate were most of its
+  # CPU, 2026-11-27), names them only then. When pgrep names none, the group is asked again: gone,
+  # it was a process ending in between; still there, the step left it (once, under load, pgrep
+  # listed nothing for a planted `sleep 30`, 2026-11-27).
+  left=""
+  if kill -0 -- "-$pid" 2> /dev/null; then
+    left=$(pgrep -a -g "$pid" || true)
+    [ -n "$left" ] || ! kill -0 -- "-$pid" 2> /dev/null || left="process group $pid (pgrep listed none)"
+  fi
   t_pgrep=$EPOCHREALTIME
   if [ -n "$left" ]; then
     echo "gate: step \"$label\" left processes running:" >&2
@@ -171,23 +186,34 @@ step() {
     stop_group "$pid"
     exit 1
   fi
-  after=$(child_cpu "$me")
+  child_cpu "$stat_after" after
   t_cpu=$EPOCHREALTIME
-  left=$(find "$tmp" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort)
+  # What the step left in its TMPDIR, by a glob (no find | sort, no subshell: the bookkeeping of
+  # each step was about 25 processes, most of a dry gate's CPU, 2026-11-27).
+  local ng=0 dg=0 leftovers=()
+  shopt -q nullglob && ng=1
+  shopt -q dotglob && dg=1
+  shopt -s nullglob dotglob
+  leftovers=("$tmp"/*)
+  [ "$ng" = 1 ] || shopt -u nullglob
+  [ "$dg" = 1 ] || shopt -u dotglob
   t_check=$EPOCHREALTIME
-  rm -rf -- "${tmp:?}"
+  t_end=""
+  [ ! -e "$end_mark" ] || read -r t_end < "$end_mark" || true
+  [ -n "$t_end" ] || t_end=$t_wait
+  rm -rf -- "${tmp:?}" "$end_mark"
   t_rm=$EPOCHREALTIME
-  t_end=$(cat "$end_mark" 2> /dev/null || echo "$t_wait")
-  rm -f "$end_mark"
-  awk -v e="$t_end" -v w="$t_wait" -v t="$t_timer" -v p="$t_pgrep" -v c="$t_cpu" -v k="$t_check" -v r="$t_rm" 'BEGIN {
-    printf "    epilogue: body end to wait %.2f s, timer wait %.2f, pgrep %.2f, child_cpu %.2f, TMPDIR check %.2f, rm %.2f\n",
-      w - e, t - w, p - t, c - p, k - c, r - k }'
-  if [ -n "$left" ]; then
+  local e1 e2 e3 e4 e5 e6
+  us2 e1 "$t_end" "$t_wait"; us2 e2 "$t_wait" "$t_timer"; us2 e3 "$t_timer" "$t_pgrep"
+  us2 e4 "$t_pgrep" "$t_cpu"; us2 e5 "$t_cpu" "$t_check"; us2 e6 "$t_check" "$t_rm"
+  echo "    epilogue: body end to wait $e1 s, timer wait $e2, pgrep $e3, child_cpu $e4, TMPDIR check $e5, rm $e6"
+  if [ "${#leftovers[@]}" -gt 0 ]; then
     echo "gate: step \"$label\" left files in its TMPDIR:" >&2
-    echo "$left" | sed 's/^/    /' >&2
+    printf '    %s\n' "${leftovers[@]##*/}" >&2
     exit 1
   fi
-  echo "    $label: $((SECONDS - start)) s, $(awk -v a="$before" -v b="$after" 'BEGIN { printf "%.1f", b - a }') CPU-s"
+  local tenths=$(( ((after - before) * 10 + clk_tck / 2) / clk_tck ))
+  echo "    $label: $((SECONDS - start)) s, $((tenths / 10)).$((tenths % 10)) CPU-s"
   return "$status"
 }
 # A failing command, then a passing one: a step's status must be the failing one's (errexit inside
@@ -196,11 +222,34 @@ planted_failure() {
   false
   echo "planted: ran past its failing command"
 }
-# The CPU seconds (user + system) of a shell's waited-for children so far: cutime and cstime of
+# A step that passes and leaves a file in its TMPDIR (scripts/gate-selftest.sh): its lane fails.
+planted_leftover() {
+  : > "$TMPDIR/planted-leftover"
+}
+# A step that passes and leaves a process running in its group (scripts/gate-selftest.sh).
+planted_orphan() {
+  sleep 30 > /dev/null 2>&1 &
+}
+
+# The CPU (user + system) of a shell's waited-for children so far: cutime and cstime of
 # /proc/<pid>/stat. The pid is the shell running the step ($BASHPID there: the bare lanes run in
 # a subshell of their own, where $$ is still the gate's).
+# Into variable $2, in clock ticks (clk_tck a second), from stat file $1 (/proc/<pid>/stat), read
+# with builtins: no subshell, no awk.
+clk_tck=$(getconf CLK_TCK)
 child_cpu() {
-  awk -v hz="$(getconf CLK_TCK)" '{ printf "%.2f", ($16 + $17) / hz }' "/proc/$1/stat"
+  local stat f
+  read -r stat < "$1"
+  read -ra f <<< "${stat##*) }"  # from field 3 (state): cutime and cstime are fields 16 and 17
+  printf -v "$2" '%d' "$(( f[13] + f[14] ))"
+}
+# Into variable $1: the seconds from EPOCHREALTIME $2 to $3, to two places (integer microseconds,
+# no awk; EPOCHREALTIME always has six decimals, its separator is the locale's).
+us2() {
+  local d=$(( 10#${3//[.,]/} - 10#${2//[.,]/} )) sign=""
+  [ "$d" -ge 0 ] || { sign=-; d=$(( -d )); }
+  d=$(( (d + 5000) / 10000 ))
+  printf -v "$1" '%s%d.%02d' "$sign" "$(( d / 100 ))" "$(( d % 100 ))"
 }
 # SIGTERM to a process group, then SIGKILL to what is left of it 5 s later.
 stop_group() {
