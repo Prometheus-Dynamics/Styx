@@ -817,6 +817,13 @@ def narrowed_crates(base, named):
     return sorted(crates)
 
 
+def fetch_upstream(root=ROOT):
+    """git fetch origin, without the background maintenance a fetch starts when git judges the
+    repository due (`maintenance run --auto --detach`): it read the HDD beside th1's tree hash
+    (2026-11-27). The repository's own git commands still run it."""
+    git("-c", "maintenance.auto=false", "fetch", "-q", "origin", check=False, cwd=root)
+
+
 def mark(what):
     """The gate's time outside its steps (diagnostic): seconds since gate.py run started."""
     t0 = os.environ.get("STYX_GATE_T0")
@@ -853,7 +860,7 @@ def cmd_run(a):
         print(f"GATE {'green' if rc == 0 else 'RED'}: " + ", ".join(f"{v} {status[v]}" for v in ALL))
         return rc
     if UPSTREAM.startswith("origin/"):
-        git("fetch", "-q", "origin", check=False)
+        fetch_upstream()
     mark("fetched")
     own_cargo_home()
     mark("cargo home fetched")

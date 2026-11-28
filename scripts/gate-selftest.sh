@@ -441,6 +441,37 @@ if gate._head_at_hash.get(r) != (sh("rev-parse", "HEAD"), tree):
 EOF
 rm -rf -- "${hc:?}"
 echo "    record commit: a handed-over HEAD's tree is used unread; moved, malformed or none read it; worktree_tree records what it hashed"
+# The gate's fetch (gate.py fetch_upstream) starts no background maintenance: in a clone that git
+# judges due (gc.auto=1, loose objects fetched), a plain fetch starts `maintenance run --auto` and
+# the gate's does not (GIT_TRACE2_EVENT names each child).
+mf=$(mktemp -d "${TMPDIR:-/tmp}/mf.XXX")
+python3 - "$mf" <<'EOF' || { rm -rf -- "${mf:?}"; echo "gate-selftest: FAILED: gate fetch" >&2; exit 1; }
+import os, subprocess, sys
+sys.path.insert(0, "scripts")
+import gate
+d = sys.argv[1]
+up, r = os.path.join(d, "up"), os.path.join(d, "r")
+def sh(where, *a): subprocess.run(["git", "-C", where, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True)
+os.makedirs(up); sh(up, "init", "-q"); sh(up, "commit", "-q", "--allow-empty", "-m", "c1")
+subprocess.run(["git", "clone", "-q", up, r], check=True, capture_output=True)
+sh(r, "config", "gc.auto", "1"); sh(r, "config", "fetch.unpackLimit", "1000")
+def fetched(how):
+    for i in range(2):
+        with open(os.path.join(up, f"f{how}{i}"), "w") as f: f.write(f"{how} {i}\n")
+        sh(up, "add", "-A"); sh(up, "commit", "-q", "-m", f"{how}{i}")
+    trace = os.path.join(d, f"{how}.trace")
+    os.environ["GIT_TRACE2_EVENT"] = trace
+    try:
+        if how == "gate": gate.fetch_upstream(root=r)
+        else: subprocess.run(["git", "-C", r, "fetch", "-q", "origin"], check=True, capture_output=True)
+    finally:
+        del os.environ["GIT_TRACE2_EVENT"]
+    return '"maintenance","run","--auto"' in open(trace).read()
+if not fetched("plain"): sys.exit("gate-selftest: FAILED: gate fetch: the planted clone is not due (a plain fetch started no maintenance)")
+if fetched("gate"): sys.exit("gate-selftest: FAILED: gate fetch: the gate's fetch started maintenance run --auto")
+EOF
+rm -rf -- "${mf:?}"
+echo "    gate fetch: a due clone's plain fetch starts maintenance; the gate's does not"
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(

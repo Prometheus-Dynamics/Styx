@@ -232,6 +232,9 @@ nothing, `scripts/gate.sh` and `scripts/check.sh` say so and exit 0 with no run 
 runs the behind variants there; a red one is bisected over its behind range and blocked until a
 gate passes it.
 
+The gate's fetch of `origin` starts no background `git maintenance run --auto` (`-c maintenance.auto=false`):
+it read the disk beside the gate's own git calls. The repository's other git commands still run it.
+
 The trailers come from the first-parent log, which is git's longest read in a gate when the repository
 is on a slow disk. Outside CI the parsed log is kept in `<area>/cache/gate-first-parent.json`
 (`STYX_GATE_FIRST_PARENT_CACHE`), keyed by its tip commit: a gate reads only `<tip>..origin/next`,
