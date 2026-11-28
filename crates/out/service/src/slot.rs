@@ -370,6 +370,10 @@ pub struct Slot {
     /// The 3A loop's controls and requests, shared by the control socket, the capture thread and
     /// the ISP thread (`aaa`).
     pub(crate) aaa: crate::aaa::Link,
+    /// `isp_short`'s text buffer while the status shows none: kept, not dropped, so the next
+    /// short frame writes into it instead of allocating on the ISP thread. Locked only with
+    /// `status` held.
+    isp_short_spare: Mutex<String>,
 }
 
 /// A request to a camera's worker thread.
@@ -479,6 +483,7 @@ impl Slot {
             wake: AtomicBool::new(false),
             isp_route: Mutex::new(None),
             aaa: crate::aaa::Link::default(),
+            isp_short_spare: Mutex::new(String::with_capacity(crate::isp::SHORT_TEXT_ROOM)),
         }
     }
 
@@ -750,7 +755,7 @@ impl Slot {
         status.isp.to_soft = 0;
         status.isp.to_pisp = 0;
         status.isp.input_form = None;
-        status.isp.short = None;
+        self.keep_isp_short(&mut status);
         status.isp.fallback = None;
         status.isp.left_out = None;
     }
@@ -821,11 +826,27 @@ impl Slot {
     }
 
     /// Why frames go without a picture (`None`: every frame gets one again).
+    /// The text goes into the buffer it had before (`isp_short_spare` while none is shown): a
+    /// frame that goes short after a clear allocates nothing.
     pub(crate) fn isp_short(&self, why: Option<&str>) {
         let mut status = lock(&self.status);
         match why {
-            Some(text) => set_text(&mut status.isp.short, text),
-            None => status.isp.short = None,
+            Some(text) => {
+                let shown = status
+                    .isp
+                    .short
+                    .get_or_insert_with(|| std::mem::take(&mut *lock(&self.isp_short_spare)));
+                shown.clear();
+                shown.push_str(text);
+            }
+            None => self.keep_isp_short(&mut status),
+        }
+    }
+
+    /// Clears the shown `isp_short`, keeping its buffer for the next.
+    fn keep_isp_short(&self, status: &mut CameraStatus) {
+        if let Some(text) = status.isp.short.take() {
+            *lock(&self.isp_short_spare) = text;
         }
     }
 

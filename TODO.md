@@ -199,4 +199,8 @@ Results: styx-notes/3A-PROOF-2-RESULTS.md (raw outputs and pictures beside it). 
   (`missed > 0 || !made` in the pace, `crates/out/service/src/isp.rs`) starts the "ISP short"
   status: `write!` into the pace's text grows it from empty (8, 16, 32, 64, 134 bytes, isp.rs:472),
   and `Slot::set_text` copies it with `to_string` (134 bytes, slot.rs:417, from isp.rs:840). All 6
-  while waiting for frame 49. Held for the user with Q12-Q14: not fixed.
+  while waiting for frame 49. That allocation fixed (user-approved, 2026-11-27): the pace's text
+  is made with room for the longest when the ISP thread starts, and the status keeps the text's
+  buffer through a clear (`Slot::isp_short`); the unit test `going_short_and_back_allocates_nothing`
+  (isp.rs) counts 10 allocations before, 0 after. The item stays open and held with Q12-Q14: the
+  aaa test's line has not been seen again yet.

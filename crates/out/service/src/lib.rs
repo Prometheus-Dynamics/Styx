@@ -67,6 +67,8 @@ pub mod isp_switch;
 pub mod outlet;
 pub mod service;
 pub mod slot;
+#[cfg(test)]
+mod test_alloc;
 pub mod worker;
 
 pub use aaa::AaaStatus;

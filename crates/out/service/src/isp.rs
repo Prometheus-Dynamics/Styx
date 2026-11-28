@@ -397,7 +397,7 @@ const SHORT_REFRESH: u32 = 30;
 
 /// The ISP's measured time a frame and the camera's frame interval, both smoothed, and the
 /// frames since one went without a picture: what `isp_short` says.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Pace {
     /// The last raw frame's (id, timestamp ns).
     last: Option<(u64, u64)>,
@@ -406,6 +406,22 @@ struct Pace {
     /// Frames since the last one without a picture (`None`: none went without one yet).
     since_short: Option<u32>,
     text: String,
+}
+
+/// Room for `isp_short`'s text, made when the ISP thread starts: the longest says about 150 bytes,
+/// so a frame that goes short under load never grows it on the ISP thread.
+pub(crate) const SHORT_TEXT_ROOM: usize = 256;
+
+impl Default for Pace {
+    fn default() -> Self {
+        Self {
+            last: None,
+            interval_ns: 0.0,
+            work_ns: 0.0,
+            since_short: None,
+            text: String::with_capacity(SHORT_TEXT_ROOM),
+        }
+    }
 }
 
 impl Pace {
@@ -1240,6 +1256,46 @@ mod pace_tests {
             }
         }
         assert_eq!(cleared, 1);
+    }
+
+    /// Frames that go short and come back, over and over, after the thread started: neither the
+    /// text nor the status allocates (Q15: under load the first short frame grew the text from
+    /// empty, and every short after a clear made the status's text again, on the ISP thread).
+    #[test]
+    fn going_short_and_back_allocates_nothing() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let slot = Slot::new(
+            "cam0".to_string(),
+            crate::config::CameraConfig::default(),
+            tx,
+        );
+        let mut pace = Pace::default();
+        let interval = 8_333_333;
+        let mut id = 0u64;
+        let mut shown = [0u32; 2];
+        let allocations = crate::test_alloc::count(|| {
+            for _ in 0..3 {
+                // Every other frame missed (the longest text: the ISP is slower than the camera),
+                // then every frame made until the hold clears it.
+                for _ in 0..40 {
+                    id += 2;
+                    if let Some(short) = pace.frame(id, id * interval, 16_600_000, true, "soft") {
+                        shown[usize::from(short.is_none())] += 1;
+                        slot.isp_short(short);
+                    }
+                }
+                for _ in 0..SHORT_HOLD + 2 {
+                    id += 1;
+                    if let Some(short) = pace.frame(id, id * interval, 2 * MS, true, "soft") {
+                        shown[usize::from(short.is_none())] += 1;
+                        slot.isp_short(short);
+                    }
+                }
+            }
+        });
+        assert_eq!(shown[1], 3, "cleared once a round");
+        assert!(shown[0] >= 3, "said at least once a round");
+        assert_eq!(allocations, 0, "allocations on the ISP thread");
     }
 
     /// Every frame made: nothing is said.
