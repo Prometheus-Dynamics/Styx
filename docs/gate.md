@@ -209,6 +209,9 @@ applied). Outside CI the gate keeps its own index for it, one per checkout, in
 stat data of every unchanged file, so `add -A` hashes only what changed, and git's racy-entry check
 reads a file changed within the index's own timestamp. An index git refuses is made again from
 HEAD. `scripts/gate.py worktree-tree [--index FILE]` prints the tree (a fresh index without one).
+The commit a record names (HEAD, when its tree is the gate's) is decided from HEAD and its tree as
+they were hashed (`STYX_GATE_HEAD`): at the end of a gate only the ref is read, and a HEAD that
+moved since reads its tree again.
 
 `scripts/land.sh` pushes to `next`. It compares code only: documentation that no code or script
 names is left out of every comparison, so a push that changes only such documentation needs no

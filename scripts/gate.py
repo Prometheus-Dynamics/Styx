@@ -616,6 +616,25 @@ def gate_index(root=ROOT):
     return os.path.join(os.environ.get("STYX_AREA") or "/mnt/nvme-wd/styx", "cache", name, "gate-index")
 
 
+# HEAD and its tree when worktree_tree last hashed a checkout: {root: (commit, tree)}.
+_head_at_hash = {}
+
+
+def head_commit_for(tree, root=ROOT):
+    """HEAD when its tree is TREE, else "-": the commit a record names. The record is written at the
+    end of a gate, while the lanes still use the disk; reading HEAD's commit object then took 3.13 s
+    on the HDD (th1, 2026-11-27). gate.py run hands the steps HEAD and its tree as hashed
+    (STYX_GATE_HEAD), so only the ref is read: the same commit means the same tree. A moved HEAD, or
+    none handed over, reads the tree as before."""
+    head = git("rev-parse", "HEAD", cwd=root).strip()
+    known = os.environ.get("STYX_GATE_HEAD", "").split()
+    if len(known) == 2 and known[0] == head:
+        head_tree = known[1]
+    else:
+        head_tree = git("rev-parse", "HEAD^{tree}", cwd=root).strip()
+    return head if head_tree == tree else "-"
+
+
 def worktree_tree(root=ROOT, index=None):
     """The tree the working tree would commit as (edits and untracked files, .gitignore applied).
     A fresh index re-reads and hashes every file: two of git's three longest calls in a gate with
@@ -627,10 +646,12 @@ def worktree_tree(root=ROOT, index=None):
     check covers a file changed within the index's own timestamp. A missing index, or one git
     refuses, is made again from HEAD."""
     index = gate_index(root) if index is None else index
+    head, head_tree = git("rev-parse", "HEAD", "HEAD^{tree}", cwd=root).split()
+    _head_at_hash[root] = (head, head_tree)
     if index in (None, "-"):
         with tempfile.TemporaryDirectory() as tmp:
             env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
-            git("read-tree", "HEAD", env=env, cwd=root)
+            git("read-tree", head, env=env, cwd=root)
             git("add", "-A", env=env, cwd=root)
             return git("write-tree", env=env, cwd=root).strip()
     os.makedirs(os.path.dirname(index), exist_ok=True)
@@ -647,9 +668,9 @@ def worktree_tree(root=ROOT, index=None):
                 for stale in (index, index + ".lock"):
                     if os.path.exists(stale):
                         os.unlink(stale)
-                ok, _, err = run("read-tree", "HEAD")
+                ok, _, err = run("read-tree", head)
             else:
-                ok, _, err = run("read-tree", "--reset", "HEAD")
+                ok, _, err = run("read-tree", "--reset", head)
             if ok:
                 ok, _, err = run("add", "-A")
             if ok:
@@ -675,6 +696,8 @@ def run_gate(selected, tree, narrow=None, doctests=True, no_reuse=()):
         f.write(_meta_text)
     env = dict(os.environ, STYX_GATE_SELECTED=" ".join(selected), STYX_GATE_RESULTS=results.name,
                STYX_GATE_TREE=tree, STYX_GATE_META=meta_file)
+    if ROOT in _head_at_hash:
+        env["STYX_GATE_HEAD"] = " ".join(_head_at_hash[ROOT])
     if not CI:
         env["STYX_GATE_RECORDS"] = records_dir()
     if narrow is not None:
@@ -1650,8 +1673,7 @@ def cmd_reuse_record(a):
     with open(a.plan) as f:
         plan = json.load(f)
     tree = os.environ.get("STYX_GATE_TREE") or worktree_tree()
-    head = git("rev-parse", "HEAD").strip()
-    commit = head if git("rev-parse", "HEAD^{tree}").strip() == tree else "-"
+    commit = head_commit_for(tree)
     now = time.strftime("%Y-%m-%dT%H:%M:%S")
     with open(os.path.join(records_dir(), "keys.tsv"), "a") as f:
         fcntl.flock(f, fcntl.LOCK_EX)

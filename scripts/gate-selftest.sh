@@ -407,6 +407,40 @@ for what, spoil in (("an index git refuses", lambda: open(index, "wb").write(os.
 EOF
 rm -rf -- "${gi:?}"
 echo "    gate index: equal to a fresh index: missing, unchanged, edits, 20 racy same-second edits, planted mtimes, new/deleted/mode, newly ignored, tracked-ignored, new HEAD; refused index and stale lock made again"
+# The record's commit (gate.py head_commit_for), in a scratch repository: with HEAD and its tree
+# handed over (STYX_GATE_HEAD, as worktree_tree hashed them) the tree is taken from it, not read (a
+# planted tree that is not HEAD's is believed); a HEAD moved since, malformed or no hand-over read
+# the tree; worktree_tree records the commit and tree it hashed.
+hc=$(mktemp -d "${TMPDIR:-/tmp}/hc.XXX")
+python3 - "$hc" <<'EOF' || { rm -rf -- "${hc:?}"; echo "gate-selftest: FAILED: record commit" >&2; exit 1; }
+import os, subprocess, sys
+sys.path.insert(0, "scripts")
+import gate
+r = os.path.join(sys.argv[1], "r")
+def sh(*a): return subprocess.run(["git", "-C", r, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True, text=True).stdout.strip()
+os.makedirs(r)
+sh("init", "-q"); sh("commit", "-q", "--allow-empty", "-m", "c1")
+head, tree = sh("rev-parse", "HEAD"), sh("rev-parse", "HEAD^{tree}")
+planted = "0" * 40
+def expect(what, env, t, want):
+    os.environ.pop("STYX_GATE_HEAD", None)
+    if env is not None: os.environ["STYX_GATE_HEAD"] = env
+    got = gate.head_commit_for(t, root=r)
+    if got != want: sys.exit(f"gate-selftest: FAILED: record commit: {what}: {got}, not {want}")
+expect("no hand-over, HEAD's tree", None, tree, head)
+expect("no hand-over, another tree", None, planted, "-")
+expect("handed over: its tree is not read", f"{head} {planted}", planted, head)
+expect("handed over: its tree, not the one asked", f"{head} {planted}", tree, "-")
+expect("malformed hand-over", head, tree, head)
+sh("commit", "-q", "--allow-empty", "-m", "c2")
+expect("HEAD moved since the hand-over", f"{head} {planted}", planted, "-")
+expect("HEAD moved since the hand-over, its own tree", f"{head} {planted}", tree, sh("rev-parse", "HEAD"))
+gate.worktree_tree(root=r, index="-")
+if gate._head_at_hash.get(r) != (sh("rev-parse", "HEAD"), tree):
+    sys.exit(f"gate-selftest: FAILED: record commit: worktree_tree recorded {gate._head_at_hash.get(r)}")
+EOF
+rm -rf -- "${hc:?}"
+echo "    record commit: a handed-over HEAD's tree is used unread; moved, malformed or none read it; worktree_tree records what it hashed"
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(
