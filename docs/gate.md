@@ -222,6 +222,12 @@ nothing, `scripts/gate.sh` and `scripts/check.sh` say so and exit 0 with no run 
 runs the behind variants there; a red one is bisected over its behind range and blocked until a
 gate passes it.
 
+The trailers come from the first-parent log, which is git's longest read in a gate when the repository
+is on a slow disk. Outside CI the parsed log is kept in `<area>/cache/gate-first-parent.json`
+(`STYX_GATE_FIRST_PARENT_CACHE`), keyed by its tip commit: a gate reads only `<tip>..origin/next`,
+and the whole log again when the tip is not on that first-parent line (a rewind, a side line, a
+commit git no longer has) or the file cannot be read. `scripts/gate.py first-parent-log` shows a read.
+
 `scripts/release-check.sh COMMIT` refuses unless every variant passed at exactly that commit. It is
 part of the user's tagging step and never runs a gate.
 

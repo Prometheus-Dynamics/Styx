@@ -483,15 +483,87 @@ def catchups():
     return out
 
 
+def first_parent_cache():
+    """Where the parsed first-parent log is kept: on the area's disk, shared by its worktrees
+    (commits do not change; first_parent_log checks the cached tip on every read). None in CI."""
+    if CI:
+        return None
+    return os.environ.get("STYX_GATE_FIRST_PARENT_CACHE") or os.path.join(
+        os.environ.get("STYX_AREA") or "/mnt/nvme-wd/styx", "cache", "gate-first-parent.json")
+
+
+def first_parent_log(rev, root=ROOT, cache_path=None):
+    """REV's first-parent history, newest first: [commit, first parent, commit time, its
+    Gate-Lanes lines], and how it was read. Reading it all is git's longest call in a gate on the
+    HDD (7.84 s at load 139, 2026-11-27), so the parsed log is cached by its tip commit and each
+    read takes only <tip>..REV: valid when the oldest new commit's first parent is the tip (or
+    nothing is new and REV is the tip). Anything else (REV rewound or off the tip's first-parent
+    line, a tip git no longer has, an unreadable cache) reads the whole log again."""
+    fmt = "--format=%H%x00%P%x00%ct%x00%B%x1e"
+
+    def read(spec):
+        r = subprocess.run(["git", "-C", root, "log", "--first-parent", fmt, spec, "--"],
+                           capture_output=True, text=True)
+        if r.returncode:
+            return None, r.stderr.strip()
+        out = []
+        for rec in r.stdout.split("\x1e"):
+            rec = rec.strip("\n")
+            if rec:
+                h, parents, ct, body = rec.split("\x00", 3)
+                out.append([h, (parents.split() or [""])[0], int(ct),
+                            "\n".join(ln for ln in body.splitlines() if ln.startswith("Gate-Lanes:"))])
+        return out, ""
+
+    cached = None
+    if cache_path:
+        try:
+            with open(cache_path) as f:
+                c = json.load(f)
+            if (c.get("version") == 1 and c["commits"] and c["tip"] == c["commits"][0][0]
+                    and all(len(x) == 4 for x in c["commits"])):
+                cached = c
+        except (OSError, ValueError, KeyError, TypeError, IndexError, AttributeError):
+            cached = None
+    commits, how = None, "whole log"
+    if cached:
+        tip = cached["tip"]
+        new, _ = read(f"{tip}..{rev}")
+        if new:
+            if new[-1][1] == tip:
+                commits, how = new + cached["commits"], f"{len(new)} new over the cache"
+        elif new is not None:
+            r = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "-q", f"{rev}^{{commit}}"],
+                               capture_output=True, text=True)
+            if r.stdout.strip() == tip:
+                commits, how = cached["commits"], "0 new over the cache"
+        if commits is None:
+            how = "whole log (the cache's tip is not on its first-parent line)"
+    if commits is None:
+        commits, err = read(rev)
+        if commits is None:
+            sys.exit(f"gate: git log --first-parent {rev}: {err}")
+    if cache_path and commits and (not cached or cached["tip"] != commits[0][0]):
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        tmp = f"{cache_path}.{os.getpid()}.tmp"
+        with open(tmp, "w") as f:
+            json.dump({"version": 1, "tip": commits[0][0], "commits": commits}, f)
+        os.replace(tmp, cache_path)
+    return commits, how
+
+
+def cmd_first_parent_log(a):
+    commits, how = first_parent_log(a.rev, root=a.root, cache_path=a.cache)
+    print(f"read: {how}")
+    for h, parent, ct, lanes in commits:
+        print(h, parent, ct, json.dumps(lanes))
+
+
 def behind(rev=UPSTREAM):
     """Per variant: (last passing commit or None, commits behind, days since the oldest uncovered)."""
-    log = git("log", "--first-parent", "--format=%H%x00%ct%x00%B%x1e", rev)
-    commits = []
-    for rec in log.split("\x1e"):
-        rec = rec.strip("\n")
-        if rec:
-            h, ct, body = rec.split("\x00", 2)
-            commits.append((h, int(ct), parse_trailer(body)))
+    log, how = first_parent_log(rev, cache_path=first_parent_cache())
+    mark(f"first-parent log of {rev}: {how}")
+    commits = [(h, ct, parse_trailer(lanes)) for h, _, ct, lanes in log]
     caught = {}
     for commit, variant, status, _ in catchups():
         if status in STATUS_OK:
@@ -1563,6 +1635,10 @@ def main():
     sh = sub.add_parser("scripts-hidden")
     sh.add_argument("--on", action="store_true")
     sub.add_parser("script-mode-drift").add_argument("--root", default=ROOT)
+    fp = sub.add_parser("first-parent-log")
+    fp.add_argument("--root", default=ROOT)
+    fp.add_argument("--cache")
+    fp.add_argument("rev")
     dr = sub.add_parser("doctests-run")
     dr.add_argument("--calls", required=True)
     dr.add_argument("--expect", required=True)
@@ -1584,7 +1660,7 @@ def main():
     if a.cmd == "run" and a.crates and not a.narrow:
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
     fn = {"selftest-key": cmd_selftest_key, "selftest-reuse": cmd_selftest_reuse,
-          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "script-mode-drift": cmd_script_mode_drift, "doctests-run": cmd_doctests_run, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind,
+          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "script-mode-drift": cmd_script_mode_drift, "doctests-run": cmd_doctests_run, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind, "first-parent-log": cmd_first_parent_log,
           "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan, "alloc-selftest": cmd_alloc_selftest,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)

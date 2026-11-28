@@ -285,6 +285,49 @@ out=$(chf home clippy) && ch_fail "a lane with no home was given one"
 [[ $out == *"the clippy lane has no home"* ]] || ch_fail "a lane with no home not named: $out"
 rm -rf -- "${ch:?}"
 echo "    cargo-home.sh: lock and crates recorded; homes at the fetch's key; same lock fetches nothing; a new lock moves the key in place; missing homes named"
+# The first-parent log's cache (gate.py first_parent_log), in a scratch repository with a merge:
+# every read must equal the whole log read with no cache. Cold reads it all; the same tip reads
+# nothing new; new commits and a --no-ff merge are read alone over the cache; a cache whose tip is
+# on a merged side line (reachable, not first-parent), a rewound rev, a tip git does not have and
+# an unreadable cache each read the whole log again.
+fp=$(mktemp -d "${TMPDIR:-/tmp}/fp.XXX")
+fp_fail() { echo "gate-selftest: FAILED: first-parent cache: $1" >&2; rm -rf -- "${fp:?}"; exit 1; }
+fpc() { git -C "$fp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$@"; }
+mkdir -p "$fp/r" && git -C "$fp/r" init -q
+fpc c1 && fpc c2 -m "Gate-Lanes: host:all=passed" && fpc c3
+fpl() { python3 scripts/gate.py first-parent-log --root "$fp/r" "$@" 2>&1; }
+fpr() { # rev, expected read line
+  local want got
+  want=$(fpl "$1" | tail -n +2) || fp_fail "the uncached read of $1 failed: $want"
+  got=$(fpl --cache "$fp/c.json" "$1") || fp_fail "the cached read of $1 failed: $got"
+  [ "$(head -1 <<< "$got")" = "read: $2" ] || fp_fail "$1 read as '$(head -1 <<< "$got")', not 'read: $2'"
+  [ "$(tail -n +2 <<< "$got")" = "$want" ] || fp_fail "$1 read over the cache differs from the whole log"
+}
+fpr HEAD "whole log"
+fpr HEAD "0 new over the cache"
+fpc c4 && fpc c5
+fpr HEAD "2 new over the cache"
+git -C "$fp/r" checkout -q -b side HEAD~1 && fpc s1 && fpc s2
+side=$(git -C "$fp/r" rev-parse HEAD)
+git -C "$fp/r" checkout -q - && git -C "$fp/r" -c user.name=t -c user.email=t@t merge -q --no-ff -m m1 side
+fpr HEAD "1 new over the cache"
+fpc c6
+python3 - "$fp/c.json" "$side" <<'EOF'
+import json, sys
+c = json.load(open(sys.argv[1]))
+c["tip"] = c["commits"][0][0] = sys.argv[2]
+json.dump(c, open(sys.argv[1], "w"))
+EOF
+fpr HEAD "whole log (the cache's tip is not on its first-parent line)"
+fpr HEAD~2 "whole log (the cache's tip is not on its first-parent line)"
+fpr HEAD "2 new over the cache"
+sed -i "s/$(git -C "$fp/r" rev-parse HEAD)/$(printf 'e%.0s' {1..40})/g" "$fp/c.json"
+fpr HEAD "whole log (the cache's tip is not on its first-parent line)"
+echo '{"version": 1, "tip": ' > "$fp/c.json"
+fpr HEAD "whole log"
+fpr HEAD "0 new over the cache"
+rm -rf -- "${fp:?}"
+echo "    first-parent cache: equal to the whole log cold, unchanged, appended, merged; side-line tip, rewind, unknown tip, unreadable cache read it all"
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(
