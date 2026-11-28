@@ -38,6 +38,12 @@ jobs:
           [ "$targets" = - ] || args+=(--target "$targets")
           rustup toolchain install "$pin" "${args[@]}"
           rustup default "$pin"
+          # Every other toolchain goes (the image's preinstalled stable): rust-cache hashes every
+          # installed rustc, so an image update moved the key with no change here (run
+          # 46063480763 listed 1.100.0 beside the pin).
+          rustup toolchain list | awk '{print $1}' | while read -r tc; do
+            case "$tc" in "$pin"-*) ;; *) rustup toolchain uninstall "$tc" ;; esac
+          done
       # The active rustc is the pin, in the checkout and outside it (the default), or the job stops.
       - name: The active rustc is the pin
         run: |
@@ -47,6 +53,10 @@ jobs:
           rustc -vV
           [ "$here" = "$pin" ] && [ "$default" = "$pin" ] || {
             echo "::error::active rustc $here (default $default), rust-toolchain.toml pins $pin"; exit 1; }
+          # The pin is the only toolchain installed (rust-cache's key hashes each one).
+          rustup toolchain list
+          others=$(rustup toolchain list | awk '{print $1}' | grep -v "^$pin-" || true)
+          [ -z "$others" ] || { echo "::error::toolchains beside the pin $pin: $others"; exit 1; }
       # The cache's key is made from the committed lock file and the manifests: the build uses
       # exactly that lock (the gate runs every cargo step with --locked). The root manifest (its
       # profiles change every artifact) is in the key too.
@@ -108,21 +118,46 @@ jobs:
           echo "PKG_CONFIG_PATH=$HOME/libcamera-prefix/lib/pkgconfig" >> "$GITHUB_ENV"
           echo "LD_LIBRARY_PATH=$HOME/libcamera-prefix/lib" >> "$GITHUB_ENV"
       # A cold cache (no entry for this key: a new pin, lock or manifest) is seeded before the
-      # gate, after the system libraries it links and outside the gate's bounds, as
-      # scripts/seed-bake.sh does locally: the dependencies of host:all's clippy and test build
-      # and of host:default's clippy. Cold, clippy alone passed its 285 s bound (run
-      # 46062199446). The gate then runs on them warm, and its green run saves them under the
+      # gate, after the system libraries it links and outside the gate's bounds: every compile the
+      # gate does on CI, in the target directory it does it in (scripts/gate.sh). host:all in
+      # target/: clippy and the test build with all features, and the C library for c_proof in
+      # target/debug/c-proof. host:default in target/default: clippy and the default-only crates'
+      # test build. The bare lanes in target/bare: each no_std crate on each target, and
+      # styx-frame's portable-atomic tests. The first seed built target/ only, so host:default's
+      # clippy compiled every dependency again on one build job: 221 s of its 230 s bound, 64 CPU-s
+      # (run 46063480763). The gate then runs on them warm, and its green run saves them under the
       # key. A warm run (an exact hit) skips this.
       - name: Dependency seed (a cold cache only)
         if: steps.rust-cache.outputs.cache-hit != 'true'
         run: |
+          t=$PWD/target
+          seed() { local s=$SECONDS; "${@:2}"; echo "seed: $1: $((SECONDS - s)) s"; }
+          seed "host:all clippy, all features" cargo clippy --locked --workspace --all-targets --all-features --quiet
+          seed "host:all test build, all features" cargo test --locked --workspace --all-features --no-run --quiet
+          seed "host:all C library for c_proof" env CARGO_TARGET_DIR="$t/debug/c-proof" \
+            cargo build --locked -p styx-capi --lib --quiet
+          crates=()
+          names=$(python3 scripts/test-layout.py default-only-crates)
+          for c in $names; do crates+=(-p "$c"); done
+          [ "${#crates[@]}" -gt 0 ] || { echo "::error::no default-only crates listed"; exit 1; }
+          seed "host:default clippy, default features" env CARGO_TARGET_DIR="$t/default" \
+            cargo clippy --locked --workspace --all-targets --quiet
+          seed "host:default test build, default-only crates" env CARGO_TARGET_DIR="$t/default" \
+            cargo test --locked "${crates[@]}" --no-run --quiet
+          mapfile -t nostd < <(grep -l '^no_std = true' crates/*/*/Cargo.toml | xargs -r -n1 dirname | xargs -r -n1 basename)
+          [ "${#nostd[@]}" -gt 0 ] || { echo "::error::no no_std crates listed"; exit 1; }
           s=$SECONDS
-          cargo clippy --locked --workspace --all-targets --all-features --quiet
-          echo "seed: clippy, all features: $((SECONDS - s)) s"; s=$SECONDS
-          cargo test --locked --workspace --all-features --no-run --quiet
-          echo "seed: test build, all features: $((SECONDS - s)) s"; s=$SECONDS
-          cargo clippy --locked --workspace --all-targets --quiet
-          echo "seed: clippy, default features: $((SECONDS - s)) s"
+          for target in thumbv7em-none-eabihf riscv32imac-unknown-none-elf riscv32imc-unknown-none-elf; do
+            cas=1; rustc --print cfg --target "$target" | grep -q '^target_has_atomic="ptr"$' || cas=0
+            for c in "${nostd[@]}"; do
+              f=(); [ "$cas" = 1 ] || ! grep -q '^critical-section = ' crates/*/"$c"/Cargo.toml || f=(--features critical-section)
+              CARGO_TARGET_DIR="$t/bare" cargo check --locked -q -p "styx-$c" --no-default-features "${f[@]}" --target "$target"
+            done
+          done
+          echo "seed: bare no_std checks: $((SECONDS - s)) s"
+          seed "bare portable-atomic test build" env CARGO_TARGET_DIR="$t/bare" RUSTFLAGS="--cfg styx_portable_atomic" \
+            cargo test --locked -q -p styx-frame --features critical-section --no-run \
+            --target "$(rustc -vV | sed -n 's/^host: //p')"
       # The proofs with a real PipeWire consumer need a daemon and a session manager. The gate
       # then refuses to pass them over (STYX_REQUIRE_PIPEWIRE), as it does the C caller's proof
       # (STYX_REQUIRE_CC: the runner has a C compiler). The local gate's other required needs are
