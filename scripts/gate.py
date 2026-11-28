@@ -605,13 +605,64 @@ def set_block(variant, text):
 
 # --- running -------------------------------------------------------------------------
 
-def worktree_tree():
-    """The tree the working tree would commit as (edits and untracked files, .gitignore applied)."""
-    with tempfile.TemporaryDirectory() as tmp:
-        env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
-        git("read-tree", "HEAD", env=env)
-        git("add", "-A", env=env)
-        return git("write-tree", env=env).strip()
+def gate_index(root=ROOT):
+    """The gate's own index for ROOT, kept on the area's disk (one per checkout); None in CI."""
+    if CI:
+        return None
+    if os.environ.get("STYX_GATE_INDEX"):
+        return os.environ["STYX_GATE_INDEX"]
+    real = os.path.realpath(root)
+    name = f"{os.path.basename(real)}-{hashlib.sha256(real.encode()).hexdigest()[:8]}"
+    return os.path.join(os.environ.get("STYX_AREA") or "/mnt/nvme-wd/styx", "cache", name, "gate-index")
+
+
+def worktree_tree(root=ROOT, index=None):
+    """The tree the working tree would commit as (edits and untracked files, .gitignore applied).
+    A fresh index re-reads and hashes every file: two of git's three longest calls in a gate with
+    the repository on the HDD (read-tree 2.99 s and 3.82 s at load 139, 2026-11-27). Outside CI the
+    gate keeps its own index on the area's disk (gate_index) and brings it to HEAD with
+    `read-tree --reset HEAD`, which keeps the stat data of every entry whose content HEAD has (as
+    -m does, but an entry edited since is no refusal), so
+    `add -A` hashes only what changed; the tree is the one a fresh index gives. Git's racy-entry
+    check covers a file changed within the index's own timestamp. A missing index, or one git
+    refuses, is made again from HEAD."""
+    index = gate_index(root) if index is None else index
+    if index in (None, "-"):
+        with tempfile.TemporaryDirectory() as tmp:
+            env = dict(os.environ, GIT_INDEX_FILE=os.path.join(tmp, "index"))
+            git("read-tree", "HEAD", env=env, cwd=root)
+            git("add", "-A", env=env, cwd=root)
+            return git("write-tree", env=env, cwd=root).strip()
+    os.makedirs(os.path.dirname(index), exist_ok=True)
+    env = dict(os.environ, GIT_INDEX_FILE=index)
+
+    def run(*args):
+        r = subprocess.run(["git", "-C", root, *args], capture_output=True, text=True, env=env)
+        return r.returncode == 0, r.stdout.strip(), r.stderr.strip()
+
+    with open(index + ".flock", "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for attempt in ("kept", "made again"):
+            if attempt == "made again" or not os.path.exists(index):
+                for stale in (index, index + ".lock"):
+                    if os.path.exists(stale):
+                        os.unlink(stale)
+                ok, _, err = run("read-tree", "HEAD")
+            else:
+                ok, _, err = run("read-tree", "--reset", "HEAD")
+            if ok:
+                ok, _, err = run("add", "-A")
+            if ok:
+                ok, tree, err = run("write-tree")
+                if ok:
+                    return tree
+            if attempt == "made again":
+                sys.exit(f"gate: the gate's index {index}: {err}")
+            print(f"gate: the gate's index {index} is made again from HEAD ({err})", flush=True)
+
+
+def cmd_worktree_tree(a):
+    print(worktree_tree(root=a.root, index=a.index or "-"))
 
 
 def run_gate(selected, tree, narrow=None, doctests=True, no_reuse=()):
@@ -1635,6 +1686,9 @@ def main():
     sh = sub.add_parser("scripts-hidden")
     sh.add_argument("--on", action="store_true")
     sub.add_parser("script-mode-drift").add_argument("--root", default=ROOT)
+    wt = sub.add_parser("worktree-tree")
+    wt.add_argument("--root", default=ROOT)
+    wt.add_argument("--index")
     fp = sub.add_parser("first-parent-log")
     fp.add_argument("--root", default=ROOT)
     fp.add_argument("--cache")
@@ -1660,7 +1714,7 @@ def main():
     if a.cmd == "run" and a.crates and not a.narrow:
         sys.exit("gate: crate names go with --narrow (scripts/check.sh)")
     fn = {"selftest-key": cmd_selftest_key, "selftest-reuse": cmd_selftest_reuse,
-          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "script-mode-drift": cmd_script_mode_drift, "doctests-run": cmd_doctests_run, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind, "first-parent-log": cmd_first_parent_log,
+          "selftest-record": cmd_selftest_record, "lane-status": cmd_lane_status, "scripts-hidden": cmd_scripts_hidden, "script-mode-drift": cmd_script_mode_drift, "doctests-run": cmd_doctests_run, "run": cmd_run, "trailer": cmd_trailer, "verify-push": cmd_verify_push, "behind": cmd_behind, "first-parent-log": cmd_first_parent_log, "worktree-tree": cmd_worktree_tree,
           "release-check": cmd_release_check, "reuse-plan": cmd_reuse_plan, "alloc-selftest": cmd_alloc_selftest,
           "reuse-record": cmd_reuse_record}[a.cmd]
     sys.exit(fn(a) or 0)

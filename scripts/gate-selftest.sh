@@ -291,43 +291,122 @@ echo "    cargo-home.sh: lock and crates recorded; homes at the fetch's key; sam
 # on a merged side line (reachable, not first-parent), a rewound rev, a tip git does not have and
 # an unreadable cache each read the whole log again.
 fp=$(mktemp -d "${TMPDIR:-/tmp}/fp.XXX")
-fp_fail() { echo "gate-selftest: FAILED: first-parent cache: $1" >&2; rm -rf -- "${fp:?}"; exit 1; }
-fpc() { git -C "$fp/r" -c user.name=t -c user.email=t@t commit -q --allow-empty -m "$@"; }
-mkdir -p "$fp/r" && git -C "$fp/r" init -q
-fpc c1 && fpc c2 -m "Gate-Lanes: host:all=passed" && fpc c3
-fpl() { python3 scripts/gate.py first-parent-log --root "$fp/r" "$@" 2>&1; }
-fpr() { # rev, expected read line
-  local want got
-  want=$(fpl "$1" | tail -n +2) || fp_fail "the uncached read of $1 failed: $want"
-  got=$(fpl --cache "$fp/c.json" "$1") || fp_fail "the cached read of $1 failed: $got"
-  [ "$(head -1 <<< "$got")" = "read: $2" ] || fp_fail "$1 read as '$(head -1 <<< "$got")', not 'read: $2'"
-  [ "$(tail -n +2 <<< "$got")" = "$want" ] || fp_fail "$1 read over the cache differs from the whole log"
-}
-fpr HEAD "whole log"
-fpr HEAD "0 new over the cache"
-fpc c4 && fpc c5
-fpr HEAD "2 new over the cache"
-git -C "$fp/r" checkout -q -b side HEAD~1 && fpc s1 && fpc s2
-side=$(git -C "$fp/r" rev-parse HEAD)
-git -C "$fp/r" checkout -q - && git -C "$fp/r" -c user.name=t -c user.email=t@t merge -q --no-ff -m m1 side
-fpr HEAD "1 new over the cache"
-fpc c6
-python3 - "$fp/c.json" "$side" <<'EOF'
-import json, sys
-c = json.load(open(sys.argv[1]))
-c["tip"] = c["commits"][0][0] = sys.argv[2]
-json.dump(c, open(sys.argv[1], "w"))
+python3 - "$fp" <<'EOF' || { rm -rf -- "${fp:?}"; echo "gate-selftest: FAILED: first-parent cache" >&2; exit 1; }
+import json, os, subprocess, sys
+sys.path.insert(0, "scripts")
+import gate
+d = sys.argv[1]
+r, cache = os.path.join(d, "r"), os.path.join(d, "c.json")
+def sh(*a): return subprocess.run(["git", "-C", r, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True, text=True).stdout.strip()
+def commit(*m): sh("commit", "-q", "--allow-empty", *m)
+os.makedirs(r)
+sh("init", "-q")
+commit("-m", "c1"); commit("-m", "c2", "-m", "Gate-Lanes: host:all=passed"); commit("-m", "c3")
+def read(rev, want):
+    whole, _ = gate.first_parent_log(rev, root=r)
+    got, how = gate.first_parent_log(rev, root=r, cache_path=cache)
+    if how != want: sys.exit(f"gate-selftest: FAILED: first-parent cache: {rev} read as '{how}', not '{want}'")
+    if got != whole: sys.exit(f"gate-selftest: FAILED: first-parent cache: {rev} read over the cache differs from the whole log")
+off = "whole log (the cache's tip is not on its first-parent line)"
+read("HEAD", "whole log")
+read("HEAD", "0 new over the cache")
+commit("-m", "c4"); commit("-m", "c5")
+read("HEAD", "2 new over the cache")
+sh("checkout", "-q", "-b", "side", "HEAD~1"); commit("-m", "s1"); commit("-m", "s2")
+side = sh("rev-parse", "HEAD")
+sh("checkout", "-q", "-"); sh("merge", "-q", "--no-ff", "-m", "m1", "side")
+read("HEAD", "1 new over the cache")
+commit("-m", "c6")
+c = json.load(open(cache)); c["tip"] = c["commits"][0][0] = side; json.dump(c, open(cache, "w"))
+read("HEAD", off)
+read("HEAD~2", off)
+read("HEAD", "2 new over the cache")
+head = sh("rev-parse", "HEAD")
+with open(cache) as f: text = f.read()
+with open(cache, "w") as f: f.write(text.replace(head, "e" * 40))
+read("HEAD", off)
+with open(cache, "w") as f: f.write('{"version": 1, "tip": ')
+read("HEAD", "whole log")
+read("HEAD", "0 new over the cache")
 EOF
-fpr HEAD "whole log (the cache's tip is not on its first-parent line)"
-fpr HEAD~2 "whole log (the cache's tip is not on its first-parent line)"
-fpr HEAD "2 new over the cache"
-sed -i "s/$(git -C "$fp/r" rev-parse HEAD)/$(printf 'e%.0s' {1..40})/g" "$fp/c.json"
-fpr HEAD "whole log (the cache's tip is not on its first-parent line)"
-echo '{"version": 1, "tip": ' > "$fp/c.json"
-fpr HEAD "whole log"
-fpr HEAD "0 new over the cache"
 rm -rf -- "${fp:?}"
 echo "    first-parent cache: equal to the whole log cold, unchanged, appended, merged; side-line tip, rewind, unknown tip, unreadable cache read it all"
+# The gate's own index (gate.py worktree_tree), in a scratch repository: every tree from the kept
+# index must equal a fresh index's. Missing, unchanged, edited; the racy case 20 times over (a
+# same-size edit right after the index write, read again within the same second); a same-size edit
+# whose mtime equals the entry's and the index's; new, deleted, chmod +x; an untracked file the
+# index held that .gitignore now ignores; a tracked file that is ignored; a new HEAD; an index git
+# refuses and a stale index.lock are each made again.
+gi=$(mktemp -d "${TMPDIR:-/tmp}/gi.XXX")
+python3 - "$gi" <<'EOF' || { rm -rf -- "${gi:?}"; echo "gate-selftest: FAILED: gate index" >&2; exit 1; }
+import contextlib, io, os, subprocess, sys, time
+sys.path.insert(0, "scripts")
+import gate
+d = sys.argv[1]
+r, index = os.path.join(d, "r"), os.path.join(d, "index")
+def sh(*a): subprocess.run(["git", "-C", r, "-c", "user.name=t", "-c", "user.email=t@t", *a], check=True, capture_output=True)
+def put(path, text):
+    with open(os.path.join(r, path), "w") as f: f.write(text)
+os.makedirs(os.path.join(r, "d"))
+sh("init", "-q")
+# ctime is not compared: the unreadable-file check below changes only a ctime (in a later second
+# under load, git then reads the file: f2-g1, 2026-11-27), and without it a same-size edit within
+# the second is caught by git's racy-entry check alone.
+sh("config", "core.trustctime", "false")
+put("a", "one\n"); put("d/b", "two\n"); put("t", "keep\n"); put(".gitignore", "t\n")
+sh("add", "-A"); sh("add", "-f", "t"); sh("commit", "-qm", "c1")
+for f in ("a", "d/b", "t", ".gitignore"):  # an hour old: not racy, so git trusts their stat data
+    os.utime(os.path.join(r, f), (time.time() - 3600,) * 2)
+last = [None]
+def check(what, moved):
+    fresh = gate.worktree_tree(root=r, index="-")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        kept = gate.worktree_tree(root=r, index=index)
+    if out.getvalue(): sys.exit(f"gate-selftest: FAILED: gate index: {what}: the kept index was not used: {out.getvalue().strip()}")
+    if kept != fresh: sys.exit(f"gate-selftest: FAILED: gate index: {what}: the kept index gave {kept}, a fresh index {fresh}")
+    if moved and kept == last[0]: sys.exit(f"gate-selftest: FAILED: gate index: {what}: the change was not seen")
+    if not moved and kept != last[0]: sys.exit(f"gate-selftest: FAILED: gate index: {what}: the tree moved with nothing changed")
+    last[0] = kept
+check("a missing index", True)
+check("nothing changed", False)
+# An unchanged file the kept index has seen is not read again: unreadable, it must not matter
+# (a fresh index, or a kept one that lost its stat data, reads it and fails).
+if os.geteuid() != 0:
+    os.chmod(os.path.join(r, "d/b"), 0)
+    try:
+        if gate.worktree_tree(root=r, index=index) != last[0]: sys.exit("gate-selftest: FAILED: gate index: an unreadable unchanged file moved the tree")
+    except SystemExit as e:
+        sys.exit(f"gate-selftest: FAILED: gate index: an unchanged file was read again ({e})")
+    finally:
+        os.chmod(os.path.join(r, "d/b"), 0o644)
+put("a", "three\n"); check("an edit", True)
+for i in range(20):
+    put("a", f"x{i:03d}"); last[0] = gate.worktree_tree(root=r, index=index)  # the index written
+    t0 = time.time(); put("a", f"y{i:03d}")
+    check(f"racy {i}: a same-size edit within the second of the index write", True)
+    if time.time() - t0 >= 1: sys.exit(f"gate-selftest: FAILED: gate index: racy {i}: the read after the edit took 1 s or more")
+put("a", "aaaa"); os.utime(os.path.join(r, "a"), (1700000000, 1700000000)); check("a planted mtime (before)", True)
+put("a", "bbbb")
+for f in (os.path.join(r, "a"), index): os.utime(f, (1700000000, 1700000000))
+check("a same-size edit with the entry's and the index's mtime", True)
+put("n", "new\n"); check("a new file", True)
+os.unlink(os.path.join(r, "d/b")); check("a deleted file", True)
+os.chmod(os.path.join(r, "a"), 0o755); check("chmod +x", True)
+put(".gitignore", "t\nn\n"); check("an untracked file the index held, ignored now", True)
+put("t", "changed\n"); check("a tracked file that is ignored", True)
+sh("add", "-A"); sh("commit", "-qm", "c2"); put("a", "four\n"); check("a new HEAD", True)
+for what, spoil in (("an index git refuses", lambda: open(index, "wb").write(os.urandom(64))),
+                    ("a stale index.lock", lambda: open(index + ".lock", "w").close())):
+    spoil()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        gate.worktree_tree(root=r, index=index)
+    if "is made again from HEAD" not in out.getvalue(): sys.exit(f"gate-selftest: FAILED: gate index: {what} was not made again")
+    check(f"after {what}", False)
+EOF
+rm -rf -- "${gi:?}"
+echo "    gate index: equal to a fresh index: missing, unchanged, edits, 20 racy same-second edits, planted mtimes, new/deleted/mode, newly ignored, tracked-ignored, new HEAD; refused index and stale lock made again"
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(

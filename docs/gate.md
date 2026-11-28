@@ -203,6 +203,13 @@ Gate-Lanes: host:checks=passed host:all=passed host:default=not-run(behind) ...
 Gate-Tree: <tree id>
 ```
 
+The tree id is the tree the working tree would commit as (edits and untracked files, `.gitignore`
+applied). Outside CI the gate keeps its own index for it, one per checkout, in
+`<area>/cache/<checkout>-<hash>/gate-index` (`STYX_GATE_INDEX`): `read-tree --reset HEAD` keeps the
+stat data of every unchanged file, so `add -A` hashes only what changed, and git's racy-entry check
+reads a file changed within the index's own timestamp. An index git refuses is made again from
+HEAD. `scripts/gate.py worktree-tree [--index FILE]` prints the tree (a fresh index without one).
+
 `scripts/land.sh` pushes to `next`. It compares code only: documentation that no code or script
 names is left out of every comparison, so a push that changes only such documentation needs no
 gate and no trailers. Otherwise the newest commit since `origin/next` with the trailers carries the
