@@ -38,7 +38,9 @@ The test-group filter check (`scripts/test-layout.py filters`) lists the tests s
 through nextest's reuse-build inputs (`reuse-inputs`: binaries-metadata from the step's own list,
 the workspace metadata, and the tree and each binary's size, mtime and inode), so it starts no
 cargo and waits on no cargo lock. Inputs made for another tree, or whose binaries changed since,
-are refused loudly; with no inputs it builds and lists with cargo as before.
+are refused loudly; with no inputs it builds and lists with cargo as before. The tests step's
+nextest run uses the same inputs (`reuse-checked`, the same refusal), so the run starts no cargo
+either: no resolve on the path, and no wait on the package-cache lock beside the doctests' cargo.
 
 Lanes that share no build run side by side, and each one's output is printed when the host lanes
 end:

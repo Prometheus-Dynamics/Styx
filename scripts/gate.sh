@@ -474,9 +474,16 @@ all_tests() {
     doc_pid=$!
   fi
   # The expression names only crates with a test that is not #[ignore]: matching nothing is a fault.
+  # The run reuses the list's build (nextest's binaries-metadata and the workspace's metadata,
+  # test-layout.py reuse-inputs), refused when stale (another tree, a binary rebuilt or gone): no
+  # cargo runs here, so it neither starts a resolve on the path nor waits on the package-cache lock
+  # beside the doctests' cargo (3 Blocking lines a gate in host:all's home, 2026-11-27).
   if [ -n "$expr" ]; then
-    cargo nextest run --locked --workspace --no-fail-fast --no-tests=fail --all-features \
-      --test-threads "$test_threads" -E "$expr"
+    local reuse_in
+    reuse_in=$(python3 scripts/test-layout.py reuse-checked "$lists/reuse")
+    read -r reuse_bins reuse_meta <<< "$reuse_in"
+    cargo-nextest nextest run --binaries-metadata "$reuse_bins" --cargo-metadata "$reuse_meta" \
+      --no-fail-fast --no-tests=fail --test-threads "$test_threads" -E "$expr"
   elif [ -n "${STYX_GATE_NARROW+set}" ]; then
     echo "no crate's tests to run (narrowed)"
   else

@@ -186,12 +186,12 @@ def reuse_checked(out):
     tree = current_tree()
     if inputs["tree"] != tree:
         sys.exit(f"stale reuse inputs in {out}: built for tree {inputs['tree']}, the tree is {tree}: "
-                 "the filter check refuses to list them")
+                 "refused (the filter check lists them, the tests step runs them)")
     for path, want in sorted(inputs["stamps"].items()):
         have = stamp(path) if os.path.exists(path) else None
         if have != want:
             sys.exit(f"stale reuse inputs in {out}: {path} {'is gone' if have is None else 'changed'} "
-                     "since they were made: the filter check refuses to list it")
+                     "since they were made: refused")
     return os.path.join(out, "binaries.json"), os.path.join(out, "cargo-metadata.json")
 
 
@@ -464,6 +464,8 @@ if __name__ == "__main__":
         filters(sys.argv[2:])
     elif sys.argv[1:2] == ["reuse-inputs"] and len(sys.argv) == 4:
         reuse_inputs(sys.argv[2], sys.argv[3])
+    elif sys.argv[1:2] == ["reuse-checked"] and len(sys.argv) == 3:
+        print(*reuse_checked(sys.argv[2]))
     elif sys.argv[1:2] == ["default-only"] and len(sys.argv) == 4:
         default_only(sys.argv[2], sys.argv[3])
     elif sys.argv[1:2] == ["shared-state"]:

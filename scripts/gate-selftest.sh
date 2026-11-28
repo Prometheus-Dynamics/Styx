@@ -105,8 +105,10 @@ if wrong:
     sys.exit("gate-selftest: FAILED: the doctests' list: " + "; ".join(wrong))
 print("    doctests' list: a moved crate and its dependents; not the rest; nothing when nothing moved")
 PY
-# The filter check on the tests step's binaries (test-layout.py STYX_FILTER_REUSE) refuses stale
-# reuse inputs loudly, never lists them: made for another tree, a binary gone, a binary changed.
+# The filter check on the tests step's binaries (test-layout.py STYX_FILTER_REUSE), and the tests
+# step's nextest run on them (test-layout.py reuse-checked), refuse stale reuse inputs loudly, never
+# list or run them: made for another tree, a binary gone, a binary changed. Inputs that match are
+# handed over.
 ri_dir="$(mktemp -d "${TMPDIR:-/tmp}/ri.XXX")"
 : > "$ri_dir/bin"
 ri() { # tree, stamps json, expected message
@@ -117,12 +119,24 @@ ri() { # tree, stamps json, expected message
     echo "gate-selftest: FAILED: stale reuse inputs ($3) were not refused: exit $rc: $got" >&2
     rm -rf -- "${ri_dir:?}"; exit 1
   fi
+  rc=0
+  got=$(STYX_GATE_TREE=t1 python3 scripts/test-layout.py reuse-checked "$ri_dir" 2>&1) || rc=$?
+  if [ "$rc" = 0 ] || [[ $got != *"$3"* ]]; then
+    echo "gate-selftest: FAILED: stale reuse inputs ($3) were not refused for the run: exit $rc: $got" >&2
+    rm -rf -- "${ri_dir:?}"; exit 1
+  fi
 }
 ri t0 '{}' "built for tree t0, the tree is t1"
 ri t1 "{\"$ri_dir/gone\": [0, 0, 0]}" "is gone since they were made"
 ri t1 "{\"$ri_dir/bin\": [0, 1, 1]}" "changed since they were made"
+printf '{"tree": "t1", "stamps": {"%s": %s}}' "$ri_dir/bin" \
+  "$(python3 -c 'import os,sys; s=os.stat(sys.argv[1]); print([s.st_size, s.st_mtime_ns, s.st_ino])' "$ri_dir/bin")" > "$ri_dir/inputs.json"
+got=$(STYX_GATE_TREE=t1 python3 scripts/test-layout.py reuse-checked "$ri_dir" 2>&1) ||
+  { echo "gate-selftest: FAILED: matching reuse inputs refused for the run: $got" >&2; rm -rf -- "${ri_dir:?}"; exit 1; }
+[ "$got" = "$ri_dir/binaries.json $ri_dir/cargo-metadata.json" ] ||
+  { echo "gate-selftest: FAILED: matching reuse inputs not handed over: $got" >&2; rm -rf -- "${ri_dir:?}"; exit 1; }
 rm -rf -- "${ri_dir:?}"
-echo "    filter check: stale reuse inputs refused (another tree, a binary gone, a binary changed)"
+echo "    filter check and tests run: stale reuse inputs refused (another tree, a binary gone, a binary changed); matching ones handed over"
 # The restore's mode check (gate.py script_mode_drift): a tracked script whose exec bit differs
 # from the index is named, after the hide and restore nothing is, and the check writes nothing to
 # the index (`git diff` rewrote all of it at every gate's end). A script added to the index during
