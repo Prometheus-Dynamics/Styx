@@ -26,7 +26,7 @@
 # path (the same registry and git checkouts for every worktree): whatever does not match is rebuilt.
 #
 # The key: Cargo.lock, the [profile.*] sections of Cargo.toml, .cargo/config.toml,
-# rust-toolchain.toml and `rustc -vV`. The two newest seeds are kept. Every write is under a lock,
+# rust-toolchain.toml, `rustc -vV` and the CARGO_HOME path. The two newest seeds are kept. Every write is under a lock,
 # and a seed is renamed into place only when complete.
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
@@ -46,13 +46,16 @@ fi
 mkdir -p "$seeds"
 
 # The key reads the committed Cargo.lock (the gate has checked it against the manifests).
+# The CARGO_HOME too: a dependency's fingerprint holds its source path, which is under it, so a seed
+# built in another home saves nothing (scripts/cargo-home.sh: the gate's is at one fixed path).
+home=${CARGO_HOME:-$HOME/.cargo}
 key=$( { cat Cargo.lock
          awk '/^\[/{p = ($0 ~ /^\[profile/)} p' Cargo.toml
          cat .cargo/config.toml rust-toolchain.toml 2>/dev/null || true
-         rustc -vV; } | sha256sum | cut -c1-16)
+         rustc -vV; echo "CARGO_HOME=$home"; } | sha256sum | cut -c1-16)
 # The toolchain's part of it: a seed of another toolchain saves nothing (every unit rebuilds), so a
 # new one is baked (scripts/seed-bake.sh); a seed of another Cargo.lock still saves most of a build.
-toolchain=$( { cat rust-toolchain.toml 2>/dev/null || true; rustc -vV; } | sha256sum | cut -c1-16)
+toolchain=$( { cat rust-toolchain.toml 2>/dev/null || true; rustc -vV; echo "CARGO_HOME=$home"; } | sha256sum | cut -c1-16)
 toolchain_seeded() {
   local d
   for d in "$seeds"/*/; do

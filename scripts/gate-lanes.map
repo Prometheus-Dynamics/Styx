@@ -23,6 +23,7 @@ scripts/test-layout.py      all no-reuse
 scripts/rustdoc-only.sh     all no-reuse
 scripts/one-shm.py          all
 scripts/cargo-seed.sh       all
+scripts/cargo-home.sh       all no-reuse
 scripts/seed-bake.sh        host:checks
 scripts/seed-list.py        all
 scripts/lanes-behind.sh     all

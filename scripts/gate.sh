@@ -567,6 +567,22 @@ gate_selftest() {
   scripts/gate-selftest.sh
   python3 scripts/gate.py selftest-record "$key"
 }
+# lane_home <lane>: the lane runs in its own CARGO_HOME, $STYX_GATE_CARGO_HOMES/<lane>, which
+# scripts/gate.py fills before the gate (scripts/cargo-home.sh: every committed lock file's crates,
+# offline). Cargo takes its package-cache lock for writing while it resolves, even offline, so lanes
+# sharing one home waited on each other there (16-19 "Blocking waiting for file lock on package
+# cache" lines a core-crate gate, 2026-11-27). A home goes with a target directory: a dependency's
+# fingerprint holds its source path, under CARGO_HOME. host:all (main) keeps the one gate.py set.
+# Unset (CI, STYX_OWN_CARGO_HOME=0), every lane keeps the caller's CARGO_HOME.
+lane_home() {
+  [ -n "${STYX_GATE_CARGO_HOMES:-}" ] || return 0
+  [ -f "$STYX_GATE_CARGO_HOMES/$1/.styx-fetch-key" ] || {
+    echo "gate: the $1 lane has no CARGO_HOME in $STYX_GATE_CARGO_HOMES (scripts/cargo-home.sh fetch)" >&2
+    exit 1
+  }
+  CARGO_HOME="$STYX_GATE_CARGO_HOMES/$1"
+  export CARGO_HOME
+}
 checks_lane() {
   lane_mark host:checks started
   if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
@@ -605,6 +621,7 @@ if [ "$cargo_lanes" = 1 ]; then
     step_tmp_root="$step_tmp_root/checks"
     step_count=0
     mkdir "$step_tmp_root"
+    lane_home checks
     checks_lane
   ) > "$checks_out" 2>&1 &
   checks_pid=$!
@@ -646,6 +663,7 @@ start_bare() {
     step_count=0
     mkdir "$step_tmp_root"
     start_from "$target_dir" bare
+    lane_home bare
     export CARGO_TARGET_DIR="$target_dir/bare" CARGO_BUILD_JOBS=2
     bare_lanes
   ) > "$bare_out" 2>&1 &
@@ -686,6 +704,7 @@ start_clippy_all() {
     step_count=0
     mkdir "$step_tmp_root"
     start_from "$target_dir" clippy
+    lane_home clippy
     export CARGO_TARGET_DIR="$target_dir/clippy"
     clippy_all
   ) > "$clippy_out" 2>&1 &
@@ -701,6 +720,7 @@ start_default() {
     step_count=0
     mkdir "$step_tmp_root"
     start_from "$target_dir" default
+    lane_home default
     export CARGO_TARGET_DIR="$target_dir/default" CARGO_BUILD_JOBS=$(( jobs > 3 ? jobs / 2 : 1 ))
     default_lane
   ) > "$default_out" 2>&1 &
@@ -722,7 +742,7 @@ if compgen -G "crates/*/*/Cargo.toml" > /dev/null; then
     if selected host:all; then
       start_default
     else
-      ( start_from "$target_dir" default; export CARGO_TARGET_DIR="$target_dir/default"; default_lane )
+      ( start_from "$target_dir" default; lane_home default; export CARGO_TARGET_DIR="$target_dir/default"; default_lane )
     fi
   fi
   if selected host:all; then

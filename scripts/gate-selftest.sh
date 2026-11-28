@@ -27,7 +27,7 @@ trap 'rm -rf -- "${scratch:?}"' EXIT
 # old key is reused while the new key runs. CI and reuse-off are left out here: both always run.
 keyroot=$scratch/keyroot
 mkdir -p "$keyroot/scripts"
-cp scripts/gate.sh scripts/gate.py scripts/gate-selftest.sh scripts/gate-supervise.py scripts/rustdoc-only.sh "$keyroot/scripts/"
+cp scripts/gate.sh scripts/gate.py scripts/gate-selftest.sh scripts/gate-supervise.py scripts/rustdoc-only.sh scripts/cargo-home.sh "$keyroot/scripts/"
 k_same=$(python3 scripts/gate.py selftest-key --root "$keyroot")
 [ "$k_same" = "$(python3 scripts/gate.py selftest-key)" ] ||
   { echo "gate-selftest: FAILED: an unchanged copy keys $k_same, the tree $(python3 scripts/gate.py selftest-key)"; exit 1; }
@@ -233,6 +233,44 @@ out=$(runner "$dc/exe") && dc_fail "a call whose rustdoc cannot start passed"
 [[ $out == *"cannot be replayed: no rustdoc"* ]] || dc_fail "a rustdoc gone not named: $out"
 rm -rf -- "${dc:?}"
 echo "    collected doctests: whole outputs in crate order, no jobserver; a failing, missing or unreplayable call fails"
+# The gate's own CARGO_HOME (scripts/cargo-home.sh), in a scratch repository with a lock file and
+# no dependencies (nothing downloaded): a fetch records the lock's sha256 and the crate count and
+# brings every lane's home to its key; the same lock again fetches nothing and keeps the key; a new
+# lock moves the key and brings each home up to it at the same path; an unknown lane, and a lane
+# with no home, are refused by name.
+ch=$(mktemp -d "${TMPDIR:-/tmp}/ch.XXX")
+ch_fail() { echo "gate-selftest: FAILED: cargo home: $1" >&2; rm -rf -- "${ch:?}"; exit 1; }
+mkdir -p "$ch/repo/scripts" "$ch/repo/src"
+cp scripts/cargo-home.sh "$ch/repo/scripts/"
+printf '[package]\nname = "chprobe"\nversion = "0.1.0"\nedition = "2021"\n' > "$ch/repo/Cargo.toml"
+: > "$ch/repo/src/lib.rs"
+printf '# probe\nversion = 4\n\n[[package]]\nname = "chprobe"\nversion = "0.1.0"\n' > "$ch/repo/Cargo.lock"
+git -C "$ch/repo" init -q && git -C "$ch/repo" add -A && git -C "$ch/repo" -c user.name=t -c user.email=t@t commit -qm probe
+chf() { (cd "$ch/repo" && env -u GITHUB_ACTIONS STYX_CARGO_HOME_DIR="$ch/home" scripts/cargo-home.sh "$@" 2>&1); }
+out=$(chf fetch) || ch_fail "the first fetch failed: $out"
+[[ $out == *"lock: Cargo.lock $(sha256sum "$ch/repo/Cargo.lock" | cut -c1-64)"* ]] || ch_fail "the lock's sha256 not recorded: $out"
+[[ $out == *"crates: 0 registry crate files"* ]] || ch_fail "the crate count not recorded: $out"
+key1=$(cat "$ch/home.lanes/main/.styx-fetch-key" 2> /dev/null) || ch_fail "no main home"
+for l in main clippy default bare checks; do
+  [ "$(cat "$ch/home.lanes/$l/.styx-fetch-key" 2> /dev/null)" = "$key1" ] || ch_fail "the $l home is not at the fetch"
+  grep -q '^offline = true' "$ch/home.lanes/$l/config.toml" || ch_fail "the $l home is not offline"
+done
+out=$(chf fetch) || ch_fail "the second fetch failed: $out"
+[[ $out == *"nothing fetched"* ]] || ch_fail "the same lock fetched again: $out"
+[ "$(cat "$ch/home.lanes/bare/.styx-fetch-key")" = "$key1" ] || ch_fail "the same lock moved the key"
+printf '# probe 2\nversion = 4\n\n[[package]]\nname = "chprobe"\nversion = "0.1.0"\n' > "$ch/repo/Cargo.lock"
+git -C "$ch/repo" -c user.name=t -c user.email=t@t commit -qam probe2
+out=$(chf fetch) || ch_fail "the fetch of a new lock failed: $out"
+key2=$(cat "$ch/home.lanes/default/.styx-fetch-key")
+[ -n "$key2" ] && [ "$key2" != "$key1" ] || ch_fail "a new lock kept the key"
+[ "$(chf home default)" = "$ch/home.lanes/default" ] || ch_fail "a lane's home moved"
+out=$(chf home nope) && ch_fail "an unknown lane was given a home"
+[[ $out == *"no lane nope"* ]] || ch_fail "an unknown lane not named: $out"
+rm "$ch/home.lanes/clippy/.styx-fetch-key"
+out=$(chf home clippy) && ch_fail "a lane with no home was given one"
+[[ $out == *"the clippy lane has no home"* ]] || ch_fail "a lane with no home not named: $out"
+rm -rf -- "${ch:?}"
+echo "    cargo-home.sh: lock and crates recorded; homes at the fetch's key; same lock fetches nothing; a new lock moves the key in place; missing homes named"
 lanes=(host:checks host:all host:default bare:thumbv7em bare:riscv32imac bare:riscv32imc)
 # plant label | the lane it is in ("" for a step outside every lane)
 cases=(
@@ -262,6 +300,7 @@ dry_gate() {
   case "$mode" in
     beside-slow) how=(-u GITHUB_ACTIONS STYX_GATE_CLIPPY_BESIDE=1 "STYX_GATE_DRY_SLOW=tests, all features") ;;
     serial) how=(STYX_GATE_CLIPPY_BESIDE=0) ;;
+    nohome) how=(STYX_GATE_CARGO_HOMES="$scratch/no-homes") ;;
   esac
   env -u STYX_GATE_SUPERVISOR -u STYX_GATE_NARROW -u STYX_GATE_TREE -u STYX_GATE_META \
     -u STYX_GATE_RECORDS -u STYX_GATE_NO_REUSE -u STYX_CHECK_DOCTESTS "${how[@]}" \
@@ -279,6 +318,7 @@ bad() { echo "gate-selftest: FAILED: $1"; sed 's/^/    /' "$scratch/$2.log" | ta
 t0=$SECONDS
 pids=()
 { dry_gate clean "" > "$scratch/clean.out"; echo "    dry gate unplanted ended at $((SECONDS - t0)) s"; } & pids+=($!)
+{ dry_gate nohome "" nohome > "$scratch/nohome.out"; echo "    dry gate with no lane homes ended at $((SECONDS - t0)) s"; } & pids+=($!)
 for i in "${!cases[@]}"; do
   IFS='|' read -r label _ mode <<< "${cases[$i]}"
   { dry_gate "$i" "$label" "$mode" > "$scratch/$i.out"; echo "    dry gate $i ended at $((SECONDS - t0)) s"; } & pids+=($!)
@@ -289,6 +329,10 @@ for v in "${lanes[@]}"; do
   [[ " ${trailer#Gate-Lanes: } " == *" $v=passed "* ]] || { bad "unplanted: $v is not passed (exit $rc: $trailer)" clean; break; }
 done
 [ "$rc" = 0 ] || bad "unplanted: the gate exited $rc" clean
+read -r rc trailer < "$scratch/nohome.out"
+if [ "$rc" = 0 ]; then bad "no lane homes: the gate exited 0 ($trailer)" nohome
+elif ! grep -q 'gate: the checks lane has no CARGO_HOME' "$scratch/nohome.log"; then bad "no lane homes: the lane is not named" nohome
+else echo "    red as it should be: no lane homes -> the lanes that need one fail by name ($trailer)"; fi
 for i in "${!cases[@]}"; do
   IFS='|' read -r label lane mode <<< "${cases[$i]}"
   read -r rc trailer < "$scratch/$i.out"

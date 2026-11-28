@@ -100,7 +100,7 @@ CI = bool(os.environ.get("CI"))
 # The gate's own files: a record or key made by other gate rules is not trusted.
 GATE_FILES = ["scripts/gate.sh", "scripts/gate.py", "scripts/gate-lanes.map", "scripts/affected.py",
               "scripts/test-layout.py", "scripts/gate-supervise.py", "scripts/rustdoc-only.sh",
-              ".config/nextest.toml", ".config/default-only.txt"]
+              "scripts/cargo-home.sh", ".config/nextest.toml", ".config/default-only.txt"]
 # How a test says it needs something outside its process (styx_frame::not_run, dma_case).
 OUTSIDE_NEED = re.compile(r"\bnot_run\b|\bdma_case\b")
 # Variables a test may read: the ones its crate's sources name, and these prefixes. Not the gate's
@@ -232,7 +232,7 @@ def scripts_hash():
 # The gate's self-test (scripts/gate-selftest.sh) tests these and nothing else: it runs again when
 # one changes, and its green run is reused otherwise, like a lane's crate.
 SELFTEST_FILES = ["scripts/gate.sh", "scripts/gate.py", "scripts/gate-selftest.sh",
-                  "scripts/gate-supervise.py", "scripts/rustdoc-only.sh"]
+                  "scripts/gate-supervise.py", "scripts/rustdoc-only.sh", "scripts/cargo-home.sh"]
 
 
 def selftest_key(root=ROOT):
@@ -678,6 +678,26 @@ def mark(what):
         print(f"gate: at {time.time() - float(t0):.1f} s: {what}", flush=True)
 
 
+def own_cargo_home():
+    """The gate's own CARGO_HOME (scripts/cargo-home.sh), filled from every committed lock file
+    before any cargo runs, then offline: host:all's home for everything gate.py and the main lane
+    run, and every lane's home under STYX_GATE_CARGO_HOMES for gate.sh (lane_home; a gate variable,
+    in no key). CARGO_HOME is keyed like any CARGO_ variable: it stays at one path. Not in CI, and
+    not with STYX_OWN_CARGO_HOME=0 (the caller's CARGO_HOME, as before)."""
+    if CI or os.environ.get("STYX_OWN_CARGO_HOME", "1") == "0":
+        return
+    r = subprocess.run([os.path.join(ROOT, "scripts", "cargo-home.sh"), "fetch"], cwd=ROOT,
+                       capture_output=True, text=True)
+    out = (r.stdout + r.stderr).strip()
+    if r.returncode != 0:
+        sys.exit(f"{out}\ngate: the gate's CARGO_HOME could not be filled (scripts/cargo-home.sh fetch)")
+    print(out, flush=True)
+    home = subprocess.run([os.path.join(ROOT, "scripts", "cargo-home.sh"), "home", "main"], cwd=ROOT,
+                          capture_output=True, text=True, check=True).stdout.strip()
+    os.environ["CARGO_HOME"] = home
+    os.environ["STYX_GATE_CARGO_HOMES"] = os.path.dirname(home)
+
+
 def cmd_run(a):
     os.environ["STYX_GATE_T0"] = repr(time.time())
     if CI:
@@ -689,6 +709,8 @@ def cmd_run(a):
     if UPSTREAM.startswith("origin/"):
         git("fetch", "-q", "origin", check=False)
     mark("fetched")
+    own_cargo_home()
+    mark("cargo home fetched")
     base = git("merge-base", UPSTREAM, "HEAD").strip()
     # A gate whose result is already known does not run: nothing it tests changed. Only
     # documentation that no code or script reads (or nothing) differs from the base, so the base's

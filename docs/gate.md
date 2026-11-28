@@ -56,6 +56,23 @@ its own level to it, and says so when started above it. Between systemd scopes a
 share is set by CPUWeight, not nice: a heavy run stays in a unit at the default weight (100), and no
 Styx script sets CPUWeight, CPUQuota or IOWeight (checked 2026-11-27).
 
+## The gate's own CARGO_HOME
+
+Off CI, `gate.py run` fills the gate's own CARGO_HOME before any cargo runs
+(scripts/cargo-home.sh fetch): `cargo fetch --locked` from every committed lock file into
+`<area>/cache/cargo-home` (online only when something is missing), with its `fetch.log`: each lock
+file's sha256, the sources, the number of registry crate files, a sha256 over their sums and the git
+checkouts. The same lock files again fetch nothing. Each lane then runs offline in a home of its own,
+`<area>/cache/cargo-home.lanes/<lane>` (main, clippy, default, bare, checks): copies of the fetched
+home, reflinks where the disk has them, brought up to each new fetch in place. Cargo takes its
+package-cache lock for writing while it resolves, even offline, so lanes sharing one home waited on
+each other there; and a dependency's fingerprint holds its source path, under CARGO_HOME, so a home
+stays at one path and goes with one target directory (a new path rebuilt every dependency: 1,174
+CPU-s for host:all's test build). host:all keeps `main`, which gate.py sets; gate.sh's `lane_home`
+sets the others and fails a lane, by name, whose home is missing. The gate never reads or writes
+~/.cargo. CARGO_HOME is keyed like any CARGO_ variable (one path, one key); the seeds' key holds it
+too. CI keeps the runner's CARGO_HOME (rust-cache's), and STYX_OWN_CARGO_HOME=0 keeps the caller's.
+
 ## A failing step fails its lane
 
 Every lane's status comes from its own pass mark, written after its last step, and from the gate's

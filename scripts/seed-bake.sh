@@ -31,6 +31,13 @@ for a in "$@"; do
     *) echo "seed-bake: usage: scripts/seed-bake.sh [--if-due] [--background]" >&2; exit 2 ;;
   esac
 done
+# The gate's own CARGO_HOME (scripts/cargo-home.sh): host:all's, where the seed is restored, since a
+# dependency's fingerprint holds its source path under it. STYX_OWN_CARGO_HOME=0 keeps the caller's.
+if [ "${STYX_OWN_CARGO_HOME:-1}" != 0 ]; then
+  scripts/cargo-home.sh fetch > /dev/null
+  CARGO_HOME=$(scripts/cargo-home.sh home main)
+  export CARGO_HOME
+fi
 if [ "$if_due" = 1 ] && scripts/cargo-seed.sh toolchain-seeded; then
   echo "seed-bake: a seed of this toolchain exists: nothing to bake"
   exit 0
